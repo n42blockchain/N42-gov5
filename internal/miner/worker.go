@@ -1396,6 +1396,19 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return errors.New("coinbase is empty")
 	}
 
+	// S76: classification for the "miner: build phases" line below. A real
+	// speculative-HIT never reaches that line -- it returns straight to the
+	// sealer a few lines down, off the fill/commit path entirely -- so
+	// specStatus here only ever lands on "spec" (this call IS the speculative
+	// build, speculative==true), "miss" (a parked speculative task existed for
+	// parentHash but could not be used, or none was ever parked) or "none"
+	// (nothing to look up: no parentHash, e.g. the first block after genesis).
+	specStatus := "none"
+	specReason := ""
+	if speculative {
+		specStatus = "spec"
+	}
+
 	// Speculative HIT: the previous view voted for parentHash, the build ran
 	// during that view's vote rounds, and consensus now confirms the guess.
 	// Pay the pacing wait the parked build skipped, then hand the block
@@ -1440,7 +1453,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				}
 				return nil
 			}
+			specStatus = "miss"
+			specReason = "stale-applied-head-moved"
 			log.Info("miner: speculative build discarded, applied head moved", "parent", parentHash.Hex()[:12])
+		} else {
+			specStatus = "miss"
+			specReason = "not-started"
 		}
 	}
 
@@ -1818,6 +1836,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		"candidatesScanned", tl.PendingTxCount, "candidatesIncluded", current.tcount,
 		"poolSnapshotUs", poolSnapshotUs, "fillLoopDoneUs", fillLoopDoneUs,
 		"buildTriggeredUs", triggerAt.UnixMicro(), "parentHash", parentHash.Hex(),
+		// S76 (docs/QS_TIMELINE_35zzzba.md): a real speculative-HIT never
+		// reaches this line (it returns to the sealer earlier in commitWork),
+		// so "spec" here distinguishes a speculative build in flight ("spec")
+		// from an on-critical-path build that missed a parked speculative task
+		// ("miss", with specReason) or had none to look up ("none").
+		"spec", specStatus, "specReason", specReason,
 		// tMs is the build's END; tMs - total is its start. Round 35zzq could not
 		// place either against the QC, and the gap between them is the cycle now.
 		"tMs", time.Now().UnixMilli())
@@ -2304,8 +2328,22 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				if err := env.gasPool.SubGas(usedGas); err != nil {
 					return err
 				}
+				dRunP := time.Since(tRun)
+				// S76: the parallel-fill success path used to `return nil` here
+				// without ever touching tl, so fillLoopDoneUs/fillExec/
+				// candidatesScanned stayed at their zero value on EVERY build
+				// under the standing N42_MINER_PARALLEL_FILL=1 config -- the
+				// serial loop below (which does stamp tl) never runs when this
+				// branch succeeds. Mirror the same three stamps here: pick+size
+				// admission is this path's "scan" (fillScan = fillTx - fillExec
+				// at the call site), BuildParallel's wall time is its "exec".
+				if tl != nil {
+					tl.FillLoopDoneAt = time.Now()
+					tl.FillExecDur = dRunP
+					tl.PendingTxCount = len(candidates)
+				}
 				log.Info("miner: parallel fill", "candidates", len(candidates), "included", len(included), "failed", failed,
-					"pick", dPickP, "run", time.Since(tRun), "pendingSnapshot", dPending, "trim", dTrim, "staleTrimmed", staleTrimmed)
+					"pick", dPickP, "run", dRunP, "pendingSnapshot", dPending, "trim", dTrim, "staleTrimmed", staleTrimmed)
 				return nil
 			}
 			if !errors.Is(perr, internal.ErrParallelNotApplicable) {
