@@ -62,7 +62,7 @@ func TestFillTransactionsIncludesPendingInNonceOrder(t *testing.T) {
 	w.txsPool = &mnTStubTxsPool{pending: mnTByAddr(f.Senders[0], tx0, tx1)}
 
 	getHeader := func(hash types.Hash, number uint64) *block.Header { return nil }
-	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, "")); err != nil {
+	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil); err != nil {
 		t.Fatalf("fillTransactions: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestFillTransactionsEmptyPoolIsNoop(t *testing.T) {
 	ibs, env := mnTPrepareEnvAndState(t, w, f)
 
 	getHeader := func(hash types.Hash, number uint64) *block.Header { return nil }
-	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, "")); err != nil {
+	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil); err != nil {
 		t.Fatalf("fillTransactions: %v", err)
 	}
 	if len(env.txs) != 0 || env.tcount != 0 {
@@ -111,7 +111,7 @@ func TestFillTransactionsRespectsInterrupt(t *testing.T) {
 	interrupt := new(atomic.Int32)
 	interrupt.Store(commitInterruptNewHead)
 	getHeader := func(hash types.Hash, number uint64) *block.Header { return nil }
-	err := w.fillTransactions(interrupt, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""))
+	err := w.fillTransactions(interrupt, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil)
 	if err == nil {
 		t.Fatal("expected an interrupt error")
 	}

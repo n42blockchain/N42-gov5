@@ -25,6 +25,7 @@ package miner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1760,7 +1761,8 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 
 	tPrep := time.Since(start)
 	wd.SetStep("pendingSnapshot")
-	err = w.fillTransactions(interrupt, current, ibs, getHeader, pf, wd)
+	tl := &fillTimeline{}
+	err = w.fillTransactions(interrupt, current, ibs, getHeader, pf, wd, tl)
 	switch {
 	case err == nil:
 		w.resubmitAdjustCh <- &intervalAdjust{inc: false}
@@ -1787,9 +1789,31 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 
 	// Build-phase breakdown: the dropped-seal hunt found ~6s builds with a
 	// 6ms seal and no visible spender - this line is the missing evidence.
+	//
+	// S75 (docs/QS_WIN2_RESIDUAL.md): fillTx used to be one opaque number
+	// bundling pool-scan + selection + EVM execution; fillScan/fillExec
+	// split it using tl.FillExecDur (the loop's accumulated ApplyTransaction
+	// time, dCommit in fillTransactions -- zero on the parallel-fill path or
+	// an empty-pool early return, in which case fillScan==fillTx and
+	// fillExec==0). poolSnapshotUs/fillLoopDoneUs are 0 when tl was never
+	// populated (same early-return cases).
+	fillTxTotal := time.Since(start) - tPrep
+	fillExec := tl.FillExecDur
+	fillScan := fillTxTotal - fillExec
+	var poolSnapshotUs, fillLoopDoneUs int64
+	if !tl.PoolSnapshotAt.IsZero() {
+		poolSnapshotUs = tl.PoolSnapshotAt.UnixMicro()
+	}
+	if !tl.FillLoopDoneAt.IsZero() {
+		fillLoopDoneUs = tl.FillLoopDoneAt.UnixMicro()
+	}
 	log.Info("miner: build phases",
 		"align", tAlign, "persistWait", dPersistWait, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
-		"fillTx", time.Since(start)-tPrep, "total", time.Since(start),
+		"fillTx", fillTxTotal, "total", time.Since(start),
+		"fillScan", fillScan, "fillExec", fillExec,
+		"candidatesScanned", tl.PendingTxCount, "candidatesIncluded", current.tcount,
+		"poolSnapshotUs", poolSnapshotUs, "fillLoopDoneUs", fillLoopDoneUs,
+		"buildTriggeredUs", triggerAt.UnixMicro(), "parentHash", parentHash.Hex(),
 		// tMs is the build's END; tMs - total is its start. Round 35zzq could not
 		// place either against the QC, and the gap between them is the cycle now.
 		"tMs", time.Now().UnixMilli())
@@ -1946,7 +1970,66 @@ func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") ==
 // trim) and where the parallel/serial fill decision is made, so it is also
 // where pf's summary line is logged and wd is cancelled -- the literal
 // "start of the fill" boundary.
-func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header, pf *prefillTimes, wd *buildStallWatchdog) (retErr error) {
+// fillTimeline carries S75's timeline stamps out of fillTransactions
+// (docs/QS_WIN2_RESIDUAL.md) without touching any of its many return
+// statements: PoolSnapshotAt is stamped right after w.txsPool.Pending()
+// returns ("pool snapshot taken"), FillLoopDoneAt right after the serial
+// selection loop exits ("fill loop done"), FillExecDur is the accumulated
+// ApplyTransaction time (dCommit) inside that loop, and PendingTxCount is
+// the scanned-candidate count (pendingTxs). All four are left zero-value on
+// the parallel-fill path and on early "no pending transactions" returns
+// before the respective point is reached -- the caller treats a zero
+// PoolSnapshotAt/FillLoopDoneAt as "not reached" rather than as a real
+// microsecond-zero timestamp.
+type fillTimeline struct {
+	PoolSnapshotAt time.Time
+	FillLoopDoneAt time.Time
+	FillExecDur    time.Duration
+	PendingTxCount int
+}
+
+// minerBlockTimelineJSON is S75's one-JSON-line-per-block leader timeline
+// (docs/QS_WIN2_RESIDUAL.md). finalizeDoneUs/rootDoneUs share one timestamp
+// today -- the leader computes the state root inside FinalizeAndAssemble and
+// does not time it separately from Finalize, unlike the follower's
+// "blockimport phases" root field; see the call site's comment.
+type minerBlockTimelineJSON struct {
+	Number           uint64 `json:"number"`
+	Hash             string `json:"hash"`
+	BuildTriggeredUs int64  `json:"buildTriggeredUs"`
+	FinalizeDoneUs   int64  `json:"finalizeDoneUs"`
+	RootDoneUs       int64  `json:"rootDoneUs"`
+	BlockSealedUs    int64  `json:"blockSealedUs"`
+	Txs              int    `json:"txs"`
+}
+
+// logMinerBlockTimeline emits the leader-side "miner: block timeline" Info
+// line (S75, docs/QS_WIN2_RESIDUAL.md). Marshal failure is not possible for
+// this fixed, all-primitive struct, but is handled defensively since this is
+// a logging-only addition that must never affect block production.
+func logMinerBlockTimeline(iblock block.IBlock, triggerAt, finalizeDoneAt, rootDoneAt, sealedAt time.Time, txs int) {
+	num := uint64(0)
+	if n := iblock.Number64(); n != nil {
+		num = n.Uint64()
+	}
+	tl := minerBlockTimelineJSON{
+		Number:           num,
+		Hash:             iblock.Hash().Hex(),
+		BuildTriggeredUs: triggerAt.UnixMicro(),
+		FinalizeDoneUs:   finalizeDoneAt.UnixMicro(),
+		RootDoneUs:       rootDoneAt.UnixMicro(),
+		BlockSealedUs:    sealedAt.UnixMicro(),
+		Txs:              txs,
+	}
+	b, err := json.Marshal(tl)
+	if err != nil {
+		log.Warn("miner: block timeline marshal failed", "err", err)
+		return
+	}
+	log.Info("miner: block timeline", "role", "leader", "json", string(b))
+}
+
+func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header, pf *prefillTimes, wd *buildStallWatchdog, tl *fillTimeline) (retErr error) {
 	header := env.header
 	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
 	if err != nil {
@@ -2105,6 +2188,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	tPending := time.Now()
 	pending := w.txsPool.Pending(false)
 	dPending := time.Since(tPending)
+	if tl != nil {
+		tl.PoolSnapshotAt = time.Now() // S75: "pool snapshot taken"
+	}
 	pendingRawAccts := len(pending)
 	if len(pending) == 0 {
 		pf.logIfSlow(blockNumber, dPending, 0)
@@ -2234,6 +2320,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	for _, list := range pending {
 		pendingTxs += len(list)
 	}
+	if tl != nil {
+		tl.PendingTxCount = pendingTxs // S75: "candidates scanned"
+	}
 
 	// Accounts skipped because their head transaction cannot pay the base fee.
 	// Reported once per build: a block that comes out empty with a full pool is
@@ -2324,6 +2413,10 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Shift()
 		}
 		dHeap += time.Since(tShift)
+	}
+	if tl != nil {
+		tl.FillLoopDoneAt = time.Now() // S75: "fill loop done"
+		tl.FillExecDur = dCommit       // S75: fillExec = ApplyTransaction time only
 	}
 	lookupWait := time.Duration(commitment.QMDBLookupWaitNanos() - lookupWait0)
 
@@ -2485,6 +2578,12 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		exec = &r
 	}
 	dFinalize := time.Since(tCommitStart)
+	// S75 (docs/QS_WIN2_RESIDUAL.md): "finalize done". The leader never times
+	// state-root computation separately from FinalizeAndAssemble (unlike the
+	// follower's "blockimport phases" root field) -- rootDone below is this
+	// same instant, not an independent measurement; see the commit message.
+	tFinalizeDoneAt := time.Now()
+	tRootDoneAt := tFinalizeDoneAt
 
 	// Mobile-verification packet: the recorder captured this block's read
 	// log during the build; pair it with the FINAL header (receipts root,
@@ -2639,6 +2738,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		if contentionDiagEnabled {
 			tParked = time.Now()
 		}
+		tSealedAt := time.Now()
 		w.specMu.Lock()
 		w.specTask = &task{
 			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
@@ -2652,6 +2752,11 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 			num = n.Uint64()
 		}
 		log.Info("miner: speculative build parked", "number", num, "txs", envCopy.tcount, "parent", specParent.Hex()[:12], "tMs", time.Now().UnixMilli())
+		// S75: "blockSealed" for a speculative-hit block is this park instant
+		// -- the block is fully built and immutable from here, it is only the
+		// network hand-off (OutputBroadcast, logged from hotstuff) that is
+		// deferred until the guessed parent is confirmed.
+		logMinerBlockTimeline(iblock, triggerAt, tFinalizeDoneAt, tRootDoneAt, tSealedAt, envCopy.tcount)
 		return nil
 	}
 
@@ -2678,6 +2783,10 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 			"headerTime", time.Unix(int64(iblock.Time()), 0).Format(time.RFC3339),
 			"rewardCount", commitRewardCount,
 		)
+		// S75 (docs/QS_WIN2_RESIDUAL.md): "blockSealed" -- the block is handed
+		// to the sealer/taskCh here; the network hand-off itself is logged
+		// from hotstuff's onBlockReady ("proposal handed to network").
+		logMinerBlockTimeline(iblock, triggerAt, tFinalizeDoneAt, tRootDoneAt, time.Now(), envCopy.tcount)
 	case <-w.ctx.Done():
 		return w.ctx.Err()
 	}
