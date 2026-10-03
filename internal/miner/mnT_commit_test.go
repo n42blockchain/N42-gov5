@@ -22,7 +22,7 @@ func mnTBuildFilledEnv(t *testing.T, w *worker, f *mnTChainFixture) (*environmen
 	t.Helper()
 	ibs, env := mnTPrepareEnvAndState(t, w, f)
 	getHeader := func(hash types.Hash, number uint64) *block.Header { return nil }
-	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, "")); err != nil {
+	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil); err != nil {
 		t.Fatalf("fillTransactions: %v", err)
 	}
 	return env, ibs
