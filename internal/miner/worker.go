@@ -1367,7 +1367,11 @@ func (w *worker) takeSpecTask(parent types.Hash) *task {
 }
 
 func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash, speculative bool, triggerAt time.Time) error {
-	log.Info("miner: commitWork begin", "speculative", speculative) // diagnostic: pairs with "build triggered"
+	// S75 (docs/QS_WIN2_RESIDUAL.md): tUs/parentHash let this line double as
+	// both "build triggered" for THIS build and "next build triggered" for
+	// the previous block's "miner: block timeline" (matched by parentHash ==
+	// that timeline's sealed block hash).
+	log.Info("miner: commitWork begin", "speculative", speculative, "parentHash", parentHash.Hex(), "tUs", time.Now().UnixMicro()) // diagnostic: pairs with "build triggered"
 	start := time.Now()
 
 	// S11 diagnostics (N42_BUILD_STALL_DIAG=1; docs/QS_BLOCK_TIME_BUDGET.md
