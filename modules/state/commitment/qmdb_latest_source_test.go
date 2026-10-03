@@ -72,6 +72,7 @@ func decodeNonce(t *testing.T, enc []byte) uint64 {
 func TestQMDBLatestAccountSource_ResidentEvictedAndEmpty(t *testing.T) {
 	db := n42TestDB(t)
 	rc := NewQMDBRootComputer()
+	rc.SetEvictLag(0) // asserts immediate eviction; pin it regardless of N42_QMDB_EVICT_LAG_BLOCKS
 	ctx := context.Background()
 
 	a1 := types.BytesToAddress([]byte{1})

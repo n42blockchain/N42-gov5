@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -67,6 +68,38 @@ type QMDBRootComputer struct {
 	// persisted, the same thing the layered cache already exposes.
 	// Uncontended when no source is installed.
 	readers sync.RWMutex
+
+	// evictLag (N42_QMDB_EVICT_LAG_BLOCKS) keeps flushed entries and twig
+	// leaves resident for K blocks after their flush (qmdb.EvictLag).
+	// K = 0 evicts everything flushed, as before.
+	evictLag qmdb.EvictLag
+}
+
+// evictLagFromEnv parses N42_QMDB_EVICT_LAG_BLOCKS (unset, invalid or <= 0
+// means 0: today's evict-everything-flushed behaviour).
+func evictLagFromEnv() int {
+	n, err := strconv.Atoi(os.Getenv("N42_QMDB_EVICT_LAG_BLOCKS"))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// SetEvictLag overrides the residency lag (tests/benchmarks) and resets the
+// ring of recorded cursors.
+func (r *QMDBRootComputer) SetEvictLag(k int) {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	if k < 0 {
+		k = 0
+	}
+	r.evictLag = qmdb.EvictLag{K: k}
+}
+
+// evictLaggedLocked evicts through `through` per the residency lag
+// (qmdb.EvictLag). Caller holds readers exclusively.
+func (r *QMDBRootComputer) evictLaggedLocked(through uint64) {
+	r.evictLag.Evict(r.t, through, r.flushedThrough)
 }
 
 // Lookup reads the live value for keyHash from another goroutine. cold is
@@ -121,6 +154,11 @@ func (r *QMDBRootComputer) LookupLocked(keyHash qmdb.Hash, cold qmdb.Getter) (va
 // owner (round 28 diagnostic: the leader's build against the import's
 // ComputeRoot/FlushTo at 163k-transaction blocks).
 var qmdbLookupWaitNanos atomic.Int64
+
+// lastLoggedColdReads/lastLoggedResidentHits hold the qmdb read counters at
+// the previous "qmdb root phases" line, so each line reports the reads since
+// the one before (about one block: the build and the write of it).
+var lastLoggedColdReads, lastLoggedResidentHits atomic.Uint64
 
 // QMDBLookupWaitNanos reports the process-wide accumulated Lookup wait.
 func QMDBLookupWaitNanos() int64 { return qmdbLookupWaitNanos.Load() }
@@ -311,7 +349,7 @@ func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
 
 // NewQMDBRootComputer creates an empty in-memory QMDB root computer.
 func NewQMDBRootComputer() *QMDBRootComputer {
-	return &QMDBRootComputer{t: qmdb.New()}
+	return &QMDBRootComputer{t: qmdb.New(), evictLag: qmdb.EvictLag{K: evictLagFromEnv()}}
 }
 
 // VoidIndexTrust marks the in-RAM index untrusted, forcing the next
@@ -723,7 +761,12 @@ func (r *QMDBRootComputer) AdoptOwnAppends(liveNext, liveFlushed uint64) bool {
 	}
 	r.stagedValid = false
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
-	r.t.AdoptFlushed(liveFlushed)
+	if r.evictLag.K > 0 {
+		r.t.AdoptFlushedKeep()
+		r.evictLaggedLocked(liveFlushed)
+	} else {
+		r.t.AdoptFlushed(liveFlushed)
+	}
 	return true
 }
 
@@ -738,8 +781,7 @@ func (r *QMDBRootComputer) HasUnwrittenBuild() bool {
 func (r *QMDBRootComputer) EvictFlushed() {
 	r.readers.Lock()
 	defer r.readers.Unlock()
-	r.t.EvictThrough(r.flushedThrough)
-	r.t.EvictTwigsThrough(r.flushedThrough)
+	r.evictLaggedLocked(r.flushedThrough)
 }
 
 // ResidentTwigLeaves exposes how many twigs still hold their leaf array (for the
@@ -832,8 +874,12 @@ func (r *QMDBRootComputer) ComputeRoot(
 	// Observability only; logged at the same threshold as the other block
 	// phases, and only for blocks big enough to matter.
 	if len(ops) > 1000 {
+		cold, hits := qmdb.ReadCounters()
+		dCold := cold - lastLoggedColdReads.Swap(cold)
+		dHits := hits - lastLoggedResidentHits.Swap(hits)
 		log.Info("qmdb root phases", "ops", len(ops), "applyWorkers", qmdb.ParallelApplyWorkers,
-			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds())
+			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds(),
+			"coldReads", dCold, "residentHits", dHits, "evictLag", r.evictLag.K)
 	}
 	return root, nil
 }
