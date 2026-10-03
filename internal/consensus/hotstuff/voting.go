@@ -113,6 +113,16 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 	}
 	msg := e.voteSigningMessage(view, vote.BlockHash)
 
+	// S75 (docs/QS_WIN2_RESIDUAL.md): "first vote received" -- the first
+	// Round 1 vote for THIS view's collector hash to reach this point
+	// (unverified but hash-matched; equivocation/hash-mismatch votes above
+	// never reach here). Distinct from PrepareQCFormed (tryFormPrepareQC),
+	// which fires only once a full quorum is collected.
+	if e.viewTiming.FirstPrepareVoteAt == nil {
+		t := time.Now()
+		e.viewTiming.FirstPrepareVoteAt = &t
+	}
+
 	// Buffer vote for batch verification.
 	e.prepareVoteBuf = append(e.prepareVoteBuf, pendingVote{
 		voter:    vote.Voter,

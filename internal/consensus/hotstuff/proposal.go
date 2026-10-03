@@ -151,6 +151,7 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 
 	now := time.Now()
 	e.viewTiming.ProposalSent = &now
+	e.viewTiming.BlockHash = blockHash // S75: correlates with "miner: block timeline"
 
 	if err := e.emit(EngineOutput{
 		Type: OutputBroadcast,
@@ -161,6 +162,11 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	}); err != nil {
 		return err
 	}
+	// S75 (docs/QS_WIN2_RESIDUAL.md): "proposal handed to network" -- the
+	// microsecond timestamp also rides in "hotstuff view timing"'s us=...
+	// JSON (ProposalSent), this line exists for the case a view never
+	// commits (publishCommittedTiming only fires on commit).
+	log.Info("hotstuff: proposal broadcast", "view", view, "blockHash", blockHash.Hex(), "tUs", now.UnixMicro())
 
 	// Same-leader speculative build: with a leader tenure above one this
 	// node also leads view+1, and the vote-time hint never fires for its
@@ -264,6 +270,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 	e.roundState.EnterVoting()
 	now := time.Now()
 	e.viewTiming.ProposalReceived = &now
+	e.viewTiming.BlockHash = proposal.BlockHash // S75: correlates with "miner: block timeline"
 
 	// Request block execution.
 	if err := e.emit(EngineOutput{Type: OutputExecuteBlock, Hash: proposal.BlockHash}); err != nil {
@@ -749,6 +756,13 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// view (recorded by processProposal). This is what advances the round once
 	// the block has actually propagated to and been imported by us.
 	view := e.roundState.CurrentView()
+	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash && e.viewTiming.BlockExecuted == nil {
+		// S75 (docs/QS_WIN2_RESIDUAL.md): "block executed" -- this import is
+		// this view's own pending proposal, i.e. local execution of this
+		// block just completed (not a parent/catch-up/leader-self import).
+		t := time.Now()
+		e.viewTiming.BlockExecuted = &t
+	}
 	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash &&
 		!e.roundState.HasVotedInView(view) {
 		if !e.extendsJustify(view, blockHash) {
