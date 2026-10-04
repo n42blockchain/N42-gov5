@@ -38,6 +38,7 @@ package qmdb
 import (
 	"runtime"
 	"sync"
+	"time"
 
 	"lukechampine.com/blake3"
 	"lukechampine.com/blake3/guts"
@@ -639,7 +640,9 @@ func (t *Tree) GetVia(keyHash Hash, cold ColdReader) (value []byte, found bool, 
 		return nil, false, true
 	}
 	coldReads.Add(1)
+	t0 := time.Now()
 	_, v, ok := cold.ColdEntry(slot)
+	coldNanos.Add(int64(time.Since(t0)))
 	if !ok {
 		return nil, false, true
 	}
