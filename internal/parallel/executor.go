@@ -102,6 +102,80 @@ type Executor struct {
 	// approximates time workers spent NOT inside a transaction body (blocked on
 	// the scheduler's work handoff, or simply between waves).
 	busyNanos atomic.Int64
+
+	// workerStats holds one entry per worker goroutine from the most recent
+	// executeParallel call (S82, measurement-only). Each goroutine only ever
+	// writes its own index, so no atomics are needed on the hot per-tx path;
+	// the slice itself is only read after wg.Wait() in executeParallel's
+	// caller. It is overwritten (not accumulated) on every call, so it
+	// reflects the last wave only -- the first (initial) wave dominates
+	// transaction count on a full block, so that is the wave worth seeing.
+	workerStats []workerStat
+}
+
+// workerStat is one worker's timings for a single executeParallel call
+// (S82). All fields are wall time in nanoseconds except queueLen.
+type workerStat struct {
+	queueLen    int
+	setupNs     int64
+	wallNs      int64
+	busyNs      int64
+	mvsWriteNs  int64
+	mvsDeleteNs int64
+}
+
+// WorkerStatsSummary aggregates the per-worker S82 timings from the most
+// recent executeParallel call into the handful of numbers worth logging.
+type WorkerStatsSummary struct {
+	WallMaxMs     float64
+	WallMinMs     float64
+	WallMeanMs    float64
+	QMax          int
+	QMin          int
+	SetupMs       int64
+	MvsWriteMs    int64
+	MvsDeleteMs   int64
+	SlowestWorker int
+}
+
+// WorkerStats summarizes the per-worker timings recorded during the last
+// executeParallel call (S82, measurement-only). Safe to call only after
+// Run() has returned -- workerStats is written without synchronization
+// under the assumption that each worker goroutine only touches its own
+// slot and that the caller waits for all workers (wg.Wait) before reading.
+func (e *Executor) WorkerStats() WorkerStatsSummary {
+	var s WorkerStatsSummary
+	if len(e.workerStats) == 0 {
+		return s
+	}
+	var setupNs, mvsWriteNs, mvsDeleteNs, sumWallNs int64
+	s.WallMinMs = -1
+	s.QMin = -1
+	for i, ws := range e.workerStats {
+		wallMs := float64(ws.wallNs) / 1e6
+		if wallMs > s.WallMaxMs {
+			s.WallMaxMs = wallMs
+			s.SlowestWorker = i
+		}
+		if s.WallMinMs < 0 || wallMs < s.WallMinMs {
+			s.WallMinMs = wallMs
+		}
+		if s.QMin < 0 || ws.queueLen < s.QMin {
+			s.QMin = ws.queueLen
+		}
+		if ws.queueLen > s.QMax {
+			s.QMax = ws.queueLen
+		}
+		setupNs += ws.setupNs
+		mvsWriteNs += ws.mvsWriteNs
+		mvsDeleteNs += ws.mvsDeleteNs
+		sumWallNs += ws.wallNs
+	}
+	s.WallMeanMs = float64(sumWallNs) / float64(len(e.workerStats)) / 1e6
+	s.SetupMs = setupNs / 1e6
+	s.MvsWriteMs = mvsWriteNs / 1e6
+	s.MvsDeleteMs = mvsDeleteNs / 1e6
+	return s
 }
 
 // WorkerSetupFunc prepares one worker's private context. It is called on the
@@ -356,12 +430,19 @@ func (e *Executor) executeParallel(txIndices []int) {
 		}
 	}
 
+	// S82: fresh per-call worker stats. Each goroutine below writes only its
+	// own index, so no synchronization is needed on the hot path.
+	e.workerStats = make([]workerStat, e.workers)
+
 	// Start workers.
 	for i := 0; i < e.workers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
+			tWallStart := time.Now()
+			ws := &e.workerStats[workerID]
 			defer wg.Done()
 			defer func() {
+				ws.wallNs = int64(time.Since(tWallStart))
 				if r := recover(); r != nil {
 					buf := make([]byte, 4096)
 					n := runtime.Stack(buf, false)
@@ -371,8 +452,10 @@ func (e *Executor) executeParallel(txIndices []int) {
 			var ctx any
 			var setupErr error
 			if e.workerSetup != nil {
+				tSetup := time.Now()
 				var teardown func()
 				ctx, teardown, setupErr = e.workerSetup(workerID)
+				ws.setupNs = int64(time.Since(tSetup))
 				if teardown != nil {
 					defer teardown()
 				}
@@ -389,15 +472,17 @@ func (e *Executor) executeParallel(txIndices []int) {
 					e.status[txIndex] = StatusExecuted
 					return
 				}
-				e.executeSingle(ctx, txIndex)
+				e.executeSingle(ctx, txIndex, ws)
 			}
 			if queues != nil {
+				ws.queueLen = len(queues[workerID])
 				for _, txIndex := range queues[workerID] {
 					run(txIndex)
 				}
 				return
 			}
 			for txIndex := range work {
+				ws.queueLen++
 				run(txIndex)
 			}
 		}(i)
@@ -414,8 +499,9 @@ func (e *Executor) executeParallel(txIndices []int) {
 	wg.Wait()
 }
 
-// executeSingle executes a single transaction.
-func (e *Executor) executeSingle(ctx any, txIndex int) {
+// executeSingle executes a single transaction. ws is the calling worker's
+// S82 stat slot, or nil from runSequential (which has no worker to charge).
+func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	e.totalExecutions.Add(1)
 
 	// Reuse the transaction's read/write set. NewExecutor allocates one per
@@ -427,6 +513,7 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 	//
 	// Withdraw only that incarnation's keys: DeleteAll walks every entry in
 	// the store and was 95% of a follower's CPU at 54k transactions (35e).
+	tDelete := time.Now()
 	rw := e.rwSets[txIndex]
 	if rw != nil {
 		for _, wd := range rw.Writes {
@@ -436,16 +523,24 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 	} else {
 		rw = NewReadWriteSet(txIndex)
 	}
+	if ws != nil {
+		ws.mvsDeleteNs += int64(time.Since(tDelete))
+	}
 
 	// Execute the transaction.
 	tCall := time.Now()
 	err := e.exec(ctx, txIndex, rw)
-	e.busyNanos.Add(int64(time.Since(tCall)))
+	busy := int64(time.Since(tCall))
+	e.busyNanos.Add(busy)
+	if ws != nil {
+		ws.busyNs += busy
+	}
 
 	e.results[txIndex] = TxResult{Err: err}
 	e.rwSets[txIndex] = rw
 
 	// Apply writes to MVS with incarnation tag.
+	tWrite := time.Now()
 	inc := e.incarnation[txIndex]
 	for _, wd := range rw.Writes {
 		if wd.Delta != nil {
@@ -453,6 +548,9 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 			continue
 		}
 		e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
+	}
+	if ws != nil {
+		ws.mvsWriteNs += int64(time.Since(tWrite))
 	}
 
 	e.status[txIndex] = StatusExecuted
