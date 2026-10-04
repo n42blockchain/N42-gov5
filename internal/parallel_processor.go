@@ -45,6 +45,7 @@ import (
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -433,6 +434,23 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// goroutine.
 	tExecutorMade := time.Now()
 	tRunStart := time.Now()
+	// S81 measurement-only snapshot: coldReads/residentHits/coldNanos
+	// (lib/qmdb/evict.go) are process-wide atomics, but in production the
+	// ONLY caller that reaches Tree.GetVia (the function that bumps them) is
+	// this wave's own per-worker LookupSource -- see docs/QS_EXEC_WAVE_WAIT.md
+	// and the confirmation note below. Taking a before/after snapshot across
+	// executor.Run() therefore isolates this block's wave reads WITHOUT
+	// resetting the counters, which would be unsafe: a leader's isolated
+	// build tree and a follower's live tree can both be bumping the same
+	// atomics in the same process. Caveat: if a future caller ever reaches
+	// GetVia from outside the wave (e.g. a second concurrent block build),
+	// this snapshot would double-count that caller's reads too.
+	var waveCold0, waveResident0 uint64
+	var waveColdNs0 int64
+	if useQMDB {
+		waveCold0, waveResident0 = qmdb.ReadCounters()
+		waveColdNs0 = qmdb.ReadColdNanos()
+	}
 	var unlockReaders func()
 	if useQMDB {
 		unlockReaders = p.bc.qmdbRootComputer.LockReaders()
@@ -442,6 +460,15 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		unlockReaders()
 	}
 	tRunEnd := time.Now()
+	var waveReads, waveColdReads uint64
+	var waveColdMs int64
+	if useQMDB {
+		cold1, resident1 := qmdb.ReadCounters()
+		waveColdReads = cold1 - waveCold0
+		waveReads = waveColdReads + (resident1 - waveResident0)
+		waveColdMs = (qmdb.ReadColdNanos() - waveColdNs0) / 1e6
+	}
+	waveBusyMs := executor.BusyNanos() / 1e6
 
 	// Strict: any transaction failure fails the block. Lenient: a failed
 	// candidate wrote nothing (the failure is a pre-check, before FinalizeTx),
@@ -647,7 +674,8 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
-			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds())
+			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
+			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs)
 	}
 
 	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Nopay: nopay}, nil

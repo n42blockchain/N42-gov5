@@ -30,6 +30,11 @@ import (
 // read by up to 32 Block-STM workers.
 var coldReads atomic.Uint64
 
+// coldNanos accumulates wall time spent inside ColdReader.ColdEntry calls
+// (the cgo/mdbx Cursor.Get a cold fault makes) -- S81 measurement-only
+// addition, read alongside coldReads/residentHits by ReadColdNanos.
+var coldNanos atomic.Int64
+
 type paddedCounter struct {
 	n atomic.Uint64
 	_ [56]byte
@@ -47,6 +52,16 @@ func ReadCounters() (cold, resident uint64) {
 	}
 	return coldReads.Load(), resident
 }
+
+// ReadColdNanos reports the process-wide accumulated wall time spent inside
+// cold-entry faults (GetVia/entryAt's ColdEntry calls). S81 measurement-only;
+// see the caveat on GetVia and in docs/QS_EXEC_WAVE_WAIT.md -- in production
+// GetVia is called only from the Block-STM wave's per-worker LookupSource, so
+// this total is effectively wave-scoped already, but it is still a
+// process-wide atomic shared by every tree instance (e.g. a leader's isolated
+// build tree and a follower's live tree both bump it), so a caller comparing
+// rounds must account for both trees running in the same process.
+func ReadColdNanos() int64 { return coldNanos.Load() }
 
 // ColdReader serves entry records that have been evicted from the in-memory
 // window. ColdEntry returns the immutable (keyHash, value) stored at an absolute

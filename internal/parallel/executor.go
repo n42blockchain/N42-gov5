@@ -95,6 +95,13 @@ type Executor struct {
 	execNanos       int64 // wall time in executeParallel across waves
 	validateNanos   int64 // wall time in validateInOrder across waves
 	traceLeft       int   // N42_PARALLEL_TRACE: validation failures still to log this Run
+
+	// busyNanos sums, across every worker and every call, the wall time spent
+	// inside e.exec (the transaction body: EVM run + state reads/writes). It
+	// is measurement-only (S81, waveBusyMs): idle = workers*runMs - busyMs/workers
+	// approximates time workers spent NOT inside a transaction body (blocked on
+	// the scheduler's work handoff, or simply between waves).
+	busyNanos atomic.Int64
 }
 
 // WorkerSetupFunc prepares one worker's private context. It is called on the
@@ -431,7 +438,9 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 	}
 
 	// Execute the transaction.
+	tCall := time.Now()
 	err := e.exec(ctx, txIndex, rw)
+	e.busyNanos.Add(int64(time.Since(tCall)))
 
 	e.results[txIndex] = TxResult{Err: err}
 	e.rwSets[txIndex] = rw
@@ -627,4 +636,11 @@ func (e *Executor) MVS() *MVS {
 // Stats returns execution statistics.
 func (e *Executor) Stats() (executions, aborts int64) {
 	return e.totalExecutions.Load(), e.totalAborts.Load()
+}
+
+// BusyNanos returns the sum, across every worker and every executeSingle
+// call in this Run, of wall time spent inside e.exec (measurement-only,
+// S81's waveBusyMs).
+func (e *Executor) BusyNanos() int64 {
+	return e.busyNanos.Load()
 }
