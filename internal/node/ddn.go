@@ -83,6 +83,8 @@ func (n *Node) ddnProvider(c conf.DDNCfg) (provider.DecisionProvider, error) {
 			modelPath = filepath.Join(n.config.NodeCfg.DataDir, modelPath)
 		}
 		switch backendName {
+		case "native-system1":
+			backend, err = provider.NewNativeSystem1(sc.ProviderDID)
 		case "native-rules":
 			backend, err = provider.NewNativeRules(sc.ProviderDID)
 		case "native-bayes":

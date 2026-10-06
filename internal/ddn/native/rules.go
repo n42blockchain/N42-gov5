@@ -16,9 +16,9 @@ type healthRule struct {
 }
 
 var healthRules = []healthRule{
-	{"CONSENSUS", []string{"finality stalled", "consensus stalled", "conflicting finalized", "double vote", "quorum lost"}},
+	{"CONSENSUS", []string{"finality stalled", "consensus stalled", "conflicting finalized", "double vote", "quorum lost", "qc mismatch", "consensus halted"}},
 	{"STORAGE", []string{"database corrupted", "disk full", "state root mismatch", "mdbx error", "checksum mismatch"}},
-	{"NETWORK", []string{"no peers", "connection refused", "peer timeout", "network unreachable"}},
+	{"NETWORK", []string{"no peers", "connection refused", "peer timeout", "data unavailable", "network unreachable"}},
 	{"EXECUTION", []string{"execution reverted", "invalid transaction", "out of gas", "vm panic"}},
 }
 
@@ -27,7 +27,7 @@ func RulesHash() chain.Hash {
 	b, _ := json.Marshal(struct {
 		Algorithm string       `json:"algorithm"`
 		Rules     []healthRule `json:"rules"`
-	}{"health-rules-unicode-v1", healthRules})
+	}{"health-rules-unicode-v2", healthRules})
 	return crypto.Keccak256Hash(b)
 }
 
