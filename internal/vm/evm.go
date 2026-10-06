@@ -117,7 +117,8 @@ func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, err
 // specific errors should ever be performed. The interpreter makes
 // sure that any errors generated are to be considered faulty code.
 //
-// The EVM should never be reused and is not thread safe.
+// The EVM is not thread safe. Sequential transactions in the same block may
+// reuse it through Reset after the preceding execution has returned.
 type EVM struct {
 	// Context provides auxiliary blockchain related information
 	context   evmtypes.BlockContext
@@ -167,8 +168,8 @@ func (evm *EVM) SetContentStoreDB(db ContentStoreDB) {
 	evm.contentStoreDB = db
 }
 
-// NewEVM returns a new EVM. The returned EVM is not thread safe and should
-// only ever be used *once*.
+// NewEVM returns an EVM for one block context. It is not thread safe; callers
+// must Reset it before executing another transaction in that block.
 // Uses legacy global precompile maps for backward compatibility.
 func NewEVM(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, state evmtypes.IntraBlockState, chainConfig *params.ChainConfig, vmConfig Config) *EVM {
 	return NewEVMWithPrecompiles(blockCtx, txCtx, state, chainConfig, vmConfig, nil)
