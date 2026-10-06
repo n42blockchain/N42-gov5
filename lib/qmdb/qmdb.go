@@ -312,16 +312,19 @@ func (tw *twig) recompute() {
 // When cold is nil the window starts at 0 and never shifts — identical to the
 // original all-in-RAM behavior, so existing callers/tests are unaffected.
 type Tree struct {
-	twigs       []*twig
-	entries     []entry    // window: entries[i] is absolute slot entriesBase+i
-	entriesBase uint64     // absolute slot of entries[0]; slots < base are cold
-	cold        ColdReader // serves evicted entries (nil = no eviction)
-	leafStore   LeafStore  // serves persisted twig leaf blobs for fast rehydration
-	evicted     uint64     // count of slots evicted from RAM (for Stats)
-	idx         Index      // keyHash -> global slot of the live entry (pluggable)
-	nextSlot    uint64     // append cursor
-	root        Hash
-	rootDirty   bool
+	twigs              []*twig
+	entries            []entry // window: entries[i] is absolute slot entriesBase+i
+	entriesBase        uint64  // absolute slot of entries[0]; slots < base are cold
+	flushedThrough     uint64  // committed slot boundary, independent of RAM eviction
+	stagedFlushThrough uint64
+	stagedFlushValid   bool
+	cold               ColdReader // serves evicted entries (nil = no eviction)
+	leafStore          LeafStore  // serves persisted twig leaf blobs for fast rehydration
+	evicted            uint64     // count of slots evicted from RAM (for Stats)
+	idx                Index      // keyHash -> global slot of the live entry (pluggable)
+	nextSlot           uint64     // append cursor
+	root               Hash
+	rootDirty          bool
 
 	// nDirtyTwigs counts twigs with stale internal nodes (dirty=true). Steady
 	// state is ZERO (setLeaf keeps roots current), letting recomputeDirtyTwigs
@@ -331,7 +334,7 @@ type Tree struct {
 	nDirtyTwigs int
 
 	// deadFlushed collects slots whose entry row is already ON DISK (below the
-	// evicted/flushed watermark) and was deactivated afterwards. Dead rows are
+	// committed or evicted watermark) and was deactivated afterwards. Dead rows are
 	// never read again (cold faults go through the live index, rehydration uses
 	// the leaf blob / activeBits, index rebuild scans only active slots), so the
 	// next FlushTo deletes them — the entry log then tracks the LIVE set instead
@@ -518,9 +521,10 @@ func (t *Tree) deactivate(slot uint64) {
 		if i := slot - t.entriesBase; i < uint64(len(t.entries)) {
 			t.entries[i].active = false
 		}
-	} else {
-		// The row for this slot is already on disk and is now dead: schedule its
-		// deletion at the next flush (dead rows are never read again).
+	}
+	if slot < t.entriesBase || (slot < t.flushedThrough && t.leafStore != nil && t.hist == nil) {
+		// A committed row can still be resident in a retained hot window.
+		// Disk reclamation must not depend on whether RAM was evicted.
 		t.deadFlushed = append(t.deadFlushed, slot)
 	}
 	t.rootDirty = true

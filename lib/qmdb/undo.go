@@ -164,6 +164,15 @@ func UnmarshalBlockUndo(b []byte) (*BlockUndo, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Even an empty-value entry needs a slot varint, a 32-byte key and a
+	// value-length varint. Reject an impossible count before allocating;
+	// corrupt persisted metadata must not turn a small read into an OOM or
+	// a makeslice panic. The v2 appended-key section only makes this bound
+	// conservative; individual entry reads below still check their lengths.
+	const minUndoEntryBytes = 1 + 32 + 1
+	if count > uint64(len(p))/minUndoEntryBytes {
+		return nil, errors.New("qmdb: block-undo truncated at entries")
+	}
 	u.Entries = make([]UndoEntry, 0, count)
 	for i := uint64(0); i < count; i++ {
 		var e UndoEntry

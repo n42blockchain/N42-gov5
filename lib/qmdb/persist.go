@@ -192,6 +192,7 @@ func (l leafStoreGetter) LeavesInto(id int, dst *[2 * TwigSize]Hash) bool {
 	}
 	return decodeSparseLeavesInto(v, dst)
 }
+
 // LeafStoreFromGetter wraps a Getter (kv.Tx / map store) as a LeafStore.
 func LeafStoreFromGetter(g Getter) LeafStore { return leafStoreGetter{g} }
 
@@ -325,18 +326,26 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		return flushedThrough, bytesW, err
 	}
 	bytesW += 8
+	t.stagedFlushThrough, t.stagedFlushValid = t.nextSlot, true
 	return t.nextSlot, bytesW, nil
 }
 
 // CommitFlush finalizes the last FlushTo after its surrounding transaction
 // committed: the staged dead-row deletes are durable and can be forgotten.
-func (t *Tree) CommitFlush() { t.stagedDead = t.stagedDead[:0] }
+func (t *Tree) CommitFlush() {
+	t.stagedDead = t.stagedDead[:0]
+	if t.stagedFlushValid {
+		t.flushedThrough = t.stagedFlushThrough
+		t.stagedFlushValid = false
+	}
+}
 
 // AbortFlush undoes the last FlushTo's in-memory bookkeeping after its
 // surrounding transaction rolled back: the dead-row deletes never reached disk,
 // so re-queue them for the next flush. Call BEFORE any ApplyUndo peel — the
 // peel prunes revived slots out of deadFlushed and must see the full list.
 func (t *Tree) AbortFlush() {
+	t.stagedFlushValid = false
 	t.deadFlushed = append(t.deadFlushed, t.stagedDead...)
 	t.stagedDead = t.stagedDead[:0]
 }
@@ -421,6 +430,9 @@ func (t *Tree) resetForLoad() {
 	t.twigs = nil
 	t.entries = nil
 	t.entriesBase = 0
+	t.flushedThrough = 0
+	t.stagedFlushThrough = 0
+	t.stagedFlushValid = false
 	t.evicted = 0
 	t.nextSlot = 0
 	t.root = nullHash
@@ -532,6 +544,7 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	// append cursor. Future appends grow it; cold serves everything below.
 	t.entries = nil
 	t.entriesBase = nextSlot
+	t.flushedThrough = nextSlot
 	t.evicted = nextSlot
 	t.nextSlot = nextSlot
 	// Drop pre-reload in-memory bookkeeping that refers to the abandoned tree

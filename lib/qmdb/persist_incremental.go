@@ -202,6 +202,9 @@ func (t *Tree) loadIncremental(g Getter, prev uint64) error {
 	// resetForLoad).
 	t.entries = nil
 	t.entriesBase = next
+	t.flushedThrough = next
+	t.stagedFlushThrough = 0
+	t.stagedFlushValid = false
 	t.evicted = next
 	t.nextSlot = next
 	t.deadFlushed = nil

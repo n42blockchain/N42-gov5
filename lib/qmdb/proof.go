@@ -67,6 +67,14 @@ func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
 // liveness claim) and hash to the bits commitment, and the combined twig root
 // folds up the upper tree.
 func VerifyProof(root Hash, p *Proof) bool {
+	if p == nil || len(p.UpperPath) > maxProofUpperPath {
+		return false
+	}
+	// The path must authenticate every bit of the twig position. Otherwise a
+	// valid path can be relabelled as a slot outside the committed tree.
+	if (p.Slot/TwigSize)>>uint(len(p.UpperPath)) != 0 {
+		return false
+	}
 	local := p.Slot % TwigSize
 	if p.Bits[local/8]&(1<<uint(local%8)) == 0 {
 		return false // slot not live in the presented bitmap
@@ -83,7 +91,7 @@ func VerifyProof(root Hash, p *Proof) bool {
 	}
 	bits := p.Bits
 	node = hashNode(node, hashBits(&bits))
-	twigID := int(p.Slot / TwigSize)
+	twigID := p.Slot / TwigSize
 	for L := 0; L < len(p.UpperPath); L++ {
 		if twigID&1 == 0 {
 			node = hashNode(node, p.UpperPath[L])
@@ -99,6 +107,10 @@ func VerifyProof(root Hash, p *Proof) bool {
 // (vs an MPT/JMT proof) and route to VerifyEncodedProof. v2 = split twig
 // commitment (adds the 256-byte activeBits bitmap after the twig path).
 const proofCodecVersion = 0x02
+
+// Match n42-rs's QMDB v2 decoder; reject impossible paths before allocating or
+// hashing attacker-supplied siblings.
+const maxProofUpperPath = 64
 
 // Marshal encodes a membership proof to a self-describing byte blob:
 //
@@ -137,7 +149,7 @@ func (p *Proof) Marshal() []byte {
 // UnmarshalProof decodes a blob produced by Proof.Marshal.
 func UnmarshalProof(b []byte) (*Proof, error) {
 	if len(b) < 1+32+8+1 || b[0] != proofCodecVersion {
-		return nil, errors.New("qmdb: not a v1 proof blob")
+		return nil, errors.New("qmdb: not a v2 proof blob")
 	}
 	p := &Proof{}
 	pos := 1
@@ -161,6 +173,9 @@ func UnmarshalProof(b []byte) (*Proof, error) {
 	pos += TwigSize / 8
 	ul := int(b[pos])
 	pos++
+	if ul > maxProofUpperPath {
+		return nil, fmt.Errorf("qmdb: proof upper path length %d exceeds %d", ul, maxProofUpperPath)
+	}
 	if len(b) < pos+ul*32+4 {
 		return nil, errors.New("qmdb: proof truncated in upper path")
 	}
@@ -169,24 +184,36 @@ func UnmarshalProof(b []byte) (*Proof, error) {
 		copy(p.UpperPath[i][:], b[pos:pos+32])
 		pos += 32
 	}
-	vl := int(binary.LittleEndian.Uint32(b[pos : pos+4]))
+	vl := uint64(binary.LittleEndian.Uint32(b[pos : pos+4]))
 	pos += 4
-	if len(b) < pos+vl {
+	// Compare before converting to int, including on 32-bit mobile clients.
+	if vl > uint64(len(b)-pos) {
 		return nil, errors.New("qmdb: proof truncated in value")
 	}
-	p.Value = make([]byte, vl)
-	copy(p.Value, b[pos:pos+vl])
+	if vl != uint64(len(b)-pos) {
+		return nil, errors.New("qmdb: proof has trailing bytes")
+	}
+	p.Value = make([]byte, int(vl))
+	copy(p.Value, b[pos:])
 	return p, nil
 }
 
 // VerifyEncodedProof decodes a marshaled proof and verifies it against a world
-// root — the client-side check for QMDB-native eth_getProof data.
+// root. Callers consuming an untrusted RPC response must also bind KeyHash to
+// their requested key; VerifyEncodedProofForKey does both checks.
 func VerifyEncodedProof(root Hash, blob []byte) bool {
 	p, err := UnmarshalProof(blob)
 	if err != nil {
 		return false
 	}
 	return VerifyProof(root, p)
+}
+
+// VerifyEncodedProofForKey verifies both membership and the requested key, so a
+// valid proof for another account or storage slot cannot answer this query.
+func VerifyEncodedProofForKey(root, expectedKey Hash, blob []byte) bool {
+	p, err := UnmarshalProof(blob)
+	return err == nil && p.KeyHash == expectedKey && VerifyProof(root, p)
 }
 
 // SlotEntry is one occupied slot in the twig log (for snapshot export/import).

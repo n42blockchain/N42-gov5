@@ -148,6 +148,10 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 
 	// --- 3. Truncate the cursor + resident entry window. -------------------
 	t.nextSlot = prev
+	if t.flushedThrough > prev {
+		t.flushedThrough = prev
+	}
+	t.stagedFlushValid = false
 	if t.entriesBase <= prev {
 		if keep := prev - t.entriesBase; keep < uint64(len(t.entries)) {
 			t.entries = t.entries[:keep]
@@ -164,6 +168,10 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 
 	// --- 4. Revive the block's deactivations. ------------------------------
 	touched := make(map[int]struct{}, len(u.Entries)+1)
+	var revived map[uint64]struct{}
+	if len(t.deadFlushed) > 0 {
+		revived = make(map[uint64]struct{}, len(u.Entries))
+	}
 	for i := range u.Entries {
 		e := &u.Entries[i]
 		if e.Slot >= prev {
@@ -185,15 +193,22 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 			copy(v, e.Value)
 			t.setEntry(e.Slot, entry{keyHash: e.KeyHash, value: v, active: true})
 		}
-		// Cancel any pending dead-row reclamation for the revived slot, so the
-		// next flush doesn't delete the row this key now depends on.
-		for j := 0; j < len(t.deadFlushed); j++ {
-			if t.deadFlushed[j] == e.Slot {
-				t.deadFlushed[j] = t.deadFlushed[len(t.deadFlushed)-1]
-				t.deadFlushed = t.deadFlushed[:len(t.deadFlushed)-1]
-				j--
+		if revived != nil {
+			revived[e.Slot] = struct{}{}
+		}
+	}
+	// Cancel reclamation of revived rows in one pass. Scanning the entire
+	// queue for each undo entry makes a large candidate peel quadratic in
+	// the block size. Keep unrelated dead rows (including duplicates) so the
+	// next flush still reclaims them, but cannot delete a restored value.
+	if len(revived) > 0 {
+		pending := t.deadFlushed[:0]
+		for _, slot := range t.deadFlushed {
+			if _, restored := revived[slot]; !restored {
+				pending = append(pending, slot)
 			}
 		}
+		t.deadFlushed = pending
 	}
 	// Recombine the committed roots of twigs whose bits changed (the boundary
 	// twig already recombined above).

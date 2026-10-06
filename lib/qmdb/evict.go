@@ -18,8 +18,6 @@
 
 package qmdb
 
-import "encoding/binary"
-
 // ColdReader serves entry records that have been evicted from the in-memory
 // window. ColdEntry returns the immutable (keyHash, value) stored at an absolute
 // slot, or ok=false if the slot is absent (e.g. pruned). kv.Tx-backed and
@@ -35,17 +33,8 @@ type ColdReader interface {
 type getterCold struct{ g Getter }
 
 func (c getterCold) ColdEntry(slot uint64) (Hash, []byte, bool) {
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], slot)
-	v, err := c.g.GetOne(EntryTable, b[:])
-	if err != nil || len(v) < 32 {
-		return Hash{}, nil, false
-	}
-	var kh Hash
-	copy(kh[:], v[:32])
-	val := make([]byte, len(v)-32)
-	copy(val, v[32:])
-	return kh, val, true
+	kh, value, ok, _ := c.ColdEntryChecked(slot)
+	return kh, value, ok
 }
 
 // ColdReaderFromGetter wraps a Getter (kv.Tx / map store) as a ColdReader over the
