@@ -5,6 +5,7 @@ package types
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"unicode/utf8"
 
 	chain "github.com/n42blockchain/N42/common/types"
@@ -64,8 +65,8 @@ func (r DecisionRequest) Validate(now uint64) error {
 	if r.Quorum < 1 || r.Quorum > 16 || r.MaxLatencyMs < 1 || r.MaxLatencyMs > 60000 {
 		return errors.New("invalid quorum or latency bound")
 	}
-	if r.Deadline <= now {
-		return errors.New("request expired")
+	if r.Deadline <= now || r.Deadline > now+86400000 {
+		return errors.New("request deadline must be within the next 24 hours")
 	}
 	if r.PolicyParameters.MinConfidencePPM > PPM {
 		return errors.New("confidence exceeds one million ppm")
@@ -73,7 +74,8 @@ func (r DecisionRequest) Validate(now uint64) error {
 	if r.PrivacyMode != "public" && r.PrivacyMode != "private" {
 		return errors.New("privacy_mode must be public or private")
 	}
-	if !decimal(r.MaxCost) {
+	cost, ok := new(big.Int).SetString(r.MaxCost, 10)
+	if !decimal(r.MaxCost) || !ok || cost.BitLen() > 256 {
 		return errors.New("max_cost must be canonical unsigned decimal")
 	}
 	id, err := r.CanonicalHash()

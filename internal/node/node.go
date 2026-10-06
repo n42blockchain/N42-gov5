@@ -86,6 +86,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/cs"
+	ddngateway "github.com/n42blockchain/N42/internal/ddn/gateway"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
 	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
@@ -202,11 +203,12 @@ type Node struct {
 	historyExpirer    *HistoryExpirer
 	snapshotMgr       *snapshot.Manager
 
-	p2pGenesisHash     types.Hash                  // genesis hash used for P2P fork digest
-	exexManager        *exex.Manager               // Execution Extensions manager
-	hotstuffService    *hotstuff.Service           // HotStuff BFT consensus service (nil if not using HotStuff)
-	bundlerService     *bundler.BundlerService     // ERC-4337 bundler service (nil if disabled)
-	peerdasService     *peerdas.Service            // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	p2pGenesisHash     types.Hash              // genesis hash used for P2P fork digest
+	exexManager        *exex.Manager           // Execution Extensions manager
+	hotstuffService    *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
+	bundlerService     *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
+	peerdasService     *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	ddnGateway         *ddngateway.Gateway
 	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
 	deferredPipeline   *deferred.Pipeline          // Deferred execution pipeline (nil if disabled)
 	grpcServer         *grpc.Server                // gRPC KV server for RPCDaemon (nil if disabled)
@@ -436,7 +438,7 @@ func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescrip
 		cfg.AICfg.Training.Enabled ||
 		cfg.AICfg.Attestation.Enabled ||
 		cfg.AICfg.Inference.Enabled
-	distributedConfigured := cfg.CoprocessorCfg.Enabled ||
+	distributedConfigured := cfg.AICfg.DDN.Enabled || cfg.CoprocessorCfg.Enabled ||
 		cfg.MessagingCfg.Enabled ||
 		cfg.StorageCfg.Enabled ||
 		cfg.NotifyCfg.Enabled
@@ -1810,6 +1812,7 @@ func (n *Node) Start() error {
 	// follows — it only reads n.config and (for messaging) the already-ready
 	// n.p2p, exactly like startMobileVerify just above.
 	n.startDistributedRuntime()
+	n.startDDNRuntime()
 
 	if n.config.NodeCfg.Miner {
 		eb, err := n.Etherbase()
@@ -2277,16 +2280,17 @@ func (n *Node) startMCPServer() {
 	}
 	mcpBackend := &mcpNodeBackend{node: n}
 	n.mcpServer = mcp.NewServer(mcpBackend, n.config.MCPCfg.AllowedTools)
+	if n.ddnGateway != nil {
+		ddngateway.RegisterMCPTools(n.mcpServer, n.ddnGateway)
+	}
 	host := n.config.MCPCfg.Host
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	addr := fmt.Sprintf("%s:%d", host, n.config.MCPCfg.Port)
-	go func() {
-		if err := n.mcpServer.Start(addr); err != nil {
-			log.Error("MCP server failed to start", "err", err)
-		}
-	}()
+	if err := n.mcpServer.Start(addr); err != nil {
+		log.Error("MCP server failed to start", "err", err)
+	}
 }
 
 func (n *Node) startWeb3Gateway() {
@@ -3265,6 +3269,9 @@ func (n *Node) stopServices() []error {
 		}},
 		// 2e. Distributed infrastructure
 		{"Distributed services", func() error {
+			if n.ddnGateway != nil {
+				n.ddnGateway.Stop()
+			}
 			// Before the database closes: the sealer may be mid-write.
 			if n.txIndexer != nil {
 				n.txIndexer.Stop()
@@ -3382,7 +3389,8 @@ func (n *Node) stopServices() []error {
 		// 5. Checkpoint sync + Snap sync + Initial sync
 		// Note: checkpointSync relies on node context cancellation (done above).
 		{"Checkpoint sync", func() error {
-			n.checkpointSync = nil
+			// Cancellation owns checkpoint shutdown; keep the pointer immutable
+			// while the sync-startup goroutine observes it.
 			return nil
 		}},
 		{"Snap sync", func() error { return n.snapSync.Stop() }},
