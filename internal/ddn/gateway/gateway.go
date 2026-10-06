@@ -49,7 +49,13 @@ type entry struct {
 	expires  uint64
 	nonceKey string
 }
+type ReceiptSigner interface {
+	DID() string
+	Sign(d.DecisionReceipt) (d.DecisionReceipt, error)
+}
+
 type Gateway struct {
+	signer   ReceiptSigner
 	cfg      Config
 	provider provider.DecisionProvider
 	ctx      context.Context
@@ -215,6 +221,21 @@ func (g *Gateway) execute(t item) {
 			expiry = t.r.Deadline
 		}
 		rec.Receipt = &d.DecisionReceipt{ChainID: t.r.ChainID, Version: d.Version, RequestID: t.r.RequestID, ProviderDID: id.DID, Model: id.Model, ModelVersion: id.ModelVersion, ModelHash: id.ModelHash, PolicyHash: t.r.PolicyHash, InputHash: t.r.InputHash, Result: result, StartedAt: uint64(started.UnixMilli()), CompletedAt: uint64(finished.UnixMilli()), LatencyMs: elapsed, Expiry: expiry, Nonce: t.r.Nonce}
+
+		g.mu.Lock()
+		signer := g.signer
+		g.mu.Unlock()
+		if signer != nil {
+			signed, signErr := signer.Sign(*rec.Receipt)
+			if signErr != nil {
+				rec.Status = "failed"
+				rec.Error = "receipt signing failed"
+				rec.Receipt = nil
+				g.Metrics.Errors.Add(1)
+			} else {
+				rec.Receipt = &signed
+			}
+		}
 		g.Metrics.Completed.Add(1)
 		g.Metrics.LatencyMs.Add(elapsed)
 		metrics.GetOrCreateHistogram("ddn_provider_latency_seconds").Observe(finished.Sub(started).Seconds())
@@ -263,3 +284,18 @@ func (g *Gateway) pruneLocked(now uint64) {
 	}
 }
 func (g *Gateway) Stop() { g.mu.Lock(); g.closed = true; g.cancel(); g.mu.Unlock(); g.wg.Wait() }
+
+// SetSigner installs an explicit DDN signer whose DID matches the configured
+// provider identity. It does not borrow any consensus or wallet keys.
+func (g *Gateway) SetSigner(s ReceiptSigner) error {
+	if s == nil || s.DID() != g.provider.Identity().DID {
+		return errors.New("DDN signer/provider DID mismatch")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return ErrClosed
+	}
+	g.signer = s
+	return nil
+}
