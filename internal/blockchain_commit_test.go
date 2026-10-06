@@ -6,14 +6,22 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 func TestCommitToCanonicalAdvancesBlockAndHeaderHeads(t *testing.T) {
+	heads := make(chan common.ChainHighestBlock, 4)
+	sub, err := event.GlobalEvent.Subscribe(heads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
 	db := newRealignTestDB(t)
 	parent := block.NewBlock(&block.Header{
 		Number:     uint256.NewInt(8),
@@ -56,12 +64,28 @@ func TestCommitToCanonicalAdvancesBlockAndHeaderHeads(t *testing.T) {
 	if len(committed) != 1 || committed[0] != 9 {
 		t.Fatalf("commit callback = %v, want [9]", committed)
 	}
+	select {
+	case head := <-heads:
+		if !head.Inserted || head.Block.Hash() != child.Hash() || bc.CurrentBlock().Hash() != child.Hash() {
+			t.Fatal("canonical head event does not match the committed head")
+		}
+	default:
+		t.Fatal("follower canonical commit did not publish a head event")
+	}
 	// A duplicate QC/Decide is idempotent and must not advance consumers twice.
 	if err := bc.CommitToCanonical(child.Hash()); err != nil {
 		t.Fatal(err)
 	}
 	if len(committed) != 1 {
 		t.Fatalf("duplicate commit fired callback again: %v", committed)
+	}
+	if err := bc.CommitToCanonical(types.Hash{0xff}); err == nil {
+		t.Fatal("missing block commit succeeded")
+	}
+	select {
+	case head := <-heads:
+		t.Fatalf("duplicate or failed commit published a head: %s", head.Block.Hash())
+	default:
 	}
 
 	if err := db.View(context.Background(), func(tx kv.Tx) error {

@@ -5,7 +5,7 @@
 // commitment (not an MPT), so it serves QMDB membership proofs: each proof is a
 // single self-describing blob (qmdb.Proof.Marshal) carried in the EIP-1186
 // accountProof / storageProof arrays. A client detects the QMDB backend from the
-// proof descriptor and verifies with qmdb.VerifyEncodedProof against the block's
+// proof descriptor and verifies with qmdb.VerifyEncodedProofForKey against the block's
 // stateRoot.
 //
 // The running node does not keep a live QMDB commitment (QMDB is built offline by
@@ -55,7 +55,7 @@ func NewQMDBStateProofProvider() *QMDBStateProofProvider {
 }
 
 // Descriptor reports the QMDB proof semantics so clients route verification to
-// qmdb.VerifyEncodedProof and do not expect MPT/EIP-1186 node lists.
+// qmdb.VerifyEncodedProofForKey and do not expect MPT/EIP-1186 node lists.
 func (*QMDBStateProofProvider) Descriptor() StateProofDescriptor {
 	return StateProofDescriptor{
 		Backend:            StateProofBackendQMDB,

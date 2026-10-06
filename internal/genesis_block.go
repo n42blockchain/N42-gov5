@@ -404,6 +404,14 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 		if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != qroot {
 			return nil, statedb, fmt.Errorf("qmdb genesis root mismatch: header=%s computed=%s", block.StateRoot(), qroot)
 		}
+		// The alloc and forest have been written in this same transaction.
+		// Record explicit execution evidence only for the verified root; a
+		// caller-supplied root override is not proof of the seeded state.
+		if block.StateRoot() == qroot {
+			if err := rawdb.WriteQMDBApplied(tx, 0, block.Hash()); err != nil {
+				return nil, statedb, fmt.Errorf("cannot record qmdb genesis applied head: %w", err)
+			}
+		}
 	} else if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
 		if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
 			return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)

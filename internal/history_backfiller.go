@@ -34,9 +34,10 @@ import (
 // the work still has to happen, and a backfiller competing for the same cores
 // and the same MDBX write lock may give back what it saved.
 //
-// The interlock: while the marker is behind the head, historical queries above
-// it must be REFUSED. An index that is known to be behind is safe; one that is
-// silently behind is the failure mode this whole design exists to prevent,
+// The interlock: while the marker is behind the head, all historical queries
+// must be REFUSED, including queries below the marker that may need a later
+// change. An index known to be behind is safe; one silently behind is the
+// failure mode this whole design exists to prevent,
 // because HistoricalStateReader reads a missing entry as "untouched" and falls
 // back to the CURRENT value.
 type HistoryBackfiller struct {
