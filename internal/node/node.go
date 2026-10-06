@@ -1409,6 +1409,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
+	node.api.SetRPCMaxGasPrice(cfg.NodeCfg.RPCMaxGasPrice)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
 	node.api.SetP2P(&p2pAdminAdapter{svc: p2p, node: &node})
 	node.api.SetMiner(&minerAdminAdapter{m: miner})
@@ -1813,6 +1814,10 @@ func (n *Node) Start() error {
 			}
 			svc.SetH2V4Identity(identity)
 		}
+		if err := svc.ConfigureVoteStore(filepath.Join(n.config.NodeCfg.DataDir, "hotstuff-votes"),
+			n.p2pGenesisHash, os.Getenv("N42_SEPARATE_VOTE_DB") == "1"); err != nil {
+			return fmt.Errorf("configure hotstuff vote store: %w", err)
+		}
 		svc.SetBlockProducer(n.miner)
 		if err := svc.Start(); err != nil {
 			// A consensus service that failed to start (topic-join / gossip
@@ -2064,7 +2069,7 @@ func (n *Node) Start() error {
 	// competing for the same MDBX write lock -- is what this mode measures.
 	if state.HistoryIndexDeferred() {
 		log.Warn("history index DEFERRED — rebuilt off the commit path from changesets; " +
-			"historical queries above the backfill marker are refused until it catches up")
+			"historical queries are refused until the backfill marker reaches the snapshot head")
 		n.historyBackfiller = internal.NewHistoryBackfiller(n.db,
 			func() uint64 {
 				if bc := n.blockChain; bc != nil {
@@ -3399,6 +3404,10 @@ func (n *Node) stopServices() []error {
 			errs = append(errs, err)
 			log.PrintSubItem(fmt.Sprintf("%s stopped with error: %v", svc.name, err))
 		}
+	}
+	if commitment.QMDBStateReadMode() == commitment.QMDBReadVerify {
+		accounts, storage, compared := commitment.QMDBVerifyTotals()
+		log.Info("qmdb verify final", "compared", compared, "accountMismatch", accounts, "storageMismatch", storage)
 	}
 
 	return errs

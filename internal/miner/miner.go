@@ -188,12 +188,12 @@ func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 		log.Warn("miner: build trigger while worker not running")
 		return
 	}
-	// A speculative build in flight yields to real work: signal its interrupt
-	// so the worker goroutine frees up. (If the guess already finished and
-	// matches parentHash, commitWork collects it via takeSpecTask instead of
-	// rebuilding.)
-	if p := m.worker.activeSpecInterrupt.Load(); p != nil {
-		p.Store(commitInterruptNewHead)
+	// Preserve an in-flight build when consensus confirms its parent. The
+	// queued real request will consume the finished task, still checking the
+	// applied head before sealing. Only a stale guess must yield immediately.
+	if work := m.worker.activeSpecWork.Load(); work != nil &&
+		(parentHash == (types.Hash{}) || work.parentHash != parentHash) {
+		work.interrupt.Store(commitInterruptNewHead)
 	}
 	interrupt := new(atomic.Int32)
 	req := &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash, enqueuedAt: time.Now()}

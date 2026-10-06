@@ -51,6 +51,7 @@ import (
 	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/internal/streamverify"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
@@ -78,6 +79,12 @@ func usesTimerDrivenSealing(engine consensus.Engine) bool {
 // block (required by import-gated voting).
 type blockSealNotifier interface {
 	NotifyBlockSealed(hash, txHash types.Hash)
+}
+
+// blockPersistenceNotifier records execution evidence for a fresh local seal.
+// Merely finding an existing body or a sibling is not evidence of applied state.
+type blockPersistenceNotifier interface {
+	NotifyBlockPersisted(hash, txHash, parentHash types.Hash)
 }
 
 // siblingLookup is implemented by the blockchain so the leader can converge on a
@@ -247,13 +254,13 @@ type worker struct {
 
 	// Cross-view speculative build state. specTask holds the parked result of
 	// a speculative commitWork (guarded by specMu); specParent is the parent
-	// the parked block extends. activeSpecInterrupt points at the interrupt of
-	// a speculative build in flight, so a real production trigger can abort it
-	// instead of queueing behind it.
-	specMu              sync.Mutex
-	specTask            *task
-	specParent          types.Hash
-	activeSpecInterrupt atomic.Pointer[atomic.Int32]
+	// the parked block extends. activeSpecWork publishes the immutable parent
+	// and interrupt together, so real work can preserve a matching build and
+	// interrupt a stale one without racing the worker's next build.
+	specMu         sync.Mutex
+	specTask       *task
+	specParent     types.Hash
+	activeSpecWork atomic.Pointer[newWorkReq]
 
 	// sealedOnParent records the FIRST block this node sealed on a given parent
 	// (keyed by parentHash). A leader re-elected across several views at the same
@@ -684,6 +691,9 @@ func (w *worker) resultLoop() error {
 			// receive and import. Doing this here (not in Seal) binds propose↔push to
 			// the same block, which import-gated voting requires.
 			tNotify := time.Now()
+			if bpn, ok := w.engine.(blockPersistenceNotifier); ok {
+				bpn.NotifyBlockPersisted(blk.Hash(), blk.TxHash(), blk.ParentHash())
+			}
 			if bsn, ok := w.engine.(blockSealNotifier); ok {
 				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
 			}
@@ -704,7 +714,9 @@ func (w *worker) resultLoop() error {
 			// Record this as the one candidate for its parent (after a successful
 			// import), so a later view's divergent sibling is suppressed above.
 			w.recordSealedOnParent(parentHash, blk)
-			if concrete, ok := blk.(*block.Block); ok {
+			if concrete, ok := blk.(*block.Block); ok && usesTimerDrivenSealing(w.engine) {
+				// HotStuff publishes the canonical head from CommitToCanonical,
+				// after QC commit, on both leaders and followers.
 				event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 			}
 		}
@@ -938,10 +950,11 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	if speculative {
-		// Publish our interrupt so a real production trigger can abort us, and
-		// make sure only one speculative build runs at a time.
-		w.activeSpecInterrupt.Store(interrupt)
-		defer w.activeSpecInterrupt.Store(nil)
+		// commitWork is serialized by runLoop. A confirmed matching parent
+		// can wait for this build, then consume its parked task through the
+		// usual applied-head and pacing checks above.
+		w.activeSpecWork.Store(&newWorkReq{parentHash: parentHash, interrupt: interrupt})
+		defer w.activeSpecWork.Store(nil)
 	}
 
 	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE
@@ -1282,6 +1295,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
+	coinbase := env.coinbase
+	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), w.engine, w.chainConfig, &coinbase)
+	vmenv := vm2.NewEVM(blockContext, evmtypes.TxContext{}, ibs, w.chainConfig, vmConfig)
 
 	// EIP-7928: when the BAL fork is active, harvest each committed tx's post-value
 	// writes via the shared BALCapture (a pure observer wrapping noop) so the block
@@ -1321,8 +1337,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		if balCap != nil {
 			balCap.BeginTx(txn.Hash())
 		}
-		coinbase := env.coinbase
-		receipt, _, err := internal.ApplyTransaction(w.chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, env.gasPool, ibs, writer, env.header, txn, &header.GasUsed, vmConfig)
+		receipt, _, err := internal.ApplyTransactionWithEVM(vmenv, w.chainConfig, w.engine, env.gasPool, ibs, writer, env.header, txn, &header.GasUsed, vmConfig)
 		if err != nil {
 			if balCap != nil {
 				balCap.DiscardTx()

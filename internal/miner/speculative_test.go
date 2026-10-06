@@ -84,17 +84,41 @@ func TestTriggerEvictsSpeculativeOnly(t *testing.T) {
 }
 
 // TestSpeculativeInterruptSignalled pins the pre-emption path: a real trigger
-// must signal the interrupt of a speculative build in flight.
+// must signal the interrupt of a speculative build on a different parent.
 func TestSpeculativeInterruptSignalled(t *testing.T) {
 	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
 	m := &Miner{worker: w}
 
 	specInt := new(atomic.Int32)
-	w.activeSpecInterrupt.Store(specInt)
+	w.activeSpecWork.Store(&newWorkReq{parentHash: types.Hash{0x03}, interrupt: specInt})
 	m.TriggerBlockProduction(types.Hash{0x04})
 	if specInt.Load() != commitInterruptNewHead {
 		t.Fatalf("active speculative build was not interrupted: %d", specInt.Load())
 	}
 	// Drain for cleanliness.
+	<-w.newWorkCh
+}
+
+// A view confirmation must not discard execution already underway on its
+// parent. It still queues real work: speculation alone cannot seal a block.
+func TestTriggerPreservesMatchingSpeculativeBuild(t *testing.T) {
+	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
+	m := &Miner{worker: w}
+	parent := types.Hash{0x04}
+	specInt := new(atomic.Int32)
+	w.activeSpecWork.Store(&newWorkReq{parentHash: parent, interrupt: specInt})
+	m.TriggerBlockProduction(parent)
+	if specInt.Load() != commitInterruptNone {
+		t.Fatal("matching speculative execution was interrupted")
+	}
+	req := <-w.newWorkCh
+	if req.speculative || req.parentHash != parent || req.interrupt == specInt {
+		t.Fatal("confirmation must queue independent real work for the parent")
+	}
+	// A later unpinned request cannot claim the old guess is confirmed.
+	m.TriggerBlockProduction(types.Hash{})
+	if specInt.Load() != commitInterruptNewHead {
+		t.Fatal("unpinned production failed to interrupt a speculative guess")
+	}
 	<-w.newWorkCh
 }
