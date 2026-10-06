@@ -16,13 +16,20 @@ import (
 type Native struct {
 	identity   Identity
 	classifier *native.Classifier
+	system1    bool
 }
 
 func NewNativeRules(did string) (*Native, error) {
 	if did == "" {
 		return nil, errors.New("native provider DID required")
 	}
-	return &Native{identity: Identity{DID: did, Model: "N42-health-rules", ModelVersion: "1", ModelHash: native.RulesHash(), Family: "native-health-rules", Tasks: []string{"node.anomaly"}, Schemas: []string{"health-v1"}}}, nil
+	return &Native{identity: Identity{DID: did, Model: "N42-health-rules", ModelVersion: "2", ModelHash: native.RulesHash(), Family: "native-health-rules", Tasks: []string{"node.anomaly"}, Schemas: []string{"health-v1"}}}, nil
+}
+func NewNativeSystem1(did string) (*Native, error) {
+	if did == "" {
+		return nil, errors.New("native provider DID required")
+	}
+	return &Native{identity: Identity{DID: did, Model: "N42-system1-rules", ModelVersion: "1", ModelHash: native.SystemHash(), Family: "native-system1-rules", Tasks: []string{"node.anomaly"}, Schemas: []string{"system1-v1"}}, system1: true}, nil
 }
 func NewNativeModel(did string, a native.Artifact) (*Native, error) {
 	if did == "" {
@@ -45,6 +52,9 @@ func (n *Native) Decide(ctx context.Context, r d.DecisionRequest, input string) 
 	id := n.identity
 	if r.Task != id.Tasks[0] || r.SchemaID != id.Schemas[0] {
 		return d.DecisionResult{}, errors.New("native task/schema mismatch")
+	}
+	if n.system1 {
+		return native.System1(ctx, input)
 	}
 	if n.classifier == nil {
 		return native.Health(ctx, input)
@@ -71,6 +81,9 @@ func healthGuard(ctx context.Context, task, input string) (d.DecisionResult, boo
 }
 
 func (n *Native) Labels() []string {
+	if n.system1 {
+		return native.SystemLabels()
+	}
 	if n.classifier != nil {
 		return n.classifier.Labels()
 	}

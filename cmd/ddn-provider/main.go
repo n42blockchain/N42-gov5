@@ -26,7 +26,7 @@ func main() {
 }
 func run() error {
 	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
-	backend := flag.String("backend", "native-rules", "native-rules, native-bayes or native-transformer")
+	backend := flag.String("backend", "native-rules", "native-rules, native-system1, native-bayes or native-transformer")
 	file := flag.String("model", "", "local artifact file")
 	did := flag.String("did", "", "provider DID")
 	chain := flag.Uint64("chain-id", 0, "required chain ID")
@@ -48,6 +48,8 @@ func run() error {
 	}
 	var p provider.DecisionProvider
 	switch *backend {
+	case "native-system1":
+		p, err = provider.NewNativeSystem1(*did)
 	case "native-rules":
 		p, err = provider.NewNativeRules(*did)
 	case "native-bayes":
