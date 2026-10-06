@@ -168,6 +168,12 @@ func (pool *TxsPool) GetTx(hash types.Hash) *transaction.Transaction {
 	return pool.all.Get(hash)
 }
 
+// GetTxs resolves a batch of hashes into dst. Missing entries are nil. The
+// references remain valid after eviction; no sender assertion is implied.
+func (pool *TxsPool) GetTxs(hashes []types.Hash, dst []*transaction.Transaction) {
+	pool.all.GetBatch(hashes, dst)
+}
+
 // GetTransaction retrieves all pending transactions as a flat list.
 func (pool *TxsPool) GetTransaction() (txs []*transaction.Transaction, err error) {
 	pending := pool.Pending(false)

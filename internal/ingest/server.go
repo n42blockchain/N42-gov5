@@ -19,6 +19,7 @@
 package ingest
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -39,21 +40,30 @@ type TxPool interface {
 	Stats() (pending, pendingAddrs, queued, queuedAddrs int)
 }
 
+// batchTxPool retains the pool's per-transaction validation verdicts while
+// amortizing account snapshots and sender recovery over a bounded group.
+type batchTxPool interface {
+	AddLocals(txs []*transaction.Transaction) []error
+}
+
 // Server accepts binary-encoded transactions over TCP for high-throughput injection.
 //
 // Wire format per batch:
 //
 //	[4B LE num_txs] [2B LE tx_len, tx_bytes, 20B sender] x num_txs
 //
-// The sender field is pre-recovered by the stress tool to skip ECDSA verification.
-//
-// WARNING: This server trusts the provided sender address. It is intended for
-// controlled testing environments only. Do NOT expose on public networks.
+// The sender field is a claim supplied by the stress tool. The production
+// TxsPool.AddLocal path recovers the signature and checks this claim against
+// the node's chain signer; setting From here does not populate that recovery
+// cache or bypass validation. A custom TxPool must provide the same validation.
+// This unauthenticated endpoint is intended for controlled benchmarks only.
 type Server struct {
-	mu       sync.Mutex
-	listener net.Listener
-	pool     TxPool
-	addr     string
+	mu          sync.Mutex
+	listener    net.Listener
+	connections map[net.Conn]struct{}
+	wg          sync.WaitGroup
+	pool        TxPool
+	addr        string
 
 	// Backpressure gates
 	softTarget int // resume accepting when pool drops below this
@@ -73,12 +83,13 @@ type Server struct {
 func NewServer(addr string, pool TxPool, softTarget, hardCap int) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		pool:       pool,
-		addr:       addr,
-		softTarget: softTarget,
-		hardCap:    hardCap,
-		ctx:        ctx,
-		cancel:     cancel,
+		pool:        pool,
+		connections: make(map[net.Conn]struct{}),
+		addr:        addr,
+		softTarget:  softTarget,
+		hardCap:     hardCap,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
@@ -87,6 +98,9 @@ func NewServer(addr string, pool TxPool, softTarget, hardCap int) *Server {
 func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.listener != nil || s.ctx.Err() != nil {
+		return errors.New("ingest: server already started or stopped")
+	}
 
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -95,21 +109,30 @@ func (s *Server) Start() error {
 	s.listener = ln
 	log.Info("Ingest server started", "addr", ln.Addr().String())
 
-	go s.acceptLoop(ln)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.acceptLoop(ln)
+	}()
 	return nil
 }
 
-// Stop shuts down the server and closes the listener.
+// Stop closes the listener and connections, then waits for in-flight pool
+// submissions to return. The owner can safely stop the pool afterwards.
 func (s *Server) Stop() {
 	s.cancel()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.listener != nil {
 		s.listener.Close()
 		s.listener = nil
 	}
+	for conn := range s.connections {
+		conn.Close()
+	}
+	s.mu.Unlock()
+	s.wg.Wait()
 	log.Info("Ingest server stopped")
 }
 
@@ -146,7 +169,19 @@ func (s *Server) acceptLoop(ln net.Listener) {
 			// Listener closed.
 			return
 		}
-		go s.handleConn(conn)
+		s.mu.Lock()
+		if s.ctx.Err() != nil {
+			s.mu.Unlock()
+			conn.Close()
+			return
+		}
+		s.connections[conn] = struct{}{}
+		s.wg.Add(1)
+		s.mu.Unlock()
+		go func() {
+			defer s.wg.Done()
+			s.handleConn(conn)
+		}()
 	}
 }
 
@@ -154,7 +189,15 @@ func (s *Server) acceptLoop(ln net.Listener) {
 // contain multiple batches, processed sequentially until the connection
 // closes or an error occurs.
 func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		s.mu.Lock()
+		delete(s.connections, conn)
+		s.mu.Unlock()
+	}()
+	// Length and sender fields are tiny; reading each directly from TCP
+	// otherwise needs several socket reads per transaction.
+	reader := bufio.NewReaderSize(conn, 64*1024)
 
 	for {
 		select {
@@ -163,7 +206,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		default:
 		}
 
-		accepted, err := s.readBatch(conn)
+		accepted, err := s.readBatch(reader)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
 				log.Warn("Ingest connection error", "err", err)
@@ -189,9 +232,14 @@ const maxBatchSize = 100_000
 // that still fit the 2-byte wire length field.
 const maxTxSize = 48 * 1024 // 48 KiB
 
+const (
+	poolBatchTransactions = 256
+	poolBatchBytes        = 1 << 20
+)
+
 // readBatch reads and processes one batch of transactions from the
 // connection. It returns the number of successfully injected transactions.
-func (s *Server) readBatch(r io.Reader) (uint32, error) {
+func (s *Server) readBatch(r io.Reader) (accepted uint32, retErr error) {
 	// Read num_txs (4 bytes LE).
 	var numBuf [4]byte
 	if _, err := io.ReadFull(r, numBuf[:]); err != nil {
@@ -220,7 +268,40 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 		return 0, nil
 	}
 
-	var accepted uint32
+	batchPool, batching := s.pool.(batchTxPool)
+	var queued []*transaction.Transaction
+	queuedBytes := 0
+	if batching {
+		queued = make([]*transaction.Transaction, 0, poolBatchTransactions)
+	}
+	flush := func() error {
+		if len(queued) == 0 {
+			return nil
+		}
+		verdicts := batchPool.AddLocals(queued)
+		count := len(queued)
+		queued = nil
+		queuedBytes = 0
+		if len(verdicts) != count {
+			return fmt.Errorf("ingest: pool returned %d verdicts for %d transactions", len(verdicts), count)
+		}
+		for _, err := range verdicts {
+			if err != nil {
+				s.rejected.Add(1)
+			} else {
+				s.injected.Add(1)
+				accepted++
+			}
+		}
+		return nil
+	}
+	// Preserve the original streaming behavior on a truncated frame: all
+	// complete transactions before the read error still reach validation.
+	defer func() {
+		if err := flush(); retErr == nil {
+			retErr = err
+		}
+	}()
 	var senderBuf [20]byte
 	txBuf := make([]byte, 0, 1024) // reusable buffer for tx bytes
 
@@ -257,10 +338,29 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 			continue
 		}
 
-		// Set the pre-recovered sender.
+		// Set the claimed sender; the pool must validate it against V/R/S.
 		var sender types.Address
 		copy(sender[:], senderBuf[:])
 		tx.SetFrom(sender)
+
+		if batching {
+			if queuedBytes+int(txLen) > poolBatchBytes {
+				if err := flush(); err != nil {
+					return accepted, err
+				}
+			}
+			if queued == nil {
+				queued = make([]*transaction.Transaction, 0, poolBatchTransactions)
+			}
+			queued = append(queued, tx)
+			queuedBytes += int(txLen)
+			if len(queued) == poolBatchTransactions {
+				if err := flush(); err != nil {
+					return accepted, err
+				}
+			}
+			continue
+		}
 
 		// Submit to pool.
 		if err := s.pool.AddLocal(tx); err != nil {
@@ -272,6 +372,9 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 		accepted++
 	}
 
+	if err := flush(); err != nil {
+		return accepted, err
+	}
 	s.batches.Add(1)
 	return accepted, nil
 }
