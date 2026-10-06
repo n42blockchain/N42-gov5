@@ -1,6 +1,9 @@
 package node
 
 import (
+	"github.com/n42blockchain/N42/internal/ddn/receipt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -33,6 +36,26 @@ func (n *Node) startDDNRuntime() {
 	if err != nil {
 		log.Error("DDN disabled: invalid gateway configuration", "err", err)
 		return
+	}
+
+	if c.SigningKeyFile != "" {
+		path := c.SigningKeyFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(n.config.NodeCfg.DataDir, path)
+		}
+		signer, loadErr := receipt.LoadSigner(path, os.Getenv("N42_DDN_KEY_PASSWORD"))
+		if loadErr != nil {
+			g.Stop()
+			log.Error("DDN disabled: receipt key unavailable")
+			return
+		}
+		if err = g.SetSigner(signer); err != nil {
+			signer.Close()
+			g.Stop()
+			log.Error("DDN disabled: signer identity mismatch")
+			return
+		}
+		n.ddnSigner = signer
 	}
 	n.ddnGateway = g
 	n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{Namespace: "n42", Service: &gateway.API{Gateway: g}, Authenticated: true})

@@ -126,6 +126,7 @@ func DefaultAICfg() AICfg {
 // DDNCfg controls the remote-sidecar shadow gateway, disabled by default.
 // Signing keys are deliberately absent: never reuse the validator key.
 type DDNCfg struct {
+	SigningKeyFile string   `json:"signing_key_file" yaml:"signing_key_file"`
 	Enabled        bool     `json:"enabled" yaml:"enabled"`
 	GatewayEnabled bool     `json:"gateway_enabled" yaml:"gateway_enabled"`
 	ShadowMode     bool     `json:"shadow_mode" yaml:"shadow_mode"`

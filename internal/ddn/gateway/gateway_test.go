@@ -11,6 +11,7 @@ import (
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/ddn/provider"
+	"github.com/n42blockchain/N42/internal/ddn/receipt"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"github.com/n42blockchain/N42/internal/mcp"
 	"strings"
@@ -170,5 +171,33 @@ func TestMCPAllowlistAndRPC(t *testing.T) {
 	rec := awaitRecord(t, g, id)
 	if !rec.Receipt.Result.NeedEscalation {
 		t.Fatal("UNKNOWN failed to escalate")
+	}
+}
+
+func TestSignedShadowReceipt(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	signer, _ := receipt.NewSigner(key)
+	defer signer.Close()
+	id := identity()
+	id.DID = signer.DID()
+	g, err := New(config(), provider.Stub{ID: id, Result: d.DecisionResult{Label: "NORMAL", ConfidencePPM: 900000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Stop()
+	if err = g.SetSigner(signer); err != nil {
+		t.Fatal(err)
+	}
+	req := request(9)
+	requestID, err := g.Submit(req, "healthy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := awaitRecord(t, g, requestID)
+	if rec.Receipt == nil {
+		t.Fatalf("signing failed: %+v", rec)
+	}
+	if err = receipt.Verify(*rec.Receipt, req, signer.Address(), uint64(time.Now().UnixMilli())); err != nil {
+		t.Fatal(err)
 	}
 }

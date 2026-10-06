@@ -87,6 +87,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/cs"
 	ddngateway "github.com/n42blockchain/N42/internal/ddn/gateway"
+	ddnreceipt "github.com/n42blockchain/N42/internal/ddn/receipt"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
 	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
@@ -208,6 +209,7 @@ type Node struct {
 	hotstuffService    *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
 	bundlerService     *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
 	peerdasService     *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	ddnSigner          *ddnreceipt.Signer
 	ddnGateway         *ddngateway.Gateway
 	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
 	deferredPipeline   *deferred.Pipeline          // Deferred execution pipeline (nil if disabled)
@@ -3271,6 +3273,9 @@ func (n *Node) stopServices() []error {
 		{"Distributed services", func() error {
 			if n.ddnGateway != nil {
 				n.ddnGateway.Stop()
+			}
+			if n.ddnSigner != nil {
+				n.ddnSigner.Close()
 			}
 			// Before the database closes: the sealer may be mid-write.
 			if n.txIndexer != nil {
