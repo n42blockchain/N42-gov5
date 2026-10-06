@@ -68,6 +68,7 @@
 1. [Prediction Market Guide](./engineering/PREDICTION_MARKET_GUIDE.md)
 1. [N42 Distributed Decision Network (DDN)](./DDN.md)
 1. [Using the DDN](./DDN_USAGE.md)
+1. [DDN Integration Plan (Go node)](./DDN_INTEGRATION_PLAN.md)
 
 ## Compliance
 
