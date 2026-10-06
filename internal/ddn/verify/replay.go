@@ -3,10 +3,11 @@ package verify
 import (
 	"errors"
 	"fmt"
+	"sync"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ddn/receipt"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
-	"sync"
 )
 
 // Verifier is a bounded consumer replay cache. Production consumers must

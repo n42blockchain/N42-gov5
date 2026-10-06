@@ -1,15 +1,17 @@
 package receipt
 
 import (
-	"github.com/google/uuid"
-	"github.com/n42blockchain/N42/accounts/keystore"
-	chain "github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/crypto"
-	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/n42blockchain/N42/accounts/keystore"
+	chain "github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
+	d "github.com/n42blockchain/N42/internal/ddn/types"
 )
 
 func signedFixture(t *testing.T) (*Signer, d.DecisionRequest, d.DecisionReceipt, uint64) {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 )
@@ -20,4 +21,12 @@ type Identity struct {
 type DecisionProvider interface {
 	Identity() Identity
 	Decide(context.Context, d.DecisionRequest, string) (d.DecisionResult, error)
+}
+
+// RequestValidator allows a provider group to enforce its configured quorum.
+type RequestValidator interface{ ValidateRequest(d.DecisionRequest) error }
+
+// EvidenceProvider binds the complete fan-out outcome set into the receipt.
+type EvidenceProvider interface {
+	DecideWithEvidence(context.Context, d.DecisionRequest, string) (d.DecisionResult, chain.Hash, error)
 }

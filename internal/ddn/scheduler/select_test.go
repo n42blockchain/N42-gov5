@@ -2,13 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"strings"
+	"testing"
+	"time"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ddn/provider"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"github.com/n42blockchain/N42/internal/distributed/coprocessor"
-	"strings"
-	"testing"
-	"time"
 )
 
 func TestSelectionUsesCapabilitiesReputationPriceAndStatus(t *testing.T) {

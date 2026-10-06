@@ -2,11 +2,12 @@ package receipt
 
 import (
 	"bytes"
+	"math/big"
+	"testing"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
-	"math/big"
-	"testing"
 )
 
 // Fixed values were produced by the actual n42-26 relay's quote_digest,

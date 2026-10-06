@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	chain "github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/crypto"
 	"reflect"
 	"unicode/utf8"
+
+	chain "github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // canonical uses struct declaration order, Go JSON escaping, compact UTF-8,
