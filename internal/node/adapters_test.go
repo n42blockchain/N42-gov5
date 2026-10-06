@@ -3,8 +3,8 @@ package node
 import (
 	"testing"
 
-	"github.com/holiman/uint256"
 	"errors"
+	"github.com/holiman/uint256"
 
 	"github.com/stretchr/testify/require"
 
@@ -66,24 +66,24 @@ func TestMcpNodeBackendNilFields(t *testing.T) {
 // fakeTxsPool is a minimal common.ITxsPool implementation for exercising
 // ingestPoolAdapter's pure delegation.
 type fakeTxsPool struct {
-	addLocalErr                               error
-	addLocalCalledWith                        *transaction.Transaction
+	addLocalErr                                error
+	addLocalCalledWith                         *transaction.Transaction
 	pending, pendingAddrs, queued, queuedAddrs int
 }
 
-func (f *fakeTxsPool) Stop() error { return nil }
-func (f *fakeTxsPool) Has(types.Hash) bool { return false }
+func (f *fakeTxsPool) Stop() error                                               { return nil }
+func (f *fakeTxsPool) Has(types.Hash) bool                                       { return false }
 func (f *fakeTxsPool) Pending(bool) map[types.Address][]*transaction.Transaction { return nil }
 func (f *fakeTxsPool) GetTransaction() ([]*transaction.Transaction, error)       { return nil, nil }
 func (f *fakeTxsPool) GetTx(types.Hash) *transaction.Transaction                 { return nil }
-func (f *fakeTxsPool) AddRemotes([]*transaction.Transaction) []error            { return nil }
+func (f *fakeTxsPool) AddRemotes([]*transaction.Transaction) []error             { return nil }
 func (f *fakeTxsPool) AddLocal(tx *transaction.Transaction) error {
 	f.addLocalCalledWith = tx
 	return f.addLocalErr
 }
 func (f *fakeTxsPool) AddLocals([]*transaction.Transaction) []error { return nil }
 func (f *fakeTxsPool) Stats() (int, int, int, int) {
-	return f.pending, f.pendingAddrs, f.queued, f.queuedAddrs
+	return f.pendingAddrs, f.pending, f.queuedAddrs, f.queued
 }
 func (f *fakeTxsPool) Nonce(types.Address) uint64 { return 0 }
 func (f *fakeTxsPool) Content() (map[types.Address][]*transaction.Transaction, map[types.Address][]*transaction.Transaction) {
