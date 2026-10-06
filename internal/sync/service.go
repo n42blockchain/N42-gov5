@@ -80,6 +80,11 @@ type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 // TxPool is the interface for adding remote transactions received via gossip.
 type TxPool interface {
 	AddRemotes(txs []*transaction.Transaction) []error
+	// GetTx (S32, N42_BLOCK_DECODE_REUSE_POOL): returns the pool's own
+	// object for hash, or nil on a miss. Used by the block-push receive
+	// path to reuse an already-decoded, sender-cached transaction instead
+	// of decoding the pushed block's copy fresh.
+	GetTx(hash types.Hash) *transaction.Transaction
 }
 
 type config struct {
@@ -102,6 +107,18 @@ func (s *Service) SetBlockImportNotifier(n BlockImportNotifier) {
 // Service is responsible for handling all runtime p2p related operations as the
 // main entry point for network messages.
 type Service struct {
+	// deferredPending: pushed blocks whose deferred-execution check must run
+	// again once their parent is applied (keyed by parent hash).
+	deferredMu       sync.Mutex
+	deferredPending  map[types.Hash][]block.IBlock
+	deferredAttempts map[types.Hash]int
+
+	// pushInflight: blocks the direct-push handler has decoded and is
+	// importing. The gossip copy of the same block is ignored on its header
+	// before the full decode (every block arrived twice, and the second copy
+	// was decoded, re-validated under validateBlockLock and re-imported).
+	pushInflight sync.Map
+
 	cfg    *config
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -127,6 +144,15 @@ type Service struct {
 	// after every round.
 	catchUpInProgress atomic.Bool
 	catchUpTarget     atomic.Uint64
+
+	// Grace period for a lag-exactly-1 catch-up (N42_HOTSTUFF_CATCHUP_GRACE_MS).
+	// In steady-state depth-1 deferred execution the head is normally one block
+	// behind the QC'd height while the matching proposal is already arriving on
+	// the normal path, so an immediate pull is usually wasted work. When armed,
+	// catchUpGraceTarget holds the most recent deferred target and
+	// catchUpGraceTimer ensures only one grace timer runs at a time.
+	catchUpGraceTarget atomic.Uint64
+	catchUpGraceTimer  atomic.Bool
 
 	// Hashes authenticated by a CommitQC whose body/header had not arrived when
 	// consensus requested catch-up. Any block ingress path promotes the hash to

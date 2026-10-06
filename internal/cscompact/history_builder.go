@@ -18,8 +18,8 @@ import (
 	"github.com/RoaringBitmap/roaring/roaring64"
 
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/recsplit"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -198,8 +198,12 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 	}
 	defer store.Close()
 
-	// Resume from existing segments.
-	existingSegs := store.SegmentCount()
+	// Resume from existing segments, rewriting a partial tail first (see
+	// peelPartialTail — this entry point has the same whole-segment arithmetic).
+	existingSegs, err := peelPartialTail(store, b.prefix, endBlock)
+	if err != nil {
+		return err
+	}
 	resumeBlock := existingSegs * HistSegmentSize
 	if resumeBlock > startBlock {
 		startBlock = resumeBlock
@@ -255,7 +259,20 @@ func (b *HistoryBuilder) BuildFromBlockKeys(ctx context.Context, startBlock, end
 	}
 	defer store.Close()
 
-	existingSegs := store.SegmentCount()
+	// A run that ends mid-segment leaves a PARTIAL final segment, and the resume
+	// arithmetic below is in whole segments: counting a partial as full resumes
+	// past the tip and indexes NOTHING. accthist/storhist sat at their
+	// 2026-06-06 tail for three months exactly this way.
+	//
+	// The history dat header is magic+keyCount+flags with no blockCount, so the
+	// partial tail is detected POSITIONALLY instead: if the existing segments
+	// claim to cover beyond endBlock, the last one cannot be full. Peel and
+	// rewrite it (TruncateLastSegment shrinks the cdat too, so a weekly tail
+	// rewrite leaves no orphaned frames).
+	existingSegs, err := peelPartialTail(store, b.prefix, endBlock)
+	if err != nil {
+		return err
+	}
 	if resume := existingSegs * HistSegmentSize; resume > startBlock {
 		startBlock = resume
 		log.Info("Resuming history build", "from", startBlock, "existingSegments", existingSegs)
@@ -421,7 +438,7 @@ func (b *HistoryBuilder) collectFromChangesets(ctx context.Context, csTable stri
 				if len(k) >= 28 && len(v) >= 32 {
 					var compositeKey [52]byte
 					copy(compositeKey[:20], k[8:28]) // addr (same offset for both)
-					copy(compositeKey[20:], v[:32])   // slot
+					copy(compositeKey[20:], v[:32])  // slot
 					mapKey := string(compositeKey[:])
 					keyMap[mapKey] = append(keyMap[mapKey], blockNum)
 				}
@@ -508,4 +525,28 @@ func (b *HistoryBuilder) buildFromKeyMap(ctx context.Context, entries []histKeyD
 		"elapsed", elapsed.Truncate(time.Second))
 
 	return nil
+}
+
+// peelPartialTail drops trailing segments whose POSITIONAL coverage runs past
+// endBlock. Such a segment cannot be full, and every resume path here counts in
+// whole segments — so leaving it in place makes the next run resume beyond the
+// tip and index nothing at all. accthist/storhist sat frozen at their
+// 2026-06-06 tail for three months exactly this way.
+//
+// The history dat header (magic + keyCount + flags) carries no block count, so
+// the test is positional rather than read from the data. TruncateLastSegment
+// shrinks the cdat as well, so repeated weekly tail rewrites leave no orphaned
+// frames in a published artefact.
+func peelPartialTail(store *SegmentStoreWriter, prefix string, endBlock uint64) (uint64, error) {
+	segs := store.SegmentCount()
+	for endBlock > 0 && segs > 0 && segs*HistSegmentSize > endBlock {
+		log.Warn("History: final segment PARTIAL — rewinding to rewrite it",
+			"prefix", prefix, "segment", segs-1,
+			"claimedCoverage", segs*HistSegmentSize, "endBlock", endBlock)
+		if err := store.TruncateLastSegment(); err != nil {
+			return 0, fmt.Errorf("peel partial tail: %w", err)
+		}
+		segs = store.SegmentCount()
+	}
+	return segs, nil
 }

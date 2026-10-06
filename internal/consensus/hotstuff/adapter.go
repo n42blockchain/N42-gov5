@@ -12,16 +12,21 @@
 package hotstuff
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -442,8 +447,18 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// Execution consumes the header's own GasLimit (block gas pool), so an
 	// unchecked header lets a bad leader mint arbitrarily large blocks.
 	// This invariant holds for every honestly-produced AND replayed block.
-	if header.GasUsed > header.GasLimit {
-		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, header.GasLimit)
+	usedLimit := header.GasLimit
+	if h.chainConfig != nil && chain != nil && h.chainConfig.IsDeferredExecution(header.Time) {
+		// The header's GasUsed is the PARENT's execution, bounded by the
+		// parent's limit (the limit may step between the two).
+		if p, _ := chain.GetHeaderByHash(header.ParentHash); p != nil {
+			if ph, ok := p.(*block.Header); ok && ph != nil {
+				usedLimit = ph.GasLimit
+			}
+		}
+	}
+	if header.GasUsed > usedLimit {
+		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, usedLimit)
 	}
 	// EIP-1559 BaseFee re-derivation is deliberately NOT enforced here.
 	// A head-adjacency gate was tried and is unsound: the FIRST header of
@@ -607,35 +622,55 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// Prepare), mirroring VerifyHeader — the leader may be extending a block
 	// that is not yet locally canonical (commit lag), and the timestamp + PBR
 	// must derive from the block actually extended.
-	parent, _ := chain.GetHeaderByHash(header.ParentHash)
+	parent, perr := chain.GetHeaderByHash(header.ParentHash)
+	var parentHeader *block.Header
 	if parent != nil {
-		parentHeader, ok := parent.(*block.Header)
-		if ok && parentHeader != nil {
-			period := h.config.Period
-			if period == 0 {
-				period = 3 // default 3 second blocks
-			}
-			// Deterministic block time: parent time + period, with NO now-floor.
-			// A now-floor makes the timestamp (and thus the block hash) change on
-			// every build attempt; a leader triggered several times for the same
-			// parent/view would then produce DIFFERENT blocks (multi-produce) and
-			// followers could never agree which one to import. Determinism makes the
-			// leader produce exactly one block per height — taskLoop dedups repeat
-			// builds by sealHash, and propose/push/import all reference one block.
-			header.Time = parentHeader.Time + period
+		if ph, ok := parent.(*block.Header); ok && ph != nil {
+			parentHeader = ph
+		}
+	}
+	if parentHeader == nil {
+		// With committee evidence wired, every non-genesis header must carry
+		// ParentBeaconRoot = Blake3(parent CE), and only the parent header can
+		// supply it. A build whose parent this node cannot resolve (round 35zo:
+		// an own block still unwritten and invisible to the lookup) would leave
+		// the field zero, be rejected by every follower, and then sit in the
+		// store as a same-height sibling that a later leader converges on and
+		// re-proposes after a restart (round 35zq). Refuse to build it instead;
+		// the miner drops the attempt and the next trigger rebuilds.
+		h.lock.RLock()
+		wired := h.committeePool != nil
+		h.lock.RUnlock()
+		if wired {
+			return fmt.Errorf("prepare: parent %x of block %s is not resolvable, cannot link committee evidence: %v",
+				header.ParentHash[:8], header.Number, perr)
+		}
+	}
+	if parentHeader != nil {
+		period := h.config.Period
+		if period == 0 {
+			period = 3 // default 3 second blocks
+		}
+		// Deterministic block time: parent time + period, with NO now-floor.
+		// A now-floor makes the timestamp (and thus the block hash) change on
+		// every build attempt; a leader triggered several times for the same
+		// parent/view would then produce DIFFERENT blocks (multi-produce) and
+		// followers could never agree which one to import. Determinism makes the
+		// leader produce exactly one block per height — taskLoop dedups repeat
+		// builds by sealHash, and propose/push/import all reference one block.
+		header.Time = parentHeader.Time + period
 
-			// EIP-4788 committee-evidence link: stamp ParentBeaconRoot from the
-			// actual parent header via deterministic CE re-derivation, matching
-			// exactly what VerifyHeader recomputes. No-op until the committee pool
-			// is wired (SetCommitteeEvidence).
-			h.lock.RLock()
-			pool := h.committeePool
-			h.lock.RUnlock()
-			if pbr, perr := parentBeaconRootFromHeader(pool, parentHeader); perr != nil {
-				return perr
-			} else if pbr != nil {
-				header.ParentBeaconRoot = pbr
-			}
+		// EIP-4788 committee-evidence link: stamp ParentBeaconRoot from the
+		// actual parent header via deterministic CE re-derivation, matching
+		// exactly what VerifyHeader recomputes. No-op until the committee pool
+		// is wired (SetCommitteeEvidence).
+		h.lock.RLock()
+		pool := h.committeePool
+		h.lock.RUnlock()
+		if pbr, perr := parentBeaconRootFromHeader(pool, parentHeader); perr != nil {
+			return perr
+		} else if pbr != nil {
+			header.ParentBeaconRoot = pbr
 		}
 	}
 	// Cancun headers carry a parent beacon root. Without committee evidence
@@ -653,6 +688,10 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 // Finalize runs any post-transaction state modifications (e.g. block rewards).
 // HotStuff delegates reward logic to the APoS reward module so that validators
 // receive the same epoch-based rewards regardless of which consensus engine is active.
+// finalizeTrace (N42_FINALIZE_TRACE=1) logs what an empty block reads and the
+// root each side computes -- round 26's build-versus-verify diagnostic.
+var finalizeTrace = os.Getenv("N42_FINALIZE_TRACE") == "1"
+
 func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	header, ok := iHeader.(*block.Header)
 	if !ok {
@@ -710,7 +749,46 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	// replay reasons) — validator QMDB trees could drift apart indefinitely,
 	// surfacing only as nonce anomalies under load and as startup
 	// marker/tree-root mismatches.
+	if finalizeTrace {
+		var fa types.Address
+		if h.chainConfig.HotStuff != nil && h.chainConfig.HotStuff.DevFaucetAddress != nil {
+			fa = *h.chainConfig.HotStuff.DevFaucetAddress
+		}
+		accts, stor := ibs.DirtySetSizes()
+		log.Warn("finalize trace", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
+			"coinbase", header.Coinbase, "coinbaseBal", ibs.GetBalance(header.Coinbase).String(),
+			"faucetBal", ibs.GetBalance(fa).String(), "txs", len(txs), "dirtyAccts", accts, "dirtySlots", stor)
+	}
 	localRoot := ibs.IntermediateRoot()
+	if finalizeTrace {
+		log.Warn("finalize trace root", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
+			"proposer", header.Root, "local", localRoot)
+		// The exact leaves the root was computed from, for a small block:
+		// diffing this line between the proposer and a rejecting follower
+		// names the account or slot the two sides disagree on.
+		if accts, stor := ibs.LastRootDirtySet(); len(accts) <= 16 {
+			for _, addr := range sortedAddrs(accts) {
+				enc := "<removed>"
+				if a := accts[addr]; a != nil {
+					enc = fmt.Sprintf("%x", a.MarshalV2())
+				}
+				var slots []string
+				for key, v := range stor[addr] {
+					slots = append(slots, fmt.Sprintf("%x=%s", key[:4], v.Hex()))
+				}
+				sort.Strings(slots)
+				log.Warn("finalize trace leaf", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
+					"addr", addr.Hex(), "account", enc, "slots", strings.Join(slots, ","))
+			}
+		}
+	}
+	if h.chainConfig.IsDeferredExecution(header.Time) {
+		// The header's Root is the parent's executed root (checked against
+		// this node's stored result before execution); this block's own
+		// root was just computed and is read by the caller from
+		// ibs.LastIntermediateRoot to be stored for the next header.
+		return rewards, unpayMap, nil
+	}
 	if header.Root != (types.Hash{}) && header.Root != localRoot {
 		return nil, nil, fmt.Errorf("state root mismatch at block %d: proposer %x, locally computed %x",
 			header.Number.Uint64(), header.Root[:8], localRoot[:8])
@@ -803,6 +881,17 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	}
 	sealedHeader.ResetHashCache()
 
+	// Self-check the extra we are about to sign for: every follower decodes
+	// it, and one malformed QC in the header (round 35zzg: "snap_ssz:
+	// length overflow" on an empty chained block, one in ~50k) is a BAD
+	// BLOCK on all of them. Refuse to seal it here instead, and keep the
+	// bytes so the next occurrence can be read.
+	if _, _, _, derr := decodeHeaderExtra(sealedHeader.Extra); derr != nil {
+		log.Error("hotstuff: refusing to seal a header whose extra-data does not decode",
+			"number", sealedHeader.Number, "err", derr, "extra", hex.EncodeToString(sealedHeader.Extra))
+		return fmt.Errorf("seal: header extra-data does not decode: %w", derr)
+	}
+
 	sealed := b.WithSeal(sealedHeader)
 
 	// Deliver the sealed block to the miner's resultLoop. The Proposal is NOT
@@ -850,6 +939,22 @@ func (h *HotStuff) NotifyBlockSealed(hash types.Hash, txHash types.Hash) {
 			log.Debug("hotstuff: seal block event ignored", "err", err)
 		}
 	}
+}
+
+// WaitForCommitVoteJournal implements the miner's commitVoteJournalWaiter
+// interface (push_order.go, S19/6co): it lets the leader's own write path
+// delay the start of WriteBlockWithState for hash until this node's own
+// journalCommitVote for hash has succeeded, or timeout elapses, or the view
+// is abandoned first. Called from the miner's resultLoop goroutine, never
+// from the engine's own -- WaitForCommitVoteJournal itself takes only the
+// engine's separate writeLatchMu leaf lock, never e.mu, so this never blocks
+// anything the consensus hot path is doing. A no-op (returns immediately)
+// when N42_LEADER_WRITE_AFTER_JOURNAL is unset or the engine is unavailable.
+func (h *HotStuff) WaitForCommitVoteJournal(hash types.Hash, timeout time.Duration) (time.Duration, string) {
+	if ce := h.Engine(); ce != nil {
+		return ce.WaitForCommitVoteJournal(hash, timeout)
+	}
+	return 0, "off"
 }
 
 // SealHash returns the hash of a block prior to it being sealed.
@@ -1001,3 +1106,13 @@ var (
 	_ consensus.Engine       = (*HotStuff)(nil)
 	_ consensus.EngineReader = (*HotStuff)(nil)
 )
+
+// sortedAddrs lists the keys of m in address order (deterministic trace).
+func sortedAddrs(m map[types.Address]*account.StateAccount) []types.Address {
+	out := make([]types.Address, 0, len(m))
+	for a := range m {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}

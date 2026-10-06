@@ -202,6 +202,8 @@ const (
 // txPricedList is a price-sorted heap to allow operating on transactions pool
 // contents in a price-incrementing way. Only remote transactions are tracked.
 type txPricedList struct {
+	// reheaps counts Reheap runs (diagnostics and tests).
+	reheaps int64
 	// Number of stale price points (re-heap trigger).
 	// This field is accessed atomically, and must be the first field
 	// to ensure correct alignment for atomic operations.
@@ -325,6 +327,7 @@ func (l *txPricedList) Discard(slots int, force bool) ([]*transaction.Transactio
 func (l *txPricedList) Reheap() {
 	l.reheapMu.Lock()
 	defer l.reheapMu.Unlock()
+	atomic.AddInt64(&l.reheaps, 1)
 
 	atomic.StoreInt64(&l.stales, 0)
 	l.urgent.list = make([]*transaction.Transaction, 0, l.all.RemoteCount())
@@ -343,7 +346,17 @@ func (l *txPricedList) Reheap() {
 }
 
 // SetBaseFee updates the base fee and triggers a re-heap.
+// SetBaseFee records the pending base fee and reheaps the priced lists when it
+// changed. Reheap walks every remote transaction, heapifies them and pops a
+// fifth of them one by one; at 600k transactions that is most of a second,
+// paid inside the pool reorg under the pool lock on EVERY block -- and the
+// fleet's base fee sits flat on the gas target block after block (round 35zz:
+// reorgs of 0.4-1.8 s with 150 ms of timed phases, the builder starved of
+// pending transactions at tenure 16). An unchanged fee changes no ordering.
 func (l *txPricedList) SetBaseFee(baseFee *uint256.Int) {
+	if l.urgent.baseFee != nil && baseFee != nil && l.urgent.baseFee.Eq(baseFee) {
+		return
+	}
 	l.urgent.baseFee = baseFee
 	l.Reheap()
 }

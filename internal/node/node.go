@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -58,6 +59,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/conf"
@@ -811,7 +813,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// So this is not "unaudited", it is "known to diverge under load",
 			// and the fix is not in internal/parallel: a parallel executor
 			// needs a reader per worker, or reads serialised.
-			log.Warn("ParallelEVM ENABLED — BROKEN under load: a 2026-09-02 bench A-B-A halted the chain (6/7 nodes rejected blocks; the parallel executor missed an intra-block credit). Do NOT enable on any chain whose blocks matter")
+			log.Warn("ParallelEVM ENABLED: each Block-STM worker now owns its read transaction and reads the live QMDB tree under its lock (the 2026-09-02 halt was a shared MDBX cursor, 3709ca6a); UNMEASURED under load until a round says otherwise -- do not enable on a chain whose blocks matter",
+				"workers", internal.ParallelWorkers())
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
@@ -1054,31 +1057,85 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// entry log per block. The in-RAM key->slot index is used because the
 			// per-block evmRecord tx is read-only (cannot back the index with
 			// MDBX on the live path). Also serve QMDB-native eth_getProof.
-			qmdbRC := commitment.NewQMDBRootComputer()
-			rtx, err := chainKv.BeginRo(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
-			}
 			// Wire the cold/leaf getters BEFORE LoadFrom: the rebuild faults
 			// frozen leaves and cold entries through them. A failed reload can
 			// leave a partially populated twig slice, so it is not an empty-tree
 			// fallback: using it can panic in Root(), and an actually empty tree
 			// would not reproduce this history-dependent root. Fail closed and
-			// require repair/reseed instead.
-			qmdbRC.SetCold(rtx)
-			loadErr := qmdbRC.LoadFrom(rtx)
-			rtx.Rollback()
-			// rtx is dead from here; detach so nothing faults through it (the
-			// first block's execution re-points at a live tx).
-			qmdbRC.SetCold(nil)
+			// require repair/reseed instead -- after retrying on a fresh
+			// computer and read view: rounds 35g-35j lost a node at every
+			// fleet start to "twig metadata inconsistent" part way through the
+			// scan, and the same store loaded whole on the next start ten
+			// minutes later, so the first failure is a transient read, not
+			// the disk.
+			var qmdbRC *commitment.QMDBRootComputer
+			var loadErr error
+			// Round 35z2 (2026-09-08): all three attempts failed on three
+			// different twigs (172644, 179292, 185698 of 219511) and the fourth
+			// start, ten minutes later, loaded whole -- six attempts with a
+			// longer pause ride out a longer burst of whatever the transient is.
+			for attempt := 1; attempt <= 6; attempt++ {
+				qmdbRC = commitment.NewQMDBRootComputer()
+				rtx, err := chainKv.BeginRo(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
+				}
+				qmdbRC.SetCold(rtx)
+				loadErr = qmdbRC.LoadFrom(rtx)
+				rtx.Rollback()
+				// rtx is dead from here; detach so nothing faults through it (the
+				// first block's execution re-points at a live tx).
+				qmdbRC.SetCold(nil)
+				if loadErr == nil {
+					break
+				}
+				log.Error("QMDB forest reload failed at startup", "attempt", attempt, "err", loadErr)
+				time.Sleep(5 * time.Second)
+			}
 			if loadErr != nil {
 				return nil, fmt.Errorf("reload QMDB forest: %w", loadErr)
 			}
 			qmdbRC.EnableUndoRecording()
 			realBC.SetQMDBRootComputer(qmdbRC)
-			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
+			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider(realBC.Config()))
 			log.Info("State commitment: QMDB (twig forest, live block production)",
 				"root", fmt.Sprintf("%x", qmdbRC.Root()))
+			if commitment.QMDBStateReadMode() == commitment.QMDBReadOn {
+				// N42_STATE_READ_QMDB=1: EVERY head-state account read -- the
+				// miner's build, the txpool, RPC, the history fallback -- goes
+				// to the tree, not only block execution. Round 26's first
+				// attempt switched execution alone and the miner built on a
+				// table the previous leg had frozen: state-root mismatch on
+				// the first block, seven nodes wedged.
+				modules.SetLatestAccountSource(commitment.NewQMDBLatestAccountSource(qmdbRC, chainKv))
+				log.Info("head-state account reads served from the QMDB tree (N42_STATE_READ_QMDB=1): miner, txpool and RPC included")
+			}
+			if commitment.QMDBOnlyAccountWrites() {
+				// N42_STATE_WRITE_QMDB_ONLY=1: stop maintaining the plain
+				// `Account` table. Only sound once reads no longer touch it.
+				if !modules.LatestAccountSourceInstalled() {
+					return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 requires N42_STATE_READ_QMDB=1: the plain Account table stops being written, so reads must not depend on it")
+				}
+				modules.SetPlainAccountWriteSkipped(true)
+				// Record the head at the FIRST enablement so a repair can later
+				// rebuild exactly the rows the table missed: every address in an
+				// AccountChangeSet from this block on, re-read from the tree.
+				var frozenAt uint64
+				if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
+					if v, err := tx.GetOne(modules.QMDBMeta, commitment.QMDBAccountFrozenAtKey); err == nil && len(v) == 8 {
+						frozenAt = binary.BigEndian.Uint64(v)
+						return nil
+					}
+					frozenAt = bc.CurrentBlock().Number64().Uint64() + 1
+					var buf [8]byte
+					binary.BigEndian.PutUint64(buf[:], frozenAt)
+					return tx.Put(modules.QMDBMeta, commitment.QMDBAccountFrozenAtKey, buf[:])
+				}); err != nil {
+					return nil, fmt.Errorf("record the Account table freeze: %w", err)
+				}
+				log.Warn("QMDB-only account persistence: the plain Account table is frozen; snap-sync serving and state dumps read a stale table (measurement lever, docs/QS_BLOCK_TIME_BUDGET.md round 26)",
+					"frozenAt", frozenAt)
+			}
 
 		case state.RootSchemeLegacyKeccak:
 			log.Info("State commitment: Legacy-Keccak (no tree)")
@@ -1086,6 +1143,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		default:
 			return nil, fmt.Errorf("unsupported state scheme: %s", stateScheme)
 		}
+	}
+	if commitment.QMDBOnlyAccountWrites() && !modules.PlainAccountWriteSkipped() {
+		return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 needs a chain committing with QMDB (state scheme %s does not)", stateScheme)
 	}
 
 	// Initialize ZK proving if configured.
@@ -2078,7 +2138,7 @@ func (n *Node) Start() error {
 					}
 				}
 				return 0
-			}, 256, 2*time.Second)
+			}, 256, historyBackfillInterval())
 		n.historyBackfiller.Start()
 	}
 
@@ -2250,10 +2310,32 @@ func (n *Node) startIngestServer() {
 		n.config.IngestCfg.SoftTarget,
 		n.config.IngestCfg.HardCap,
 	)
+	if n.config.IngestCfg.HintOnly {
+		// Recovery across three quarters of this node's CPU budget, as the
+		// import's own sender recovery sizes itself; the endpoint is fed
+		// ahead of the block, so it competes with nothing on the critical
+		// path except itself.
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 2 {
+			workers -= workers / 4
+		}
+		// The import verifies with the signer of the block's fork rules
+		// (MakeSignerWithTimestamp), and the sender cache is keyed by that
+		// signer: recover into the same one, following the chain head.
+		cfg := n.blockChain.Config()
+		bc := n.blockChain
+		n.ingestServer.EnableHintOnly(func() transaction.Signer {
+			h := bc.CurrentBlock()
+			if h == nil || h.Number64() == nil {
+				return transaction.LatestSignerForChainID(cfg.ChainID)
+			}
+			return transaction.MakeSignerWithTimestamp(cfg, h.Number64().ToBig(), h.Time())
+		}, workers)
+	}
 	if err := n.ingestServer.Start(); err != nil {
 		log.Error("Ingest server failed to start", "err", err)
 	} else {
-		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
+		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr, "hintOnly", n.config.IngestCfg.HintOnly)
 	}
 }
 
@@ -3844,4 +3926,23 @@ func (n *Node) Engine() consensus.Engine {
 
 func (n *Node) ChainDb() kv.RwDB {
 	return n.db
+}
+
+// historyBackfillInterval is how often the deferred history backfiller folds
+// the changesets behind the head into the index: N42_HISTORY_INDEX_INTERVAL
+// (a Go duration), default 2 s. Each fold rewrites the index chunk of every
+// account touched since the last one, so a full block's ~23k hot accounts
+// cost ~25 MB of payload and ~106 MB of dirty pages under the single MDBX
+// writer per fold; at one fold per block that writer was busy enough late
+// in a leg that block writes waited up to 2.4 s to begin (round 35zzi).
+// Folding every N seconds rewrites each chunk once for all the blocks in
+// between.
+func historyBackfillInterval() time.Duration {
+	if v := os.Getenv("N42_HISTORY_INDEX_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		log.Warn("N42_HISTORY_INDEX_INTERVAL ignored (not a positive duration)", "value", v)
+	}
+	return 2 * time.Second
 }

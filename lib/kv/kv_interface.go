@@ -194,6 +194,15 @@ type Deleter interface {
 	Delete(table string, k []byte) error
 }
 
+// Upserter is implemented by transactions that can make a key hold exactly one
+// value in a single operation. On a DupSort table every other duplicate of the
+// key is removed; on a plain table it is an ordinary put. It replaces the
+// Delete+Put pair that DupSort writers otherwise need, which costs a second
+// B-tree descent per key.
+type Upserter interface {
+	Upsert(table string, k, v []byte) error
+}
+
 type Closer interface {
 	Close()
 }

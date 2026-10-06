@@ -115,6 +115,23 @@ func appRun(ctx *cli.Context) error {
 		defer pprofServer.Close()
 	}
 
+	// S14 (docs/QS_BLOCK_TIME_BUDGET.md 6cb-6ce): contention profiling for the
+	// ~450ms of an in-tenure cycle's 520ms consensus vote round-trip that no
+	// named wait accounts for. Independent of PprofCfg.TraceMutex/TraceBlock
+	// (the qs harness does not set those) so one env switch turns on both
+	// this and the hotstuff vote-path stamps (internal/consensus/hotstuff).
+	// Must run before node.NewNode starts the consensus service, so nothing
+	// contended at startup goes unprofiled. Off by default: no profiling
+	// overhead unless a round opts in. /debug/pprof/mutex and /debug/pprof/block
+	// are already served wherever pprof is (net/http/pprof's blank import
+	// above registers them unconditionally; they report empty until the
+	// rates below are set).
+	if os.Getenv("N42_CONTENTION_DIAG") == "1" {
+		runtime.SetMutexProfileFraction(5)
+		runtime.SetBlockProfileRate(1_000_000)
+		log.Info("contention profiling enabled (N42_CONTENTION_DIAG=1)", "mutexFraction", 5, "blockProfileRateNs", 1_000_000)
+	}
+
 	stack, err := node.NewNode(ctx, &DefaultConfig)
 	if err != nil {
 		log.PrintErrorBox("Node Startup Failed", []string{err.Error()})

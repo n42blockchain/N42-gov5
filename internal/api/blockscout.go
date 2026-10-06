@@ -41,6 +41,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/api/rpchelper"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -421,6 +422,18 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 	}
 	defer tx.Rollback()
 
+	if src := s.api.proofSource; src != nil {
+		if n, ok := proofBlockNumber(tx, blockNrOrHash); ok {
+			res, err := src.ProveAt(ctx, tx, address, storageKeys, n)
+			if err == nil {
+				return res, nil
+			}
+			if !errors.Is(err, ErrProofNotCovered) {
+				return nil, err
+			}
+		}
+	}
+
 	ibs := s.api.State(tx, blockNrOrHash)
 	if ibs == nil {
 		return nil, nil
@@ -504,6 +517,21 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 		StorageHash:  storageHash,
 		StorageProof: storageProof,
 	}, nil
+}
+
+// proofBlockNumber resolves eth_getProof's block argument for a ProofSource.
+// A node that does not hold the old headers (eth-el bootstrapped from a
+// snapshot) cannot resolve a historical number through the canonical index;
+// an explicit number is then taken as given — the source answers for exactly
+// that height, and a client checks the proof against its own header anyway.
+func proofBlockNumber(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) (uint64, bool) {
+	if num, _, err := rpchelper.GetCanonicalBlockNumber(blockNrOrHash, tx); err == nil && num != nil {
+		return num.Uint64(), true
+	}
+	if bn, ok := blockNrOrHash.Number(); ok && bn >= 0 {
+		return uint64(bn), true
+	}
+	return 0, false
 }
 
 func (s *BlockChainAPI) stateProofProvider() (internal.StateProofProvider, internal.StateProofDescriptor) {

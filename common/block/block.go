@@ -27,7 +27,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,11 +38,11 @@ import (
 
 	"github.com/n42blockchain/N42/lib/rlp"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 type Block struct {
@@ -52,6 +54,29 @@ type Block struct {
 
 	ReceiveAt    time.Time
 	ReceivedFrom interface{}
+
+	// decodeReused/decodeDecoded (S32): how many of this block's own
+	// transactions were reused from the pool vs freshly decoded by
+	// DecodeRLPReusePool. Zero value (both 0) for a block decoded any other
+	// way -- callers should not treat "0, 0" as "every tx was reused".
+	// Written once, before the block is ever shared, by the decoder alone.
+	decodeReused, decodeDecoded int
+
+	// Import-timing stamps (S39, docs/QS_BLOCK_TIME_BUDGET.md 6dr): unix-ms
+	// stamps for named hand-off points on a follower's block-push receive
+	// path. See block_import_stamps.go for the setters/getter and which
+	// package writes each one. Zero value for a block that never passes
+	// through a given hand-off, or when the writer's own N42_CONTENTION_DIAG
+	// is off.
+	rxEndTMs, decStartTMs, decEndTMs, chkStartTMs, chkEndTMs, qTMs, insDispatchTMs, insStartTMs int64
+}
+
+// DecodeReuseStats reports how many of this block's transactions were
+// reused from the pool vs freshly decoded, when it was decoded via
+// DecodeRLPReusePool (S32, N42_BLOCK_DECODE_REUSE_POOL). Both zero for a
+// block decoded any other way.
+func (b *Block) DecodeReuseStats() (reused, decoded int) {
+	return b.decodeReused, b.decodeDecoded
 }
 
 type Verify struct {
@@ -160,7 +185,10 @@ func (b *Block) EncodeRLP(w io.Writer) error {
 	}
 	txData := make([][]byte, len(body.Txs))
 	for i, tx := range body.Txs {
-		enc, err := transaction.EncodeEthereumTransaction(tx)
+		// The cached consensus encoding (filled at pool admission, at decode,
+		// or by the transactions root): the same bytes, without re-encoding
+		// 163k transactions for every push of a sealed block.
+		enc, err := tx.EthEncoded()
 		if err != nil {
 			return err
 		}
@@ -181,13 +209,9 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode(&dec); err != nil {
 		return err
 	}
-	txs := make([]*transaction.Transaction, len(dec.TxData))
-	for i, enc := range dec.TxData {
-		tx, err := transaction.DecodeEthereumTransaction(enc)
-		if err != nil {
-			return err
-		}
-		txs[i] = tx
+	txs, err := decodeBlockTxs(dec.TxData)
+	if err != nil {
+		return err
 	}
 	b.header = dec.Header
 	b.body = &Body{Txs: txs, Verifiers: dec.Verifiers, Rewards: dec.Rewards, ZkProof: dec.ZkProof}
@@ -211,9 +235,14 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 		ReceiveAt: time.Now(),
 	}
 
-	block.header.Bloom = CreateBloom(receipts)
-	block.header.TxHash = TxRoot(txs)
-	block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
+	// Under deferred execution the bloom and the receipts root in this header
+	// are the parent's, stamped by the builder; this block's own are stored
+	// with its execution result and appear in the next header.
+	if !DeferredAt(block.header.Time) {
+		block.header.Bloom = CreateBloom(receipts)
+		block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
+	}
+	block.header.TxHash = TxRootAt(txs, block.header.Time)
 
 	return block
 }
@@ -243,6 +272,36 @@ func TxRoot(txs []*transaction.Transaction) types.Hash {
 		return hash.DeriveShaErigon(transaction.EthTransactions(txs))
 	}
 	return hash.DeriveSha(transaction.Transactions(txs))
+}
+
+// DeferredExecutionTime is the chain's deferredExecutionTime, set at startup
+// like UseEthereumTxRoot (same process-global invariant). Zero = never.
+// From it, a header's Root, ReceiptHash, Bloom and GasUsed are the parent's
+// executed values and the assembly must leave what the builder stamped.
+var DeferredExecutionTime uint64
+
+// DeferredAt reports whether a block at blockTime is under deferred
+// execution.
+func DeferredAt(blockTime uint64) bool {
+	return DeferredExecutionTime != 0 && blockTime >= DeferredExecutionTime
+}
+
+// TxRootBlake3Time is the chain's txRootBlake3Time, set at startup like
+// UseEthereumTxRoot (same process-global invariant). Zero = never.
+var TxRootBlake3Time uint64
+
+// TxRootAt computes the transactions root for a block at blockTime: the
+// BLAKE3 binary root (hash.Blake3BinaryRoot over the consensus encodings)
+// from TxRootBlake3Time on, TxRoot's rule before it. Block production and
+// validation must both use it so the fork is applied on both sides.
+func TxRootAt(txs []*transaction.Transaction, blockTime uint64) types.Hash {
+	if TxRootBlake3Time != 0 && blockTime >= TxRootBlake3Time {
+		if UseEthereumTxRoot {
+			return hash.Blake3BinaryRoot(transaction.EthTransactions(txs))
+		}
+		return hash.Blake3BinaryRoot(transaction.Transactions(txs))
+	}
+	return TxRoot(txs)
 }
 
 func (b *Block) Header() IHeader {
@@ -338,4 +397,67 @@ func (b *Block) SendersToTxs(senders []types.Address) {
 
 func (b *Block) Uncles() []*Header {
 	return nil
+}
+
+// parallelTxDecodeMin is the transaction count from which a block's
+// transactions are decoded across goroutines.
+const parallelTxDecodeMin = 2048
+
+// decodeBlockTxs decodes a block's transaction encodings, across goroutines
+// for a large block (a follower decoded 163k transactions on the stream
+// goroutine before its import could start: ~110 ms a block). The error, if
+// any, is the one of the lowest failing index, as the serial loop reported.
+func decodeBlockTxs(data [][]byte) ([]*transaction.Transaction, error) {
+	txs := make([]*transaction.Transaction, len(data))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 16 {
+		workers = 16
+	}
+	if len(data) < parallelTxDecodeMin || workers < 2 {
+		for i, enc := range data {
+			tx, err := transaction.DecodeEthereumTransaction(enc)
+			if err != nil {
+				return nil, err
+			}
+			txs[i] = tx
+		}
+		return txs, nil
+	}
+	chunk := (len(data) + workers - 1) / workers
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		errAt = -1
+		first error
+	)
+	for w := 0; w < workers; w++ {
+		lo, hi := w*chunk, (w+1)*chunk
+		if hi > len(data) {
+			hi = len(data)
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				tx, err := transaction.DecodeEthereumTransaction(data[i])
+				if err != nil {
+					mu.Lock()
+					if errAt < 0 || i < errAt {
+						errAt, first = i, err
+					}
+					mu.Unlock()
+					return
+				}
+				txs[i] = tx
+			}
+		}(lo, hi)
+	}
+	wg.Wait()
+	if first != nil {
+		return nil, first
+	}
+	return txs, nil
 }

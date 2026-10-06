@@ -1,0 +1,263 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+
+package datc
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"testing"
+)
+
+// TestLeafSegCursor exercises spill → finalize → cursor against a reference
+// sorted slice, covering cross-frame and cross-bucket boundaries and the
+// floor-jump pattern asOfLeaves uses (Seek(key|n+1) then Prev / Last).
+func TestLeafSegCursor(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newLeafSpillWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type row struct{ k, v []byte }
+	var ref []row
+	rng := uint64(12345)
+	next := func() uint64 { rng = rng*6364136223846793005 + 1442695040888963407; return rng >> 11 }
+
+	// ~50K rows across many buckets and several blocks per key — enough for
+	// multiple frames per bucket at the 256 KiB frame target? Frame target is
+	// large; force multiple frames with bulky values.
+	for blk := uint64(0); blk < 8; blk++ {
+		for i := 0; i < 6000; i++ {
+			key := make([]byte, 32)
+			binary.BigEndian.PutUint64(key[0:], next()%97) // few buckets, dense
+			binary.BigEndian.PutUint64(key[8:], next()%4000)
+			k := append(append([]byte{}, key...), 0, 0, 0, 0, 0, 0, 0, byte(blk))
+			v := make([]byte, 40+int(next()%80))
+			for j := range v {
+				v[j] = byte(next())
+			}
+			if err := w.add(leafTableA, k, v); err != nil {
+				t.Fatal(err)
+			}
+			ref = append(ref, row{k: k, v: v})
+		}
+	}
+	if err := w.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeLeafSegments(dir); err != nil {
+		t.Fatal(err)
+	}
+	sort.SliceStable(ref, func(i, j int) bool { return bytes.Compare(ref[i].k, ref[j].k) < 0 })
+
+	set, ok, err := openLeafSegSet(dir, leafTableA, newFrameLRU())
+	if err != nil || !ok {
+		t.Fatalf("open: ok=%v err=%v", ok, err)
+	}
+
+	// Full forward scan == reference.
+	c := set.Cursor()
+	k, v, err := c.Seek([]byte{0})
+	for i := range ref {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k == nil {
+			t.Fatalf("scan ended early at %d/%d", i, len(ref))
+		}
+		if !bytes.Equal(k, ref[i].k) || !bytes.Equal(v, ref[i].v) {
+			t.Fatalf("row %d mismatch", i)
+		}
+		k, v, err = c.Next()
+	}
+	if k != nil {
+		t.Fatal("scan has extra rows")
+	}
+
+	// Random Seek = first ref row >= probe; then Prev returns the row before.
+	for trial := 0; trial < 2000; trial++ {
+		probe := make([]byte, 40)
+		for j := range probe {
+			probe[j] = byte(next())
+		}
+		probe[0] = byte(next() % 120) // stay near populated buckets
+		idx := sort.Search(len(ref), func(i int) bool { return bytes.Compare(ref[i].k, probe) >= 0 })
+		k, v, err := c.Seek(probe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if idx == len(ref) {
+			if k != nil {
+				t.Fatalf("trial %d: Seek past end returned %x", trial, k[:8])
+			}
+			// asOfLeaves falls to Last() here.
+			lk, lv, err := c.Last()
+			if err != nil || !bytes.Equal(lk, ref[len(ref)-1].k) || !bytes.Equal(lv, ref[len(ref)-1].v) {
+				t.Fatalf("trial %d: Last mismatch", trial)
+			}
+			continue
+		}
+		if !bytes.Equal(k, ref[idx].k) || !bytes.Equal(v, ref[idx].v) {
+			t.Fatalf("trial %d: Seek mismatch", trial)
+		}
+		pk, pv, err := c.Prev()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if idx == 0 {
+			if pk != nil {
+				t.Fatalf("trial %d: Prev before first returned %x", trial, pk[:8])
+			}
+		} else if !bytes.Equal(pk, ref[idx-1].k) || !bytes.Equal(pv, ref[idx-1].v) {
+			t.Fatalf("trial %d: Prev mismatch", trial)
+		}
+	}
+
+	// Multiple frames actually exercised?
+	frames := 0
+	for b := 0; b < 256; b++ {
+		if n, err := set.frameCount(b); err == nil {
+			frames += n
+		}
+	}
+	if frames < 8 {
+		t.Fatalf("want several frames, got %d (raise row count)", frames)
+	}
+	set.Close() // release file handles so TempDir cleanup works on Windows
+	_ = os.RemoveAll(dir)
+	_ = fmt.Sprintf
+}
+
+// TestFinalizeFalseMagic: rows whose values contain the zstd frame magic end
+// up verbatim in the compressed stream (incompressible literals), so the
+// finalize frame scanner sees false frame boundaries inside real frames. Every
+// row must survive and no frame may be reported corrupt.
+func TestFinalizeFalseMagic(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newLeafSpillWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	magic := []byte{0x28, 0xb5, 0x2f, 0xfd}
+	rng := uint64(99)
+	next := func() uint64 { rng = rng*6364136223846793005 + 1442695040888963407; return rng >> 11 }
+	const rows = 20000
+	for i := 0; i < rows; i++ {
+		k := make([]byte, 36)
+		binary.BigEndian.PutUint64(k[0:], next())
+		binary.BigEndian.PutUint32(k[32:], uint32(i))
+		v := make([]byte, 64)
+		for j := range v {
+			v[j] = byte(next())
+		}
+		copy(v[int(next()%56):], magic) // a false frame magic at a random offset (stays a literal)
+		if err := w.add(leafTableA, k, v); err != nil {
+			t.Fatal(err)
+		}
+		if i%3000 == 0 {
+			if err := w.flushBatch(); err != nil { // several real frames per bucket
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.close(); err != nil {
+		t.Fatal(err)
+	}
+	// The scenario is only meaningful if the compressed spill really carries
+	// more magic occurrences than real frames.
+	spills, _ := filepath.Glob(filepath.Join(dir, leafSpillDir, "*.zspill"))
+	falseMagics := 0
+	for _, f := range spills {
+		b, _ := os.ReadFile(f)
+		falseMagics += bytes.Count(b, magic)
+	}
+	if falseMagics < 50 {
+		t.Fatalf("test setup: only %d magic occurrences in the spill (need false ones inside frames)", falseMagics)
+	}
+	if err := finalizeLeafSegments(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, leafSpillDir)); !os.IsNotExist(err) {
+		t.Fatalf("spill dir retained: finalize reported corrupt frames on clean data")
+	}
+	set, ok, err := openLeafSegSet(dir, leafTableA, newFrameLRU())
+	if err != nil || !ok {
+		t.Fatalf("open: %v", err)
+	}
+	defer set.Close()
+	c := set.Cursor()
+	n := 0
+	for k, _, e := c.Seek([]byte{0}); k != nil && e == nil; k, _, e = c.Next() {
+		n++
+	}
+	if n != rows {
+		t.Fatalf("rows lost: got %d want %d", n, rows)
+	}
+}
+
+// TestLeafSegSeekFromPosition: a Seek from a positioned cursor (the forward
+// gallop) lands exactly where a Seek from a fresh cursor does, for targets
+// before, inside and far beyond the current frame, across buckets.
+func TestLeafSegSeekFromPosition(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newLeafSpillWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := uint64(4242)
+	next := func() uint64 { rng = rng*6364136223846793005 + 1442695040888963407; return rng >> 11 }
+	var keys [][]byte
+	for i := 0; i < 40000; i++ {
+		k := make([]byte, 36)
+		k[0] = byte(next() % 5) // few buckets, many frames each
+		binary.BigEndian.PutUint64(k[1:], next()%3000)
+		binary.BigEndian.PutUint32(k[32:], uint32(i))
+		v := make([]byte, 30+int(next()%60))
+		if err := w.add(leafTableA, k, v); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	if err := w.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeLeafSegments(dir); err != nil {
+		t.Fatal(err)
+	}
+	set, ok, err := openLeafSegSet(dir, leafTableA, newFrameLRU())
+	if err != nil || !ok {
+		t.Fatalf("open: ok=%v err=%v", ok, err)
+	}
+	defer set.Close()
+	c := set.Cursor()
+	for i := 0; i < 20000; i++ {
+		target := append([]byte{}, keys[int(next()%uint64(len(keys)))]...)
+		switch next() % 4 {
+		case 0:
+			target[35]++ // just past an existing key
+		case 1:
+			target = target[:20] // a prefix
+		case 2:
+			target[0] = byte(next() % 7) // another (or a missing) bucket
+		}
+		if next()%8 == 0 {
+			c.Next() // wander off the last seek's row
+		}
+		gk, gv, err := c.Seek(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wk, wv, err := set.Cursor().Seek(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gk, wk) || !bytes.Equal(gv, wv) {
+			t.Fatalf("seek %d to %x: positioned cursor %x, fresh cursor %x", i, target, gk, wk)
+		}
+	}
+}

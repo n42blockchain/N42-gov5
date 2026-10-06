@@ -24,6 +24,7 @@ package transaction
 
 import (
 	"encoding/binary"
+	"math/big"
 	"math/bits"
 	"sync"
 
@@ -228,4 +229,41 @@ func appendRLPCollectionPrefix(dst []byte, shortBase, longBase byte, size uint64
 	n := (bits.Len64(size) + 7) / 8
 	dst = append(dst, longBase+byte(n))
 	return append(dst, encoded[8-n:]...)
+}
+
+// legacySigningHash is keccak(rlp([nonce, gasPrice, gas, to, value, data,
+// chainId, 0, 0])), the EIP-155 signing payload, appended directly instead of
+// through hash.RlpHash over an []interface{} (reflection encode: 4.9 s of a
+// follower's 25 s profile, paid once per sender recovery).
+func legacySigningHash(tx *Transaction, chainID *big.Int) types.Hash {
+	var cid uint256.Int
+	if chainID != nil {
+		cid.SetFromBig(chainID)
+	}
+	gasPrice, value, data, to := tx.GasPrice(), tx.Value(), tx.Data(), tx.To()
+	contentSize := uint64(rlp.IntSize(tx.Nonce())+rlp.IntSize(tx.Gas())) +
+		rlpUint256Size(gasPrice) + rlpAddressSize(to) +
+		rlpUint256Size(value) + rlp.BytesSize(data) +
+		rlpUint256Size(&cid) + 2
+	bufp := legacyHashBufferPool.Get().(*[]byte)
+	dst := appendRLPCollectionPrefix((*bufp)[:0], 0xc0, 0xf7, contentSize)
+	dst = rlp.AppendUint64(dst, tx.Nonce())
+	dst = appendRLPUint256(dst, gasPrice)
+	dst = rlp.AppendUint64(dst, tx.Gas())
+	if to == nil {
+		dst = append(dst, 0x80)
+	} else {
+		dst = append(dst, 0x94)
+		dst = append(dst, to[:]...)
+	}
+	dst = appendRLPUint256(dst, value)
+	dst = appendRLPBytes(dst, data)
+	dst = appendRLPUint256(dst, &cid)
+	dst = append(dst, 0x80, 0x80)
+	h := crypto.Keccak256Hash(dst)
+	if cap(dst) <= 1<<20 {
+		*bufp = dst[:0]
+		legacyHashBufferPool.Put(bufp)
+	}
+	return h
 }

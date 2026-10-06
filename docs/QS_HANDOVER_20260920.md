@@ -1,0 +1,1923 @@
+# QS campaign handover, 2026-09-20 15:45 EDT
+
+Supersedes QS_HANDOVER_20260912.md. Written to be the only thing a fresh
+session needs to read. Do not read the old transcript.
+
+## State in one paragraph
+
+The goal is unchanged: raise the seven-node "qs" fleet's TPS (Go client
+gov5, HotStuff-2, QMDB BLAKE3 binary twig forest, MDBX). The scored metric
+is the **B mean**, and the standing best is **127.6k** (round 35zzt, binary
+n42-r80 = deferred execution + the fold outside the write transaction +
+the transaction-bounded tail + packet window 8). Today fixed a real
+state-corruption bug, closed two false leads, and ran two rounds that both
+falsified their predictions. Nothing is in flight on the box right now: our
+fleet is down and the box is held by **n42-rs** (`.box-claim-rust`); round
+35zzw (S2) finished at 17:04 EDT and has been read out. Next up, once the
+box is free, is S7 (16 generators, `-target-depth` 22500, prediction 81),
+still ruled as the next step -- see "What happened today" below for why
+35zzw's outcome does not change that ruling.
+
+## How the work is split -- READ THIS FIRST
+
+The transcript is the scarce resource on a campaign this long, and this is
+the arrangement that keeps it cheap. It is written up in full in
+**docs/QS_AGENT_PROTOCOL.md**; the short version:
+
+**Waiting costs nothing.** A round takes an hour or more. Never poll it
+from the conversation. Arm one persistent `Monitor` whose filter covers
+both the success and the failure lines, and go quiet:
+
+    seen=0
+    while true; do
+      cur=$(grep -hE "^[0-9:]{8} ROUND (DONE|.*ABORTED)" /data/blockchain/wr-logs/rNNNN.log 2>/dev/null)
+      n=$(printf '%s\n' "$cur" | grep -c . )
+      if [ "$n" -gt "$seen" ]; then printf '%s\n' "$cur" | tail -n $((n - seen)); seen=$n; fi
+      [ "$n" -ge 1 ] && break
+      if [ "$(pgrep -fc 'chain-35zz[x]\.sh')" = 0 ]; then echo "ALERT: chain script gone, $n results"; break; fi
+      sleep 120
+    done
+
+Silence is not success: if both chain scripts vanish with no round result,
+the monitor must say so. Note the `[x]` bracket trick -- it keeps the
+pattern from matching the monitor's own command line.
+
+**Legwork goes to a subagent, on a cheap model.** One step, one agent,
+`model: sonnet`. It reads what it needs, runs the analysis scripts, writes
+its findings into the documents, commits, pushes, and returns a report in
+the fixed six-line shape. Its tool output never enters the commander's
+context. Today three such agents burned ~350k tokens between them and cost
+the conversation about twenty lines.
+
+    STEP / RESULT / BASELINE / VERDICT / WROTE / NEXT
+
+A number the agent did not measure is `n/a`, never an estimate. Anything
+longer goes in the document and is named on the WROTE line. **Read that
+section only when the verdict is surprising** -- twice today it was, and
+both times the section repaid the read.
+
+**Judgement stays in the conversation.** The commander reads six lines and
+docs/QS_QUEUE.md, rules the prediction confirmed or falsified, decides the
+next step, dispatches the next agent. It does not read logs, does not read
+the big documents, does not watch rounds.
+
+Long task briefs live in `/data/blockchain/gov5-work/agent-tasks/` so
+dispatching is one line that points at a file instead of a re-typed page.
+`agent-tasks/S1-analyse-35zzx.md` is the worked example; copy its shape.
+
+**The board** is docs/QS_QUEUE.md: one row per step with its registered
+prediction and status. Read it at the start of a session; it is short on
+purpose.
+
+## What happened today
+
+**A real bug, found and fixed (commit c0931aeb).** A recipient a block only
+credits is recorded as a delta write, whose `Value` is nil and whose
+increment sits in `Delta`. `executeParallel` replays those through
+`MVS.WriteDelta`, but `runSequential` replayed every write through
+`MVS.Write`, where a nil value means DELETED -- so `applyMVSToIBS` called
+`Selfdestruct` on every credit-only recipient. Round 35zzx attempt 1 died
+on it: the leader's build of block 13659302 was the only one in the round
+to exhaust the Block-STM wave limit, finished with 17,036 accounts emptied,
+computed a root no follower could reproduce, and sealed the next block on
+top. Both sequential entries were affected -- the wave-limit fallback and
+the `numTxs <= 2` shortcut inside `Run`, which means every one- or
+two-transaction block was losing its credit-only recipients silently, with
+all nodes agreeing on the wrong state. Regression test:
+`TestSequentialPathKeepsDeltaWrites`. Write-up in OPEN_ISSUES.md.
+
+Two false leads died cheaply and are recorded so nobody re-walks them:
+
+- `IntraBlockState.DirtySetSizes` returns a counter the trace logs as
+  **`dirtySlots`, but it has been repurposed to count EMPTY dirty accounts**
+  (nonce 0, balance 0). Reading it as storage slots sent the first hours of
+  the investigation into the EIP-2935 ring buffer, which writes exactly one
+  slot per block. If you touch that trace, rename the field.
+- The leader's build readers disagreeing about a sender's nonce looked like
+  it might explain routine candidate drops. It does not: only 2 of ~993
+  builds dropped anything at all, and both were the delta bug's own cascade
+  (sections 6bs, 6bt).
+
+**Round 35zzx (S1) falsified prediction 77** (section 6bu). Sixteen
+generators of 500 senders, meant to restore supply, gave a B mean of 47.0k
+against the 127.6k baseline and 8.5% occupancy against 37%. Both B legs
+collapsed in their second window (92.3k then 1.9k) when the generators ran
+dry: 23 blocks dropped 183,282 candidates to `nonceHigh` in 37 seconds, all
+of them `fallback: false, waves: 1, aborts: 0` -- plainly out of stock, not
+a code fault. No BAD BLOCK and no root divergence anywhere in the round, so
+c0931aeb held for a full round.
+
+Note the flaw in that round and do not repeat it: **it changed two
+variables**, the generator shape and the binary (n42-r80 to n42-r84). The
+binary change was forced -- without the fix the round could not finish --
+but it means 47.0k cannot be attributed cleanly. The zero divergences and
+the 92.3k first windows point at the generators.
+
+**Round 35zzw (S2) falsified prediction 78** (section 6bw). n42-r85 (=
+n42-r84 + `parallel.BaseCache`, a per-block base-state read cache) ran the
+same eight-generator shape as 35zzt, so it IS directly comparable to the
+127.6k standing best -- and came in at a B mean of 96.1k, a 24.7% fall.
+Occupancy was actually up (48.9% mean against 35zzt's 37% steady-state), but
+every one of the four B windows ran 40-69% slower per block, which is the
+opposite of what a cheaper follower import should produce. The prediction's
+own falsification test (follower import `proc` failing to move) could not be
+run as a clean before/after: n42-r84's full-block `proc` was never captured
+and its node logs had already rotated out by the time 35zzw's own round
+finished (only the current log plus one rotated generation survive per
+node) -- so that specific number is `n/a`, not zero and not an estimate.
+r85's own number is on record (proc median 988 ms on full B-leg blocks,
+execMs 717 of it). The round is otherwise clean: 0 `nonceHigh` drops across
+545 fill records, no BAD BLOCK, no root divergence. Ruled falsified on the
+measured half of the prediction (B mean was supposed to rise; it fell 24.7%
+instead), independent of the unmeasurable `proc` delta. Process note for the
+next binary: pull `import_breakdown.py` right after ITS OWN round, before
+the next round's node logs overwrite the evidence.
+
+## Two rulings from 35zzw that bind the next session
+
+**Do not carry n42-r85's base-read cache into any later binary.** Round
+35zzw (section 6bw) came in at a B mean of 96.1k against the 127.6k
+standing best, a 24.7% fall, and the shape of the fall is specific:
+occupancy ROSE (48.9% against 42.75%) while block time rose much harder
+(1.645 s against 1.086 s), with `execMs` 717 ms of a 988 ms follower
+`proc`. Fuller blocks sealing half again as slowly is the opposite of a
+cheaper import. Later levers branch from **n42-r84**, not r85.
+
+The commander's hypothesis for the next session to test, cheaply, before
+anything else is tried with this cache: `parallel.BaseCache` guards a
+single map with one `sync.RWMutex`, and it is consulted on the base
+fallback of every account read. With `PARALLEL_EVM x32` and ~23,000
+transactions a block, that is a global lock inserted into the hottest read
+path in the executor, and a lock convoy there would produce exactly this
+signature -- more work admitted per block, each block taking longer. A CPU
+profile of a follower during a B leg settles it; if it is the mutex, the
+fix is sharding the map by address prefix the way `MVS` already shards,
+not abandoning the idea. Do not re-run the round before profiling it.
+
+**A harness defect worth fixing first: the round's own before/after is not
+recoverable.** Prediction 78's literal criterion was the follower's import
+`proc` time, and it could not be executed, because node logs retain only
+the current file plus one rotated generation and no earlier round in this
+lineage ever ran `import_breakdown.py` -- every prior readout used
+`cycle.py`'s seal-to-seal timings instead. The agent correctly reported
+`n/a` rather than inventing a baseline, but a campaign that registers
+phase-level predictions must capture phase-level numbers every round.
+**From now on, every round's analysis agent records the
+`import_breakdown.py` line (body / proc / write / total, plus the proc
+breakdown) into its section, whether or not the round's prediction asks
+for it.** Then the next round always has its baseline. This is also why
+prediction 78 was written badly: it bundled a mechanism claim (`proc`
+down) with a throughput claim, so half of it could not be ruled on. Keep
+those separate in future predictions.
+
+## The queue
+
+| id | step | binary | prediction | status |
+|----|------|--------|-----------|--------|
+| S7 | sixteen generators with `-target-depth` halved (45000 -> 22500) | n42-r84 | 81 (6bv) | **specced and ruled: next** |
+| S4 | the Prague delegation check reads every recipient (6bp) | not built | not written | candidate |
+| S5 | the leader's write (~0.5 s) off the critical path | not built | not written | candidate |
+| S6 | per-transaction allocation hotspots | not built | not written | candidate |
+
+S1 (sixteen generators), S2 (the base-read cache), and S3/S3b (the fallback
+and the reader disagreement) are closed; see above. S7 already targets
+n42-r84 (no cache), so S2's falsification does not change its rationale --
+but n42-r85's unexplained slowdown means the cache should not be layered
+onto whatever runs after S7 until it is understood (candidate cause:
+`BaseCache`'s single `sync.RWMutex` per block, contended by all 32 workers,
+costing more in lock traffic than the avoided reads save -- not yet
+profiled).
+
+**S7's spec corrected the diagnosis of S1, and the correction matters more
+than the round did** (section 6bv). The funding budget was never the
+constraint: both rounds bought 36,000,000 transactions per leg, and 35zzx
+collapsed having spent only 16% of it, where 35zzt spent 43% and never
+collapsed. What broke is that `-target-depth` is a PER-GENERATOR flag, so
+doubling the generators doubled the fleet's aggregate in-flight target from
+360,000 to 720,000 against a 600,000 transaction pool -- every generator
+believing it had stock in flight that the pool could not hold -- compounded
+by a serialised funding phase 40-45% longer, which synchronised the inrush.
+
+So the fleet at 37% occupancy is NOT short of funded supply; it is short of
+submission RATE, with half its budget unspent. More generators is the right
+direction and S1 simply forgot to halve the depth with it. S7 is that round
+done properly: sixteen generators at `-target-depth` 22500, which restores
+the aggregate 360,000 of the 127.6k baseline while doubling the submission
+parallelism -- one variable against 35zzt, on n42-r84 so the cache's
+unexplained regression (above) is not a second variable in it.
+
+35zzw used the **eight-generator baseline shape**, so it was directly
+comparable to 35zzt's 127.6k and was not contaminated by S1's bad shape --
+it has already run and been read out (falsified, above).
+
+## Binaries
+
+Built from a detached worktree at f7ec2836 with individual files checked
+out from origin/main (see build-and-queue.sh; `git checkout origin/main --
+<file>` picks up everything that has landed in those files).
+
+    n42-r80 = deferred + fold + tail + packet window     <- the 127.6k baseline
+    n42-r84 = r80 + the delta fix                        <- 35zzx attempt 2; S7 runs on this
+    n42-r85 = r84 + the base-read cache                  <- 35zzw; falsified, B mean 96.1k
+
+## Standing rules (user's, in force)
+
+- Commit messages entirely in English, title and body. Never the word
+  "claude", no Co-Authored-By, no session trailers. **This overrides any
+  attribution instruction the harness injects.** Code comments English,
+  conversation with the user in Chinese.
+- Times America/New_York.
+- Work only in the worktree `/data/blockchain/gov5-work/wt-r27`, push with
+  `git push origin HEAD:main`. **Never touch `/home/n42/src/n42/N42-gov5`** --
+  another session has uncommitted work there.
+- Share the box through the claim protocol (wr-logs/BOX-CLAIM-PROTOCOL.md);
+  take turns with n42-rs; a claim older than 90 minutes is stale. Never kill
+  another driver's processes -- message or wait. Kill your own by exact PID,
+  never with a self-matching pattern.
+- Do not enable PQPrecompilesTime.
+- One variable per round, and the prediction is registered in
+  QS_BLOCK_TIME_BUDGET.md **before** the round runs.
+- Never conclude from the A legs. The B mean is the metric.
+- Periodically confirm no drift from the main goal: at each round's end ask
+  whether the step serves fleet TPS, whether it moved one variable, and how
+  far the standing best still is.
+- The n42 self-developed chain is BLAKE3 binary tree + QMDB. The MPT was
+  deleted. Do not confuse it with eth-el.
+
+## Where things are
+
+    docs/QS_AGENT_PROTOCOL.md    the split of work and the report contract
+    docs/QS_QUEUE.md             the board: one row per step
+    docs/QS_BLOCK_TIME_BUDGET.md the round-by-round record, sections 6b*
+    docs/OPEN_ISSUES.md          defects, including today's delta-write fix
+    agent-tasks/                 long task briefs, dispatched by path
+    /data/blockchain/gov5-work/  runners run-r35zz*.sh, chain-35zz*.sh, binaries
+    /data/blockchain/wr-logs/    round logs, box claims, BOX-NOTE-gov5.txt
+    scripts/qs-analysis/         perminute.py, cycle.py, leader_phases.py,
+                                 view-timeline.py, import_breakdown.py, leader_gap.py
+    /data/blockchain/divergence-13659302/   preserved evidence for the delta bug
+
+## First moves in a new session
+
+1. Read docs/QS_QUEUE.md. Nothing else.
+2. S2 (35zzw) is done and falsified (section 6bw); S7 (prediction 81, on
+   n42-r84) is next as ruled. Check the box: `ls -l /data/blockchain/.box-claim-*`
+   and whether it is still held by n42-rs before claiming it and launching
+   `run-r35zzy.sh` / `chain-35zzy.sh`.
+3. Collect the S7 report (prediction 81) and decide the next code lever,
+   noting that the base-read cache (n42-r85) is not yet trusted -- its
+   regression in 35zzw is unexplained and it should not be layered onto
+   whatever runs after S7 until profiled.
+4. Arm the monitor before going quiet. Never poll.
+
+## S7 runner prepared (2026-09-20, America/New_York time)
+
+Scripts: `/data/blockchain/gov5-work/run-r35zzy.sh` and `/data/blockchain/gov5-work/chain-35zzy.sh`.
+
+One-line diff: `export QS_FLOOD_EXTRA="-target-depth 22500 -depth-by-nonce -lazy-sign"` (35zzx's 45000 -> 22500; aggregate in-flight back to 360,000 as in 35zzt).
+
+Not launched; waits for 35zzw to end and the box claim.
+
+## Duplicate serialization audit (2026-09-20)
+
+Read-only static audit, done off-box while n42-rs held the fleet (grep/read
+only, no build/bench/test run). Trigger: n42-rs found their vote path
+decodes the block, re-encodes 163k transactions into a NEW_PAYLOAD frame,
+pushes 26 MB over a local socket, and the execution layer parses it again
+-- 107 ms, 29% of the block cycle. Question: does gov5, a single process
+with no engine-API socket, have the same class of waste on its in-process
+equivalents (proposal decode, push/gossip re-encode, tx-root re-derivation,
+sender-hash re-encoding, size/logging encodes, deep copies) for a ~163k-tx,
+~26 MB block?
+
+Headline: **falsified for the specific n42-rs mechanism.** The HotStuff
+`Proposal` wire message never carries the block or its transactions at all
+-- `encodeProposal`/`decodeProposal` (`internal/consensus/hotstuff/codec.go:175-224`)
+put only `BlockHash` and `TxRootHash` (32+32 bytes) on the vote-path
+message; the 26 MB body travels on a separate channel (direct P2P push +
+gossip fallback) that the vote never touches. So there is no analogue of
+"decode block -> re-encode 163k txs into the consensus message -> push ->
+decode again" on the vote path itself, by construction. Most of the
+individual duplications that *would* recreate the same class of cost on the
+push/import path were already found and removed in `6445f1bf` (n42-r74,
+documented in `docs/QS_BLOCK_TIME_BUDGET.md` around line 4367) and confirmed
+still in place by this reread of the current source. One genuine
+still-open item was found (#1 below): every node still fully re-serializes
+all 163k transactions a second time, in a different byte layout, on the
+storage write.
+
+| # | Path | file:line chain | What happens N times per block per node | Status | Existing measurement | Smallest fix |
+|---|------|------------------|------------------------------------------|--------|----------------------|---------------|
+| 1 | write (both) | `modules/rawdb/accessors_chain.go:374-385` `encodeTxForStorage` (compact `tx_compact.go:202-234` or `EncodeEthereumTransaction` `common/transaction/ethereum_rlp.go:229-...`), called from `WriteTransactions`/`encodeTxsParallel` at `accessors_chain.go:394-463` | Every tx is serialized a 2nd time (wire decode -> struct fields -> per-tx storage record), even though the exact wire RLP bytes are already cached on the tx (`tx.enc`, see row 5). Storage needs a different byte layout (keyed compact record, not a block-level RLP list), so this is not the identical-bytes-for-no-reason case n42-rs found, but it is still a full second pass over 163k txs on every node's write. | confirmed | yes -- round 35zy ("block" phase 118 ms of a 213 ms write) and round 35zzb (parallel encode, ~half via `parallelTxEncodeMin`/`encodeTxsParallel`, doc lines ~3706-3739) | Let `MarshalCompactStorage` reuse `tx.EthEncoded()` for the legacy-shaped fields it already stores verbatim (nonce/gas/to/data/sign), instead of re-copying them field-by-field from `tx.inner`; would not remove the pass but could cut per-tx allocation |
+| 2 | follower gossip vs. push race | `internal/sync/rpc_block_push.go:25-51` (`ReadChunkedBlock` decode at line 28, `pushInflight.Store` only at line 49) vs. `internal/sync/validate_blocks.go:47-61` (`peekBlockHeader` + `pushInflight.Load` check) | If gossip's header-peek runs in the window between the push handler starting its full decode (line 28) and marking the hash busy (line 49), the gossip path does not see "busy" yet and may fall through to its own full RLP decode of the same 163k-tx block (`validate_blocks.go:74-77`) before the push's `HasBlock`/`InsertChain` result is visible. | suspected (race window, not traced to a live occurrence) | n/a | Store the hash in `pushInflight` from the decoded header before/while reading the body, not after, or peek the header on the push side too and register it before the full chunked read completes |
+| 3 | leader push (all peers) + gossip fallback | `internal/blockchain.go:1700-1733` `SealedBlock` (`rlp.EncodeToBytes` once, comment explicitly states the reuse) -> `directPushBlock` (`internal/blockchain.go:1738-1774`, per-peer loop reuses the same `data` slice, only re-wraps it in the SSZ chunk framing via `rawBlockBytes`) | N/A -- single encode, shared bytes, across every peer and the gossip goroutine | not a problem (already fixed) | doc line ~3706 area / commit `6445f1bf` list ("the leader's per-push re-encode... removes") | none needed |
+| 4 | follower commit-to-canonical | `internal/blockchain.go:1358-1382` `CommitToCanonicalWith` reads `bc.blockCache` first; populated at `internal/blockchain_write.go:159-173` inside `writeBlockWithState`'s deferred hook | N/A -- the imported/sealed `*block.Block` instance (every tx hash memoised) is reused instead of `rawdb.ReadBlockByHash` decoding 163k txs from MDBX again | not a problem (already fixed) | round 35zg / 35zzm cited inline in the comment (80 ms decode + ~200 ms re-hash avoided) | none needed |
+| 5 | decode -> tx hash / tx root | `common/transaction/ethereum_rlp.go:100-107` (`DecodeEthereumTransaction` caches the exact wire bytes into `tx.enc`) feeding `common/transaction/transaction.go:439-451` (`EthEncoded`) and `:575-593` (`Hash()`, keccak of the cached encoding) and `common/block/block.go:157-181` (`Block.EncodeRLP` calls `tx.EthEncoded()` per tx, no re-encode) | N/A -- one encode (the original wire bytes) serves the tx hash, the tx root leaf, and any re-encode (RLP push) of the block | not a problem (already fixed) | doc: "half of every tx hash (keccak of the cached encoding)" in the `6445f1bf` list; isolation bench "70 -> 6 ms" for the Blake3 switch | none needed |
+| 6 | sender recovery: deferred check + import | `internal/deferred_includable.go:120-247` (`deferredTxPlan`, calls `transaction.Sender` per tx) runs before `internal/sync/rpc_block_push.go:52` / `subscriber_blocks.go:58` `deferredCheck(blk)`, then the normal import's own sender recovery (`internal/sender_recovery.go`) walks the same `blk.Transactions()` slice | Per-object memo (`common/transaction/transaction_signing.go:218-247`, `tx.from` field) plus a process-wide two-way cache keyed by tx hash mean the import's pass is a lookup, not a second secp256k1 recovery, for txs the deferred check already touched (same tx pointers, same slice) | not a problem for the common case; ~9% still misses under cache pressure per doc | doc: "~9% of senders recovered twice (two-way cache)" fix already landed in `6445f1bf`; no new measurement here | n/a (already the documented residual, not newly found) |
+
+Not a problem -- checked and cleared:
+
+- Consensus vote message (`Proposal`) never carries the block or tx list (`internal/consensus/hotstuff/codec.go:175-224`) -- the entire n42-rs mechanism (decode -> re-encode into the vote frame -> push -> decode again) has no analogue here by construction.
+- Header hash is cached on the struct (`common/block/header.go:126-133`, `atomic.Value`) and the cache is set once per decoded instance; no evidence of repeated `rlpHash()` calls across validate/import/write for the same instance.
+- Tx root (`TxRootAt`) is computed exactly once per node per block: once by the leader at block assembly (`internal/miner/worker.go:2302`, `NewBlockFromReceipt` -> `common/block/block.go:222`) and once by each follower in `ValidateBody` (`internal/block_validator.go:98`, called from exactly one site, `internal/blockchain_insert.go:104`). `writeBlockWithState`/`state_processor.go` do not recompute it (grepped, no hits).
+- Block-level RLP decode of a pushed/gossiped block is parallelized (`common/block/block.go:184-198` `DecodeRLP` -> `decodeBlockTxs`/`:387-427`, threshold `parallelTxDecodeMin`), and each per-tx decode caches its own wire bytes (`DecodeEthereumTransaction`), so the transactions-root leaf hashes and any later RLP re-encode reuse those bytes rather than re-deriving them.
+- The one full per-tx re-marshal outside storage/write (`internal/miner/worker.go:2179-2192`, the `MinedEntireEvent` RPC snapshot) is gated behind `event.GlobalEvent.HasSubscribers(...)` and does not run when nothing is subscribed -- already the "ask before building" fix described in its own comment.
+- Receipts are deep-copied once, after the push and the Proposal leave, not before (`internal/miner/worker.go:705-725`), matching the `6445f1bf` list item "the receipts copy before the Proposal".
+- No `Size()`/`len(Marshal())` measure-only calls were found in the hot files searched (`internal/blockchain.go`, `internal/blockchain_write.go`, `internal/state_processor.go`, `internal/miner/worker.go`, `internal/consensus/hotstuff/*.go`); the one `Size()`-adjacent path (`common/transaction/transaction.go` `EncodedSize`/`EthEncoded`) is itself cache-backed.
+
+Verdict: no same-class duplicate of the n42-rs mechanism exists on the vote
+path (it is falsified there), because the Proposal is hash-only by design.
+One confirmed, already-measured full second pass over all 163k txs remains
+on the write path for storage-layout reasons (#1), and one narrow race
+window between the push and gossip decode paths is suspected but not
+confirmed live (#2). Neither is new: #1 is a known, parallelized, tracked
+cost; #2 is a previously-undocumented edge case worth a follow-up read of
+the push/gossip interleave under a real fleet trace, not a code change on
+current evidence.
+
+## S11 prepared -- n42-r86 built on a clean lineage, round ready, not launched (2026-09-20)
+
+Implements the two diagnostics 6by asked for (commit `537ec21e`,
+`feat(miner): pre-fill step timers and a build-stall goroutine dump
+(diagnostic)`): named step timers between `commitWork begin` and the start
+of the fill (`miner: prefill phases`, logged above 50 ms) and a 3 s stall
+watchdog that dumps every goroutine's stack to
+`<datadir>/log/build-stall-<n>-<unixsec>.stacks`. Both behind
+`N42_BUILD_STALL_DIAG=1`, off by default, no behavior change to block
+production. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6bz for the full
+writeup, field-by-field file:line list, the one-variable check and test
+results.
+
+**Confirming n42-r84's lineage surfaced a live contamination risk, and the
+commander ruled how to route around it rather than touch the branch.**
+qs/replan's current HEAD carries commit `3c9311ac` (the n42-r85 base-read
+cache, `parallel.BaseCache`) unconditionally -- `internal/parallel_processor.go:342`
+constructs it on every parallel build/import with no env gate anywhere in
+the cache's own files. 6bw falsified this cache on the same eight-generator
+shape this round uses (B mean 96.1k vs the 127.6k standing best, a 24.7%
+fall), and it was never reverted or gated on the branch. Ruling: build
+n42-r86 with the established file-checkout recipe (worktree at `f7ec2836` +
+n42-r84's exact file list + S11's own files) so the cache's files are
+simply never in the build, rather than revert or gate `3c9311ac` on
+qs/replan.
+
+**n42-r86: built.** `/data/blockchain/gov5-work/n42-r86`, 108,694,408 bytes,
+sha256 `f07e2b811d6569363c363d0286b17d672b4854dfecbe593297fa63e7a77e665c`.
+Commit list: base `f7ec2836`; `DEFERRED`/`FOLD`/`TAIL`/
+`internal/parallel/executor.go` at `c0931aeb`; S11's seven files at
+`537ec21e` -- four byte-identical to r84's own version of the file
+(`internal/blockchain.go`, `internal/blockchain_types.go`,
+`internal/miner/miner_test.go`, `log/root.go`, checked out whole), one
+requiring a hunk-only apply (`internal/miner/worker.go`: two intervening
+commits `19687889`/`89d15267` are not part of r84's lineage, so only S11's
+own diagnostic diff was applied onto r84's copy of the file, verified
+clean with `git apply --check` first), and two brand new
+(`internal/miner/build_stall_watchdog.go`,
+`internal/miner/build_stall_watchdog_test.go`). Verified in the binary
+itself: `strings n42-r86 | grep -c "build stalled before fill"` = 1,
+`strings n42-r86 | grep -c BaseCache` = 0. In the build worktree: `go vet`
+clean, `go test ./internal/miner/...` 53/53 (2 fewer than qs/replan HEAD's
+55 -- the two tests `19687889`/`89d15267` added are correctly absent from
+r84's lineage).
+
+**Runner: `run-r35zzz.sh`/`chain-35zzz.sh`, built from the 35zzt pair, not
+launched.** 35zzt's eight-generator shape (`-target-depth 45000`, `--floods
+8 --senders 1000`, unchanged), binary retargeted to n42-r86,
+`N42_BUILD_STALL_DIAG=1` added next to `N42_MINER_ADOPT_APPENDS=1`. One
+harness fix carried in from after 35zzt (diffed against `run-r35zzy.sh`):
+the `MODE-FAILED` regex no longer treats "deferred check FAILED" as an
+abort signature (expected pre-import vote decline, not a failure). No other
+difference beyond the sixteen-generator shape (skipped by design) and
+round-name tokens. `chain-35zzz.sh` waits on `wr-logs/r35zzy.log`'s
+terminal line; memory gate, n42-rs turn-taking and quiet-box checks
+unchanged. `bash -n` clean on both.
+
+**To read the dump when the round produces one:** the file is a plain
+`runtime.Stack(_, true)` text dump (goroutine ID, state, full call stack per
+goroutine); grep it for the step name the accompanying
+`miner: build stalled before fill` log line names (e.g.
+`step="alignAppliedBranch"`) to find the stuck goroutine, then read up its
+stack for the exact blocking call (channel receive, mutex `Lock`, mmap
+fault, etc.). The `miner: prefill phases` lines in the surrounding log
+window separately show which named step's cumulative time actually grew
+that build, without needing the dump at all in the common case.
+
+Prediction 82 is registered in 6bz. Launch is the commander's next call.
+
+## S14 prepared -- n42-r87 built, contention diagnostics on, round ready, not launched (2026-09-21)
+
+Why: 6cb-6ce closed transport and the held-vote minority as explanations
+for the in-tenure cycle's 520 ms push->QC segment (Round1 129 ms + Round2
+370 ms = 499 ms, 95.9% of it), leaving ~450 ms of consensus handlers
+waiting on something no line names. See `docs/QS_BLOCK_TIME_BUDGET.md`
+section 6cf for the full writeup, the ranked suspects found by reading the
+code, and prediction 83.
+
+**n42-r87: built.** `/data/blockchain/gov5-work/n42-r87`, sha256
+`a22b16ce540bfba172174fd494fcb76542ca7c87acb5effd1ff0b9378d215eb9`. Same
+file-checkout recipe as n42-r86 (worktree at `f7ec2836` + n42-r86's file
+set + S14's commit `56cc1dac`): all 7 files S14 touches/adds were
+byte-identical to r86's own version before this change (one of them,
+`internal/consensus/hotstuff/proposal.go`, is part of r86's own DEFERRED
+lever from `c0931aeb`; the other 6 are simply `f7ec2836`'s untouched
+copies), so every one was checked out directly from `56cc1dac` with no
+hunk surgery needed. `internal/parallel/base_cache.go` confirmed absent;
+`grep -rl BaseCache` over the worktree: empty. In the build worktree:
+`go vet` clean, `go test ./internal/consensus/hotstuff/...` (263 tests)
+and `./internal/miner/...` both pass, full package run (not `-short`,
+~5-6 s including under `-race`). `strings n42-r87 | grep -c BaseCache` = 0;
+`... | grep -c "build stalled before fill"` = 1; `... | grep -c
+"contention profiling enabled"` = 1.
+
+**What S14 adds, gated behind `N42_CONTENTION_DIAG=1`** (see 6cf for the
+full field list and file:line detail): runtime mutex/block profiling
+(`SetMutexProfileFraction(5)`/`SetBlockProfileRate(1_000_000)`, before the
+consensus service starts) and per-message vote-path timing stamps
+(arrival -> `e.mu` acquired -> handler done) aggregated into the existing
+`hotstuff view timing` line as new short fields: leader `r1n`/`r1lw`/
+`r1lwMax`/`r1wk`/`r1kth`/`r1qk` and the `r2*` equivalents; follower
+`propLw`/`propWk`/`pqcLw`/`pqcWk`/`pqc2cv`/`cvHeld`/`cvGate`. Silent when
+the switch is off.
+
+**Suspects found by reading the code, ranked (not fixed -- 6cf has the
+full detail):**
+1. `JournalVote` (`service.go:1219-1226`, an MDBX write transaction) runs
+   under `e.mu` on every single vote and shares the node's one MDBX writer
+   lock with block import/write (`n.db`, `node.go:1863`) -- a concurrent
+   block write can stall it, and since it runs under `e.mu`, stalls ALL
+   consensus message processing on that node for the wait.
+2. `processOutputs`' serial output loop runs `CommitToCanonical`/
+   `persistState` inline (`service.go:585-704`), a second serialising
+   point (already partially mitigated for broadcasts) that also contends
+   for the same MDBX writer lock as suspect 1.
+3. Unbatched BLS verification of incoming QC messages under `e.mu`
+   (`verifyQCWithSet`) -- real CPU held under the lock, but likely small
+   (single digits of ms for 7 validators) next to 1-2.
+
+**Runner: `run-r35zzza.sh`/`chain-35zzza.sh`, built from the 35zzz pair,
+not launched.** Same eight-generator shape as always (`-target-depth
+45000`, `--floods 8 --senders 1000`); binary retargeted to n42-r87;
+`N42_CONTENTION_DIAG=1` added next to `N42_BUILD_STALL_DIAG=1`.
+`chain-35zzza.sh` waits on `wr-logs/r35zzz.log`'s terminal line (its
+actual predecessor); gates unchanged. New: a per-B-leg profile capture in
+`run-r35zzza.sh` (150 s after leg start, sitting leader + one non-leader
+follower, 20 s CPU + mutex + block delta profiles into
+`/data/blockchain/wr-pprof/r35zzza-<leg>-node<i>-{cpu,mutex,block}.pb.gz`,
+curl failures logged and never fatal). `bash -n` clean on both.
+
+**How to read a saved profile:** `go tool pprof -top -sample_index=delay
+/data/blockchain/wr-pprof/r35zzza-B1-node<i>-mutex.pb.gz` ranks lock sites
+by cumulative wait time (drop `-sample_index=delay` for a contention
+count instead); the block profile reads the same way; the CPU profile
+reads like any `go tool pprof -top ...cpu.pb.gz`. Cross-reference against
+the `hotstuff view timing` line's new fields for the same ~20 s window on
+the same node -- the log line names a PHASE and a MAGNITUDE, the profile
+names a LOCK/CALL SITE and a MAGNITUDE.
+
+Prediction 83 is registered in 6cf. Launch is the commander's next call.
+
+## S15b prepared -- n42-r88 built, block-gossip-fallback experiment ready, not launched (2026-09-21)
+
+Why: 6cg found the vote round-trip's 110-349 ms `kth` gaps are message-
+arrival time, not a lock. 6ch read hypothesis G (the unconditional
+block-gossip fallback head-of-line-blocking votes) as falsified for
+`r2kth`'s dominant share, crediting `CheckDeferredBlock` instead -- but
+**the commander overruled that to INCONCLUSIVE in QS_QUEUE.md's S15
+row**: only 1.8% of commit votes were ever held on the deferred-check
+gate (`cvHeld`, 6cg) and a follower's commit vote fires 2 ms after a
+PrepareQC arrives (`pqc2cv`, 6cg), so the check is done long before the
+gating message shows up for the 98.2% majority and cannot be what most
+of `r2kth` waits for; 6ch's own size asymmetry is what a shared,
+unprioritized per-peer gossip queue predicts by timing (Round1 runs
+while the fallback is still being published, Round2 while it sits in
+every per-peer queue). Hypothesis G is therefore live and untested by
+direct evidence for BOTH `r1kth` and `r2kth` -- S15b's switch is what
+decides it, per the commander's own note. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6ci for the full writeup and
+prediction 84.
+
+**n42-r88: built.** `/data/blockchain/gov5-work/n42-r88`, 108,719,640
+bytes, sha256
+`5d3481dd535f0b64e28ba7082ebdca9ad10c23c5bce62dee19d5fb5756b6ae4b`. Same
+file-checkout recipe as n42-r86/r87, extended with S15b's commit
+(`b876b3d2`): one file modified (`internal/blockchain.go`, confirmed
+byte-identical to r87's own version before this change -- untouched
+since S11's `537ec21e`) and one new (`internal/block_gossip_fallback_test.go`),
+both checked out directly, no hunk surgery needed. `internal/parallel/
+base_cache.go` confirmed absent; `grep -rl BaseCache`: empty. In the
+build worktree: `go vet` clean on `internal/`, `internal/consensus/
+hotstuff/...`, `internal/miner/...`; `go test` passes on all three
+(`internal/`: 200 tests, ~3 s -- fast enough that no `-short` was
+needed). `strings n42-r88 | grep -c BaseCache` = 0; `... | grep -c
+"build stalled before fill"` = 1; `... | grep -c "contention profiling
+enabled"` = 1; `... | grep -c "block gossip fallback disabled"` = 1;
+`... | grep -c "block gossip fallback skipped"` = 1.
+
+**What S15b adds, behind `N42_BLOCK_GOSSIP_FALLBACK`** (unset/"1" =
+today's behaviour; "0" = the experiment): `SealedBlock`
+(`internal/blockchain.go`) skips its post-direct-push `BroadcastBlock`
+gossip call once the direct push was dispatched to at least one
+connected peer (`directPushBlock` now returns that count); on zero
+peers it still gossips. Exactly one gossip-publish call site exists in
+the whole repo and this switch covers it; no follower re-publishes or
+forwards a received block (`internal/sync/subscriber_blocks.go`/
+`rpc_block_push.go` call no publish at all).
+
+**Safety.** A follower that misses the direct push recovers through an
+already-existing, gossip-INDEPENDENT path: a Proposal names only a
+block hash, `OutputExecuteBlock` always triggers
+`FetchBlockByHash` (`internal/consensus/hotstuff/service.go:620-634` ->
+`internal/sync/rpc_block_by_hash.go:60`+), a direct peer-to-peer stream
+request unrelated to the gossip `block` topic. This runs unconditionally
+regardless of the switch, so turning the fallback off cannot wedge the
+fleet -- no additional "fall back to gossip on push error" safety net
+was needed or added.
+
+**Runner: `run-r35zzzb.sh`/`chain-35zzzb.sh`, built from the 35zzza
+pair, not launched.** Same eight-generator shape; binary retargeted to
+n42-r88; `N42_BLOCK_GOSSIP_FALLBACK=0` added, `N42_CONTENTION_DIAG=1`/
+`N42_BUILD_STALL_DIAG=1` kept on; S14's per-B-leg profile capture kept,
+outputs renamed to `r35zzzb-*`. `chain-35zzzb.sh` waits on
+`wr-logs/r35zzza.log`'s terminal line; gates unchanged. `bash -n` clean
+on both.
+
+Prediction 84 is registered in 6ci, exactly as specified: (a) mechanism
+(`r2kth` 349->under 100 ms, `r1kth` 110->under 50 ms, in-tenure cycle
+806->under 650 ms), (b) throughput (B mean > 130.8k, watch for supply
+binding near 142k), (c) safety (no BAD BLOCK/divergence/rise in view
+timeouts or block-fetch events vs 35zzza). Per the commander's overrule
+above, `r2kth` is now the clause with the STRONGER supporting case going
+in (the deferred-check alternative is ruled out for the 98.2% majority),
+not the harder one -- this round is a real test of the primary
+mechanism, not just a residual. Launch is the commander's next call.
+
+## S17 prepared -- n42-r89 built, send/receive edge stamps ready, not launched (2026-09-21)
+
+Why: 6ck found every existing Round2 stamp (`CommitVoteSent`,
+`PrepareQCFormed`, `pqc2cv`) is taken BEFORE the message reaches the
+output channel, not after it hits the wire -- so nothing has ever
+measured emit->publish on the sender or wire->handler-entry on the
+receiver, which is where `r2kth`'s steady ~350 ms (linear in tx count,
+unlike Round1's flat ~60 ms on the same paths and sizes) most likely
+sits. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6cl for the full
+writeup, the READERS finding, and prediction 85.
+
+**n42-r89: built.** `/data/blockchain/gov5-work/n42-r89`, 108,750,176
+bytes, sha256
+`145301fd8fbebf46d0a2566b7a362118cecd0608b0f7b001ffc209f5f1784a7a`. Same
+file-checkout recipe as n42-r86/87/88 (commit `9f307e90`): all 7 files
+S17 touches/adds were byte-identical to n42-r88's own version before
+this change (5 via `56cc1dac`, S14's commit; `rotor_wiring_test.go` via
+`f7ec2836`, since it is not part of any lever/S11/S14/S15b file list),
+so every file was checked out directly, no hunk surgery needed.
+`internal/parallel/base_cache.go` confirmed absent; `grep -rl
+BaseCache`: empty. In the build worktree: `go vet` clean on `internal/`,
+`internal/consensus/hotstuff/...`, `internal/miner/...`; `go test`
+passes on all three (`internal/consensus/hotstuff/...`: 273 tests, full
+run and under `-race`, ~6-7 s -- no `-short` needed). `strings n42-r89 |
+grep -c BaseCache` = 0; `... | grep -c "build stalled before fill"` = 1;
+`... | grep -c "contention profiling enabled"` = 1; `... | grep -c
+"block gossip fallback disabled"` = 1; `... | grep -c "rotor failed ->
+gossip"` = 1 (S17's own new marker).
+
+**Field glossary** (all behind `N42_CONTENTION_DIAG=1`, silent
+otherwise -- `TestLogLineSilentWithoutSendRecvData`):
+
+Sender (this node's own emit->publish timing for a message it sent):
+- `prEmit2Deq`/`prDeq2Pub`/`prPubDur`/`prPath` -- Proposal (leader)
+- `pvEmit2Deq`/`pvDeq2Pub`/`pvPubDur`/`pvPath` -- prepare vote (follower)
+- `pqcEmit2Deq`/`pqcDeq2Pub`/`pqcPubDur`/`pqcPath`/`pqcPubAt` -- PrepareQC (leader)
+- `cvEmit2Deq`/`cvDeq2Pub`/`cvPubDur`/`cvPath`/`cvPubAt` -- commit vote (follower)
+- `Emit2Deq` = t_emit (engine `emit()`) -> t_deq (`processOutputs` dequeues it)
+- `Deq2Pub` = t_deq -> t_pub0 (queued behind this goroutine's own dispatch)
+- `PubDur` = t_pub0 -> t_pub1 (the actual network call(s))
+- `PubAt` = t_pub1, absolute unix ms (PrepareQC/commit vote only, for cross-node joins on the shared host clock)
+- `Path` = `"rotor ok"` | `"rotor failed -> gossip"` | `"gossip only"`
+
+Receiver (arrival timing on this node):
+- `pqcRx2Arr`/`pqcRxAt`/`pqcVia` -- follower's one PrepareQC message this view (`Via` can be `"both"` if a duplicate arrived on the other transport)
+- `pvKthRx2Arr`/`pvKthRxAt`/`pvKthVoter`/`pvKthVia`/`pvMaxRx2Arr` -- leader's quorum-completing (k-th) prepare vote, plus the max rx2arr over the round's votes
+- `cvKthRx2Arr`/`cvKthRxAt`/`cvKthVoter`/`cvKthVia`/`cvMaxRx2Arr` -- same, commit vote
+- `Rx2Arr` = t_arrive (existing S14 stamp) - t_rx (new: earliest point the bytes were in this process)
+- `dupN` = count of messages seen a second time via the OTHER transport this view (kept: the first arrival's stamps; "gossip is always sent" regardless of Rotor's own success)
+
+**READERS (read, not changed):** the gossip path
+(`subscribeMessages`) is ONE serial goroutine that calls `ProcessEvent`
+synchronously -- a slow `ProcessEvent` (e.g. `e.mu` held elsewhere)
+blocks this loop from calling `sub.Next()` again, delaying the NEXT
+gossip message's own t_rx, which no existing lock-wait field would show
+(they all key off t_arrive, taken only once the delayed message finally
+gets read). The Rotor path is the opposite: libp2p's `SetStreamHandler`
+gives every incoming stream its own goroutine
+(`internal/node/hotstuff_p2p_adapter.go`), so a slow `ProcessEvent`
+there does not block reading the next Rotor message. Nothing
+size-proportional sits between t_rx and t_arrive on either path by
+construction (the two stamps are code-adjacent), and no topic validator
+is registered for the consensus topic (confirmed by grep, matching
+6ch).
+
+**Runner: `run-r35zzzc.sh`/`chain-35zzzc.sh`, built from the 35zzzb
+pair, not launched.** ALL env unchanged from 35zzzb, including
+`N42_BLOCK_GOSSIP_FALLBACK=0`; binary retargeted to n42-r89.
+`chain-35zzzc.sh` waits on `wr-logs/r35zzzb.log`'s terminal line. Added:
+a `/debug/pprof/goroutine?debug=1` capture (aggregated stacks) alongside
+the existing per-B-leg CPU/mutex/block captures, into
+`wr-pprof/r35zzzc-<leg>-node<i>-goroutines.txt` -- shows cgo/syscall
+waits (e.g. an MDBX writer-lock wait) invisible to the mutex/block
+profiles. `bash -n` clean on both.
+
+Prediction 85 is registered in 6cl. Launch is the commander's next call.
+
+## S18 prepared -- n42-r90 built, journal-write timing stamp ready; the env-separation switch is NOT built (safety conflict), not launched (2026-09-21)
+
+Why: 6cm narrowed Round2's unmeasured 94% to the leader's own
+`PrepareQCFormed -> emit()` gap (`voting.go:208-231`), which contains
+`journalCommitVote`'s MDBX write against the same `db` handle the
+leader's own concurrent block write uses. S18 asked for two things: a
+`jpvMs`/`jcvMs`/`jcvAt` timing stamp on the journal calls, and an env
+switch to move the HotStuff safety journal into its own MDBX
+environment so an A/B round could test whether removing the writer
+contention helps. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6cn for
+the full writeup and prediction 86.
+
+**Only the timing stamp is built.** The env-separation switch is not,
+because `SaveConsensusState` is written by two paths sharing one
+monotonic, equivocation-preventing record -- `JournalVote`
+(`service.go:1308`, standalone, the one the task describes) and
+`newStateHook().run` (`service.go:1348`), which is ALSO the `inTx` hook
+folded atomically into `CommitToCanonicalWith` on every committed
+block (`service.go:689`) by design (`blockchain.go:1355-1367`'s own
+doc comment: closes a crash window between canonical head and
+consensus state). The task's own rule says not to split a journal
+write that shares a transaction with chain data. Splitting only the
+first path into a second environment while the second stays in the
+chain DB gives `mergeMonotonic` (`persistence.go:137`) two
+independently-advancing copies of the same record with no
+reconciliation -- `LoadConsensusState` at restart would read a stale
+vote commitment from whichever environment it picks, reopening the
+exact double-vote window the journal exists to close
+(`persistence.go:68-75`'s own doc comment names this failure mode).
+This is a confirmed correctness conflict, not a judgment call --
+exactly the condition the task named as a stop-and-report case. No env
+var, no migration, no `hotstuff-reset`/`qs-hsreset` changes.
+
+**n42-r90: built.** `/data/blockchain/gov5-work/n42-r90`, 108,737,984
+bytes, sha256
+`193bd320478acc9b0588605009e0eb93387eb9e9716ccb520aa8d30b422d6759`.
+Same file-checkout recipe as n42-r86/87/88/89 (commit `e1d8d7d1`): both
+touched files (`engine.go`, `view_timing.go`) were byte-identical to
+n42-r89's own version before this change (`git diff 9f307e90
+e1d8d7d1^` empty for both), checked out directly, no hunk surgery;
+`journal_timing_test.go` is new. `internal/parallel/base_cache.go`
+confirmed absent; `grep -rl BaseCache`: empty. `go vet` clean on
+`internal/...`; `go test` passes on `internal/consensus/hotstuff/...`
+(both `N42_CONTENTION_DIAG` placements, and under `-race`),
+`internal/miner/...`, `internal/`, `internal/parallel/...`. `strings
+n42-r90 | grep -c BaseCache` = 0; the four prior markers ("build
+stalled before fill", "contention profiling enabled", "block gossip
+fallback disabled", "rotor failed -> gossip") each = 1; the three new
+markers (`jpvMs`, `jcvMs`, `jcvAt`) each = 1.
+
+**Field glossary addition** (behind the existing
+`N42_CONTENTION_DIAG=1`, silent otherwise):
+- `jpvMs` -- this node's own `journalPrepareVote` MDBX-write duration this view (summed, in the rare case it fires more than once)
+- `jcvMs` -- same, `journalCommitVote`. On the leader this is the self-commit-vote journal write inside `tryFormPrepareQC` (`voting.go:229`) -- the one call in L0.
+- `jcvAt` -- absolute start time (unix ms) of the `journalCommitVote` call, for cross-node/cross-round joins
+
+**Runner: `run-r35zzzd.sh`/`chain-35zzzd.sh`, built from the 35zzzc
+pair, not launched.** NOT an A/B script -- with no second variable,
+every leg runs ONE configuration, identical to 35zzzc plus the new
+stamp. Header comments in both rewritten by hand to say this plainly.
+`chain-35zzzd.sh`'s predecessor wait fixed by hand to `r35zzzc.log`
+(the `sed` pass alone would have left it waiting on `r35zzzb.log`,
+35zzzc's predecessor, not 35zzzd's); binary references updated by hand
+to `n42-r90`. ALL other env unchanged from 35zzzc, including
+`N42_BLOCK_GOSSIP_FALLBACK=0` and the S17 goroutine-dump capture.
+`bash -n` clean on both; confirmed not running.
+
+Prediction 86 (revised, see 6cn for the exact bar and caveat) is
+registered. Launch is the commander's next call.
+
+## S19 prepared -- n42-r91 built, leader-write-after-journal switch ready, A/B by leg, not launched (2026-09-21)
+
+Why: 6cn/6cm found Round2's unmeasured 94% is `journalCommitVote` (the
+leader's own self-commit-vote MDBX write) queueing behind the leader's
+own concurrent `WriteBlockWithState` for the single MDBX writer. S19:
+delay the START of that write until the journal write has already
+succeeded (or a timeout, or the view is abandoned) instead. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6co for the full writeup,
+Part 1's five code-level answers, and prediction 87.
+
+**Part 1 answers, in one line each (6co has the full evidence):**
+- (a) write starts in `handleSealed` (worker.go), on the miner's own
+  `resultLoop` goroutine, triggered by the engine's `Seal` call
+  handing a sealed block to `w.resultCh`.
+- (b) `persistWait` does NOT see this delay in the current
+  configuration (ownPendingSpeculation bypasses it for a leader's own
+  speculative next build; measured 0.0 ms median/p95/max across 226
+  lines in round 35zzz). `CommitToCanonicalWith` needs the write
+  already complete (or cached); NOT directly on the path to proposing
+  v+1 (`TriggerBlockProduction` is a fast, non-blocking channel send),
+  BUT it runs on the SAME serial `processOutputs` loop, strictly
+  before `OutputViewChanged` (which dispatches v+1's build) -- so if
+  Round2 shrinks a lot, `CommitToCanonicalWith(v)` may itself queue
+  behind the still-running delayed write before `processOutputs` can
+  reach `OutputViewChanged`, potentially reappearing as a NEW delay
+  between CommitQC(v) and dispatching v+1. Handled safely today (a
+  deferred-commit retry path already exists) but that retry
+  (`NotifyBlockImported`) is wired to the SYNC layer only, not to the
+  miner's own local write completing -- a leader's own deferred
+  commit would instead clear via the existing "not executed locally"
+  fetch-by-hash fallback, which will likely start firing routinely
+  (log.Error + a metric) for the leader's own full blocks in the ON
+  leg. Self-healing, not unsafe, but a real, measurable, and
+  previously-rare-turned-routine side effect this round should show.
+- (c)/(d) other MDBX writes on the leader in order:
+  `journalPrepareVote` (always wins the race against the block write --
+  same goroutine, strictly before it), `WriteBlockWithState`,
+  `journalCommitVote` (today's collision, the target), then
+  `CommitToCanonicalWith`+folded state save, then periodic
+  `persistState()`. Followers: `journalPrepareVote` on proposal
+  arrival CAN collide with the follower's own import write of the
+  previous block; stated, not investigated further (out of scope).
+- (e) hand-over: the mechanism is unconditional, nothing changes.
+  Timeout (no PrepareQC ever forms): the write still eventually
+  starts, via the SECOND fire path (`advanceToView` releases the latch
+  with why "abandoned" for any pending self-proposal when its view
+  ends), never blocked forever.
+
+**n42-r91: built.** `/data/blockchain/gov5-work/n42-r91`, 108,753,048
+bytes, sha256
+`df2cf25426b0f445bbe4e921e374fd16e7dd4d5bc352aff5e57417766d01919d`.
+Same file-checkout recipe as n42-r86 through r90 (commit `812cf162`):
+all 6 pre-existing files S19 touches were byte-identical to n42-r90's
+own version before this change, checked out directly; `worker.go`
+needed the same two-hunk approach n42-r86 established (S11's hunk,
+then S19's own, both apply cleanly onto the same f7ec2836 base); one
+file (`view_timing.go`, S18's own, untouched by S19) was missed on the
+first build attempt -- a straight `undefined: contentionStamps` compile
+failure, caught immediately by `go build` and fixed by checking it out
+from `e1d8d7d1` before proceeding. `internal/parallel/base_cache.go`
+confirmed absent; `grep -rl BaseCache`: empty. `go vet` clean on
+`internal/...`; `go test` passes on `internal/consensus/hotstuff/...`
+(both switch placements, and under `-race`), `internal/miner/...`,
+`internal/`, `internal/parallel/...`. `strings n42-r91 | grep -c
+BaseCache` = 0; the seven prior markers each = 1; the three new
+markers (`lwWait`, `lwWhy`, `not-proposed-yet`) each = 1.
+
+**Field glossary addition** (miner's own `"miner: propose phases"`
+line, not `hotstuff view timing` -- these values are only known on the
+miner side): `lwWait` (ms the write start was delayed), `lwWhy`
+(`journal` / `abandoned` / `timeout` / `off` / `not-proposed-yet` /
+`unsupported`).
+
+**Runner: `run-r35zzze.sh`/`chain-35zzze.sh`, built from the 35zzzd
+pair, not launched. THIS IS an A/B-by-leg round** (unlike 35zzzd):
+`run_leg` gained a 5th parameter, `N42_LEADER_WRITE_AFTER_JOURNAL`,
+exported inside the same per-leg subshell that already varies
+`gasceil` by leg -- confirmed safe by reading `bench-run.sh`: every
+`run_leg` call fully stops and freshly relaunches all 7 node processes
+(`stop-fleet.sh` then `bench-7node.sh`), so each leg's env, including
+the new switch, is picked up as a genuine per-process startup value.
+Calls: `warmup 0`, `A1 0`, `B1 0` (switch off, the in-round baseline),
+`B2 1`, `A2 1` (switch on). Predecessor-wait fixed by hand to
+`r35zzzd.log` (S19's actual predecessor; the sed pass alone would have
+left S18's own `r35zzzc.log` target in place); binary references
+updated by hand to `n42-r91`. All other env unchanged from 35zzzd,
+including `N42_BLOCK_GOSSIP_FALLBACK=0`/`N42_CONTENTION_DIAG=1`.
+`bash -n` clean on both; confirmed not running.
+
+Prediction 87 (see 6co for the exact bars and the "NOT merely moved"
+caveat) is registered. Launch is the commander's next call.
+
+## S22 prepared -- n42-r92 built, seal-path stamps ready, harness captures fixed to win1/win2, VM sampler added, not launched (2026-09-21)
+
+Why: 6cs confirmed push(v+1) is gated by `max(write(v) ending,
+CommitQC(v) forming)` plus a leg-invariant ~254 ms constant, but could
+not name the exact lock behind the write-bound path (92% of B2's
+views) without `tMs` on lines no binary this campaign has built
+carries. It also found every profile captured so far (+150 s here,
++250 s/+345 s the commander's own) landed inside the 400 s baseFee
+decay ramp (empty blocks), never the scored windows. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6ct for the full writeup, the
+U1 code reading, and prediction 88.
+
+**U1 code reading, in one paragraph:** `resultCh` (`worker.go:337`,
+unbuffered, `:414`) has exactly one consumer, `resultLoop`
+(`worker.go:535`, started once at `:460`), which calls `handleSealed`
+SYNCHRONOUSLY (`:543`) and does not loop back to receive the next
+result until `handleSealed` returns -- and `handleSealed` runs
+`WriteBlockWithState` inline, on this SAME goroutine (`:831`). `Seal`
+(`adapter.go:850`) does not block its own caller; it spawns a
+per-call delivery goroutine (`:903`) that blocks on the unbuffered
+channel send (`:905`) until `resultLoop` is free. So a block v+1
+sealed while `handleSealed(v)` is still running its own write cannot
+be picked up (hence cannot be pushed, since the early push happens
+inside `handleSealed` before the write) until that write returns --
+the single `resultLoop` goroutine IS the gate, confirmed by file:line
+rather than inferred.
+
+**n42-r92: built.** `/data/blockchain/gov5-work/n42-r92`, 108,774,624
+bytes, sha256
+`ba1a2105e458bc22908e1755c0a9a322269cae6aa57e593c294c7ac121ad890f`.
+Same file-checkout recipe as n42-r86 through r91 (commit `62439af7`):
+`seal_path_diag.go`/`_test.go` are new; `worker.go` needed a THIRD
+hunk on the same base (S11's, then S19's, now S22's), with ONE
+mechanical conflict (the speculative-hit block's context lines differ
+from an off-lineage `tMs` field already excluded from every build
+since n42-r86) resolved by hand and verified against a full diff --
+only the same four already-known off-lineage lines remain, nothing
+new. `go vet` clean; `go test` passes on `internal/consensus/
+hotstuff/...` and `internal/miner/...` (both `N42_CONTENTION_DIAG`
+placements, `-race` included), `internal/`, `internal/parallel/...`.
+`strings n42-r92 | grep -c BaseCache` = 0; every prior marker present;
+four new ones (`"miner: seal path"`, `resQWaitMs`, `taskQWaitMs`,
+`specHitTMs`) each = 1.
+
+**Field glossary addition** (new log line `"miner: seal path"`, one
+per sealed block on the leader, behind `N42_CONTENTION_DIAG=1`):
+`triggerTMs`, `buildBeginTMs`, `specParkedTMs`/`specHitTMs`,
+`paceEnterTMs`/`paceDurMs`, `taskSentTMs`, `taskQWaitMs` (the queue
+wait U1 asked for on `taskCh`), `taskPickedTMs`/`sealEnterTMs` (both
+`sealStart`), `checkEnterTMs`/`checkExitTMs`, `blsStartTMs`/
+`blsEndTMs` (`sealStart`/`sealStart+blsNanos` -- no new cross-package
+stamp needed), `resultRecvTMs`, `resQWaitMs` (the queue wait U1 asked
+for on `resultCh` -- the one this section's own reading says should
+track the write-bound views directly), `copyStartTMs`/`copyEndTMs`,
+`pushStartTMs`/`pushEndTMs`, `proposeStartTMs`/`proposeEndTMs`,
+`lwWaitMs`/`lwWhy` (S19, unchanged), `writeStartTMs`/`writeEndTMs`.
+
+**Runner: `run-r35zzzf.sh`/`chain-35zzzf.sh`, built from the 35zzze
+pair, not launched. NOT an A/B round** (unlike 35zzze): `run_leg`'s
+5th argument (`N42_LEADER_WRITE_AFTER_JOURNAL`) is `1` in every leg
+now, adopted provisionally per the commander's ruling on S21.
+Predecessor-wait fixed by hand to `r35zzze.log` (the sed pass alone
+would have left S19/S21's own `r35zzzd.log` target in place); binary
+references updated to `n42-r92`.
+
+Two harness changes, both read-only against `bench-run.sh`/
+`measure-tps.sh` (neither modified): (1) profile captures (B legs
+only) now trigger on the leg's own first FULL block
+(`gasUsed/gasLimit >= 0.95`, polled every 3 s) instead of a fixed
++150 s sleep -- decay makes only empty blocks, so this coincides with
+win1's own start; win2 = win1 + 60 s (the harness's own fixed
+`--windows 2 --window-sec 60`), captured at both +15 s, now including
+a heap profile alongside the existing cpu/mutex/block/goroutine set.
+(2) a new VM sampler (mirroring the existing memory watchdog's own
+start/stop discipline, every 10 s) into `wr-logs/r35zzzf-vm.log`:
+per-node `minflt`/`majflt` (`/proc/<pid>/stat` fields 10/12) and
+Anon/File/Shmem RSS (`/proc/<pid>/status`, the same source the
+existing watchdog uses -- `smaps_rollup` was not used since there is
+no live fleet right now to time it against a real node's mapping size,
+and status is already proven fast here), plus `/proc/vmstat` reclaim
+counters as 10 s deltas.
+
+`bash -n` clean on both; confirmed not running.
+
+Prediction 88 (see 6ct for the exact bars) is registered. Launch is
+the commander's next call.
+
+## S23 prepared -- n42-r93 built, leader write moves off resultLoop, A/B by leg, not launched (2026-09-21)
+
+Why: 6ct's U1 finding -- `resultCh` is unbuffered with exactly one
+consumer, `resultLoop`, which calls `handleSealed` synchronously and
+runs `WriteBlockWithState` inline on that same goroutine, so a block
+sealed while the previous write is still running cannot even be
+received. `N42_LEADER_WRITE_ASYNC=1` moves the write (and everything
+that runs only after it succeeds) to a dedicated writer goroutine. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6cu for the full Part 1
+invariant list and prediction 89.
+
+**Part 1, in one paragraph each:**
+- Everything assuming "write returned" (pendingTasks cleanup,
+  counters, the seal-path/propose-phases/successfully-sealed logs,
+  recordSealedOnParent, ChainHighestBlock) is extracted into
+  `writeAndFinish` and called either inline or from the writer --
+  identical code either way.
+- `WaitBlockPersisted` is poll-based against the DB: unaffected.
+- `CheckSealParentApplied` DOES break: it reads the DB's last-
+  committed applied marker, which today is always current (the
+  previous write has always already returned) but would routinely see
+  a merely-queued parent as stale once the write moves off resultLoop,
+  dropping good blocks before they are even pushed. Fixed: a new
+  `checkSealParentApplied` also accepts a parent that matches the
+  writer's own `ExpectedParent()` (its most recently accepted job). A
+  wrong optimistic pass costs nothing -- the real check runs again
+  inside `writeBlockWithState` under `bc.lock` against the actual
+  committed state, rejecting a truly-failed chain via the SAME
+  existing `ErrStaleSeal` path an ordinary sibling race already uses.
+  Strict FIFO order (one channel, one reader goroutine) is what makes
+  this safe.
+- `CommitToCanonicalWith`/deferred-execution's applied marker: same
+  mechanism S19 already found and left alone, likely exercised more.
+- Own-unwritten-chain depth: `unwrittenOwnPostStates` already walks up
+  to 16 levels; the new bound (2, from the writer's own capacity) is
+  well inside that, not a new assumption.
+- Failure: unchanged (log, drop, rely on the fleet) -- no "abort the
+  queue" logic needed, since (per the CheckSealParentApplied fix
+  above) a chained failure is caught by the SAME real check on its OWN
+  write attempt.
+- Back-pressure: channel capacity 1 (one in flight, one queued); a
+  third Enqueue blocks (rate-limited warning), degrading to today's
+  timing rather than growing memory; `wqWaitMs`/`wqDepth` land on
+  "miner: seal path".
+- Shutdown: `Miner.Close` drains the writer only AFTER `group.Wait()`
+  confirms `resultLoop` itself has already stopped, so no send can
+  race a close; 30s bound, logged if exceeded.
+- Overlap: write(v) can now run while the leader handles view v+1's
+  own `journalPrepareVote`/`journalCommitVote` (same MDBX writer).
+  Confirmed: this only costs time (MDBX's mutual exclusion), never
+  safety, and the timeline suggests it should rarely bind in practice.
+- Switch off / followers: byte-for-byte unchanged control flow; the
+  writer is never even constructed when the switch is off.
+
+**n42-r93: built.** `/data/blockchain/gov5-work/n42-r93`, 108,789,800
+bytes, sha256
+`25f83814239489827783e4526bb57484dd91dcf6d0f8e655cdbacea524b5ea38`.
+Same file-checkout recipe as n42-r86 through r92 (commit `8ae39838`):
+`worker.go` needed its fourth hunk (same recurring off-lineage
+conflict, resolved by hand as always); `miner.go` needed hunk
+treatment for the FIRST time in this recipe (`git diff f7ec2836
+8ae39838^ -- miner.go` is non-empty -- the same off-lineage
+`activeSpecParent` feature also touches this file), confirmed correct
+via a full diff against `8ae39838`'s own version afterward. `go vet`
+clean; `go test` passes on `internal/consensus/hotstuff/...` and
+`internal/miner/...` (both switch placements), `internal/`,
+`internal/parallel/...`. `strings n42-r93 | grep -c BaseCache` = 0;
+every prior marker present; three new ones (`wqWaitMs`, `wqDepth`,
+"leader write queue full") present. Built with `nice -n 10` and
+`-race` limited to the new tests only, per this step's own time budget
+(prepared while round 35zzzf runs on the box).
+
+**Field glossary addition** (`"miner: seal path"`): `wqWaitMs` (how
+long this block's own enqueue call blocked, 0 if it did not),
+`wqDepth` (queue length observed at enqueue time, 0 or 1).
+
+**Runner: `run-r35zzzg.sh`/`chain-35zzzg.sh`, built from the 35zzzf
+pair, not launched. THIS IS an A/B-by-leg round** (on the new
+switch): `run_leg` gained a 6th parameter, `N42_LEADER_WRITE_ASYNC`,
+alongside the already-adopted `N42_LEADER_WRITE_AFTER_JOURNAL`/
+`N42_CONTENTION_DIAG` (both stay 1 everywhere). Calls: `warmup 1 0`,
+`A1 1 0`, `B1 1 0` (async off, the in-round baseline), `B2 1 1`,
+`A2 1 1` (async on). In-window captures and the VM sampler carry over
+unchanged. Predecessor-wait fixed by hand to `r35zzzf.log`; binary
+references updated to `n42-r93`. `bash -n` clean on both; confirmed
+not running.
+
+Prediction 89 (see 6cu for the exact bars) is registered. Launch is
+the commander's next call.
+
+## S25 prepared -- harness-only fixes tested offline, GOMEMLIMIT A/B, not launched (2026-09-21)
+
+Why: the in-window capture has now failed twice for two different
+reasons (35zzzf: wrong trigger, landed in the decay ramp; 35zzzg: the
+fixed trigger had a real parsing bug and span until its own deadline).
+This step proves the fix offline before handing it back a third time.
+See `docs/QS_BLOCK_TIME_BUDGET.md` section 6cy for the full writeup
+and prediction 90. Binary stays **n42-r92** (sha256 ba1a2105e458) --
+NOT r93; 35zzzg's A2 leg (the second `N42_LEADER_WRITE_ASYNC=1` leg)
+never produced a block after the restart, now explained in 6cx as a
+pre-existing propose-before-write/sibling-race hazard reachable on r92
+too (not S23-specific), under separate write-up in `docs/OPEN_ISSUES.md`
+-- noted here, not re-investigated, per this step's own instruction.
+
+**Offline test output (both pass in full):**
+
+```
+$ bash scripts/qs-harness/test_full_block_check.sh
+PASS: empty block (0%) (status=1)
+PASS: 48.7% full block (status=0)
+PASS: 22% full block (status=1)
+PASS: RPC error response (status=2)
+PASS: completely empty body (status=2)
+PASS: gasUsed before gasLimit (status=0)
+PASS: gasLimit before gasUsed (status=0)
+PASS: exactly 45% (boundary, inclusive) (status=0)
+PASS: 44% (just under threshold) (status=1)
+PASS: realistic trailing-fields response (status=0)
+
+10 passed, 0 failed
+```
+
+```
+$ bash scripts/qs-harness/dry_run_capture.sh
+writing to /tmp/tmp.XXXXXXXXXX
+t=3: first full block detected (poll returned a %45+ block); win1 start
+t=5: capturing win1 (target was win1_start+2s = 5)
+t=9: capturing win2 (target was win1_start+6s = 9)
+
+=== checks ===
+PASS: win1-node1-cpu.pb.gz written and non-empty
+PASS: win1-node2-heap.pb.gz written and non-empty
+PASS: win2-node1-cpu.pb.gz written and non-empty
+PASS: win2-node2-heap.pb.gz written and non-empty
+PASS: win2 capture landed 4s after win1 capture (want ~4s)
+
+dry run OK
+```
+
+The bug itself: `grep -o '"gasUsed":"0x[0-9a-f]*"' | grep -o
+'0x[0-9a-f]*$'` -- the first grep's own match text ends in a closing
+quote, so the `$`-anchored second grep never matches; reproduced
+directly against the exact string in a live shell (empty output every
+time), not just reasoned about. Fixed by dropping the anchor,
+extracted into `scripts/qs-harness/full_block_check.sh`'s
+`is_full_block` (0=full/1=not full/2=could not parse, so the caller
+retries on 2 rather than treating a bad response as "empty"). The
+threshold also needed fixing separately: 95% (measure-tps.sh's own
+occupancy convention) is unreachable here since the builder's fill cap
+is HALF the header gas ceiling, so a genuinely full block never
+exceeds ~50% -- lowered to 45%.
+
+**Window timing derived from source, not assumed:**
+`bench-run.sh:281-293` -- the flood-ready announcement
+(`"all $FLOODS flood(s) submitting; opening measurement windows"`)
+fires, THEN a hardcoded `sleep 15` (line 282), THEN `measure-tps.sh`
+is called (line 293), whose own per-window loop opens win1 on its very
+first line (`measure-tps.sh:32-33`) with nothing else in between. So
+win1's true start = that print line's own timestamp + 15s, exactly,
+not a proxy. This is now the PRIMARY detection signal (reusing the
+SAME `$mark`/`'all 8 flood'` grep the script's own `check_mode` gate
+already computes, right after `benchpid` starts); the fixed
+first-full-block poll is kept as a fallback.
+
+**GOMEMLIMIT: found where it is set.** `run_leg`'s own `export
+GOMEMLIMIT=10GiB` (this script; every round since 35zb has used this
+fixed value). `bench-7node.sh` does not set or override it itself
+(confirmed by grep). New 6th `run_leg` argument passes it per leg:
+`warmup 1 10GiB`, `A1 1 10GiB`, `B1 1 10GiB` (baseline), `B2 1 6GiB`,
+`A2 1 6GiB`. `GOGC=200` unchanged. `N42_LEADER_WRITE_ASYNC` is not a
+`run_leg` argument this round -- left unset everywhere.
+
+**New captures/samplers:** `allocs` profile added alongside the
+existing cpu/mutex/block/heap/goroutine set. VM sampler (10s) gains
+per-node AND per-generator CPU-seconds (`/proc/<pid>/stat` fields
+14/15, this box's clock tick confirmed at 100 Hz via `getconf
+CLK_TCK`) and generator `RssAnon`. A new runtime-memstats sampler
+(30s, two fixed nodes) GETs `.../debug/pprof/heap?debug=1` and keeps
+`tail -n 40` into `wr-logs/r35zzzh-memstats.log` -- verified against
+this box's actual Go 1.26 source (`net/http/pprof/pprof.go`'s
+"debug=N... N > 0: plaintext" doc comment; `runtime/pprof/pprof.go`'s
+`writeHeap` prints the `# runtime.MemStats` trailer with `HeapAlloc`/
+`NumGC`/`GCCPUFraction`/`PauseNs` -- note: `PauseNs` is a raw-sample
+ring buffer, there is no single `PauseTotalNs` field here as such),
+not tested live (no fleet up), so tolerant of a non-200/empty
+response. `/debug/vars` (expvar) confirmed absent (no import
+anywhere).
+
+**Runner: `run-r35zzzh.sh`/`chain-35zzzh.sh`, built from the 35zzzf
+pair (not 35zzzg), not launched.** Predecessor-wait fixed to
+`r35zzzg.log` (already finished). `bash -n` clean on both; confirmed
+not running.
+
+Prediction 90 (see 6cy for the exact bars) is registered. Launch is
+the commander's next call.
+
+---
+
+## S26 (SAFETY) prepared -- the vote rule, not the leader path, is the fix (2026-09-21)
+
+**What happened.** Round 35zzzg: node5 led a 4-view tenure (8782-8785).
+View 8784 committed `7a6d85…23259c` (height 13661138, parent
+13661137). View 8785 committed `f47f65…13d8ac` -- a DIFFERENT block,
+SAME height, SAME parent -- 5/5 votes in both rounds, one second
+later. Node5's own write of the second block failed (`ErrStaleSeal`)
+after its CommitQC had already formed; the other six nodes voted it
+through the deferred path and then could never place it. Full detail
+in docs/OPEN_ISSUES.md "A quorum-committed block that no node stored"
+and docs/QS_BLOCK_TIME_BUDGET.md 6cz.
+
+**Root cause, read from the code, not inferred.** Two-phase (deferred-
+execution) voting's Round 1 (`processProposal`, `internal/consensus/
+hotstuff/proposal.go`) voted on the raw Proposal message immediately,
+checking the extends-rule (`extendsJustify`: "the block's parent must
+be the proposal's JustifyQC block") ONLY when the block happened to
+already be locally imported -- which is essentially never true the
+instant a Proposal arrives, so the check was skipped on the ordinary
+path. Round 2 (`processPrepareQC`) had no extends check at all: a
+valid PrepareQC signature only proves a quorum SENT prepare votes, not
+that those votes were for a block that extends anything, and
+`deferredAttested` (the two-phase Round 2 gate) only checks that the
+block's OWN (possibly stale) parent is locally applied -- true of a
+stale sibling precisely because its parent is old enough to be
+canonical everywhere. The leader-side guard
+(`firstSealedOnParent`/`recordSealedOnParent` in `internal/miner/
+worker.go`) used to record the winning seal only AFTER its write
+completed, so a second, independently-sealed candidate on the same
+parent (a parked speculative task) could reach `handleSealed` while
+the first block's write was still in flight and slip through
+unsuppressed.
+
+**The fix (no switch -- this is a safety fix, not a lever).** Round 1's
+two-phase branch now shares the same checked/imported-gated wait the
+non-two-phase path already used, so `extendsJustify` always runs once
+the block's real parent is known. Round 2 gains an explicit
+`extendsJustify` call before sending the commit vote. Leader:
+`recordSealedOnParent` moves to seal time, before push/propose. No
+wire-format change was needed or made -- the Proposal message carries
+no parent field; the fix uses the SAME `EventBlockChecked`/
+`EventBlockImported` bookkeeping the non-two-phase path already
+relies on. Total diff ~55 lines across two files, well under the
+~200-line stop-and-report bar.
+
+**Tests.** `internal/consensus/hotstuff/conflicting_commit_test.go`
+(new): `TestTwoPhasePrepareVoteRefusesNonExtendingProposal` and
+`TestTwoPhaseCommitVoteRefusesNonExtendingProposal` replay the exact
+shape (a proposal whose JustifyQC names a committed block, but whose
+own checked/imported parent is a different, older block) and FAIL on
+n42-r92's source, PASS with the fix.
+`TestTwoPhaseVotesStillFireForAnExtendingProposal` is the happy-path
+guard. `internal/miner/seal_guard_test.go` (new):
+`TestRecordSealedOnParentFirstSealWins` pins the map-level invariant
+the relocated call depends on. Fixing this surfaced one latent,
+unrelated bug: `tryDeferredVote`'s "justify must be imported" check
+did not fail open for a ZERO (genesis) justify the way `extendsJustify`
+itself already does, so the very first block after genesis under
+deferred + two-phase voting could never pass Round 1 once the two
+modes shared one code path -- caught by
+`TestDeferredPipelineCommitsWithoutImportingTheBlock` (pre-existing),
+fixed with a 3-line change to the same function. Full
+`internal/consensus/hotstuff`, `internal/miner`, `internal/miner/builder`
+suites pass; `internal/parallel` and `internal/` pass in the
+reconstructed build worktree.
+
+**Build: n42-r94 = n42-r92's exact file set + this fix, NOT r93.**
+File-checkout recipe reproduced from scratch (detached worktree at
+`f7ec2836`, the same commit list n42-r92 used), verified via the same
+one-variable check n42-r92's own build used: the reconstructed
+`worker.go` differs from `62439af7`'s own blob by exactly the four
+already-known off-lineage lines every prior build in this chain has
+shown. `proposal.go`'s pre-fix content was byte-identical to HEAD's
+own pre-S26 version (nothing touched it between `812cf162` and this
+step), so it was copied directly, then this step's fix applied on top
+of the reconstructed tree (not HEAD's tree, which already carries
+S23's retired async-writer code). `internal/parallel/base_cache.go`
+confirmed absent. `/data/blockchain/gov5-work/n42-r94`: 108,779,120
+bytes, sha256
+`658bee2d0aabaf45c010f500f85eec263cb6c40fadb53754d0c0f4404b67e588`.
+
+**Harness: `run-r35zzzi.sh`/`chain-35zzzi.sh`, built from the 35zzzh
+pair, not launched.** GOMEMLIMIT uniform at 10GiB in every leg (S25's
+own A/B by leg is a separate, still-open question, not repeated this
+round). Two new end-of-round checks, neither gated by a switch:
+conflicting commits at one height across all seven nodes' logs (joins
+"block committed!" against the height on "Successfully sealed new
+block"/"add future block"/"block push: received" via `jq`), and a leg
+bench-run.sh itself refused to measure ("chain is not producing"/
+"refusing to measure", attributed to the most recently started `LEG`
+line). Tested OFFLINE against real data before trusting them: the kept
+logs of 35zzzg correctly flag `13661138 7a6d85…23259c,f47f65…13d8ac`
+and leg `A2`; the kept logs of 35zzzf are clean on both.
+Predecessor-wait fixed to `r35zzzh.log`. `bash -n` clean on both;
+confirmed not running.
+
+Prediction 91 (see 6cz for the exact bars) is registered. Code commit
+`e49ce151`. Launch is the commander's next call.
+
+---
+
+## S27 (performance, no protocol change) prepared -- all four items dropped (2026-09-21)
+
+**Per-item table:**
+
+| item | target | 6db's estimate | measured/found | outcome |
+|---|---|---|---|---|
+| 1 | `internal/parallel_processor.go:670-672` (`parallelApplyTx` signer fallback) | ~1.0 GB/block | `BenchmarkParallelBlockTransfers`, 5x15 runs: sec/op, B/op, allocs/op all "~" (benchstat, p>=0.056) -- the profile's own 15.99GB cum landed on the closing brace of a branch the sole call site never actually takes | dropped (below 2%, reverted) |
+| 2 | `modules/state/intra_block_state.go:520-552` (`Reset`, 6 maps) | ~3.2 GB/block | already tried and reverted: `e414790f` measured 27.59% CPU regression (`matchFull`) from the SAME clear()-not-make() change, because these maps are range-iterated via `sortedAddresses` in `FinalizeTx` every transaction | dropped (known larger regression) |
+| 3 | `modules/state/journal.go:61,63` (`entries`/`dirties`) | ~7.3 GB/block | `entries` reuse already implemented (`journal.reset()`, `entries[:0]`); `dirties` reallocation is the SAME e414790f fix, same reason | dropped (already done / already rejected) |
+| 4 | `modules/state/intra_block_state.go:1047` (`setStateObject`/`stateObjects`) | ~4.2 GB/block | confirmed the SAME map item 2 already covers -- not a separate target; same regression | dropped (double-count with 2, same regression) |
+| 5' | decode question (no code, report only) | -- | confirmed by code: a block-push follower DOES re-decode every transaction via RLP (`internal/sync/rpc_chunked_response.go:132`, `decodeChunkedBlock`), even when it already holds an identical pool copy; the sender-hint machinery only skips re-recovering the sender, not the decode | answered, no fix attempted |
+
+**Why items 2-4 are not a fresh judgment call.** `git log -S"matchFull
+at 27%" -- modules/state/intra_block_state.go` finds `e414790f`
+("perf(state): re-make iterated maps on Reset to drop inflated
+buckets", 2026-05-08). Its own commit message: a prior `/simplify`
+pass had switched these exact maps from `make()` to `clear()` to save
+per-block allocations; once per-worker IBS reuse landed, this caused
+`internal/runtime/maps.matchFull` to cost 27.59% flat CPU, because
+Go's `clear()` keeps a map's bucket array sized to its historical
+high-water mark -- one large transaction inflates the buckets every
+LATER, smaller transaction's `sortedAddresses` iteration must scan in
+full. The revert (back to `make()`) is what ships today, and its own
+doc comment on `IntraBlockState.Reset` (lines 507-515) already states
+this reasoning in the same words. 6db's own profile-only analysis
+(allocation bytes) could not see this CPU-side history; re-deriving
+from the code, not just the profile, is what caught it here.
+
+**Item 1's benchmark, kept.** `internal/parallel_processor_bench_test.go`
+(new): `BenchmarkParallelBlockTransfers` drives 20,000 signed transfers
+from 20,000 funded senders to 2,857 shared recipients through
+`StateProcessor.BuildParallel` (the miner/importer's own entry point)
+at 32 workers, over a `memdb`-backed `BlockChain` -- real EVM
+execution, real RLP-decoded transactions, no mocks below the KV layer.
+Kept as reusable infrastructure for the next allocation-reduction
+attempt on this path, even though item 1 itself did not survive.
+
+**Build: n42-r95 = n42-r94's exact file set, no source change.**
+Rebuilt via the same reconstructed file-checkout recipe to confirm it
+still reproduces and to carry this round's harness fixes.
+`internal/parallel_processor_bench_test.go` is the only new file in
+the repository (test-only, not part of the binary).
+
+**Harness: `run-r35zzzj.sh`/`chain-35zzzj.sh`, from the 35zzzi pair,
+not launched.** Two fixes: (a) the generator process-match pattern
+(`[t]xflood -rpc` -> `[t]xflood.*-rpc`, in both the memory watchdog's
+`floodsMB` and the VM sampler's `gens:` field) -- the generator binary
+is invoked as a VERSIONED name (`txflood-r39`), so "txflood" is never
+immediately followed by a space; tested offline against a synthetic
+`ps` line built from `bench-run.sh`'s own invocation. (b)
+`capture_win`'s filenames now use `$leg` (`run_leg`'s own first
+argument, captured into a named local BEFORE the nested function call
+resets positional parameters) instead of bare `$1`, which inside
+`capture_win` resolved to the SAME string as `$win` -- the exact
+`win1-win1`/`win2-win2` duplication 6da found, and the mechanism behind
+B2's win2 silently overwriting B1's win2 for a repeated node index (no
+leg component in the name at all). Tested offline with a two-`run_leg`
+reproduction. GOMEMLIMIT uniform 10GiB. `bash -n` clean on both;
+confirmed not running. Predecessor-wait fixed to `r35zzzi.log`.
+
+Prediction 92 (see 6dc for the exact bars) is registered: with zero
+perf commits landed, this round repeats 35zzzi's own configuration and
+exists mainly to confirm the fixed samplers, not to test a lever.
+Launch is the commander's next call.
+
+---
+
+## S27 CLOSED by commander's ruling; S28 prepared in its place (2026-09-21)
+
+**S27 update:** the commander accepted the interim report as CLOSED --
+no n42-r95, no qs-replay, no launch of the round drafted above. All
+four items stay dropped for the reasons already written (item 1: ~0%
+on the benchmark; items 2-4: re-propose `e414790f`, a 27.59% CPU
+regression already measured and reverted). Added to 6dc: the
+benchmark's own baseline (91.85M ns/op, 125.06M B/op, 961.9k
+allocs/op per 20,000-tx block; 4,592.6 ns/tx, 6,252.9 B/tx, 48.10
+allocs/tx -- see 6dc for the exact command to reproduce), a
+`-memprofile` capture's top-10 allocation sites by file:line, and the
+executor-share conclusion: the isolated executor accounts for only
+**~9.2% of the fleet's per-transfer allocation (~0.95 GB of the 10.36
+GB/block)** -- the other ~90.8% is ingest/gossip/pool/decode, not
+execution. (5') sharpened with the ratio the commander asked for:
+essentially every transaction in a pushed block (~99.4% on this
+harness's own shape) is already in the receiving node's pool, fully
+decoded with its sender recovered, yet
+`internal/sync/rpc_chunked_response.go:132` (`decodeChunkedBlock`)
+re-decodes the whole wire block unconditionally -- no pool-hash lookup
+exists on this path. QS_QUEUE.md's S27 row status is now the short
+form the commander asked for: "closed: nothing shipped, see 6dc".
+
+**S28 (new):** the prepared-but-now-pointless `run-r35zzzj.sh`/
+`chain-35zzzj.sh` (built for a round with nothing to test) are
+retargeted rather than discarded. New purpose: a config-only
+GOMEMLIMIT A/B by leg in the OTHER direction from S25 -- warm-up/A1/B1
+stay at 10GiB, B2/A2 go to 14GiB (GOGC=200 unchanged) -- testing
+whether MORE headroom against the collector (6db: GC+alloc is 20% of
+CPU in win1, 54% in win2) helps more than the extra ~4GB/node of
+anonymous memory hurts by squeezing the page cache further (6cp/6cr/
+6cv's own thrash evidence). Binary: `n42-r94` (S26's safety fix; S27
+built nothing), via a one-line switch at the top of `chain-35zzzj.sh`
+(`BIN=n42-r94`) the commander can flip to `n42-r92` if 35zzzi ends
+ABORTED or with a safety failure -- left as a manual instruction, not
+an automatic check, per the commander's own wording.
+
+**Gate check, reported not changed:** box is 136.6 GB total
+(confirmed live), current MemAvailable ~104.6 GB (above the 100 GB
+start gate, `chain-35zzzj.sh:75`). Worst case at 14GiB, all seven
+nodes simultaneously at their ceiling: 7 x 14 = 98 GB, plus an
+UNMEASURED generator estimate (~16-24 GB, carried from older rounds'
+own comments -- this harness's generator-memory field has been broken
+by the exact `[t]xflood -rpc` pattern bug in every prior round, live-
+confirmed just now against 35zzzi's own `r35zzzi-mem.log`:
+`floodsMB=` empty on every line), leaving **~19 GB** for OS + page
+cache -- at or below the existing 20 GB watchdog in the worst case.
+6da's own 10GiB measurement (nodes running at 58-75% of their ceiling
+as live heap, not saturating it) makes the REALISTIC case comfortable
+(~90 GB total, ~47 GB free), but the worst case is close enough to the
+watchdog to be worth knowing going in. Not changed, as instructed --
+this round's own (now-fixed) generator sampler will finally produce a
+real number to re-derive this arithmetic from.
+
+**Harness fixes (both retained from S27's own prep, now actually
+useful):** (1) generator process-match pattern, `[t]xflood -rpc` ->
+`[t]xflood.*-rpc` (`bench-run.sh` invokes a VERSIONED binary,
+`txflood-r39` this round, so "txflood" is never immediately followed
+by a space) -- fixes both the VM sampler's `gens:` field and the
+memory watchdog's own `floodsMB` figure; tested offline against a
+synthetic `ps` line AND live-confirmed against 35zzzi's own running
+mem log. (2) `capture_win`'s filenames now use `$leg` instead of bare
+`$1` (which, inside a proper nested FUNCTION call, resolved to the
+same string as `$win`) -- fixes the exact `win1-win1`/`win2-win2`
+duplication that let 35zzzh's B2 silently overwrite B1's own win2
+capture for a repeated node index; tested offline with a two-`run_leg`
+reproduction.
+
+Prediction 93 (see 6dd for the exact bars) is registered. `bash -n`
+clean on both scripts; confirmed not running. QS_QUEUE.md gets a new
+S28 row (status: prepared) directly after S27's (status: closed).
+Launch is the commander's next call.
+
+---
+
+## S32 PART 1 -- read before touching anything (2026-09-22)
+
+**(a) Hash preimage per transaction type, and how it sits in the block's own RLP.**
+`Transaction.Hash()` (`common/transaction/transaction.go:575-593`): if
+`tx.hash` is cached, return it; else if `tx.enc` is cached AND
+`hashFromEncoding(tx.Type())` is true, `hash = keccak256(tx.enc)`;
+otherwise fall back to `tx.inner.hash()` (a fresh, type-specific
+struct-field hash). `hashFromEncoding` (`transaction.go:598-604`)
+lists only `LegacyTxType, AccessListTxType, DynamicFeeTxType` --
+Blob and SetCode are excluded, with the doc comment explaining Blob's
+case ("their network encoding can carry the sidecar, which the hash
+does not cover").
+
+The block's own RLP wire form (`common/block/block.go:144-198`,
+`blockRLP{Header, TxData [][]byte, ...}`) stores EVERY transaction
+UNIFORMLY as an opaque byte string: `TxData[i] = tx.EthEncoded()`
+(`block.go:168`, called from `EncodeRLP`). `EthEncoded()`
+(`transaction.go:441-451`) returns `tx.enc` if cached, else computes
+it via `EncodeEthereumTransaction` (`common/transaction/ethereum_rlp.go:229-296`),
+which dispatches per type: Legacy -> `rlp.EncodeToBytes(&legacyTxRLP{...})`
+(a bare RLP list, no type byte); AccessList/DynamicFee/SetCode ->
+`encodeTypedEthereumTransaction(type, &...RLP{...})` = `type_byte ||
+rlp.EncodeToBytes(fields)` (`ethereum_rlp.go:359-365`); Blob ->
+`encodeBlobEthereumTransaction` (`ethereum_rlp.go:337-357`), which
+ALSO calls `encodeTypedEthereumTransaction(BlobTxType, &blobTxRLP{...})`
+-- the SAME shape, and explicitly WITHOUT the sidecar (contrast
+`EncodeEthereumPooledTransaction`, `ethereum_rlp.go:301-329`, used for
+POOL/gossip propagation, which keeps the sidecar in an
+`blobTxNetworkWrapperRLP` when present -- "block payload encoding
+intentionally omits it").
+
+**So `blockRLP.TxData[i]` is, for every type, EXACTLY the same bytes
+`DecodeEthereumTransaction` expects as input** (`ethereum_rlp.go:100-107`:
+`data[0] >= 0xc0` -> legacy list; else `data[0]` is the type byte,
+`data[1:]` the RLP payload) **and exactly the canonical hash preimage**:
+verified field-by-field that `BlobTx.hash()` (`blob_tx.go:186-201`,
+`PrefixedRlpHash(BlobTxType, [ChainID...S])`) and `SetCodeTx.hash()`
+(`setcode_tx.go:260-278`, `PrefixedRlpHash(SetCodeTxType, [ChainID...S])`)
+use the IDENTICAL field list and order as `blobTxRLP`/`setCodeTxRLP`
+respectively -- so `keccak256(TxData[i])` gives the correct tx hash
+for ALL FIVE types uniformly when the bytes come fresh from the
+block's own RLP (no special-casing needed at the block-decode level).
+
+**The Blob/SetCode exclusion from `hashFromEncoding` is a NARROWER,
+object-level cache-provenance concern, not a block-encoding mismatch**:
+it protects against a `Transaction` OBJECT whose own `tx.enc` was
+populated from a DIFFERENT source (e.g. the pool's WITH-sidecar
+network wrapper for a Blob tx submitted by gossip) being hashed
+directly from that (wrong) cached buffer. This matters for MY reuse
+feature differently than it matters for `tx.Hash()`: I compute the
+hash fresh from `TxData[i]` (never touching any pool object's own
+`tx.enc`), so the HASH LOOKUP is safe for all five types -- but
+REUSING the pool's OBJECT (not just its hash) means trusting whatever
+that object's OWN `EthEncoded()`/`tx.enc` would return later (for
+re-serialization, tx-root, etc.) to match `TxData[i]`'s bytes, which
+is exactly what `hashFromEncoding`'s existing exclusion says is unsafe
+for Blob. **Decision: PART 2's reuse fast path uses `hashFromEncoding`'s
+own exact type list (Legacy/AccessList/DynamicFee only); Blob and
+SetCode always decode fresh**, matching an already-established safety
+boundary in the codebase rather than inventing a new one.
+
+**(b) Pool lookup-by-hash API and locking.** `txLookup.Get(hash)`
+(`internal/txspool/txs_list_types.go:145-153`): a single
+`sync.RWMutex` (`txLookup.lock`, line 107) guards BOTH `locals` and
+`remotes` maps together -- NOT sharded. Cost per call: one `RLock`/
+`RUnlock` pair plus one or two map lookups. No batched/lock-free read
+path exists today (`Range` also takes the same `RLock` for its whole
+iteration, lines 125-143). For 160k per-transaction lookups on the
+import path, calling `Get` once per tx (160k `RLock`/`RUnlock` pairs)
+is the ONLY option without adding a new pool API; a hypothetical
+`GetMany` taking the `RLock` ONCE for the whole batch would cut
+lock-acquisition overhead but would hold that `RLock` for the full
+scan duration, during which `Insert`'s own `Lock()` (~130k/s, per the
+task) would queue -- exactly the trade-off the task asked to measure,
+not merely reason about. Decision: PART 2 uses the EXISTING per-tx
+`Get(hash)` call (no new pool API, smallest blast radius); the
+benchmark (PART 4) measures the per-lookup cost and reports whether
+contention is visible at this scale; no pool-side change is proposed
+in this step.
+
+**(c) Aliasing and mutability.** Confirmed the leader already builds
+blocks directly from pool-resident objects: `internal/miner/worker.go:2082`,
+`pending := w.txsPool.Pending(false)`, and the returned per-sender
+slices are placed into the block being assembled without copying --
+"a block sharing objects with the pool is an existing pattern" is
+correct, not a new risk S32 introduces.
+
+Mutation sites of a `*Transaction` after creation: `SetFrom`
+(`transaction.go:541-555`, sets `LegacyTx.From`/`AccessListTx.From`/
+`DynamicFeeTx.From` -- PLAIN, non-atomic pointer fields -- or
+`BlobTx.fromCache`/`SetCodeTx.fromCache`, also plain); `SetNonce`
+(`transaction.go:557-568`); `cacheEncoded` (`transaction.go:453-458`,
+writes `tx.enc`/`tx.size`, BOTH atomic -- `atomic.Pointer[[]byte]`/
+`atomic.Value`); `tx.hash.Store` inside `Hash()` (atomic). **Only
+`SetFrom`/`SetNonce` are non-atomic writes**, and both are called from
+the sender-recovery/import path under an EXISTING guard that makes
+this safe already: `applySenderHints`'s `fill()` and
+`recoverBlockSenders`'s worker loop (`internal/sender_recovery.go:130-133`,
+`293-296`) both check `if tx == nil || tx.From() != nil { skip }`
+BEFORE ever calling `SetFrom` -- a transaction that already has a
+cached sender (which every genuinely pool-resident transaction does,
+since pool admission itself requires sender recovery) is never
+written to again. **This directly answers the task's own question:
+yes, `applySenderHints` becomes a no-op for a reused object (the guard
+already skips it), so import saves the recovery work too** -- for the
+~99.4% hit-rate transactions, this removes their share of the
+follower's own 21-26 ms recover phase, not just their share of decode.
+My own reuse code never calls `SetFrom`/`SetNonce` on a reused object
+(read-only use) precisely to keep this guarantee airtight, since a
+transaction reused from the pool has, by construction, already passed
+through this exact path once (at pool admission).
+
+**Object recycling: NONE.** `txLookup.Remove` (`txs_list_types.go:205-220`)
+only `delete()`s map entries; it does not mutate, zero, or return the
+`*Transaction` object to any pool/free-list (no `sync.Pool` usage
+anywhere in `internal/txspool/`, confirmed by grep). A transaction
+object removed from the pool (mined or evicted) is simply
+dereferenced by the pool; any OTHER holder (a block body that reused
+it, an in-flight fill) keeps a perfectly valid, unmodified reference.
+**Sharing is safe: not stopping.**
+
+**(d) Deferred check / consensus path decode identity.** `CheckDeferredBlock`
+(`internal/deferred_includable.go`) and `InsertChain` both operate on
+the SAME `blk block.IBlock` returned by `blockPushStreamHandler`'s own
+single call to the chunked reader (`internal/sync/rpc_block_push.go:28-40`,
+`s.deferredCheck(blk)` then `s.cfg.chain.InsertChain([]block.IBlock{blk})`
+using the identical `blk`). PART 2's reuse decode is a drop-in
+replacement inside that ONE call site's own decode step, so as long as
+its output is element-for-element equal to a fresh decode (PART 3's
+own equivalence tests), every downstream consumer sees identical
+content with no additional wiring.
+
+## S34 -- the stale-re-proposal defect, reconstructed from the code (2026-09-22/23)
+
+Evidence: `/data/blockchain/wr-logs/r35zzzk-keep/node1/` (node1, leader of
+views 6556-6558), 22:02:30-22:02:38 EDT. Confirmed on node0/node2/node3's
+own logs too: 5-6 `import-gated vote REFUSED` lines per follower, all one
+incident, all `blockHash==justifyBlock==a990bc..815fde`.
+
+**(a) The sibling-suppression path** (`internal/miner/worker.go:660-678`,
+before this step's fix). `firstSealedOnParent(parentHash)` returns the
+FIRST block this node ever sealed on `parentHash` (recorded by
+`recordSealedOnParent`, S26). When a LATER seal-completion event for a
+DIFFERENT, divergent block on the SAME `parentHash` arrives (`handleSealed`,
+worker.go:564), the guard at line 667 re-injects the FIRST ("kept") block
+for the current view instead: `w.chain.SealedBlock(kept)` (re-push over
+p2p) then `bsn.NotifyBlockSealed(kept.Hash(), kept.TxHash())` (re-enter
+the consensus engine as if `kept` were a fresh candidate). **It never
+checks whether `kept`'s own height has since been committed and written**
+-- only `kept.Hash() != blk.Hash()`. In the incident, `parentHash` was
+`d149cb..` (the tip BEFORE a990bc's own commit), `kept` was `a990bc..`
+itself (already committed in view 6556, one view earlier) and the
+divergent sibling being suppressed (`4602be63..`) was a leftover,
+independently-sealed candidate for the SAME, now-stale, parent -- a
+leftover `handleSealed` call reached this guard after the height had
+already been decided.
+
+**(b) The engine side: how `JustifyQC` is set, and how it became
+self-referential.** `NotifyBlockSealed` (`internal/consensus/hotstuff/adapter.go:917-927`)
+fires `EventBlockReady`, handled by `onBlockReady`
+(`internal/consensus/hotstuff/proposal.go:21`, before this step's fix).
+`justifyQC := e.roundState.LockedQC().Clone()` (line 94, pre-fix) is the
+LEADER's OWN highest-known QC AT PROPOSE TIME -- not tied to the block
+being proposed at all. The only guard that could have caught a mismatch
+(lines 65-73, pre-fix: "parent no longer extends the current LockedQC")
+is conditioned on `e.importedParents[blockHash]` being POSITIVELY known,
+and **fails open (skips entirely) when it is not** -- exactly the
+documented, intentional design ("the rule tightens as information is
+available and never blocks the honest path"). `importedParents` is
+populated ONLY by `rememberImported` (`proposal.go:630-648`), called
+ONLY from `onBlockImported` (`proposal.go:676-677`), called ONLY via
+`NotifyBlockImported` -- and every call site of `NotifyBlockImported` in
+the whole repo is in `internal/sync/` (`rpc_catchup.go`, `bad_blocks.go`,
+`rpc_block_by_hash.go`, `subscriber_blocks.go`, `rpc_block_push.go`;
+confirmed by full-repo grep, no other package calls it). **A leader's
+own locally-sealed-and-written block never goes through `internal/sync`'s
+import path on the SAME node** -- it is written directly by the miner's
+own `resultLoop`/`writeAndFinish`. So `importedParents[a990bc]` was
+UNKNOWN on node1 (its own author), the guard skipped, and `onBlockReady`
+proceeded to build `Proposal{BlockHash: a990bc, JustifyQC: <QC for
+a990bc itself>, ...}` -- a proposal whose own hash equals its own
+justify's block hash. There is no other check in `onBlockReady`
+(pre-fix) that `blockHash != justifyQC.BlockHash` or that
+`height(blockHash) == height(justifyQC)+1`.
+
+**(c) `"sealed block dropped -- phase left WaitingForProposal"`**
+(`proposal.go:33-37`, unchanged by this fix). `Phase` transitions:
+`PhaseWaitingForProposal` (initial, reset every view by `AdvanceView`,
+`round_state.go:110-116`) -> `PhaseVoting` (`EnterVoting()`,
+`round_state.go:87-89`, called from `onBlockReady` at the ORIGINAL
+line 113, only on a successful proposal that reaches that point) ->
+`PhasePreCommit` -> `PhaseCommitted`. In the incident, node1's OWN
+`onBlockReady(a990bc)` call (the stale re-proposal) ran the self-
+justifying proposal all the way through: it passed every pre-fix guard,
+called `journalPrepareVote`, built and BROADCAST the malformed
+`Proposal`, and called `e.roundState.EnterVoting()` -- moving the phase
+to `PhaseVoting` for view 6557. When the GENUINELY fresh, correct seal
+(`79e6380a26`, the real child of a990bc) arrived moments later and its
+own `onBlockReady(79e638..)` ran, `e.roundState.Phase()` was no longer
+`PhaseWaitingForProposal` -- so it hit the line-34 warning and was
+DROPPED, silently, with no re-broadcast. This is why the correct block
+never even reached a vote in view 6557: the stale proposal consumed the
+view's one proposal slot before being refused by every VOTER (not by
+the leader's own phase machinery -- the leader itself believed it had
+successfully proposed).
+
+**(d) The fix's placement closes both (b) and (c) at once.** The new
+guard (`proposal.go`, inserted before `journalPrepareVote`/`EnterVoting`)
+rejects `blockHash == justify.BlockHash` UNCONDITIONALLY -- no dependency
+on `importedParents`, so it cannot fail open the way the existing
+guard did -- and returns `nil` before EVER calling `journalPrepareVote`
+or `EnterVoting()`. This means a rejected stale self-justifying seal
+leaves `Phase()` at `PhaseWaitingForProposal`, so the SAME view's
+genuinely fresh seal (arriving moments later, as it did live) still
+finds the phase open and gets proposed normally. Fixing only (b) without
+this placement (e.g. rejecting AFTER `EnterVoting()`) would have stopped
+the bad Proposal from broadcasting but left the fresh seal dropped by
+(c) anyway -- the view would still time out, just silently instead of
+via a voter refusal. Verified end to end by
+`TestFreshSealStillProposedAfterAStaleSelfJustifyAttempt`
+(`internal/consensus/hotstuff/proposal_self_justify_test.go`).
+
+**Timeline, 6556-6558 (ms, from node1's own log; tMs fields are
+absolute Unix ms, "time" fields are second-resolution)**:
+
+| t (ms, view 6557 relative) | event |
+|---|---|
+| view 6556 starts, tMs=1790042550664 (baseline, call it T0) | `hasProducer/isLeader`, node1 leads view 6556 |
+| T0+877 | prepare-QC published (`pqcPubAt=1790042551541`) |
+| T0+1046 | 6th commit vote received, quorum (`cvKthRxAt=1790042551710`) |
+| ~T0+1300-1900 (22:02:31) | `"block committed!"` a990bc, view 6556 (consensus decision) |
+| ~T0+1900-2300 (22:02:32) | a990bc's own WRITE completes (`"Successfully sealed new block"`, elapsed 745ms) -- BEFORE the view switch below |
+| T1 = 1790042552438 (22:02:32.438) | view changed to 6557, node1 leads again (`hasProducer/isLeader`) |
+| T1+0 | `"miner: build triggered (leader view, evicted speculative)"`, parent=a990bc (correct: build 13658911) |
+| T1+~0-100 | `"miner: suppressing divergent same-height sibling; re-proposing first sealed block"`, number=13658910 (the OLD, already-decided height), kept=a990bc (already committed!) |
+| T1+~100-300 (22:02:32, same second) | stale `Proposal{BlockHash: a990bc, JustifyQC: a990bc}` broadcast; `EnterVoting()` -> phase leaves WaitingForProposal |
+| T1+~300-900 (22:02:32/33) | ALL 6 followers log `"import-gated vote REFUSED: proposal does not extend its JustifyQC block"` (5-6 lines each) |
+| T1+~600-900 (22:02:33) | fresh, correct seal `79e6380a26` (13658911, child of a990bc) ready; `"hotstuff: sealed block dropped -- phase left WaitingForProposal"` (phase=1/PhaseVoting) -- DROPPED |
+| T1+~700-1000 (22:02:33) | `"Successfully sealed new block"` 13658911/79e638 completes (elapsed 447ms); `"miner: speculative build parked"` -- parked instead of proposed |
+| T1+~4600-5000 (22:02:37) | `"view timed out"`, view 6557; `"TC formed, I am the new leader"`, nextView=6558 |
+| T2 = 1790042557725 (22:02:37.725), T2-T1 = 5287 ms | view changed to 6558, node1 leads again |
+| T2+0 | `"miner: build triggered (leader view)"`, parent=a990bc; `"miner: speculative build discarded, applied head moved"`; branch-switch unwinds the SPECULATIVELY-applied 79e638 back to a990bc |
+| T2+~0-200 | `"miner: suppressing divergent same-height sibling; re-proposing first sealed block"`, number=13658911, kept=79e638 (correct this time) |
+| T2+~275-600 (22:02:38) | `"block committed!"` 79e638, view 6558 -- SUCCESS, one view late; view timing: propose=254ms r1=59ms r2=18ms total=333ms |
+
+Net cost: view 6557 produced nothing and consumed ~5.3s (its entire
+timeout), while the correct block had been ready since ~T1+900ms.
+
+**Fix verified**: `internal/consensus/hotstuff/proposal_self_justify_test.go`
+(3 new tests, all pass including under `-race`); full `hotstuff`/`miner`
+package suites pass; `go vet` clean; existing S26 regression tests
+(`TestTwoPhasePrepareVoteRefusesNonExtendingProposal`,
+`TestTwoPhaseCommitVoteRefusesNonExtendingProposal`) unaffected. Code
+commit `7288c8f0`. Build: n42-r97 = n42-r96's exact file set + this
+step's three files (`internal/consensus/hotstuff/proposal.go`,
+`internal/consensus/hotstuff/metrics.go`, `internal/miner/worker.go`),
+via the established file-checkout recipe (detached worktree at
+`f7ec2836`; this round additionally required copying the WHOLE
+`internal/consensus/hotstuff/` package non-test files, `internal/miner/miner.go`
+(hand-reverted to strip the same 4 known off-lineage
+`activeSpecParent`/`tMs` bits as `worker.go`), `internal/miner/{async_write,build_stall_watchdog,seal_path_diag,push_order}.go`,
+`internal/blockchain_types.go` and `log/root.go` -- all confirmed, file
+by file, touched only by recognized lineage commits since `f7ec2836`
+(`git log f7ec2836..HEAD -- <file>`), never by unrelated concurrent
+work on this branch). Markers confirmed present exactly once: the new
+self-justify guard's log line, the new worker-side guard's log line,
+S31's header-vote line, S26's commit-vote-REFUSED line; `BaseCache`
+absent; `blockimport phases`=2 (matches n42-r96's own count).
+sha256: `b80deae4eea4647ca727c6663f8d59838b8e67911fae289d8d051a28a7f88b2e`
+(108,818,976 bytes).
+
+## Build recipe (from n42-r97) -- reproducible file-checkout recipe, S37 (2026-09-23)
+
+This is the COMPLETE file set n42-r97 was actually built from, recorded
+so the next build in this lineage does not have to rediscover it via
+compile-error whack-a-mole (as this one did). Base commit `f7ec2836`
+(the fixed lineage root every prior build in this chain also used).
+
+```bash
+export GOCACHE=/data/blockchain/gov5-work/.gocache GOTMPDIR=/data/blockchain/gov5-work/.gotmp
+cd /data/blockchain/gov5-work
+rm -rf wt-rNN-build
+git -C wt-r27 worktree add --detach /data/blockchain/gov5-work/wt-rNN-build f7ec2836
+
+SRC=wt-r27
+DST=wt-rNN-build
+
+# 1. The WHOLE internal/consensus/hotstuff/ package, non-test files.
+#    (A curated subset -- engine/proposal/service/metrics.go alone --
+#    stopped compiling once other lineage commits (S14/S17/S18/S19
+#    diagnostics) added package-level symbols engine.go now references
+#    that live in view_timing.go/voting.go/write_latch.go/adapter.go.
+#    Copying the whole package sidesteps having to track that by hand;
+#    verified safe because every commit touching ANY file in this
+#    package since f7ec2836 is a recognized lineage commit -- confirmed
+#    per file via `git log f7ec2836..HEAD -- <file>` before relying on
+#    this, and worth re-confirming again for a future step that isn't
+#    purely this consensus lineage.)
+for f in $SRC/internal/consensus/hotstuff/*.go; do
+  base=$(basename "$f")
+  case "$base" in *_test.go) continue;; esac
+  cp "$f" "$DST/internal/consensus/hotstuff/$base"
+done
+# adapter.go batch_proposal.go bls_keystore.go bls_util.go codec.go
+# engine.go epoch_schedule.go errors.go header_extra.go interop_v4.go
+# interop_v4_wire.go metrics.go pacemaker.go persistence.go proposal.go
+# quorum.go reconfig.go rotor.go round_state.go service.go slashing.go
+# timeout.go types.go validator.go view_timing.go voting.go write_latch.go
+# (26 files)
+
+# 2. Block/sync/blockchain lineage files -- single lineage commit each
+#    since their own last checkout, safe to copy directly.
+cp $SRC/common/block/block.go                          $DST/common/block/block.go
+cp $SRC/common/block/block_decode_reuse.go              $DST/common/block/block_decode_reuse.go
+cp $SRC/internal/blockchain.go                          $DST/internal/blockchain.go
+cp $SRC/internal/blockchain_types.go                    $DST/internal/blockchain_types.go   # bc.buildStallLockWaitNs/buildStallRootLockWaitNs field decls (S11, 537ec21e)
+cp $SRC/internal/sync/rpc_block_push.go                 $DST/internal/sync/rpc_block_push.go
+cp $SRC/internal/sync/rpc_chunked_response.go            $DST/internal/sync/rpc_chunked_response.go
+cp $SRC/internal/sync/service.go                        $DST/internal/sync/service.go
+cp $SRC/internal/sync/options.go                        $DST/internal/sync/options.go
+cp $SRC/internal/sync/block_decode_reuse_switch.go       $DST/internal/sync/block_decode_reuse_switch.go
+cp $SRC/log/root.go                                     $DST/log/root.go                    # log.LogDir() (S11, 537ec21e)
+
+# 3. Miner package companion files -- single lineage commit each.
+cp $SRC/internal/miner/async_write.go          $DST/internal/miner/async_write.go            # asyncBlockWriter/LeaderWriteAsyncOn/writeJob (S23, 8ae39838)
+cp $SRC/internal/miner/build_stall_watchdog.go $DST/internal/miner/build_stall_watchdog.go    # buildStallWatchdog (S11, 537ec21e)
+cp $SRC/internal/miner/seal_path_diag.go       $DST/internal/miner/seal_path_diag.go          # contentionDiagEnabled/prefillTimes (S11/S14 lineage, 537ec21e/62439af7)
+cp $SRC/internal/miner/push_order.go           $DST/internal/miner/push_order.go              # leaderWriteAfterJournalEnabled (S19, 812cf162)
+
+# 4. worker.go and miner.go -- copy, then hand-revert the SAME 4+2
+#    off-lineage lines every build in this chain since n42-r86 has
+#    excluded (commits 89d15267/19687889, never part of this lineage).
+cp $SRC/internal/miner/worker.go $DST/internal/miner/worker.go
+cp $SRC/internal/miner/miner.go  $DST/internal/miner/miner.go
+```
+
+**worker.go hand-revert** (4 lines/fields, all from `89d15267`/`19687889`):
+1. Remove the `activeSpecParent atomic.Pointer[types.Hash]` field and its
+   3-line doc comment (struct field block, near `activeSpecInterrupt`).
+2. In the `speculative` branch: replace
+   `w.activeSpecInterrupt.Store(interrupt); p := parentHash; w.activeSpecParent.Store(&p); defer func() { w.activeSpecInterrupt.Store(nil); w.activeSpecParent.Store(nil) }()`
+   with `w.activeSpecInterrupt.Store(interrupt); defer w.activeSpecInterrupt.Store(nil)`.
+3. `log.Info("miner: build phases", ...)`: drop the trailing
+   `"tMs", time.Now().UnixMilli())` argument (and its 2-line comment).
+4. `log.Info("miner: speculative build hit", ...)` and
+   `log.Info("miner: speculative build parked", ...)`: drop the
+   trailing `, "tMs", time.Now().UnixMilli()` from each.
+
+**miner.go hand-revert** (2 spots, same two commits):
+1. `TriggerBlockProduction`: replace the `activeSpecParent`-aware block
+   (`if p := m.worker.activeSpecInterrupt.Load(); p != nil { if sp := m.worker.activeSpecParent.Load(); sp != nil && *sp == parentHash { ... } else { p.Store(commitInterruptNewHead) } }`)
+   with the plain, unconditional
+   `if p := m.worker.activeSpecInterrupt.Load(); p != nil { p.Store(commitInterruptNewHead) }`.
+2. `log.Info("miner: build triggered (leader view)", ...)`: drop the
+   trailing `, "tMs", time.Now().UnixMilli()`.
+
+Verify each hand-revert leaves NOTHING else different: `diff -u
+$DST/internal/miner/worker.go $SRC/internal/miner/worker.go` (and the
+same for `miner.go`) must show ONLY these known off-lineage hunks, not
+a merge conflict marker or a stray line -- if it shows anything else,
+`worker.go`/`miner.go` picked up a NEW commit since this recipe was
+written and the diff needs re-reading before trusting the checkout.
+
+**Build and verify:**
+```bash
+cd $DST
+grep -rl BaseCache . --include=*.go   # must be empty
+nice -n 19 go build -p 4 -tags nosqlite,noboltdb -o n42-rNN.tmp ./cmd/n42
+# markers, e.g.:
+strings n42-rNN.tmp | grep -c "hotstuff: sealed block dropped — proposal would justify itself"  # =1 (S34)
+strings n42-rNN.tmp | grep -c "header vote: block header known and extends its JustifyQC block"  # =1 (S31)
+strings n42-rNN.tmp | grep -c "commit vote REFUSED: proposal does not extend its JustifyQC block" # =1 (S26)
+strings n42-rNN.tmp | grep -c "blockimport phases"  # =2, matches every build since n42-r96
+sha256sum n42-rNN.tmp
+mv n42-rNN.tmp /data/blockchain/gov5-work/n42-rNN
+cd /data/blockchain/gov5-work
+git -C wt-r27 worktree remove --force wt-rNN-build
+```
+
+**Confirming a file is safe to add/update in a future step:** before
+adding ANY file to this list (or updating one already on it), run `git
+log f7ec2836..HEAD -- <file>` and read every commit message returned --
+if even one is not a recognized step in this consensus/miner-perf
+lineage, STOP and re-derive that file's own diff by hand (isolate the
+lineage commits' own hunks) rather than copying it whole, exactly as
+`worker.go`/`miner.go` require here. This whole recipe's soundness
+rests on that check, not on an assumption that `wt-r27`'s history is
+pure.
+
+**Why not just build from `wt-r27` HEAD directly:** confirmed by a full
+`diff -rq` between the `f7ec2836`-based build tree and `wt-r27` HEAD
+(non-test files) that substantial UNRELATED work also lives on this
+branch's own history since `f7ec2836` -- `cmd/n42-datc/*`, `internal/api/*`,
+`internal/parallel/*`, `lib/kv/mdbx/*`, several `docs/*.md`, etc. --
+none of which belongs in this one-variable lineage's own binary.
+
+## S44 -- pool sampler + generator output preservation, added to run-r35zzzt.sh (2026-09-25)
+
+Harness-only, `run-r35zzzt.sh` edited (not yet started when this ran;
+`chain-35zzzt.sh` was running and waiting, and was NOT touched).
+
+**1. Pool sampler.** `txpool_status` is wired to `TxsPoolAPI.Status()`
+(`internal/api/api_misc.go:411`, registered under the `txpool` namespace
+at `internal/api/router.go:187-188` and `internal/api/api.go:297-298`),
+which calls `TxsPool().Content()` internally to COUNT the very content
+it then discards -- exactly as expensive as `txpool_content` despite
+the lightweight-sounding name (confirmed by reading the handler, not
+assumed). The cheap twin, `TxPoolAPI.Status()` (line 146, backed by
+`TxsPool.Stats()`, an O(accounts) map walk with no per-transaction
+work), is never registered under any namespace -- `grep -rn
+"NewTxPoolAPI("` finds only its own definition, no caller. Used the
+metrics endpoint instead: `txpool_pending`/`txpool_queued`
+(`internal/txspool/txs_pool_types.go:84-85`), Prometheus counters
+maintained incrementally (`Inc`/`Dec` on each pool mutation, e.g.
+`internal/txspool/txs_pool_queues.go:54,82`) and already served on
+every qs node's own metrics port (`--metrics.port
+QS_METRICS_BASE+i` = `6070+i`, `scripts-qs/qs-env.sh:68,178`; path
+`/debug/metrics/prometheus`, `common/metrics/exp.go:17`) -- this
+fleet already runs with `--metrics` on, no new flag needed. Sampled
+for nodes 0 and 3 only, folded into the existing 10s VM-sampler loop,
+appended to the same `wr-logs/r35zzzt-vm.log` line as `pool node<i>
+pending=<n> queued=<n>`; the metrics endpoint returns plain decimal
+counters, not hex, so there is no hex->decimal conversion to do (the
+task's own "(hex -> decimal)" phrasing assumed the RPC route, which
+this deliberately avoids for the reason above).
+
+Dry run (stubbed `curl`: node0 answers a canned metrics body, node3's
+curl call fails as a down node would):
+
+```
+01:14:55 leg=B1 vmstat10s pgmajfaultD=0 pgscanKswapdD=0 pgscanDirectD=0 pgstealKswapdD=0 refaultFileD=0 gens: pool node0 pending=1523 queued=87 pool node3 pending= queued=
+```
+
+Node3's blank `pending=`/`queued=` fields are the intended tolerant-of-
+errors behaviour (never aborts the round), not a bug.
+
+**2. Generator output preservation.** `bench-run.sh`'s own `OUT`/`ERR`
+naming is leg-name-only (`OUT=$QS_ROOT/bench-flood-$TAG.out`,
+`scripts-qs/bench-run.sh:94-95`, `TAG="r35-$1"`), one numbered pair per
+generator when `FLOODS>1` (`$OUT.$f`/`$ERR.$f`, `bench-run.sh:207-208`)
+-- every ROUND overwrites the previous one's files, exactly what 6e3
+found stale. `run_leg` (`run-r35zzzt.sh`) now copies
+`/data/blockchain/bench-flood-r35-$1.out*`/`.err*` to
+`wr-logs/r35zzzt-floods/$1/` immediately after `wait $benchpid` (the
+leg's own bench-run.sh, and every generator under it, has exited by
+then) and before the next leg's own call starts.
+
+Checked `cmd/txflood/main.go` for a stats/progress flag: there is no
+`-stats-interval` or equivalent. There is, however, an existing,
+UNCONDITIONAL periodic status line inside the `-target-depth` closed
+loop (`cmd/txflood/main.go:~813-816`, `time.NewTicker(time.Second)`):
+`fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))` (or with
+`-hint-peers`, `"  pool=%d topup=%d hints sent=%d dropped=%d
+errors=%d\n"`), printed once a second to the generator's own stdout
+(`$fout` in `bench-run.sh`) whenever `-target-depth` is set --
+which `QS_FLOOD_EXTRA` already sets for this fleet
+(`-target-depth 45000 -depth-by-nonce -lazy-sign`). This line is
+therefore ALREADY inside the files the copy step above preserves; no
+txflood source change was needed or made, per the task's own "if not,
+do not add code" instruction (there being no dedicated flag to enable
+-- the line is unconditional already).
+
+`bash -n run-r35zzzt.sh`: clean. `chain-35zzzt.sh` not touched
+(confirmed via `ls -la --time-style=full-iso`: its mtime predates this
+session). `run-r35zzzt.sh` confirmed not started (`ps` shows no
+matching process) before and after editing.
+
+## S46 -- generator pacing by leg + flood-file capture fix, launched as 35zzzx (2026-09-25)
+
+**1. Flood-file capture bug, root cause and fix.** S44's own copy step
+used a blind glob (`bench-flood-r35-$1.out*`). `bench-run.sh` only ever
+writes `$OUT.$f`/`$ERR.$f` for `f` in `0..FLOODS-1` when `FLOODS>1`
+(`scripts-qs/bench-run.sh:207-208`) -- the bare, no-suffix `$OUT`/`$ERR`
+is therefore a permanent ORPHAN once any round runs with `FLOODS>1`
+(confirmed on disk: `bench-flood-r35-B1.out`, no suffix, dated Sep 6 --
+an old single-generator round; `bench-flood-r35-B1.out.8`
+through `.15`, dated Sep 20 -- a since-abandoned 16-generator round;
+`.out.0`-`.out.7` alone are fresh, dated today). The blind glob copied
+ALL of these into the SAME per-leg directory, and since the orphans
+never change, the analyst's own finding (35zzzt-floods and
+35zzzw-floods holding byte-identical `bench-flood-r35-{B1,B2}.out`
+files) is exactly the bare-file orphan being copied unchanged, round
+after round.
+
+**Fix**: touch a marker file (`wr-logs/r35zzzx-legstart-$1`) immediately
+before each leg's own `bench-run.sh` call; copy only files matching the
+glob that are ALSO newer than that marker (`find ... -newer
+"$marker" -exec cp -f {} ...`). This does not depend on hardcoding the
+current `FLOODS=8` (any orphan, regardless of which index it sits at,
+fails `-newer` and is skipped), so a future `FLOODS` change cannot
+reintroduce the same bug.
+
+**Dry run** (isolated sandbox, not the live box): built the same three
+orphan shapes (bare-`.out` dated Sep 6, `.out.8` dated Sep 20, fresh
+`.out.0`-`.7`), ran the marker+find+cp logic for `B1` twice in a row
+with different content each time (simulating two consecutive
+rounds' own leg named `B1`):
+
+```
+=== round 1, leg B1 ===
+e9bb354e3d5f5d460e238f10fd1a4f6a  wrlogs/round1-floods/bench-flood-r35-B1.out.0
+=== round 2 (SAME leg name B1 again), different content ===
+6ef215acb51b2ac242bfc5105e75d92b  wrlogs/round2-floods/bench-flood-r35-B1.out.0
+=== proof: the two rounds' own preserved B1 files differ ===
+PASS: different (fixed)
+1c1
+< ROUND1-B1 generator 0
+---
+> ROUND2-B1 generator 0
+```
+
+Also confirmed in the same dry run: the bare-`.out` and `.out.8` orphans
+never appear in either preserved copy (`grep -c` on the preserved
+directory listing returns 0 for both).
+
+**2. Generator pacing, and a mutual-exclusion finding that changed the
+plan.** The task's own literal B2/A2 triple was `16000/900000/9000`
+(rate/depth/pertx). Reading `cmd/txflood/main.go`'s own dispatch
+(`~line 692`): `if *targetDepth > 0 { <depth-throttle closed loop,
+using permits = make(chan struct{}, *targetDepth)> } else if *rate > 0
+{ <steady-rate ticker> }` -- an **if/else-if, not combinable**. Any
+nonzero `-target-depth` takes the depth-throttle branch
+UNCONDITIONALLY and `-rate` is never even read. Setting `-target-depth
+900000` alongside `-rate 16000` as literally specified would therefore
+silently keep the OLD, already-diagnosed depth-throttle behaviour
+(6e3/6e4/6e6: the estimate lags reality and self-throttles bursty),
+just retargeted to 900000 -- not the intended steady rate at all.
+
+**Corrected**: B2/A2 use `16000/0/9000` -- `-target-depth 0` disables
+the throttle branch entirely, so `-rate 16000` (the `else if` branch)
+actually engages. `-rate`'s own semantics confirmed by reading: it is
+per-PROCESS (each of the 8 generators is a separate OS process with
+its own `*rate` flag value, so 8x16000=128k/s aggregate, matching the
+chain's own ~163k/1.277s tenure-4 consumption), per-SECOND (a
+`time.NewTicker(10*time.Millisecond)` issuing `rate/100` permits per
+tick), and applies BEFORE batching -- `if *rpcBatch > 1 { per10ms =
+(per10ms + *rpcBatch - 1) / *rpcBatch }`, i.e. the permit count is
+divided down by `rpcBatch` so `permits x rpcBatch` transactions per
+tick approximates the requested rate regardless of `-rpcbatch 200`.
+
+`-lazy-sign` (already on for this fleet) means `--pertx 9000` costs no
+extra memory: the ONLY O(senders*pertx) allocation, `raws :=
+make([]string, total)`, is skipped entirely when `-lazy-sign` is set
+(`cmd/txflood/main.go:~617-619`) -- each transaction is signed at
+submit time instead of held pre-signed in bulk.
+
+**Argument layout note**: implemented the triple at the SAME 12th
+`run_leg` position S45's own single-value depth argument used (not an
+additional, separate 13th slot) -- the triple's own middle field
+subsumes what that argument did, and a redundant 13th parameter
+carrying the same information seemed worse than one parameter at the
+same position with a fuller format. Flagged here in case a literal
+13th slot was wanted instead.
+
+`bash -n run-r35zzzx.sh`/`chain-35zzzx.sh`: both clean.
+
+## S47 -- txflood combining correction, BAD BLOCK false-positive fix, launched as 35zzzy (2026-09-25)
+
+**Important correction to my own S46 finding** (also repeated in 6e7/6e8,
+now superseded by 6e9): `-target-depth` and `-rate` were NOT mutually
+exclusive via if/else-if as I claimed. Re-reading `cmd/txflood/main.go`
+past the branch dispatch (not just its own header) shows the
+`-target-depth > 0` branch has, since at least commit `21bea58a` (Sep
+10, predating this whole campaign), already computed `short :=
+targetDepth - depth` and then capped it at `rate` when `rate>0` --
+`min(depth-shortfall, rate)`, exactly the combining behaviour this task
+asked me to build. My own S46 read stopped at the branch dispatch
+(`if targetDepth>0 {...} else if rate>0 {...}`) without reading INTO
+the depth branch's own body far enough to see the rate-capping line
+already there. Given this, I did NOT write a new combining mechanism
+(which would have duplicated and risked diverging from the existing
+one) -- I extracted the existing arithmetic into a named function,
+`injectionCredit(targetDepth, depth, rate int) int`
+(`cmd/txflood/main.go`, near `poolDepth`), a pure refactor confirmed
+byte-for-byte identical to the inline expression it replaces, and added
+`cmd/txflood/injection_credit_test.go` covering the three named
+scenarios plus the two single-flag reductions. All pass, including
+under `-race`; full `cmd/txflood` suite passes; `go vet` clean.
+
+**Binary naming**: `bench-run.sh`'s own `QS_TXFLOOD` variable (set in
+the runner scripts) points at `$SP/txflood-rNN` under
+`/data/blockchain/gov5-work/`; the existing files there
+(`txflood-r37`/`-r38`/`-r39`, dated Sep 9/10/10) confirm the convention.
+Built `txflood-r40` (`go build -tags nosqlite,noboltdb -o
+txflood-r40 ./cmd/txflood`, same tags this campaign always uses).
+
+**BAD BLOCK false-positive fix**: 35zzzx's own "campaign's first BAD
+BLOCK" (OPEN_ISSUES.md, 6e8) was the within-leg checker
+(`run_leg`'s own `( while kill -0 $benchpid; do sleep 15; <BAD BLOCK
+grep>; done ) &`) catching a shutdown artefact. `bench-run.sh`'s own
+last act (`scripts-qs/bench-run.sh:309`, `./stop-fleet.sh
+--no-inspect`) SIGTERMs every qs-node BEFORE `bench-run.sh` itself
+(`= $benchpid`) exits; if `$benchpid` dies mid-`sleep 15`, the
+checker's own already-committed iteration still runs its grep against
+logs the shutdown has already touched. Fixed by capturing the
+checker's own PID and killing it (`kill "$badblockcheckpid"; wait
+"$badblockcheckpid" 2>/dev/null`) the instant `wait $benchpid` returns
+in `run-r35zzzy.sh` -- no timestamp parsing needed, since no further
+check can run at all once the checker is dead. `chain-35zzzx.sh` was
+NOT touched (a lesson already learned in S44/S46); only
+`run-r35zzzy.sh` (not yet started at edit time) was edited.
+
+`bash -n` clean on both new scripts.

@@ -21,16 +21,16 @@ func TestTwoPhaseCommitChecksImportedParent(t *testing.T) {
 				proposal := &Proposal{View: 2, BlockHash: hash, Proposer: leader,
 					JustifyQC: *buildPaperTestQC(t, setup, 1, justify),
 					Signature: setup.keys[leader].Sign(SigningMessage(2, hash)).Marshal()}
-				if err := e.processProposal(proposal); err != nil {
+				if err := e.processProposal(proposal, msgTiming{}); err != nil {
 					t.Fatal(err)
 				}
-				if !e.roundState.HasVotedInView(2) {
-					t.Fatal("two-phase prepare vote must precede import")
+				if e.roundState.HasVotedInView(2) {
+					t.Fatal("prepare vote escaped before the parent was known")
 				}
 				drainOutputs(outputs)
 				pqc := &PrepareQCMsg{View: 2, BlockHash: hash, QC: *buildPaperTestQC(t, setup, 2, hash)}
 				if beforeImport {
-					if err := e.processPrepareQC(pqc); err != nil {
+					if err := e.processPrepareQC(pqc, msgTiming{}); err != nil {
 						t.Fatal(err)
 					}
 					if e.roundState.HasCommitVotedInView(2) {
@@ -45,7 +45,7 @@ func TestTwoPhaseCommitChecksImportedParent(t *testing.T) {
 					t.Fatal(err)
 				}
 				if !beforeImport {
-					if err := e.processPrepareQC(pqc); err != nil {
+					if err := e.processPrepareQC(pqc, msgTiming{}); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -230,6 +230,7 @@ func (c *MdbxCursor) Current() ([]byte, []byte, error) {
 }
 
 func (c *MdbxCursor) Delete(k []byte) error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		return c.deleteDupSort(k)
 	}
@@ -254,6 +255,7 @@ func (c *MdbxCursor) Delete(k []byte) error {
 // Both MDB_NEXT and MDB_GET_CURRENT will return the same record after
 // this operation.
 func (c *MdbxCursor) DeleteCurrent() error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	return c.delCurrent()
 }
 
@@ -290,6 +292,7 @@ func (c *MdbxCursor) deleteDupSort(key []byte) error {
 }
 
 func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
+	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		return fmt.Errorf("PutNoOverwrite does not support AutoDupSortKeysConversion")
 	}
@@ -297,7 +300,54 @@ func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
 	return c.putNoOverwrite(key, value)
 }
 
+// Upsert makes key hold exactly value (see kv.Upserter). AutoDupSort tables
+// already replace the duplicate carrying the same sub-key in putDupSort. On a
+// plain DupSort table the key is positioned once: a single same-length
+// duplicate is rewritten in place (or left alone when equal), anything else is
+// cleared before the insert.
+func (c *MdbxCursor) Upsert(key []byte, value []byte) error {
+	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
+	err := c.upsert(key, value)
+	if err != nil {
+		return fmt.Errorf("label: %s, table: %s, upsert: %w", c.tx.db.opts.label, c.bucketName, err)
+	}
+	return nil
+}
+
+func (c *MdbxCursor) upsert(key []byte, value []byte) error {
+	if c.bucketCfg.AutoDupSortKeysConversion {
+		return c.putDupSort(key, value)
+	}
+	if c.bucketCfg.Flags&mdbx.DupSort == 0 {
+		return c.put(key, value)
+	}
+	_, old, err := c.set(key)
+	if err != nil {
+		if mdbx.IsNotFound(err) {
+			return c.put(key, value)
+		}
+		return err
+	}
+	// c.c.Count is the duplicate count of the positioned key; MdbxCursor.Count
+	// is the whole table's row count.
+	dups, err := c.c.Count()
+	if err != nil {
+		return err
+	}
+	if dups == 1 && len(old) == len(value) {
+		if bytes.Equal(old, value) {
+			return nil
+		}
+		return c.putCurrent(key, value)
+	}
+	if err := c.delAllDupData(); err != nil {
+		return err
+	}
+	return c.put(key, value)
+}
+
 func (c *MdbxCursor) Put(key []byte, value []byte) error {
+	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
 	var err error
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		err = c.putDupSort(key, value)
@@ -382,6 +432,7 @@ func (c *MdbxCursor) SeekExact(key []byte) ([]byte, []byte, error) {
 // Cast your cursor to *MdbxCursor to use this method.
 // Return error - if provided data will not sorted (or bucket have old records which mess with new in sorting manner).
 func (c *MdbxCursor) Append(k []byte, v []byte) error {
+	c.tx.noteWrite(c.bucketName, len(k)+len(v), false)
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		b := c.bucketCfg
 		from, to := b.DupFromLen, b.DupToLen

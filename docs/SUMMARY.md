@@ -66,6 +66,9 @@
 1. [VM Update Guide](./engineering/VM_UPDATE_GUIDE.md)
 1. [ETH/69 Implementation](./engineering/ETH69_IMPLEMENTATION.md)
 1. [Prediction Market Guide](./engineering/PREDICTION_MARKET_GUIDE.md)
+1. [N42 Distributed Decision Network (DDN)](./DDN.md)
+1. [Using the DDN](./DDN_USAGE.md)
+1. [DDN Integration Plan (Go node)](./DDN_INTEGRATION_PLAN.md)
 
 ## Compliance
 

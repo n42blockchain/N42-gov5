@@ -294,7 +294,7 @@ balance (BALANCE/SELFBALANCE/`Empty`) → re-runs the block non-lazy.
 go test -tags 'nosqlite,noboltdb' \
   ./internal/ethel/stateless/... ./internal/ethel/ \
   ./modules/state/ ./modules/state/commitment/ \
-  ./cmd/n42-datc/ ./lib/qmdb/ -count=1
+  ./internal/datc/ ./lib/qmdb/ -count=1
 ```
 Covers: stateless ①②③ + serve→client roundtrip incl. the 2026-06
 `TestHTTPStateAnchorEndToEnd` (real-state anchor + code over HTTP),

@@ -190,6 +190,18 @@ func SignTx(tx *Transaction, s Signer, prv *ecdsa.PrivateKey) (*Transaction, err
 // signature-recovered results — so honest, pool-seen transactions hit the
 // cache while a forged From can never be validated by it. Used by the
 // import-time sender-verification gate.
+// CachedSender answers from the process-wide sender cache alone: the address
+// a signature recovery under this signer produced earlier for this
+// transaction hash, or false. No recovery, no pool, no lock beyond an atomic
+// load -- the import's verification asks this first when a hint feed has
+// been filling the cache ahead of the block.
+func CachedSender(signer Signer, tx *Transaction) (types.Address, bool) {
+	if signer == nil || tx == nil {
+		return types.Address{}, false
+	}
+	return senderCacheGet(tx.Hash(), signer)
+}
+
 func RecoverSenderFromSig(signer Signer, tx *Transaction) (types.Address, error) {
 	hash := tx.Hash()
 	if addr, ok := senderCacheGet(hash, signer); ok {
@@ -468,15 +480,7 @@ func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *bi
 func (s eip2930Signer) Hash(tx *Transaction) (types.Hash, error) {
 	switch tx.Type() {
 	case LegacyTxType:
-		return hash.RlpHash([]interface{}{
-			tx.Nonce(),
-			tx.GasPrice(),
-			tx.Gas(),
-			tx.To(),
-			tx.Value(),
-			tx.Data(),
-			s.chainId, uint(0), uint(0),
-		}), nil
+		return legacySigningHash(tx, s.chainId), nil
 	case AccessListTxType:
 		return hash.PrefixedRlpHash(
 			tx.Type(),
@@ -565,15 +569,7 @@ func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
 func (s EIP155Signer) Hash(tx *Transaction) (types.Hash, error) {
-	return hash.RlpHash([]interface{}{
-		tx.Nonce(),
-		tx.GasPrice(),
-		tx.Gas(),
-		tx.To(),
-		tx.Value(),
-		tx.Data(),
-		s.chainId, uint(0), uint(0),
-	}), nil
+	return legacySigningHash(tx, s.chainId), nil
 }
 
 // HomesteadTransaction implements TransactionInterface using the

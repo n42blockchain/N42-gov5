@@ -240,6 +240,7 @@ const (
 	//   Same about: TxNum/TxID, BlockNum/BlockID
 	HeaderNumber    = "HeaderNumber"           // header_hash -> header_num_u64
 	BadHeaderNumber = "BadHeaderNumber"        // header_hash -> header_num_u64
+	ExecutedResult  = "ExecutedResult"         // block_hash -> this node's execution result (deferred execution)
 	HeaderCanonical = "CanonicalHeader"        // block_num_u64 -> header hash
 	Headers         = "Header"                 // block_num_u64 + hash -> header (RLP)
 	HeaderTD        = "HeadersTotalDifficulty" // block_num_u64 + hash -> td (RLP)
@@ -563,6 +564,7 @@ var ChaindataTables = []string{
 	ContractCode,
 	HeaderNumber,
 	BadHeaderNumber,
+	ExecutedResult,
 	BlockBody,
 	Receipts,
 	TxLookup,

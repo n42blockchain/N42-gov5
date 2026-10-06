@@ -24,6 +24,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"os"
 	"strconv"
 	"sync"
@@ -152,6 +153,10 @@ const (
 // =============================================================================
 
 type BlockChain struct {
+	// badSiblings: blocks this process failed to validate (see markBadSibling).
+	badSiblingsMu sync.RWMutex
+	badSiblings   map[types.Hash]struct{}
+
 	chainConfig  *params.ChainConfig
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -215,8 +220,21 @@ type BlockChain struct {
 
 	qmdbRootComputer *commitment.QMDBRootComputer
 	minerRC          *commitment.QMDBRootComputer // persistent speculative-build computer (guarded by minerRCMu; see NewMinerRootComputer)
+	minerPendingUndo []*qmdb.BlockUndo            // branch-switch undo records the miner tree has not applied yet (guarded by minerRCMu; newest last)
 	minerRCMu        sync.Mutex                   // serializes the startup pre-warm against the first leader build
 	qmdbEnabled      bool
+
+	// S11 diagnostics (N42_BUILD_STALL_DIAG=1 only; see docs/QS_BLOCK_TIME_BUDGET.md
+	// 6by). buildStallLockWaitNs accumulates the time AlignAppliedBranch and
+	// InsertChainAuthorized spend blocked on bc.lock -- the mutex both the
+	// miner build path and ordinary block import/write share.
+	// buildStallRootLockWaitNs is the same for minerRCMu (shared with the
+	// startup pre-warm, PrewarmMinerRootComputer). internal/miner/worker.go
+	// drains both with TakeBuildStallLockWait / TakeBuildStallRootLockWait
+	// into its "miner: prefill phases" line. Always zero when the switch is
+	// off -- no atomic writes on that path.
+	buildStallLockWaitNs     atomic.Int64
+	buildStallRootLockWaitNs atomic.Int64
 
 	ltHashCommitment   *commitment.LtHashCommitment
 	ltHashEnabled      bool
@@ -235,6 +253,10 @@ type BlockChain struct {
 	futureBlocks  *lru.Cache[types.Hash, *block.Block]
 	receiptCache  *lru.Cache[types.Hash, []*block.Receipt]
 	blockCache    *lru.Cache[types.Hash, *block.Block]
+	// executedHints: under deferred execution, the result the leader's build
+	// computed for a block it sealed, taken by that block's write
+	// (RememberExecutedResult / takeExecutedResultHint).
+	executedHints sync.Map
 
 	headerCache *lru.Cache[types.Hash, *block.Header]
 	numberCache *lru.Cache[types.Hash, uint64]

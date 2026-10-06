@@ -52,18 +52,28 @@ func sortedAddresses[V any](m map[types.Address]V) []types.Address {
 	for addr := range m {
 		addrs = append(addrs, addr)
 	}
-	// Avoid reflection allocations for the empty/sender/recipient/beneficiary
-	// sets common in transaction finalization. Comparing Address values by
-	// value is slower on large block sets; retain the indexed sorter there.
-	if len(addrs) <= 3 {
-		slices.SortFunc(addrs, func(a, b types.Address) int {
-			return bytes.Compare(a[:], b[:])
-		})
-	} else {
-		sort.Slice(addrs, func(i, j int) bool {
-			return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
-		})
+	slices.SortFunc(addrs, func(a, b types.Address) int {
+		return bytes.Compare(a[:], b[:])
+	})
+	return addrs
+}
+
+// pendingIncreaseAddrs returns, sorted, the addresses whose balance increase
+// is still unfolded -- the ones the block-end passes read. Sorting the whole
+// balanceInc map instead re-sorted the block's ~23k credited recipients in
+// both system calls' FinalizeTx, in the root computation and in
+// CommitBlock, long after every increase had been folded. The read order is
+// unchanged: the pending subset in address order.
+func (sdb *IntraBlockState) pendingIncreaseAddrs() []types.Address {
+	var addrs []types.Address
+	for addr, bi := range sdb.balanceInc {
+		if bi != nil && !bi.transferred {
+			addrs = append(addrs, addr)
+		}
 	}
+	slices.SortFunc(addrs, func(a, b types.Address) int {
+		return bytes.Compare(a[:], b[:])
+	})
 	return addrs
 }
 
@@ -196,6 +206,19 @@ type IntraBlockState struct {
 	// (see LastRootDirtySet).
 	lastRootAccounts map[types.Address]*account.StateAccount
 	lastRootStorage  map[types.Address]map[types.Hash]*uint256.Int
+
+	// postLayers: the unwritten-parent snapshots layered on stateReader,
+	// carried explicitly for readers that bypass it (SetPostStateLayers).
+	postLayers []*PostState
+
+	// lastIntermediateRoot is what IntermediateRoot last returned
+	// (LastIntermediateRoot); the deferred-execution write reads it.
+	lastIntermediateRoot    types.Hash
+	lastIntermediateRootSet bool
+
+	// accountPrefetch: the layer under stateReader that serves accounts
+	// read ahead across the parallel processor's workers (SetAccountPrefetch).
+	accountPrefetch *AccountPrefetch
 
 	// wipedStorageSlots holds, per wiped address, the COMPLETE pre-block storage
 	// slot set (slot → original value) captured at storage-wipe registration time
@@ -1155,6 +1178,19 @@ func (p accountWritePolicy) shouldAllowWriteBack(stateObject *stateObject) bool 
 	return true
 }
 
+// finalizeFlags is updateAccountWithWipe(policy, noop, addr, so, true,
+// false) reduced to its one state effect: the deleted flag.
+func finalizeFlags(policy accountWritePolicy, addr types.Address, so *stateObject) {
+	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, so)
+	if so.selfdestructed || emptyRemoval {
+		so.deleted = true
+		return
+	}
+	if policy.shouldAllowWriteBack(so) {
+		so.deleted = false
+	}
+}
+
 func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool) error {
 	return updateAccountWithWipe(policy, stateWriter, addr, stateObject, isDirty, false)
 }
@@ -1248,32 +1284,46 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	// the reader here is the block-witness recorder (ethel). Map-order
 	// iteration would produce witness byte streams that differ between
 	// runs of the same block.
-	for _, addr := range sortedAddresses(sdb.balanceInc) {
-		if bi := sdb.balanceInc[addr]; !bi.transferred {
-			sdb.getStateObject(addr)
-		}
+	for _, addr := range sdb.pendingIncreaseAddrs() {
+		sdb.getStateObject(addr)
 	}
-	// Materializing deferred credits can discover a read error. Do not emit
-	// any writes or finalize the journal from an incomplete account view.
 	if sdb.savedErr != nil {
 		return sdb.savedErr
 	}
-	for _, addr := range sortedAddresses(sdb.journal.dirties) {
-		so, exist := sdb.stateObjects[addr]
-		if !exist {
-			continue
+	if _, noop := stateWriter.(*NoopWriter); noop {
+		// With the no-op writer the only state updateAccount changes is the
+		// deleted flag; every writer call is a no-op and updateTrie only
+		// reads. The parallel processor leaves a whole block's dirty set in
+		// the journal, and the two Prague system calls at block end each
+		// finalized it -- ~60 ms a call over 23k objects on the fleet (round
+		// 35zzf's profile), on the follower and the leader alike. Set the
+		// flags directly; no reader is touched here, so order is free.
+		for addr := range sdb.journal.dirties {
+			so, exist := sdb.stateObjects[addr]
+			if !exist {
+				continue
+			}
+			finalizeFlags(policy, addr, so)
+			sdb.stateObjectsDirty[addr] = struct{}{}
 		}
+	} else {
+		for _, addr := range sortedAddresses(sdb.journal.dirties) {
+			so, exist := sdb.stateObjects[addr]
+			if !exist {
+				continue
+			}
 
-		// Call updateAccount with noop writer. This sets deleted flag and
-		// runs updateTrie(noop) which updates originStorage — both are
-		// necessary for correct cross-tx EVM behavior.
-		// Storage wipe is handled by storageWipes map in MakeWriteSet,
-		// not by stateObject flags, so no flag inheritance issues.
-		if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
-			return err
+			// Call updateAccount with the writer. This sets the deleted flag
+			// and runs updateTrie which updates originStorage — both are
+			// necessary for correct cross-tx EVM behavior.
+			// Storage wipe is handled by storageWipes map in MakeWriteSet,
+			// not by stateObject flags, so no flag inheritance issues.
+			if err := updateAccount(policy, stateWriter, addr, so, true); err != nil {
+				return err
+			}
+
+			sdb.stateObjectsDirty[addr] = struct{}{}
 		}
-
-		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
 	sdb.promoteWipes()
 	sdb.clearCurrentTxFlags()
@@ -1315,10 +1365,8 @@ func (sdb *IntraBlockState) CommitBlock(chainRules *params.Rules, stateWriter St
 	// Sorted iteration: see note on FinalizeTx — getStateObject can read
 	// through the block-witness recorder, so iteration order is visible
 	// in the witness stream.
-	for _, addr := range sortedAddresses(sdb.balanceInc) {
-		if bi := sdb.balanceInc[addr]; !bi.transferred {
-			sdb.getStateObject(addr)
-		}
+	for _, addr := range sdb.pendingIncreaseAddrs() {
+		sdb.getStateObject(addr)
 	}
 	return sdb.MakeWriteSet(chainRules, stateWriter)
 }
@@ -1506,10 +1554,21 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 // If a RootComputer is set (e.g., JMT), it delegates to that;
 // otherwise falls back to the legacy incremental Keccak hash.
 func (s *IntraBlockState) IntermediateRoot() types.Hash {
+	var root types.Hash
 	if s.rootComputer != nil {
-		return s.computeRootViaComputer()
+		root = s.computeRootViaComputer()
+	} else {
+		root = s.GenerateRootHash()
 	}
-	return s.GenerateRootHash()
+	s.lastIntermediateRoot, s.lastIntermediateRootSet = root, true
+	return root
+}
+
+// LastIntermediateRoot returns the root the most recent IntermediateRoot
+// computed, without computing again (a QMDB root computation applies the
+// block's writes to the tree; a second call would apply them twice).
+func (s *IntraBlockState) LastIntermediateRoot() (types.Hash, bool) {
+	return s.lastIntermediateRoot, s.lastIntermediateRootSet
 }
 
 // computeRootViaComputer collects dirty accounts/storage and delegates
@@ -1524,11 +1583,9 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// sorted CommitBlock loop, in IntermediateRoot) made the witness byte
 	// stream nondeterministic run-to-run, breaking ethel replay / mobile
 	// verification reproducibility.
-	for _, addr := range sortedAddresses(s.balanceInc) {
-		if bi := s.balanceInc[addr]; bi != nil && !bi.transferred {
-			s.getStateObject(addr)
-			s.stateObjectsDirty[addr] = struct{}{}
-		}
+	for _, addr := range s.pendingIncreaseAddrs() {
+		s.getStateObject(addr)
+		s.stateObjectsDirty[addr] = struct{}{}
 	}
 	// Merge journal.dirties — Finalize (block rewards) and post-block system
 	// calls write to journal but there's no FinalizeTx after them.
@@ -1905,4 +1962,17 @@ func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash, err error) 
 		return types.Hash{}, err
 	}
 	return hashValue, nil
+}
+
+// DirtySetSizes reports how many accounts are marked dirty and how many of
+// them are empty (nonce 0, balance 0) -- a diagnostic for comparing a build's and a
+// verify's dirty sets before the root is computed.
+func (sdb *IntraBlockState) DirtySetSizes() (accounts, withStorage int) {
+	for addr := range sdb.stateObjectsDirty {
+		accounts++
+		if so, ok := sdb.stateObjects[addr]; ok && so != nil && so.data.Nonce == 0 && so.data.Balance.IsZero() {
+			withStorage++ // repurposed: dirty accounts that are EMPTY (EIP-161 deletes)
+		}
+	}
+	return accounts, withStorage
 }

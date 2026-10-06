@@ -32,6 +32,125 @@ numbers). Companion doc for the eth-el side: `docs/ethel/weekly-update-runbook.m
 - `sendbreak.exe` (AttachConsole + CTRL_BREAK broadcaster, source mirrors
   `cmd/n42/stop_windows.go`) — or `n42 stop`.
 
+## Step 0 — THE BASE'S SOURCE IS THE OLD MAINNET, NOT THE FLEET (policy, 2026-09-04)
+
+**Read this before Step 1. It corrects what Steps 1-2 below say.**
+
+The canonical base is built ONLY from the old mainnet (`mainnet_compat`,
+chain ID 94, genesis `138734b7…`), which lives at `D:\mainnet\mainnet` on the
+Windows box and is synced from the network there. **The fleet's own blocks are
+TEST data and are never folded into the base.**
+
+Weekly order:
+
+1. **Sync the old mainnet on Windows** to its current network head. That height
+   is the week's BASELINE — the replay can go exactly that far and no further.
+   Stop it with CTRL_BREAK (`sendbreak.exe <pid>`); the caught-up signal is
+   `currentNr == highestExpectedBlockNr` in the resync log, after which it
+   switches to live-follow.
+2. **Copy that data to Linux.** One 40 GB MDBX file; chunked transfer with a
+   per-chunk byte-count check and a full md5 on both sides afterwards.
+   2026-09-04: `/data/blockchain/mainnet-source-win`, md5
+   `dc797adf00c9f0823a07b92a199b7af2`.
+3. **Replay from that copy on BOTH machines, independently.** Each machine's
+   result is its own base. Two independent executions of the same input from
+   the same starting state are the cross-check: compare `checkpoint.json`
+   (`sourceHead`, `number`, `hash`), `replay_stats.json`, and the per-batch
+   `qmdbRoot` lines.
+4. Seal / emit-hot / txindex / re-seed as in Steps 2b-3.
+
+### Why: folding fleet blocks forks the base, silently
+
+Step 2 below passes `--source E:/qs-node0` — a FLEET NODE. The fleet produces
+its own blocks on top of the replayed head (stress-test load, `--dev.txgen`),
+and those are not mainnet history. Folding them in permanently forks the base
+from the chain it is supposed to mirror, and nothing reports an error.
+
+That already happened. Two lineages exist:
+
+| base | checkpoint number | what it contains |
+|---|---|---|
+| `E:\qs-replay-v4` (49 GB) and `qs-replay-v5` (65 GB) — same checkpoint | **14,288,280** | old-mainnet history **plus folded fleet blocks** |
+| `qs-replay-linux` (29 GB) | **13,652,362** | old-mainnet history only — **the clean lineage** |
+
+The 636k-block gap between them is fleet output, not chain history. The clean
+base's `sourceHead` (13,497,579 before this week's fold) matched the Windows
+old-mainnet's height exactly — that fingerprint is how the correct source was
+identified.
+
+**Do not use the 14,288,280 lineage as a base.** It is kept for reference only.
+
+### A source that is NOT the right one, on the same box
+
+`/data/blockchain/mainnet-source` on Linux looks like the old mainnet and is
+not: genesis `883bb3e2…` (not `138734b7…`) and it stops at 13,205,073.
+Always check the genesis in the startup banner and the height against the
+base's recorded `sourceHead` before pointing a replay at a source.
+
+### Replay's resume point lives in the target DB
+
+Measured 2026-09-04: `checkpoint.json` is an OUTPUT. Rewinding it does nothing
+(0 blocks processed), and `--from`/`--to` do not override the resume point
+either (also 0 blocks). To re-run a range that has already been folded you need
+an EMPTY target or one that is genuinely behind. This matters when reproducing
+a fold for measurement or for a cross-check.
+
+## Step 0b — Cross-check result and what `receiptMismatch` means (2026-09-04)
+
+### Both machines replayed the same source independently and agreed
+
+Windows replayed all 13,612,974 blocks from genesis; Linux folded only this
+week's 115,395-block increment. Different OS, different CPU, different binary
+(Windows built fresh from `fff8a81e`, Linux running its 2026-08-28 `bin/n42`),
+different starting points — and the final state is identical:
+
+| | Windows | Linux |
+|---|---|---|
+| `sourceHead` | 13,612,974 | 13,612,974 |
+| `number` | 13,652,362 | 13,652,362 |
+| `hash` | `0x7b3f3a8f…7924` | **the same, character for character** |
+
+The `replay_stats` fields differ only in SCOPE (full chain vs weekly
+increment); every field that is comparable — `currentBlock`, `fromBlock`,
+`toBlock`, `blocksMissing`, `txFailed`, `txSkipped` — matches.
+
+Measured on the full replay, useful for planning:
+
+| | |
+|---|---|
+| wall time | **1 h 33 m 47 s** (2,419 blk/s average) |
+| processed | 13,612,974 blocks (1,975,448 empty), 26,176,157 txs, **0 missing, 0 failed** |
+| **peak private memory** | **28.76 GB** (25,269 samples at 200 ms) |
+| base size | 28.0 GB |
+
+That peak was measured WHILE the DATC v2 build was running at 44.8 GB private
+on the same box; the two coexisted with no incident. An earlier 6.68 GB figure
+was from a sparse-range probe and is a floor, not the number to plan with.
+
+### `receiptMismatch` is expected, and is NOT a failure
+
+The full replay reported **2,979 receipt mismatches against 13,609,995
+matches (0.022%)**. This is not damage.
+
+The source is the OLD chain and the target is the NEW one, and the two sit on
+**different EIP sets**, so a block's receipts are legitimately derived
+differently on each side. The replayed receipts are correct for the target
+chain; they simply do not reproduce a receipt root that the old chain's rules
+produced. `internal/replay/engine_v2.go` now says so at the comparison itself.
+
+What makes this checkable rather than a claim: the two machines replayed the
+same source independently and produced the SAME canonical hash. Deterministic
+rule differences do that; corruption does not.
+
+So: **a non-zero `receiptMismatch` is not a gate failure.** It is an
+observation counter — the run does not stop on it and the exit code is
+unaffected. Do not make it fatal.
+
+What it does NOT tell you is WHICH blocks differ; the counter records no block
+numbers and the log carries no per-block line. If that is ever needed,
+per-block logging has to be added at the comparison and the replay re-run
+(~1.5 h for the full chain).
+
 ## Step 1 — gracefully stop the fleet, record the head
 
 ```powershell
@@ -56,13 +175,18 @@ tail /e/qs-node0/log/n42.log   # last "commit-to-canonical phases" number = fina
 
 ```powershell
 Start-Process C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe -ArgumentList `
-  'replay-v2','--source','E:/qs-node0','--target','E:/qs-replay-v4', `
+  'replay-v2','--source','<OLD-MAINNET DATADIR>','--target','<BASE>', `   # NOT a fleet node -- see Step 0
   '--chain','mainnet_qmdb_staggered','--tree','qmdb', `
   '--output','E:/qs-replay-v4/replay_stats.json' `
   -RedirectStandardOutput E:\qs-replay-v4\replay-inc-<date>.log `
   -RedirectStandardError E:\qs-replay-v4\replay-inc-<date>.err -WindowStyle Hidden
 ```
 
+- **`--source` MUST be the old-mainnet datadir, never a fleet node.** This
+  line used to read `--source E:/qs-node0`; that folds the fleet's own
+  stress-test blocks into the base and forks it from mainnet history
+  permanently, with no error. See Step 0 for the two lineages that already
+  exist because of it.
 - **`--source` / `--target` take the datadir ROOT** — the tool appends
   `/chaindata` itself. Passing `E:/qs-node0/chaindata` fails with
   `open source DB … Accede mode`.

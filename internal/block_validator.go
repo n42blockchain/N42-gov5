@@ -95,7 +95,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	}
 
 	blockNum := blockNumber.Uint64()
-	txHash := block.TxRoot(b.Transactions())
+	txHash := block.TxRootAt(b.Transactions(), b.Time())
 	if txHash != b.TxHash() {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
 	}
@@ -133,6 +133,12 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	header, ok := iBlock.Header().(*block.Header)
 	if !ok {
 		return fmt.Errorf("ValidateState: invalid header type assertion for block %v", iBlock.Number64())
+	}
+	if v.config != nil && v.config.IsDeferredExecution(header.Time) {
+		// The header's gas used, bloom and receipts root are the parent's
+		// (checked before execution); this block's own go into its stored
+		// result and are checked by the next header.
+		return nil
 	}
 	if header.GasUsed != usedGas {
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", header.GasUsed, usedGas)

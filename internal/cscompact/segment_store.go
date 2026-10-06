@@ -414,3 +414,56 @@ func renameWithRetry(src, dst string) error {
 	}
 	return err
 }
+
+// TruncateLastSegment removes the newest segment from the store: the cdat
+// frame it occupies is cut back to its start offset, any later cdat file is
+// deleted, and its cidx entry goes away. Used to rewrite a PARTIAL final
+// segment (one whose source range ended mid-segment) on the next run —
+// counting such a segment as full resumes at the next boundary and leaves a
+// permanent hole, the same failure headerc/bodyc rewind against.
+//
+// Unlike the headerc rewind this also shrinks the cdat, so a weekly rebuild of
+// the tail segment does not accumulate orphaned frames inside a published
+// artefact.
+func (w *SegmentStoreWriter) TruncateLastSegment() error {
+	segs := w.SegmentCount()
+	if segs == 0 {
+		return fmt.Errorf("truncate: store is empty")
+	}
+	var lastEntry [segIdxEntrySize]byte
+	if _, err := w.idxFile.ReadAt(lastEntry[:], int64(segs-1)*segIdxEntrySize); err != nil {
+		return fmt.Errorf("truncate: read last idx entry: %w", err)
+	}
+	fileNum := binary.LittleEndian.Uint16(lastEntry[0:2])
+	datOff := int64(binary.LittleEndian.Uint32(lastEntry[4:8]))
+
+	// Drop whole cdat files newer than the one holding this segment. They can
+	// only exist if a previous crash left them behind — no live entry points
+	// into them once this entry is gone.
+	for f := fileNum + 1; ; f++ {
+		p := filepath.Join(w.dir, fmt.Sprintf("%s.%04d.cdat", w.prefix, f))
+		if _, err := os.Stat(p); err != nil {
+			break
+		}
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("truncate: remove %s: %w", p, err)
+		}
+	}
+
+	cdatPath := filepath.Join(w.dir, fmt.Sprintf("%s.%04d.cdat", w.prefix, fileNum))
+	if err := os.Truncate(cdatPath, datOff); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("truncate: cdat %s to %d: %w", cdatPath, datOff, err)
+	}
+	if err := w.idxFile.Truncate(int64(segs-1) * segIdxEntrySize); err != nil {
+		return fmt.Errorf("truncate: cidx: %w", err)
+	}
+	if err := w.idxFile.Sync(); err != nil {
+		return fmt.Errorf("truncate: sync cidx: %w", err)
+	}
+	if _, err := w.idxFile.Seek(0, 2); err != nil {
+		return fmt.Errorf("truncate: seek cidx: %w", err)
+	}
+	w.headFile = fileNum
+	w.headSize = datOff
+	return nil
+}

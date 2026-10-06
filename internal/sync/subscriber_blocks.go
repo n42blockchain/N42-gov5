@@ -55,6 +55,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 		return nil
 	}
 
+	s.deferredCheck(blk)
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		// If parent is missing, queue as future block instead of marking bad.
 		// The parent may arrive moments later via gossip.
@@ -83,6 +84,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 	if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blockHash, blockNumber.Uint64()) {
 		n.NotifyBlockImported(blockHash, blk.TxHash())
 	}
+	s.retryDeferredChildren(blockHash)
 
 	return nil
 }

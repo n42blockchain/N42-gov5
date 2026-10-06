@@ -98,8 +98,9 @@ func (o *StateOverlay) Get(table string, k []byte) ([]byte, bool) {
 func (o *StateOverlay) Len() int { return o.hAcc.Len() + o.hSto.Len() + o.tAcc.Len() + o.tSto.Len() }
 
 // FlushTo applies pending writes to tx in sorted (near-append) order and clears
-// the overlay. DupSort tables (HashedStorage, TrieOfStorage) keep the
-// delete-before-put discipline so a path/key holds exactly its current value(s).
+// the overlay. On the DupSort tables (HashedStorage, TrieOfStorage) a key must
+// end with exactly its current value: a tx that implements kv.Upserter does
+// that in one positioned write, any other tx keeps delete-before-put.
 func (o *StateOverlay) FlushTo(tx kv.RwTx) error {
 	// Plain tables: Put/Delete.
 	for _, t := range []struct {
@@ -121,7 +122,7 @@ func (o *StateOverlay) FlushTo(tx kv.RwTx) error {
 		}
 		it.Release()
 	}
-	// DupSort tables: delete-before-put (full keys; AutoDupSort splits them).
+	// DupSort tables (full keys; AutoDupSort splits them).
 	for _, t := range []struct {
 		name string
 		tr   *btree.BTreeG[overlayKV]
@@ -129,15 +130,9 @@ func (o *StateOverlay) FlushTo(tx kv.RwTx) error {
 		it := t.tr.Iter()
 		for ok := it.First(); ok; ok = it.Next() {
 			e := it.Item()
-			if err := tx.Delete(t.name, e.k); err != nil {
+			if err := replaceDup(tx, t.name, e.k, e.v); err != nil {
 				it.Release()
 				return err
-			}
-			if e.v != nil {
-				if err := tx.Put(t.name, e.k, e.v); err != nil {
-					it.Release()
-					return err
-				}
 			}
 		}
 		it.Release()
@@ -147,6 +142,22 @@ func (o *StateOverlay) FlushTo(tx kv.RwTx) error {
 	o.tAcc.Clear()
 	o.tSto.Clear()
 	return nil
+}
+
+// replaceDup leaves k holding exactly v on a DupSort table (v == nil deletes
+// every value of k). An Upserter does it in one positioned write; otherwise
+// the old duplicates are deleted before the put.
+func replaceDup(tx kv.RwTx, table string, k, v []byte) error {
+	if v == nil {
+		return tx.Delete(table, k)
+	}
+	if up, ok := tx.(kv.Upserter); ok {
+		return up.Upsert(table, k, v)
+	}
+	if err := tx.Delete(table, k); err != nil {
+		return err
+	}
+	return tx.Put(table, k, v)
 }
 
 // ---------------------------------------------------------------------------

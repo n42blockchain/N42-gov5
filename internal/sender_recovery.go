@@ -28,9 +28,11 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 )
 
 // Why this exists.
@@ -122,28 +124,67 @@ func senderRecoveryFanout() int {
 // leaks. A nil source, a miss, or a recovery error just leaves the transaction
 // for the worker-pool pass.
 func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*transaction.Transaction) int {
-	if hints == nil || signer == nil {
+	if signer == nil {
 		return 0
 	}
 	if batch, ok := hints.(senderHintBatchSource); ok && len(txs) >= senderRecoveryMinTxs {
 		return applySenderHintBatches(batch, signer, txs)
 	}
-	filled := 0
-	for _, tx := range txs {
+	// The process-wide sender cache first, across the recovery fan-out: with
+	// a hint feed (ingest hint-only mode) it holds most of the block already,
+	// and one atomic load a transaction costs nothing. The pool lookup below
+	// is what this pass used to be alone -- 163,000 serial GetTx calls
+	// against a pool writer admitting 60k tx/s, ~2 us each: the 350-410 ms
+	// that rounds 35zj-35zl still read in recover with the feed complete.
+	var filled atomic.Int64
+	fill := func(tx *transaction.Transaction) {
 		if tx == nil || tx.From() != nil {
-			continue
+			return
+		}
+		if addr, ok := transaction.CachedSender(signer, tx); ok {
+			tx.SetFrom(addr)
+			filled.Add(1)
+			return
+		}
+		if hints == nil {
+			return
 		}
 		hash := tx.Hash()
 		ptx := hints.GetTx(hash)
 		if ptx == nil || ptx.Hash() != hash {
-			continue
+			return
 		}
 		if addr, err := transaction.Sender(signer, ptx); err == nil {
 			tx.SetFrom(addr)
-			filled++
+			filled.Add(1)
 		}
 	}
-	return filled
+	workers := senderRecoveryFanout()
+	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
+		workers = 1
+	}
+	if workers < 2 {
+		for _, tx := range txs {
+			fill(tx)
+		}
+		return int(filled.Load())
+	}
+	done := make(chan struct{}, workers)
+	for w := 0; w < workers; w++ {
+		go func(start int) {
+			defer func() {
+				_ = recover()
+				done <- struct{}{}
+			}()
+			for i := start; i < len(txs); i += workers {
+				fill(txs[i])
+			}
+		}(w)
+	}
+	for w := 0; w < workers; w++ {
+		<-done
+	}
+	return int(filled.Load())
 }
 
 // Fill wire transactions in order, just like the scalar path. Only pool
@@ -319,18 +360,29 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 // the cached From via signer.Sender, but reusing the process-wide
 // senderCache for pool-seen txs so honest blocks stay fast) and compare.
 // Any mismatch or unrecoverable signature rejects the whole block.
+var senderProbeLogged atomic.Bool
+
 func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) error {
-	return verifyBlockSendersWithHints(signer, txs, nil)
+	_, err := verifyBlockSendersHinted(signer, txs, nil)
+	return err
 }
 
-// verifyBlockSendersWithHints can reuse a pool object's signature memo after
-// checking the complete signed transaction hash. Sender ignores its wire From
-// and checks the memo's signer, so this never trusts an asserted pool address.
-// The imported transaction's declared From is still compared before execution.
-func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) error {
+// verifyBlockSendersHinted is verifyBlockSenders with the pool as a cache:
+// a transaction the pool holds under the same hash carries the same
+// signature bytes (the hash covers them), and the pool recovered its sender
+// at admission, so that sender -- re-derived through the block's signer,
+// which checks the cache belongs to this signer -- is what recovering the
+// wire copy would give. It is compared with the declared sender exactly as
+// a fresh recovery would be; only the secp256k1 work is skipped. Returns
+// how many transactions the pool answered for. Round 35g: every one of a
+// 163k-transaction block's senders was recovered here at ~50 us, 8
+// core-seconds a block on every node, for transactions the node's pool had
+// already recovered once on arrival.
+func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) (int, error) {
 	if signer == nil {
-		return nil
+		return 0, nil
 	}
+	var hintHits atomic.Int64
 	type mismatch struct {
 		idx int
 		err error
@@ -368,6 +420,13 @@ func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.T
 			report(i, fmt.Errorf("tx %d declares sender %s but carries no signature values (V/R/S)", i, declared.Hex()))
 			return
 		}
+		if cached, ok := transaction.CachedSender(signer, tx); ok {
+			hintHits.Add(1)
+			if cached != *declared {
+				report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), cached.Hex()))
+			}
+			return
+		}
 		var recovered types.Address
 		var err error
 		if hints != nil && !hasBatchHints {
@@ -375,6 +434,9 @@ func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.T
 		}
 		if poolTx != nil && poolTx.Hash() == tx.Hash() {
 			recovered, err = transaction.Sender(signer, poolTx)
+			if err == nil {
+				hintHits.Add(1)
+			}
 		} else {
 			recovered, err = transaction.RecoverSenderFromSig(signer, tx)
 		}
@@ -387,6 +449,21 @@ func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.T
 		}
 	}
 
+	// One-time diagnostic (round 35zk: a complete hint feed and zero cache
+	// hits): before the fan-out, probe the cache slots of the first three
+	// transactions and say what they hold.
+	if len(txs) >= senderRecoveryMinTxs && senderProbeLogged.CompareAndSwap(false, true) {
+		for i := 0; i < 3 && i < len(txs); i++ {
+			if txs[i] == nil {
+				continue
+			}
+			h := txs[i].Hash()
+			occ, same, st := transaction.SenderCacheProbe(h)
+			hits, misses := transaction.SenderCacheStats()
+			log.Info("sender cache probe", "i", i, "hash", h.Hex()[:18], "occupied", occ, "sameHash", same, "entrySigner", st,
+				"importSigner", fmt.Sprintf("%T", signer), "cacheHits", hits, "cacheMisses", misses, "declared", txs[i].From() != nil)
+		}
+	}
 	workers := senderRecoveryFanout()
 	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
 		workers = 1
@@ -455,7 +532,7 @@ func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.T
 		}
 	}
 	if len(found) == 0 {
-		return nil
+		return int(hintHits.Load()), nil
 	}
 	// Deterministic error: report the lowest-index offender.
 	best := found[0]
@@ -464,5 +541,10 @@ func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.T
 			best = m
 		}
 	}
-	return best.err
+	return int(hintHits.Load()), best.err
+}
+
+func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) error {
+	_, err := verifyBlockSendersHinted(signer, txs, hints)
+	return err
 }

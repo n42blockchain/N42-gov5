@@ -96,6 +96,14 @@ type MdbxTx struct {
 	// tableWrites is per-table write attribution, populated only while
 	// N42_WRITE_PROBE is on. See write_probe.go.
 	tableWrites *tableWrites
+
+	// beganAt and waitedFor time a write transaction: how long BeginTxn
+	// waited for the single writer and when it got it. Read by the write
+	// probe so a log of every write transaction shows who held the lock and
+	// for how long (round 35zzi: block writes waiting 2 s to begin late in
+	// a leg, with no writer named).
+	beganAt   time.Time
+	waitedFor time.Duration
 }
 
 func (db *MdbxKV) Path() string     { return db.opts.path }
@@ -326,18 +334,22 @@ func (db *MdbxKV) beginRw(ctx context.Context, flags uint) (txn kv.RwTx, err err
 	}
 
 	runtime.LockOSThread()
+	tWait := time.Now()
 	tx, err := db.env.BeginTxn(nil, flags)
 	if err != nil {
 		runtime.UnlockOSThread() // unlock only in case of error. normal flow is "defer .Rollback()"
 		db.trackTxEnd()
 		return nil, fmt.Errorf("%w, lable: %s, trace: %s", err, db.opts.label.String(), stack2.Trace().String())
 	}
+	began := time.Now()
 
 	return &MdbxTx{
-		db:  db,
-		tx:  tx,
-		ctx: ctx,
-		id:  db.leakDetector.Add(),
+		db:        db,
+		tx:        tx,
+		ctx:       ctx,
+		id:        db.leakDetector.Add(),
+		beganAt:   began,
+		waitedFor: began.Sub(tWait),
 	}, nil
 }
 

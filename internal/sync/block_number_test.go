@@ -1,6 +1,7 @@
 package sync
 
 import (
+	gosync "sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type syncBlockStub struct {
 
 type syncChainStub struct {
 	common.IBlockChain
+	mu      gosync.Mutex
 	current block.IBlock
 }
 
@@ -45,7 +47,18 @@ func (b *syncBlockStub) StateRoot() types.Hash                           { retur
 func (b *syncBlockStub) WithSeal(block.IHeader) *block.Block             { return nil }
 
 func (s *syncChainStub) CurrentBlock() block.IBlock {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.current
+}
+
+// setCurrent replaces the head under the stub's lock; tests that advance the
+// head while a background goroutine (the catch-up grace timer) reads it must
+// use this instead of assigning the field.
+func (s *syncChainStub) setCurrent(b block.IBlock) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.current = b
 }
 
 func TestRequireBlockNumberRejectsNilNumber(t *testing.T) {

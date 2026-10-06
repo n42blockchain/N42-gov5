@@ -101,18 +101,28 @@ func (pool *TxsPool) enqueueTx(hash types.Hash, tx *transaction.Transaction, loc
 func (pool *TxsPool) promoteExecutables(accounts []types.Address) []*transaction.Transaction {
 	var promoted []*transaction.Transaction
 
+	// One read transaction for the accounts that have a queue (see
+	// demoteUnexecutables for the measurement).
+	queued := make([]types.Address, 0, len(accounts))
+	for _, addr := range accounts {
+		if pool.queue[addr] != nil {
+			queued = append(queued, addr)
+		}
+	}
+	infos := pool.currentState.GetAccountsInfo(queued)
 	for _, addr := range accounts {
 		list := pool.queue[addr]
 		if list == nil {
 			continue
 		}
+		nonce, balance := pool.accountState(addr, infos)
 		// Drop all transactions that are deemed too old (low nonce)
-		forwards := list.Forward(pool.currentState.GetNonce(addr))
+		forwards := list.Forward(nonce)
 		for _, tx := range forwards {
 			pool.all.Remove(tx.Hash())
 		}
 		// Drop all transactions that are too costly (low balance or out of gas)
-		drops, _ := list.Filter(*pool.currentState.GetBalance(addr), pool.currentMaxGas)
+		drops, _ := list.Filter(*balance, pool.currentMaxGas)
 		for _, tx := range drops {
 			pool.all.Remove(tx.Hash())
 		}
@@ -312,8 +322,18 @@ func (pool *TxsPool) truncateQueue() {
 // is always explicitly triggered by SetBaseFee and it would be unnecessary and wasteful
 // to trigger a re-heap in this function.
 func (pool *TxsPool) demoteUnexecutables() {
+	// One read transaction for every pending account's nonce and balance.
+	// Round 28/29 measured the per-account getters -- two transactions each,
+	// ~100 us apiece -- at 160-220 ms of a 0.5-0.85 s reorg on a 4,000-sender
+	// pool, and the reorg's lag behind the head is what leaves already-mined
+	// transactions in the pool for the next build to wade through.
+	addrs := make([]types.Address, 0, len(pool.pending))
+	for addr := range pool.pending {
+		addrs = append(addrs, addr)
+	}
+	accounts := pool.currentState.GetAccountsInfo(addrs)
 	for addr, list := range pool.pending {
-		nonce := pool.currentState.GetNonce(addr)
+		nonce, balance := pool.accountState(addr, accounts)
 
 		// Drop all transactions that are deemed too old (low nonce)
 		olds := list.Forward(nonce)
@@ -321,7 +341,7 @@ func (pool *TxsPool) demoteUnexecutables() {
 			pool.all.Remove(tx.Hash())
 		}
 		// Drop all transactions that are too costly, and queue any invalids back for later
-		drops, invalids := list.Filter(*pool.currentState.GetBalance(addr), pool.currentMaxGas)
+		drops, invalids := list.Filter(*balance, pool.currentMaxGas)
 		for _, tx := range drops {
 			pool.all.Remove(tx.Hash())
 		}

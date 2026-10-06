@@ -29,7 +29,7 @@ import (
 )
 
 func GetAccount(db kv.Tx, addr types.Address, acc *account.StateAccount) (bool, error) {
-	enc, err := db.GetOne(modules.Account, addr[:])
+	enc, err := modules.ReadLatestAccount(db, addr[:])
 	if err != nil {
 		return false, err
 	}

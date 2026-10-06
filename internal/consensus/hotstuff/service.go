@@ -235,6 +235,28 @@ func (s *Service) requestCommittedCatchUp(hash types.Hash, number uint64) {
 	}()
 }
 
+// deferProduction parks a leader view whose parent is not applied yet so
+// NotifyBlockImported re-runs the gate when it lands. The import can complete
+// between the gate's check and this registration; a second, side-effect-free
+// probe after registering closes that window by re-running the gate at once.
+func (s *Service) deferProduction(view ViewNumber, parentHash types.Hash) {
+	s.pendingMu.Lock()
+	s.deferredProduce.view, s.deferredProduce.parent = view, parentHash
+	s.pendingMu.Unlock()
+	if applied, checked, _ := s.blockExecutionStatus(parentHash); checked && applied {
+		s.pendingMu.Lock()
+		raced := s.deferredProduce.parent == parentHash
+		if raced {
+			s.deferredProduce.parent = types.Hash{}
+		}
+		s.pendingMu.Unlock()
+		if raced {
+			log.Info("hotstuff: deferred production resumed at once, the parent applied during the gate", "view", uint64(view), "parent", parentHash.Hex()[:12])
+			go s.triggerBlockProduction(view, parentHash)
+		}
+	}
+}
+
 // committedParentBlocked rechecks the proposed consensus parent and fails
 // closed after repeated local execution failures. The failure streak is
 // chain-wide rather than keyed by hash because commits keep advancing while a
@@ -356,6 +378,13 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 	if s.committedParentBlocked(parentHash) {
 		dCommitted = time.Since(tC)
 		logGates("committed-parent-blocked")
+		// The guard fires on a chain-wide streak of commits that landed
+		// before their block was executed here -- routine at 163k a block,
+		// where the commit QC outruns the follower's 1.5 s import -- and the
+		// parent is then one import away: round 35ze B1, both timeouts were
+		// this gate at a tenure handoff, the parent applied 100 ms later, and
+		// nothing resumed the view because only the parent-not-applied
+		// branch registered a retry. Register it here too.
 		return
 	}
 	dCommitted = time.Since(tC)
@@ -448,12 +477,26 @@ type Service struct {
 	notifiedImports map[types.Hash]struct{}
 	notifiedFIFO    []types.Hash
 
-	// pendingCommit is a committed block whose CommitToCanonical was deferred
+	// pendingCommits are committed blocks whose CommitToCanonical was deferred
 	// because the block hadn't arrived yet. Retried when that block imports —
 	// without the retry, nodes that missed the commit-time import never mark
 	// the height canonical (observed on-disk: canonical rows missing on 6/7
-	// nodes at the first view-changed height). Protected by pendingMu.
-	pendingCommit types.Hash
+	// nodes at the first view-changed height). A set, not one slot: a follower
+	// that hears several Decides before their bodies must retry every one,
+	// not only the last (n42-rs loop149/loop154 hit exactly that with the
+	// deferred-execution rule, where the vote no longer waits for the body).
+	// Protected by pendingMu.
+	pendingCommits map[types.Hash]struct{}
+	// deferredProduce remembers a leader view whose gate found the consensus
+	// parent not yet applied locally, so the import that lands it can re-run
+	// the gate instead of the view waiting out its 6 s timeout. Round 31: at
+	// 140k-transaction blocks the QC forms on five imports, and the next
+	// leader's own import of that block is often still in flight when its
+	// view starts; every such view cost a timeout.
+	deferredProduce struct {
+		view   ViewNumber
+		parent types.Hash
+	}
 
 	// A CommitQC may arrive before this node executes the committed block. Keep
 	// the consecutive failed execution observations so a leader does not extend
@@ -600,14 +643,22 @@ func (s *Service) processOutputs() {
 		case <-s.ctx.Done():
 			return
 		case output := <-s.engine.OutputCh():
-			s.handleOutput(output)
+			// S17 (docs/QS_BLOCK_TIME_BUDGET.md 6ck): t_deq, the moment this
+			// serial loop dequeues the output -- emit2Deq = t_deq - t_emit.
+			// Nil unless the message actually carries a t_emit (i.e. the
+			// diagnostic is on), so the zero-value case costs one time.Now().
+			var tDeq time.Time
+			if contentionDiagEnabled && !output.EmittedAt.IsZero() {
+				tDeq = time.Now()
+			}
+			s.handleOutput(output, tDeq)
 		case <-s.productionRetry:
 			s.retryBlockProduction()
 		}
 	}
 }
 
-func (s *Service) handleOutput(output EngineOutput) {
+func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 	switch output.Type {
 	case OutputBroadcast:
 		// Off the serial output loop: handleOutput also runs heavyweight work
@@ -619,16 +670,16 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// carries its view, so cross-message ordering is not load-bearing
 		// (the proposal's block-data pre-broadcast stays ordered inside the
 		// same goroutine).
-		go func(out EngineOutput) {
+		go func(out EngineOutput, deq time.Time) {
 			// Leader: broadcast block data via gossip BEFORE sending Proposal,
 			// so followers can import the block and vote on it.
 			if out.Message != nil && out.Message.Type == MsgProposal {
 				s.broadcastBlockData(out.Hash)
 			}
-			s.handleBroadcast(out)
-		}(output)
+			s.handleBroadcast(out, deq)
+		}(output, tDeq)
 	case OutputSendToValidator:
-		go s.handleSendToValidator(output)
+		go s.handleSendToValidator(output, tDeq)
 	case OutputExecuteBlock:
 		// A Proposal references this block. When it is imported (via direct push
 		// or fetch), NotifyBlockImported fires EventBlockImported and the engine
@@ -698,11 +749,14 @@ func (s *Service) handleOutput(output EngineOutput) {
 				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", cErr)
 				// Remember it — NotifyBlockImported retries when the block lands.
 				s.pendingMu.Lock()
-				s.pendingCommit = output.Hash
+				if s.pendingCommits == nil || len(s.pendingCommits) >= maxPendingCommits {
+					s.pendingCommits = make(map[types.Hash]struct{})
+				}
+				s.pendingCommits[output.Hash] = struct{}{}
 				s.pendingMu.Unlock()
 			} else {
 				s.pendingMu.Lock()
-				s.pendingCommit = types.Hash{}
+				delete(s.pendingCommits, output.Hash)
 				s.pendingMu.Unlock()
 			}
 			dCanon = time.Since(tCanon)
@@ -755,7 +809,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// on non-miner proposals while the chain head never advances. Direct block
 		// push (resultLoop) makes the old gossip-warmup delay unnecessary.
 		isLeader := s.engine.Engine().IsCurrentLeader()
-		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil)
+		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil, "tMs", time.Now().UnixMilli())
 		if isLeader && s.blockProducer != nil {
 			// Sync-gate: a validator whose local head trails the network must NOT
 			// produce a block. It would build on a stale head and self-fork —
@@ -848,10 +902,31 @@ func (s *Service) handleOutput(output EngineOutput) {
 	}
 }
 
-func (s *Service) handleBroadcast(output EngineOutput) {
+// handleBroadcast publishes a broadcast output (Proposal/PrepareQC/Decide/
+// Timeout/NewView) to the gossip topic, using Rotor's single-hop relay for
+// Proposals when available. tDeq is S17's dequeue stamp from processOutputs;
+// zero when called from handleSendToValidator's own "gossip is always also
+// sent" fallback (that call site records its OWN stamp for MsgVote/
+// MsgCommitVote, so this function's tracking -- gated to Proposal/PrepareQC,
+// which never arrive via that path -- never double-counts).
+func (s *Service) handleBroadcast(output EngineOutput, tDeq time.Time) {
 	if output.Message == nil || s.p2p == nil {
 		return
 	}
+	msgType := output.Message.Type
+	trackSend := contentionDiagEnabled && !output.EmittedAt.IsZero() &&
+		(msgType == MsgProposal || msgType == MsgPrepareQC)
+	var tPub0 time.Time
+	path := "gossip only"
+	if trackSend {
+		defer func() {
+			tPub1 := time.Now()
+			if eng := s.engine.Engine(); eng != nil {
+				eng.recordSendStamp(messageView(*output.Message), msgType, output.EmittedAt, tDeq, tPub0, tPub1, path)
+			}
+		}()
+	}
+
 	if output.Message.Type == MsgDecide && s.h2V4Identity != nil {
 		go s.publishH2V4Decide(output.Message)
 	}
@@ -879,6 +954,10 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	// message that fails to encode or publish) are logged separately.
 	log.Debug("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
 
+	if trackSend {
+		tPub0 = time.Now()
+	}
+
 	// Use Rotor single-hop relay for proposal broadcasts.
 	if output.Message.Type == MsgProposal && s.rotor != nil && s.rotor.Enabled() {
 		eng := s.engine.Engine()
@@ -903,7 +982,10 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 			ds, s.rpcTopic, gossipFn, gossipBytes,
 		); err != nil {
 			log.Warn("hotstuff: rotor broadcast failed, falling back to gossip", "err", err)
+			path = "rotor failed -> gossip"
 			_ = s.p2p.PublishToTopic(s.ctx, topic, gossipBytes)
+		} else {
+			path = "rotor ok"
 		}
 		return
 	}
@@ -965,9 +1047,24 @@ func timeoutPublishPeerTarget(quorumSize int) int {
 	return quorumSize - 1
 }
 
-func (s *Service) handleSendToValidator(output EngineOutput) {
+// handleSendToValidator sends a targeted output (a prepare/commit vote or a
+// timeout), trying Rotor's direct stream first and always ALSO gossiping
+// (see the comment above the fallback below). tDeq is S17's dequeue stamp
+// from processOutputs; diagnostic and message-type-gated (MsgVote/
+// MsgCommitVote only -- Proposal/PrepareQC are tracked in handleBroadcast
+// instead, since they arrive here only via OutputBroadcast, not this path).
+func (s *Service) handleSendToValidator(output EngineOutput, tDeq time.Time) {
 	if output.Message == nil || s.p2p == nil {
 		return
+	}
+
+	msgType := output.Message.Type
+	trackSend := contentionDiagEnabled && !output.EmittedAt.IsZero() &&
+		(msgType == MsgVote || msgType == MsgCommitVote)
+	rotorAttempted := false
+	var tPub0 time.Time
+	if trackSend {
+		tPub0 = time.Now()
 	}
 
 	directDelivered := false
@@ -984,6 +1081,7 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 						var buf bytes.Buffer
 						enc := s.p2p.Encoding()
 						if _, encErr := enc.EncodeGossip(&buf, &rawSSZMarshaler{data: data}); encErr == nil {
+							rotorAttempted = true
 							if sendErr := sender.SendRawBytes(s.ctx, buf.Bytes(), s.rpcTopic, pid); sendErr == nil {
 								s.rotor.RecordVoteDirect()
 								s.logVoteRouting()
@@ -1022,7 +1120,26 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 		s.rotor.RecordVoteFallback()
 		s.logVoteRouting()
 	}
-	s.handleBroadcast(output)
+	// tDeq2 is handleBroadcast's own dequeue-equivalent stamp for this
+	// nested gossip send: from this function's perspective the message was
+	// already "dequeued" at entry (tDeq), so pass a zero time here to keep
+	// handleBroadcast's OWN recordSendStamp (gated to Proposal/PrepareQC)
+	// from double-counting a vote passing through it.
+	s.handleBroadcast(output, time.Time{})
+
+	if trackSend {
+		tPub1 := time.Now()
+		path := "gossip only"
+		switch {
+		case directDelivered:
+			path = "rotor ok"
+		case rotorAttempted:
+			path = "rotor failed -> gossip"
+		}
+		if eng := s.engine.Engine(); eng != nil {
+			eng.recordSendStamp(messageView(*output.Message), msgType, output.EmittedAt, tDeq, tPub0, tPub1, path)
+		}
+	}
 }
 
 // logVoteRouting periodically reports the Rotor direct-send vs fallback ratio
@@ -1074,11 +1191,41 @@ func (s *Service) subscribeMessages() {
 		if msgCount <= 5 || msgCount%100 == 0 {
 			log.Info("hotstuff: received gossip message", "count", msgCount, "bytes", len(msg.Data))
 		}
-		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom)
+		// S17: t_rx, the earliest point these bytes are in this process --
+		// right after sub.Next() returns, before processGossipMessage's own
+		// decode. No topic validator is registered for this topic anywhere
+		// in this package (confirmed by grep, matching 6ch), so sub.Next()
+		// returning IS the earliest observable point on the gossip path.
+		var tRx time.Time
+		if contentionDiagEnabled {
+			tRx = time.Now()
+		}
+		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom, tRx, "gossip")
 	}
 }
 
-func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID) {
+// processGossipMessage is the single entry point for every inbound consensus
+// message, whichever transport delivered it: the gossip loop (subscribeMessages)
+// and the direct Rotor-relay stream handler (setupRotorStreamHandler) both call
+// this. S14 (N42_CONTENTION_DIAG=1): tArrive is the first line of this
+// handler -- the network "channel receive" the task asked for -- before
+// snappy-decompress/RLP-decode, so downstream contention stamps (see
+// contentionStamps in view_timing.go) include decode time in their
+// lock-wait figure. Zero time.Time when the switch is off, which every
+// downstream stamp already treats as "not measured."
+//
+// S17 adds rxAt/via: rxAt (t_rx) is the caller's OWN, even earlier stamp --
+// right after sub.Next() (gossip) or right after the Rotor stream read
+// (direct/relay) -- so rxAt precedes tArrive by exactly this function's own
+// call overhead (nothing else runs between them: see the "READERS" finding
+// in docs/QS_BLOCK_TIME_BUDGET.md 6cl). via names which transport this
+// specific copy arrived on.
+func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID, rxAt time.Time, via string) {
+	var tArrive time.Time
+	if contentionDiagEnabled {
+		tArrive = time.Now()
+	}
+
 	// Decompress snappy.
 	raw := &rawSSZMarshaler{}
 	if err := enc.DecodeGossip(data, raw); err != nil {
@@ -1109,8 +1256,11 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 	s.learnValidatorPeer(consensusMsg, from)
 
 	if err := ce.ProcessEvent(ConsensusEvent{
-		Type: EventMessage,
-		Msg:  *consensusMsg,
+		Type:       EventMessage,
+		Msg:        *consensusMsg,
+		ReceivedAt: tArrive,
+		RxAt:       rxAt,
+		Via:        via,
 	}); err != nil {
 		log.Debug("hotstuff: message processing error", "type", consensusMsg.Type, "err", err)
 	}
@@ -1560,9 +1710,20 @@ func (s *Service) setupRotorStreamHandler() {
 	}
 
 	sender.SetStreamHandler(s.rpcTopic, func(data []byte, from peer.ID) {
+		// S17: t_rx, the earliest point these bytes are in this process on
+		// the Rotor path. The underlying libp2p stream read completed just
+		// before this closure was invoked (internal/node/hotstuff_p2p_adapter.go's
+		// SetStreamHandler wrapper reads the full body, then calls this
+		// handler with it already in memory) -- one goroutine per incoming
+		// stream (libp2p's own SetStreamHandler contract), unlike the
+		// single serial reader loop the gossip path uses.
+		var tRx time.Time
+		if contentionDiagEnabled {
+			tRx = time.Now()
+		}
 		// Process the message as if received via gossip.
 		enc := s.p2p.Encoding()
-		s.processGossipMessage(data, enc, from)
+		s.processGossipMessage(data, enc, from, tRx, "rotor")
 
 		// If we are a relay for the current view, forward to our assigned targets.
 		if s.rotor == nil || !s.rotor.Enabled() {
@@ -1606,6 +1767,53 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// maxPendingCommits bounds the deferred-commit set; a node that far behind
+// catches up through the range import, not through retries.
+const maxPendingCommits = 256
+
+// NotifyBlockRejected implements sync.BlockImportNotifier: a block that
+// failed validation on import withdraws any deferred-execution check
+// evidence, so a re-proposal of the same hash is not voted for on the
+// strength of a check whose block then failed.
+func (s *Service) NotifyBlockRejected(hash types.Hash) {
+	if s.engine == nil {
+		return
+	}
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockRejected, Hash: hash}); err != nil {
+			log.Debug("hotstuff: EventBlockRejected processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
+// NotifyBlockChecked implements sync.BlockImportNotifier: under deferred
+// execution the sync layer verified an arrived block without executing it
+// (its header carries this node's result of the parent; its transactions
+// are includable), so the engine may vote for it as soon as the parent is
+// imported.
+func (s *Service) NotifyBlockChecked(hash types.Hash, parent types.Hash) {
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: hash, ParentHash: parent}); err != nil {
+			log.Debug("hotstuff: EventBlockChecked processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
+// NotifyBlockHeaderKnown implements sync.BlockImportNotifier (S31,
+// docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh): the block-push receive path has
+// decoded this block's header, well before CheckDeferredBlock's own
+// per-transaction check (or even the rest of the body) has been processed.
+// extendsJustify only ever reads the parent hash, so a two-phase Round 1
+// prepare vote may fire on this alone; Round 2's own execution guarantee is
+// untouched.
+func (s *Service) NotifyBlockHeaderKnown(hash types.Hash, parent types.Hash, number uint64) {
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockHeaderKnown, Hash: hash, ParentHash: parent, Number: number}); err != nil {
+			log.Debug("hotstuff: EventBlockHeaderKnown processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
 // NotifyBlockImported implements sync.BlockImportNotifier.
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.
@@ -1622,11 +1830,26 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 
 	s.pendingMu.Lock()
 	delete(s.pendingExecutions, hash) // clear if present; no longer used to gate
-	retryCommit := s.pendingCommit == hash && hash != (types.Hash{})
+	_, retryCommit := s.pendingCommits[hash]
 	if retryCommit {
-		s.pendingCommit = types.Hash{}
+		delete(s.pendingCommits, hash)
+	}
+	retryProduce := s.deferredProduce.parent == hash && hash != (types.Hash{})
+	deferredView := s.deferredProduce.view
+	if retryProduce {
+		s.deferredProduce.parent = types.Hash{}
 	}
 	s.pendingMu.Unlock()
+
+	// The block a deferred leader view was waiting to extend has just been
+	// applied locally: re-run the gate, if this node still leads that view.
+	if retryProduce && s.engine != nil {
+		eng := s.engine.Engine()
+		if eng != nil && eng.IsCurrentLeader() && eng.CurrentView() == deferredView {
+			log.Info("hotstuff: deferred production resumed after the parent applied", "view", uint64(deferredView), "parent", hash.Hex()[:12])
+			go s.triggerBlockProduction(deferredView, hash)
+		}
+	}
 
 	// A commit that was deferred because this block hadn't arrived: finish it
 	// now, so the canonical marker and head advance on every node, not just the

@@ -31,6 +31,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // SnapshotBoundary provides the oldest retained snapshot block number so
@@ -170,6 +171,11 @@ func (p *Pruner) prune(pruneTo uint64) error {
 
 	// History and receipts/logs are regular tables already capped at `limit`
 	// rows per cycle; keep them in a single bounded transaction.
+	//
+	// The deferred history fold prepares a key's last chunk outside its write
+	// transaction; HistoryIndexMu keeps this prune from landing between that
+	// read and the fold's write, which would put pruned rows back.
+	state.HistoryIndexMu.Lock()
 	err := p.db.Update(p.ctx, func(tx kv.RwTx) error {
 		// Prune account history (regular table, key = address + shard_id)
 		if err := pruneHistoryTable(tx, modules.AccountsHistory, pruneTo, limit, p.ctx); err != nil {
@@ -193,6 +199,7 @@ func (p *Pruner) prune(pruneTo uint64) error {
 
 		return nil
 	})
+	state.HistoryIndexMu.Unlock()
 
 	if err != nil {
 		return err

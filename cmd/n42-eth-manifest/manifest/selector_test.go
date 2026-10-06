@@ -62,9 +62,13 @@ func TestWalkFiles_MinimalSelectsOnlyMinimal(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	// minimal is now snapshot-ONLY; headers/codes/bodies are catch-up (runtime),
-	// not bundled.
+	// minimal ships snapshot + headers + codes (2026-08-30). Bodies, witness and
+	// senders remain catch-up/other-tier and must NOT appear.
 	want := []string{
+		"chain/freezer/codes.0000.cdat",
+		"chain/freezer/codes.cidx",
+		"chain/freezer/headerc.0000.cdat",
+		"chain/freezer/headerc.cidx",
 		"snapshot/accounts.0-25099999.ef",
 		"snapshot/accounts.0-25099999.idx",
 		"snapshot/accounts.0-25099999.val.zst",
@@ -203,9 +207,9 @@ func TestMissingSections_ReportsGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MissingSections: %v", err)
 	}
-	// minimal = snapshot + caplin checkpoint seed; both state sections and the
-	// beacon-checkpoint seed are missing here (only headerc present).
-	wantMissing := map[string]bool{"state-accounts": true, "state-storage": true, "beacon-checkpoint": true}
+	// minimal = headers + code + snapshot + caplin checkpoint seed. Only headerc
+	// is present here, so code, both state sections and the beacon seed are gaps.
+	wantMissing := map[string]bool{"code": true, "state-accounts": true, "state-storage": true, "beacon-checkpoint": true}
 	for _, m := range missing {
 		delete(wantMissing, m)
 	}
@@ -216,6 +220,8 @@ func TestMissingSections_ReportsGaps(t *testing.T) {
 
 func TestRequiredMissingSectionsSkipsOptionalBeaconSeed(t *testing.T) {
 	root := touchTree(t, []string{
+		"chain/freezer/headerc.cidx",
+		"chain/freezer/codes.cidx",
 		"snapshot/accounts.0-25099999.idx",
 		"snapshot/storage.0-25099999.idx",
 	})

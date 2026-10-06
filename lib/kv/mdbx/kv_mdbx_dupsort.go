@@ -32,6 +32,7 @@ func (c *MdbxDupSortCursor) Internal() *mdbx.Cursor {
 
 // DeleteExact - does delete
 func (c *MdbxDupSortCursor) DeleteExact(k1, k2 []byte) error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	_, err := c.getBoth(k1, k2)
 	if err != nil { // if key not found, or found another one - then nothing to delete
 		if mdbx.IsNotFound(err) {
@@ -133,6 +134,7 @@ func (c *MdbxDupSortCursor) LastDup() ([]byte, error) {
 }
 
 func (c *MdbxDupSortCursor) Append(k []byte, v []byte) error {
+	c.tx.noteWrite(c.bucketName, len(k)+len(v), false)
 	if err := c.c.Put(k, v, mdbx.Append|mdbx.AppendDup); err != nil {
 		return fmt.Errorf("label: %s, in Append: bucket=%s, %w", c.tx.db.opts.label, c.bucketName, err)
 	}
@@ -140,6 +142,7 @@ func (c *MdbxDupSortCursor) Append(k []byte, v []byte) error {
 }
 
 func (c *MdbxDupSortCursor) AppendDup(k []byte, v []byte) error {
+	c.tx.noteWrite(c.bucketName, len(k)+len(v), false)
 	if err := c.c.Put(k, v, mdbx.AppendDup); err != nil {
 		return fmt.Errorf("label: %s, in AppendDup: bucket=%s, %w", c.tx.db.opts.label, c.bucketName, err)
 	}
@@ -147,6 +150,7 @@ func (c *MdbxDupSortCursor) AppendDup(k []byte, v []byte) error {
 }
 
 func (c *MdbxDupSortCursor) PutNoDupData(k, v []byte) error {
+	c.tx.noteWrite(c.bucketName, len(k)+len(v), false)
 	if err := c.c.Put(k, v, mdbx.NoDupData); err != nil {
 		return fmt.Errorf("label: %s, in PutNoDupData: %w", c.tx.db.opts.label, err)
 	}
@@ -156,6 +160,7 @@ func (c *MdbxDupSortCursor) PutNoDupData(k, v []byte) error {
 
 // DeleteCurrentDuplicates - delete all of the data items for the current key.
 func (c *MdbxDupSortCursor) DeleteCurrentDuplicates() error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	if err := c.delAllDupData(); err != nil {
 		return fmt.Errorf("label: %s,in DeleteCurrentDuplicates: %w", c.tx.db.opts.label, err)
 	}

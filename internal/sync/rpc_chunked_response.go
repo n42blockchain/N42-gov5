@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sync/atomic"
@@ -151,41 +152,102 @@ func decodeChunkedBlock(data []byte) (*types.Block, error) {
 	}
 }
 
+// decodeChunkedBlockReusePool behaves like decodeChunkedBlock, except each
+// transaction is looked up in the pool (by lookup) before it is decoded; a
+// hit whose type is reuse-safe (common/block's own reuseSafeTxType) reuses
+// the pool's object instead of decoding it fresh (S32, docs/
+// QS_BLOCK_TIME_BUDGET.md 6di/6dj, N42_BLOCK_DECODE_REUSE_POOL). Falls back
+// to the ordinary decodeChunkedBlock (including its own legacy-protobuf
+// path) whenever the RLP reuse-decode itself fails, or when lookup is nil.
+func decodeChunkedBlockReusePool(data []byte, lookup types.TxLookup) (blk *types.Block, reused, decoded int, err error) {
+	if lookup == nil {
+		blk, err = decodeChunkedBlock(data)
+		return blk, 0, 0, err
+	}
+	blk = new(types.Block)
+	st := rlp.NewStream(bytes.NewReader(data), uint64(len(data)))
+	reused, decoded, rerr := blk.DecodeRLPReusePool(st, lookup)
+	if rerr == nil {
+		return blk, reused, decoded, nil
+	}
+	blk, err = decodeChunkedBlock(data)
+	return blk, 0, 0, err
+}
+
 // ReadChunkedBlock handles each response chunk that is sent by the peer and
 // converts it into a block. The first chunk has different deadline handling.
 func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirstChunk bool) (*types.Block, error) {
 	if isFirstChunk {
-		return readFirstChunkedBlock(stream, p2p)
+		blk, _, _, err := readFirstChunkedBlock(stream, p2p, nil, nil)
+		return blk, err
 	}
 	return readResponseChunk(stream, p2p)
 }
 
-// readFirstChunkedBlock reads the first chunked block with appropriate deadlines.
-func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types.Block, error) {
+// ReadChunkedBlockPeekHeader behaves like ReadChunkedBlock(stream, p2p,
+// true) (the single-chunk case block-push always uses) but additionally
+// (a) peeks the block's HEADER -- via peekBlockHeader, which decodes only
+// the header, leaving the transaction list untouched -- as soon as the raw
+// bytes are fully read, BEFORE the full RLP decode below (S31, docs/
+// QS_BLOCK_TIME_BUDGET.md 6dg/6dh); onHeader is called at most once, and a
+// peek failure is silently ignored. (b) decodes with lookup (S32, 6di/6dj,
+// N42_BLOCK_DECODE_REUSE_POOL): a non-nil lookup reuses a pool-resident
+// transaction object on a hash hit instead of decoding it fresh; reused/
+// decoded count each outcome (both 0 if lookup is nil, or if the RLP
+// reuse-decode itself fails and this falls back to an ordinary decode).
+func ReadChunkedBlockPeekHeader(stream libp2pcore.Stream, p2p p2p.EncodingProvider, onHeader func(*types.Header), lookup types.TxLookup) (blk *types.Block, reused, decoded int, err error) {
+	return readFirstChunkedBlock(stream, p2p, onHeader, lookup)
+}
+
+// readFirstChunkedBlock reads the first chunked block with appropriate
+// deadlines. onHeader, when non-nil, is invoked with the peeked header
+// before the full decode; lookup, when non-nil, enables reuse decoding
+// (see ReadChunkedBlockPeekHeader).
+func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, onHeader func(*types.Header), lookup types.TxLookup) (*types.Block, int, int, error) {
 	code, errMsg, err := ReadStatusCode(stream, p2p.Encoding())
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to read status code from first chunk")
+		return nil, 0, 0, errors.Wrap(err, "failed to read status code from first chunk")
 	}
 	if code != 0 {
-		return nil, fmt.Errorf("remote returned error code %d: %s", code, errMsg)
+		return nil, 0, 0, fmt.Errorf("remote returned error code %d: %s", code, errMsg)
 	}
 
 	ctx, err := readContextFromStream(stream)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to read context from stream")
+		return nil, 0, 0, errors.Wrap(err, "failed to read context from stream")
 	}
 	log.Debug("First chunk context", "forkDigest", fmt.Sprintf("%x", ctx), "peer", stream.Conn().RemotePeer().String())
 
 	raw := &rawSSZBytes{}
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
-		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
+		return nil, 0, 0, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
 	}
-	blk, err := decodeChunkedBlock(raw.data)
+	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the raw bytes are fully off
+	// the wire now, before the header peek and the (possibly 160k-transaction)
+	// full decode below -- captured as a local var since the Block this
+	// stamp belongs to does not exist yet.
+	var tRxEnd, tDecStart int64
+	if contentionDiagEnabled {
+		tRxEnd = timeNowMs()
+	}
+	if onHeader != nil {
+		if h, perr := peekBlockHeader(raw.data); perr == nil {
+			onHeader(h)
+		}
+	}
+	if contentionDiagEnabled {
+		tDecStart = timeNowMs()
+	}
+	blk, reused, decoded, err := decodeChunkedBlockReusePool(raw.data, lookup)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to decode block payload from first chunk (forkDigest=%x)", ctx)
+		return nil, 0, 0, errors.Wrapf(err, "failed to decode block payload from first chunk (forkDigest=%x)", ctx)
+	}
+	if contentionDiagEnabled {
+		blk.SetRxEndTMs(tRxEnd)
+		blk.SetDecStamps(tDecStart, timeNowMs())
 	}
 	log.Debug("First chunk decoded successfully", "blockNumber", blk.Number64().Uint64(), "peer", stream.Conn().RemotePeer().String())
-	return blk, nil
+	return blk, reused, decoded, nil
 }
 
 // readResponseChunk reads a subsequent response chunk from the stream.
