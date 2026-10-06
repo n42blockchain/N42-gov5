@@ -1,0 +1,17 @@
+[
+  {
+    "canonical": "{\"chain_id\":94,\"version\":1,\"request_id\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"task\":\"node.anomaly\",\"schema_id\":\"health-v1\",\"input_hash\":\"0x0100000000000000000000000000000000000000000000000000000000000000\",\"input_location\":\"\",\"policy_hash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"policy_parameters\":{\"min_confidence_ppm\":0,\"require_human\":false},\"model_requirements\":{\"model_hash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"family\":\"\"},\"privacy_mode\":\"public\",\"quorum\":1,\"max_latency_ms\":500,\"max_cost\":\"0\",\"deadline\":1791244800000,\"nonce\":7,\"requester\":\"did:n42:example\",\"signature\":\"\"}",
+    "hash": "0x8edc2429030cd135f9b235ae3012dd152b62d011c22b2c2ed4e81288dd3fd1d0",
+    "kind": "request"
+  },
+  {
+    "canonical": "{\"chain_id\":94,\"version\":1,\"request_id\":\"0x0200000000000000000000000000000000000000000000000000000000000000\",\"provider_did\":\"did:n42:provider\",\"model\":\"\",\"model_version\":\"\",\"model_hash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"policy_hash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"input_hash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"result\":{\"label\":\"NORMAL\",\"probabilities_ppm\":[900000,100000],\"confidence_ppm\":900000,\"need_escalation\":false,\"answers\":[]},\"started_at\":1000,\"completed_at\":1010,\"latency_ms\":10,\"expiry\":2000,\"nonce\":7,\"evidence_commitment\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"provider_signature\":\"\"}",
+    "hash": "0x9b00b4775a06003bbe17d64c6d10750f5667570badb808431f2ad41e1c093e7a",
+    "kind": "receipt"
+  },
+  {
+    "canonical": "{\"version\":1,\"model_id\":\"rules-health-v1\",\"family\":\"rules\",\"model_version\":\"1\",\"weights_hash\":\"0x0300000000000000000000000000000000000000000000000000000000000000\",\"tokenizer_hash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"supported_tasks\":[\"node.anomaly\"],\"supported_schemas\":[\"health-v1\"],\"precision\":\"rules\",\"context_limit\":65536,\"calibration_manifest\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"hardware_profile\":\"\",\"provider\":\"did:n42:provider\",\"timestamp\":1000,\"signature\":\"\"}",
+    "hash": "0xea9b326942dcb0a50b0f2ac01e2fe7e267f794b525667460d520d3bcb19557b5",
+    "kind": "manifest"
+  }
+]
