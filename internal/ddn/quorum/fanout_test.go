@@ -107,3 +107,31 @@ func TestQuorumCannotDowngradeOrExceedBudget(t *testing.T) {
 		t.Fatal("duplicate provider identity accepted")
 	}
 }
+
+type labelledProvider struct {
+	provider.DecisionProvider
+	labels []string
+}
+
+func (p labelledProvider) Labels() []string { return append([]string{}, p.labels...) }
+func TestQuorumRejectsAmbiguousLabelOrder(t *testing.T) {
+	a, b := member("a", "bayes", "NORMAL"), member("b", "transformer", "NORMAL")
+	a.Provider = labelledProvider{a.Provider, []string{"NORMAL", "STORAGE"}}
+	b.Provider = labelledProvider{b.Provider, []string{"NORMAL", "NETWORK"}}
+	if _, err := New("aggregate", []Member{a, b}, 2); err == nil {
+		t.Fatal("quorum accepted incompatible probability labels")
+	}
+	b.Provider = labelledProvider{b.Provider, []string{"NORMAL", "STORAGE"}}
+	g, err := New("aggregate", []Member{a, b}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := g.Labels()
+	if len(labels) != 2 || labels[1] != "STORAGE" {
+		t.Fatal(labels)
+	}
+	labels[0] = "mutated"
+	if g.Labels()[0] != "NORMAL" {
+		t.Fatal("quorum label metadata mutable")
+	}
+}

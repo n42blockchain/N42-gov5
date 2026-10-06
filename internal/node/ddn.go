@@ -10,9 +10,11 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/ddn/gateway"
+	"github.com/n42blockchain/N42/internal/ddn/native"
 	"github.com/n42blockchain/N42/internal/ddn/provider"
 	"github.com/n42blockchain/N42/internal/ddn/quorum"
 	"github.com/n42blockchain/N42/internal/ddn/receipt"
+	"github.com/n42blockchain/N42/internal/ddn/transformer"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -66,14 +68,60 @@ func (n *Node) ddnProvider(c conf.DDNCfg) (provider.DecisionProvider, error) {
 		return nil, errors.New("quorum size must be between 1 and 16")
 	}
 	build := func(sc conf.DDNSidecarCfg) (provider.DecisionProvider, error) {
-		var modelHash types.Hash
-		if err := modelHash.UnmarshalText([]byte(sc.ModelHash)); err != nil {
-			return nil, errors.New("invalid pinned model hash")
+
+		backendName := sc.Backend
+		if backendName == "" {
+			backendName = c.Backend
 		}
-		backend, err := provider.NewSidecar(sc.URL, provider.Identity{DID: sc.ProviderDID, Model: sc.Model, ModelVersion: sc.ModelVersion, ModelHash: modelHash, Family: sc.ModelFamily, Tasks: sc.Tasks, Schemas: sc.Schemas}, time.Duration(c.MaxLatencyMs)*time.Millisecond)
+		if backendName == "" {
+			backendName = "native-rules"
+		}
+		var backend provider.DecisionProvider
+		var err error
+		modelPath := sc.ModelFile
+		if modelPath != "" && !filepath.IsAbs(modelPath) {
+			modelPath = filepath.Join(n.config.NodeCfg.DataDir, modelPath)
+		}
+		switch backendName {
+		case "native-rules":
+			backend, err = provider.NewNativeRules(sc.ProviderDID)
+		case "native-bayes":
+			var a native.Artifact
+			a, err = native.Load(modelPath)
+			if err == nil {
+				backend, err = provider.NewNativeModel(sc.ProviderDID, a)
+			}
+		case "native-transformer":
+			var a transformer.Artifact
+			a, err = transformer.Load(modelPath)
+			if err == nil {
+				backend, err = provider.NewTransformer(sc.ProviderDID, a)
+			}
+		case "http":
+			if sc.TokenEnv == "" {
+				sc.TokenEnv = c.SidecarTokenEnv
+			}
+			if sc.TokenEnv != "" && os.Getenv(sc.TokenEnv) == "" {
+				return nil, errors.New("configured DDN provider token environment is empty")
+			}
+			var hash types.Hash
+			err = hash.UnmarshalText([]byte(sc.ModelHash))
+			if err == nil {
+				backend, err = provider.NewAuthenticatedSidecar(sc.URL, provider.Identity{DID: sc.ProviderDID, Model: sc.Model, ModelVersion: sc.ModelVersion, ModelHash: hash, Family: sc.ModelFamily, Tasks: sc.Tasks, Schemas: sc.Schemas}, time.Duration(c.MaxLatencyMs)*time.Millisecond, os.Getenv(sc.TokenEnv))
+			}
+		default:
+			return nil, errors.New("unsupported DDN backend")
+		}
 		if err != nil {
 			return nil, err
 		}
+		if sc.ModelHash != "" {
+			var expected types.Hash
+			if expected.UnmarshalText([]byte(sc.ModelHash)) != nil || expected != backend.Identity().ModelHash {
+				return nil, errors.New("DDN executable model hash mismatch")
+			}
+		}
+
 		if !c.RequireRegisteredProvider {
 			return backend, nil
 		}
@@ -94,7 +142,7 @@ func (n *Node) ddnProvider(c conf.DDNCfg) (provider.DecisionProvider, error) {
 		if c.QuorumSize != 1 {
 			return nil, errors.New("multi-provider quorum requires sidecars")
 		}
-		return build(conf.DDNSidecarCfg{URL: c.SidecarURL, ProviderDID: c.ProviderDID, Model: c.Model, ModelVersion: c.ModelVersion, ModelHash: c.ModelHash, ModelFamily: c.ModelFamily, Tasks: c.Tasks, Schemas: c.Schemas})
+		return build(conf.DDNSidecarCfg{TokenEnv: c.SidecarTokenEnv, Backend: c.Backend, ModelFile: c.ModelFile, URL: c.SidecarURL, ProviderDID: c.ProviderDID, Model: c.Model, ModelVersion: c.ModelVersion, ModelHash: c.ModelHash, ModelFamily: c.ModelFamily, Tasks: c.Tasks, Schemas: c.Schemas})
 	}
 	if len(c.Sidecars) != c.QuorumSize {
 		return nil, errors.New("quorum size must match configured sidecars")
