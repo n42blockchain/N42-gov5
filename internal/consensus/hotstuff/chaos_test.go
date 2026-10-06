@@ -103,7 +103,7 @@ func blockHashForView(view ViewNumber) types.Hash {
 func (h *chaosHarness) runConsensusRound(view ViewNumber, blockHash types.Hash) {
 	h.t.Helper()
 	n := len(h.engines)
-	leaderIdx := int(view % uint64(n))
+	leaderIdx := int(h.engines[0].LeaderForView(view, h.setup.vs))
 
 	// Step 1: Leader proposes.
 	err := h.engines[leaderIdx].ProcessEvent(ConsensusEvent{

@@ -13,6 +13,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
+	"os"
 	"sync"
 	"time"
 
@@ -275,8 +277,8 @@ func (s *Service) committedParentBlocked(parentHash types.Hash) bool {
 //
 // Re-applying goes through the sync layer's fetch-on-miss, which already knows
 // how to walk back to an applied ancestor and replay forward, and fetches the
-// body from a peer when this node lacks it. That is asynchronous, so this view
-// is skipped and the next leader finds the head aligned.
+// body from a peer when this node lacks it. That is asynchronous; a completed
+// import wakes the output loop to retry if the same leader view is still valid.
 //
 // Returns true when production may proceed.
 func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
@@ -331,6 +333,7 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 // which "miner: work queue wait" reports from the other side. Observability
 // only -- no gate is skipped or reordered.
 func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash) {
+	s.pendingProduction = &productionRequest{view: view, parent: parentHash}
 	tGate := time.Now()
 	var dBehind, dCommitted, dApplied time.Duration
 	logGates := func(outcome string) {
@@ -364,7 +367,33 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 	}
 	dApplied = time.Since(tA)
 	logGates("trigger")
+	s.pendingProduction = nil
 	s.blockProducer.TriggerBlockProduction(parentHash)
+}
+
+type productionRequest struct {
+	view   ViewNumber
+	parent types.Hash
+}
+
+// retryBlockProduction runs only on the output loop. Import notifications are
+// coalesced wakeups, not authorization to build: the pending view, leader and
+// lock must still match, and triggerBlockProduction repeats every sync gate.
+func (s *Service) retryBlockProduction() {
+	req := s.pendingProduction
+	if req == nil || s.blockProducer == nil {
+		return
+	}
+	ce := s.engine.Engine()
+	ce.mu.Lock()
+	current := !ce.removed && ce.isMember() && ce.roundState.CurrentView() == req.view &&
+		ce.roundState.LockedQC().BlockHash == req.parent && ce.isLeader(ce.myIndex, req.view, ce.validatorSet())
+	ce.mu.Unlock()
+	if !current || s.ctx.Err() != nil {
+		s.pendingProduction = nil
+		return
+	}
+	s.triggerBlockProduction(req.view, req.parent)
 }
 
 // Service is the integration layer that connects the HotStuff consensus engine
@@ -376,9 +405,14 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 //  3. Pacemaker loop — manages view timeout events
 //  4. State persister — periodically saves consensus state to DB
 type Service struct {
-	engine *HotStuff
-	p2p    P2PPublisher
-	db     kv.RwDB
+	voteDB             kv.RwDB
+	voteStorePath      string
+	voteStoreBinding   []byte
+	voteStoreRequested bool
+	voteStoreClose     sync.Once
+	engine             *HotStuff
+	p2p                P2PPublisher
+	db                 kv.RwDB
 
 	gossipTopic  string // fully qualified gossip topic string
 	rpcTopic     string // fully qualified RPC topic string
@@ -387,6 +421,12 @@ type Service struct {
 	blockProducer    BlockProducer
 	blockFetcher     BlockFetcher
 	slashingExecutor *SlashingExecutor
+
+	// Only the output loop accesses pendingProduction. Import goroutines send
+	// bounded wakeups after the persisted applied-state check, even when the
+	// early execution notification already populated the vote dedup cache.
+	pendingProduction *productionRequest
+	productionRetry   chan struct{}
 
 	// Rotor single-hop relay for proposal broadcast.
 	rotor *Rotor
@@ -447,6 +487,7 @@ func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpc
 		persistInterval:   10,
 		pendingExecutions: make(map[types.Hash]struct{}),
 		notifiedImports:   make(map[types.Hash]struct{}),
+		productionRetry:   make(chan struct{}, 1),
 	}
 }
 
@@ -487,12 +528,24 @@ func (s *Service) Start() error {
 	if s.engine.Engine() == nil {
 		return fmt.Errorf("hotstuff: consensus engine not initialized, call InitEngine first")
 	}
+	if err := s.openVoteStore(); err != nil {
+		return err
+	}
+	started := false
+	defer func() {
+		if !started {
+			s.closeVoteStore()
+		}
+	}()
 
 	// Try to recover persisted state.
 	if s.db != nil {
 		if err := s.recoverState(); err != nil {
-			log.Warn("hotstuff: failed to recover persisted state", "err", err)
+			return fmt.Errorf("recover durable consensus state: %w", err)
 		}
+	}
+	if err := s.seedVoteStore(); err != nil {
+		return err
 	}
 
 	// Install the durable vote journal before any event can be processed. From
@@ -517,6 +570,7 @@ func (s *Service) Start() error {
 	log.Info("HotStuff service started",
 		"view", s.engine.Engine().CurrentView(),
 		"validators", s.engine.Engine().ValidatorCount())
+	started = true
 	return nil
 }
 
@@ -532,6 +586,7 @@ func (s *Service) Stop() {
 		s.persistStateCtx(ctx)
 		cancel()
 	}
+	s.closeVoteStore()
 
 	log.Info("HotStuff service stopped")
 }
@@ -546,6 +601,8 @@ func (s *Service) processOutputs() {
 			return
 		case output := <-s.engine.OutputCh():
 			s.handleOutput(output)
+		case <-s.productionRetry:
+			s.retryBlockProduction()
 		}
 	}
 }
@@ -682,6 +739,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// by whatever QC this node last observed diverged between roles and
 		// was unreproducible at replay.
 	case OutputViewChanged:
+		s.pendingProduction = nil
 		log.Debug("hotstuff: view changed", "view", output.View)
 		updateMetricsViewChanged(output.View)
 		// Clear stale pending executions from previous view.
@@ -830,7 +888,7 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 		}
 		view := eng.CurrentView()
 		vs := eng.CurrentValidatorSet()
-		leader := LeaderForView(view, vs)
+		leader := eng.LeaderForView(view, vs)
 
 		var ds DirectSender
 		if sender, ok := s.p2p.(P2PDirectSender); ok {
@@ -1149,6 +1207,8 @@ func (s *Service) pacemakerLoop() {
 	}
 }
 
+var journalTrace = os.Getenv("N42_JOURNAL_TRACE") == "1"
+
 // JournalVote implements VoteJournal: it makes a vote commitment durable before
 // the engine releases the vote. Called on the ENGINE goroutine with the engine
 // mutex held, so it must not touch any locked engine accessor — everything it
@@ -1157,9 +1217,36 @@ func (s *Service) JournalVote(state *ConsensusState) error {
 	if s.db == nil {
 		return nil // no store configured (tests/embedded): journalling is a no-op
 	}
-	return s.db.Update(s.ctx, func(tx kv.RwTx) error {
-		return SaveConsensusState(tx, state)
+	db, store := s.db, "main"
+	if s.voteDB != nil {
+		db, store = s.voteDB, "separate"
+	}
+	write := func(tx kv.RwTx) error {
+		if err := SaveConsensusState(tx, state); err != nil {
+			return err
+		}
+		if s.voteDB != nil {
+			return saveVoteEpoch(tx, state.VoteEpoch)
+		}
+		return nil
+	}
+	if !journalTrace {
+		return db.Update(s.ctx, write)
+	}
+	start := time.Now()
+	var acquire, save time.Duration
+	err := db.Update(s.ctx, func(tx kv.RwTx) error {
+		acquire = time.Since(start)
+		t := time.Now()
+		err := write(tx)
+		save = time.Since(t)
+		return err
 	})
+	log.Info("hotstuff: vote journal phases", "store", store, "view", state.View,
+		"prepareView", state.LastVotedView, "commitView", state.LastCommitVotedView,
+		"prepareHash", state.LastVotedHash.Hex(), "commitHash", state.LastCommitVotedHash.Hex(),
+		"acquire", acquire, "save", save, "total", time.Since(start), "err", err)
+	return err
 }
 
 // persistState saves the current consensus state to the database using the
@@ -1245,13 +1332,13 @@ func (s *Service) persistStateCtx(ctx context.Context) {
 // stalls the chain (a "signers bitmap length mismatch" livelock, reproducible by
 // crashing a node after a validator add/remove). Restores the ACTIVE set, and any
 // committed-but-unactivated STAGED set, before consensus resumes.
-func (s *Service) recoverEpochState() {
+func (s *Service) recoverEpochState() error {
 	if s.db == nil {
-		return
+		return nil
 	}
 	ce := s.engine.Engine()
 	if ce == nil {
-		return
+		return nil
 	}
 	var (
 		aEpoch uint64
@@ -1267,11 +1354,10 @@ func (s *Service) recoverEpochState() {
 		if e1 != nil {
 			return e1
 		}
-		_, sVals, sF, _ = LoadStagedEpoch(tx)
-		return nil
+		_, sVals, sF, e1 = LoadStagedEpoch(tx)
+		return e1
 	}); err != nil {
-		log.Warn("hotstuff: failed to load persisted epoch state", "err", err)
-		return
+		return fmt.Errorf("load persisted epoch state: %w", err)
 	}
 	if aOk && len(aVals) > 0 {
 		ce.RestoreValidatorSet(aEpoch, aVals, aF)
@@ -1279,11 +1365,14 @@ func (s *Service) recoverEpochState() {
 	if len(sVals) > 0 {
 		ce.RestoreStagedSet(sVals, sF)
 	}
+	return nil
 }
 
 // recoverState loads persisted consensus state and reinitializes the engine.
 func (s *Service) recoverState() error {
-	s.recoverEpochState()
+	if err := s.recoverEpochState(); err != nil {
+		return err
+	}
 
 	var state *ConsensusState
 	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
@@ -1294,7 +1383,24 @@ func (s *Service) recoverState() error {
 		return err
 	}
 	if state == nil {
-		return nil // no persisted state
+		state = &ConsensusState{LockedQC: GenesisQC(), LastCommittedQC: GenesisQC()}
+	}
+	if state.LockedQC.View > state.View || state.LastCommittedQC.View > state.View {
+		return fmt.Errorf("corrupted consensus state: QC view exceeds state view %d", state.View)
+	}
+	// The active epoch may have reached disk before its round checkpoint.
+	// Never seed an already-restored validator set back into an earlier epoch.
+	ce := s.engine.Engine()
+	if ce != nil {
+		epoch, length := ce.epochManager.CurrentEpoch(), ce.epochManager.epochLength
+		if epoch > 0 && length > 0 {
+			if epoch > (math.MaxUint64-1)/length {
+				return fmt.Errorf("persisted epoch boundary overflows view")
+			}
+			if boundary := epoch*length + 1; state.View < boundary {
+				state.View = boundary
+			}
+		}
 	}
 
 	log.Info("hotstuff: recovering persisted state",
@@ -1304,17 +1410,11 @@ func (s *Service) recoverState() error {
 
 	// The engine was already created by adapter.New(). We need to reinitialize
 	// with recovered state if the persisted view is ahead.
-	ce := s.engine.Engine()
 	if ce == nil {
 		return nil
 	}
 	currentView := ce.CurrentView()
 	if state.View > currentView {
-		// Sanity check: QC views must not exceed state view.
-		if state.LockedQC.View > state.View || state.LastCommittedQC.View > state.View {
-			log.Warn("hotstuff: corrupted persisted state — QC view exceeds state view, ignoring")
-			return nil
-		}
 		ce.RestoreState(state.View, state.LockedQC, state.LastCommittedQC, state.ConsecutiveTimeouts)
 		log.Info("hotstuff: engine restored to persisted state", "view", state.View)
 	}
@@ -1476,7 +1576,7 @@ func (s *Service) setupRotorStreamHandler() {
 
 		view := ce.CurrentView()
 		vs := ce.CurrentValidatorSet()
-		leader := LeaderForView(view, vs)
+		leader := ce.LeaderForView(view, vs)
 		myIndex := ce.MyIndex()
 
 		if s.rotor.IsRelay(view, vs, leader, myIndex) {
@@ -1576,6 +1676,13 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 		log.Debug("hotstuff: import notification withheld (block not applied)",
 			"hash", hash, "number", blockNum)
 		return
+	}
+	// Persistence may have finished after the view's initial leader gate. Do
+	// this before vote dedup: NotifyBlockExecuted can have certified execution
+	// while the parent was still unavailable to the miner's read transaction.
+	select {
+	case s.productionRetry <- struct{}{}:
+	default:
 	}
 
 	// Dedup the engine notification: skip if we already notified this hash.

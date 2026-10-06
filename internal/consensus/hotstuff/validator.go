@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -150,10 +150,16 @@ func (vs *ValidatorSet) Clone() *ValidatorSet {
 // LeaderForView returns the leader's validator index for the given view.
 // Uses round-robin: leader = view % n.
 func LeaderForView(view ViewNumber, vs *ValidatorSet) ValidatorIndex {
+	return LeaderForViewWithTenure(view, vs, 1)
+}
+
+// LeaderForViewWithTenure matches n42-rs: (view / max(tenure, 1)) % n.
+// Tenure is a chainspec rule, independent of validator-set epoch changes.
+func LeaderForViewWithTenure(view ViewNumber, vs *ValidatorSet, tenure uint64) ValidatorIndex {
 	if vs.IsEmpty() {
 		return 0
 	}
-	return ValidatorIndex(view % uint64(vs.Len()))
+	return ValidatorIndex((view / max(tenure, 1)) % uint64(vs.Len()))
 }
 
 // IsLeader checks if the given validator is the leader for the given view.

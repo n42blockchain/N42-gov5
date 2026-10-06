@@ -119,6 +119,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := db.Update(ctx, func(tx kv.RwTx) error {
+		if marked, err := hotstuff.HasIndependentVoteStore(tx); err != nil {
+			return err
+		} else if marked {
+			return errors.New("independent vote store enabled: refusing a reset of only the main checkpoint")
+		}
 		return tx.Delete(modules.HotStuffState, stateKey)
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "delete (backup retained at %s): %v\n", *backup, err)

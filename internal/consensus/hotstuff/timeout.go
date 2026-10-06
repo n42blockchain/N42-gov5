@@ -69,7 +69,7 @@ func (e *ConsensusEngine) onTimeout() error {
 		// ourselves. (The leader now records a vote commitment for its own
 		// proposal — the proposal is signed over the vote message — which is why
 		// this guard is needed.)
-		if h, ok := e.roundState.VotedHashInView(view); ok && !IsLeader(e.myIndex, view, e.validatorSet()) {
+		if h, ok := e.roundState.VotedHashInView(view); ok && !e.isLeader(e.myIndex, view, e.validatorSet()) {
 			if verr := e.sendVote(view, h); verr != nil {
 				log.Debug("timeout vote re-send failed", "view", view, "err", verr)
 			}
@@ -329,7 +329,7 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 		return nil
 	}
 
-	expectedLeader := LeaderForView(nv.View, e.validatorSet())
+	expectedLeader := e.LeaderForView(nv.View, e.validatorSet())
 	if nv.Leader != expectedLeader {
 		return &InvalidProposerError{View: nv.View, Expected: expectedLeader, Actual: nv.Leader}
 	}
@@ -467,7 +467,7 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 	// allowed to act on — the whole network spun on a single view
 	// re-broadcasting timeouts forever (observed live: 5/7 nodes wedged on
 	// view 5408, +0 blocks in 4 minutes, timeout counters climbing).
-	if LeaderForView(nextView, e.validatorSet()) == e.myIndex {
+	if e.LeaderForView(nextView, e.validatorSet()) == e.myIndex {
 		log.Info("TC formed, I am the new leader", "view", currentView, "nextView", nextView)
 
 		nvMessage := e.newViewSigningMessage(nextView)
