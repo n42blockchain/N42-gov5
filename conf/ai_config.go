@@ -88,7 +88,7 @@ type MEVOptimizerCfg struct {
 // DefaultAICfg returns the default AI infrastructure configuration (all disabled).
 func DefaultAICfg() AICfg {
 	return AICfg{
-		DDN: DDNCfg{QuorumSize: 1, MaxProviderConcurrency: 2, ShadowMode: true, MaxConcurrency: 2, QueueSize: 32, MaxItems: 1024, MaxInputBytes: 65536, MaxLatencyMs: 500, ReceiptTTLSec: 300, Tasks: []string{"node.anomaly"}, Schemas: []string{"health-v1"}},
+		DDN: DDNCfg{Backend: "native-rules", QuorumSize: 1, MaxProviderConcurrency: 2, ShadowMode: true, MaxConcurrency: 2, QueueSize: 32, MaxItems: 1024, MaxInputBytes: 65536, MaxLatencyMs: 500, ReceiptTTLSec: 300, Tasks: []string{"node.anomaly"}, Schemas: []string{"health-v1"}},
 		Wallet: WalletCfg{
 			MaxSessionKeys:    16,
 			DefaultSpendLimit: "1000000000000000000",
@@ -123,9 +123,12 @@ func DefaultAICfg() AICfg {
 	}
 }
 
-// DDNCfg controls the remote-sidecar shadow gateway, disabled by default.
+// DDNCfg controls native or optional HTTP shadow decisions, disabled by default.
 // Optional signing uses a dedicated encrypted DDN key, never the validator key.
 type DDNCfg struct {
+	SidecarTokenEnv           string          `json:"sidecar_token_env" yaml:"sidecar_token_env"`
+	Backend                   string          `json:"backend" yaml:"backend"`
+	ModelFile                 string          `json:"model_file" yaml:"model_file"`
 	QuorumSize                int             `json:"quorum_size" yaml:"quorum_size"`
 	MaxProviderConcurrency    int             `json:"max_provider_concurrency" yaml:"max_provider_concurrency"`
 	Sidecars                  []DDNSidecarCfg `json:"sidecars" yaml:"sidecars"`
@@ -151,8 +154,12 @@ type DDNCfg struct {
 	ReceiptTTLSec             int             `json:"receipt_ttl_sec" yaml:"receipt_ttl_sec"`
 }
 
-// DDNSidecarCfg pins each remote quorum member's identity and model claim.
+// DDNSidecarCfg configures a native or HTTP quorum member; the name is retained
+// for configuration compatibility.
 type DDNSidecarCfg struct {
+	TokenEnv     string   `json:"token_env" yaml:"token_env"`
+	Backend      string   `json:"backend" yaml:"backend"`
+	ModelFile    string   `json:"model_file" yaml:"model_file"`
 	URL          string   `json:"url" yaml:"url"`
 	ProviderDID  string   `json:"provider_did" yaml:"provider_did"`
 	Model        string   `json:"model" yaml:"model"`

@@ -39,3 +39,11 @@ func (a *CoprocessorAdapter) Decide(ctx context.Context, r d.DecisionRequest, in
 	}
 	return a.Backend.Decide(ctx, r, input)
 }
+
+// Labels preserves native schema discovery through registry-backed dispatch.
+func (a *CoprocessorAdapter) Labels() []string {
+	if p, ok := a.Backend.(interface{ Labels() []string }); ok {
+		return append([]string{}, p.Labels()...)
+	}
+	return []string{}
+}

@@ -84,6 +84,10 @@ n42: go-version version-build
 	$(GOBUILD) -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
 	@echo "Compile done!"
 
+.PHONY: ddn-model
+ddn-model: go-version
+	$(GOBUILD) -o $(BUILD_PATH)ddn-model ./cmd/ddn-model
+
 zkguest:
 	@echo "Building RISC-V64 zkVM guest program..."
 	CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build \

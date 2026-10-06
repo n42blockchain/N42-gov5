@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	metrics "github.com/n42blockchain/N42/common/metrics"
@@ -22,10 +23,18 @@ import (
 type Sidecar struct {
 	endpoint string
 	identity Identity
+	token    string
 	client   *http.Client
 }
 
 func NewSidecar(endpoint string, id Identity, timeout time.Duration) (*Sidecar, error) {
+	return NewAuthenticatedSidecar(endpoint, id, timeout, "")
+}
+func NewAuthenticatedSidecar(endpoint string, id Identity, timeout time.Duration, token string) (*Sidecar, error) {
+	if token != "" && (len(token) < 16 || len(token) > 256 || strings.ContainsAny(token, "\r\n\t ")) {
+		return nil, errors.New("invalid sidecar token")
+	}
+
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("invalid sidecar HTTP endpoint")
@@ -33,7 +42,7 @@ func NewSidecar(endpoint string, id Identity, timeout time.Duration) (*Sidecar, 
 	if id.DID == "" || id.ModelHash == (chain.Hash{}) || timeout <= 0 {
 		return nil, errors.New("sidecar identity, pinned model hash and timeout required")
 	}
-	return &Sidecar{endpoint: endpoint, identity: id, client: &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("sidecar redirects prohibited") }}}, nil
+	return &Sidecar{token: token, endpoint: endpoint, identity: id, client: &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("sidecar redirects prohibited") }}}, nil
 }
 func (s *Sidecar) Identity() Identity {
 	id := s.identity
@@ -58,6 +67,9 @@ func (s *Sidecar) Decide(ctx context.Context, r d.DecisionRequest, input string)
 		return d.DecisionResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if s.token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return d.DecisionResult{}, errors.New("sidecar unavailable")

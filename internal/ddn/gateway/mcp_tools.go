@@ -26,6 +26,17 @@ func decode(data []byte, out any) error {
 
 // RegisterMCPTools uses the existing MCP server's configured tool allowlist.
 func RegisterMCPTools(s *mcp.Server, g *Gateway) {
+	s.RegisterTool(mcp.Tool{Name: "ddn.info", Description: "Read active executable model identity, quorum and ordered native labels.", Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), Handler: func(ctx context.Context, data json.RawMessage) (any, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var p struct{}
+		if err := decode(data, &p); err != nil {
+			return nil, err
+		}
+		return g.Info(), nil
+	}})
+
 	s.RegisterTool(mcp.Tool{Name: "ddn.decide", Description: "Submit a redacted public decision in shadow mode; returns a request ID. Output never controls node execution.", Parameters: json.RawMessage(`{"type":"object","properties":{"request":{"type":"object"},"input":{"type":"string"}},"required":["request","input"],"additionalProperties":false}`), Handler: func(ctx context.Context, data json.RawMessage) (any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err

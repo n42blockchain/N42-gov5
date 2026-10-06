@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ type Group struct {
 	identity provider.Identity
 	permits  chan struct{}
 	wg       sync.WaitGroup
+	labels   []string
 }
 
 func New(did string, members []Member, maxParallel int) (*Group, error) {
@@ -44,9 +46,23 @@ func New(did string, members []Member, maxParallel int) (*Group, error) {
 	}
 	sort.Slice(ms, func(i, j int) bool { return ms[i].Provider.Identity().DID < ms[j].Provider.Identity().DID })
 	var ids []provider.Identity
+	var labels []string
+	labelsKnown := true
 	seen := map[string]bool{}
 	for _, m := range ms {
 		id := m.Provider.Identity()
+		if p, ok := m.Provider.(interface{ Labels() []string }); ok {
+			ls := p.Labels()
+			if len(ls) == 0 {
+				labelsKnown = false
+			} else if labels == nil {
+				labels = ls
+			} else if !reflect.DeepEqual(labels, ls) {
+				return nil, errors.New("quorum label order mismatch")
+			}
+		} else {
+			labelsKnown = false
+		}
 		if id.DID == "" || seen[id.DID] || id.ModelHash == (chain.Hash{}) {
 			return nil, errors.New("quorum requires unique providers and pinned models")
 		}
@@ -63,7 +79,10 @@ func New(did string, members []Member, maxParallel int) (*Group, error) {
 		tasks = intersection(tasks, id.Tasks)
 		schemas = intersection(schemas, id.Schemas)
 	}
-	return &Group{members: ms, identity: provider.Identity{DID: did, Model: "DDN-quorum-v1", ModelVersion: "1", ModelHash: crypto.Keccak256Hash(b), Family: "aggregate", Tasks: tasks, Schemas: schemas}, permits: make(chan struct{}, maxParallel)}, nil
+	if !labelsKnown {
+		labels = []string{}
+	}
+	return &Group{labels: labels, members: ms, identity: provider.Identity{DID: did, Model: "DDN-quorum-v1", ModelVersion: "1", ModelHash: crypto.Keccak256Hash(b), Family: "aggregate", Tasks: tasks, Schemas: schemas}, permits: make(chan struct{}, maxParallel)}, nil
 }
 func intersection(a, b []string) []string {
 	var out []string
@@ -168,3 +187,5 @@ func (g *Group) DecideWithEvidence(ctx context.Context, r d.DecisionRequest, inp
 // Wait is called after gateway cancellation and worker shutdown, so no new
 // fan-out goroutines can be added while waiting.
 func (g *Group) Wait() { g.wg.Wait() }
+
+func (g *Group) Labels() []string { return append([]string{}, g.labels...) }
