@@ -153,7 +153,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 		metaTx.SetFrom(from)
 		seedRecoveredSender(metaTx, poolSigner)
-		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
+		if err := checkTxFee(*metaTx.GasPrice(), s.api.rpcMaxGasPrice); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -437,7 +437,7 @@ func SubmitTransaction(ctx context.Context, api *API, tx *transaction.Transactio
 	if api == nil || api.TxsPool() == nil {
 		return avmcommon.Hash{}, errors.New("transaction pool unavailable")
 	}
-	if err := checkTxFee(*tx.GasPrice(), tx.Gas(), baseFee); err != nil {
+	if err := checkTxFee(*tx.GasPrice(), api.rpcMaxGasPrice); err != nil {
 		return avmcommon.Hash{}, err
 	}
 	if err := api.TxsPool().AddLocal(tx); err != nil {
@@ -478,15 +478,15 @@ func (s *TransactionAPI) SendTransaction(ctx context.Context, args TransactionAr
 	return SubmitTransaction(ctx, s.api, signed)
 }
 
-// checkTxFee validates the transaction fee to prevent unreasonably high gas prices.
-// maxGasPriceGwei is the maximum acceptable gas price (1000 Gwei).
-const maxGasPriceGwei = 1000_000_000_000 // 1000 Gwei in Wei
+// checkTxFee enforces the operator's RPC admission policy. This does not change
+// consensus validity or the transaction pool's base-fee/balance validation.
+const defaultRPCMaxGasPriceWei = 1000_000_000_000
 
-func checkTxFee(gasPrice uint256.Int, gas uint64, cap float64) error {
-	if gasPrice.IsZero() {
-		return nil
+func checkTxFee(gasPrice uint256.Int, ceiling uint64) error {
+	if ceiling == 0 {
+		ceiling = defaultRPCMaxGasPriceWei
 	}
-	maxGasPrice := uint256.NewInt(maxGasPriceGwei)
+	maxGasPrice := uint256.NewInt(ceiling)
 	if gasPrice.Cmp(maxGasPrice) > 0 {
 		return fmt.Errorf("gas price %s exceeds maximum allowed %s", gasPrice.String(), maxGasPrice.String())
 	}

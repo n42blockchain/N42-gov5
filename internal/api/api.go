@@ -107,6 +107,7 @@ type API struct {
 
 	accountManager *accounts.Manager
 	chainConfig    *params.ChainConfig
+	rpcMaxGasPrice uint64
 
 	gpo   *Oracle
 	p2p   P2PAdmin   // optional; nil until SetP2P is called
@@ -268,7 +269,12 @@ func chainIDUint64(cfg *params.ChainConfig) uint64 {
 	return cfg.ChainID.Uint64()
 }
 
-func (n *API) TxsPool() common.ITxsPool       { return n.txspool }
+func (n *API) TxsPool() common.ITxsPool { return n.txspool }
+
+// SetRPCMaxGasPrice configures native transaction admission before RPC starts.
+// Zero keeps the historical 1000 gwei ceiling; it never disables fee checking.
+func (n *API) SetRPCMaxGasPrice(wei uint64) { n.rpcMaxGasPrice = wei }
+
 func (n *API) Database() kv.RwDB              { return n.db }
 func (n *API) Engine() consensus.Engine       { return n.engine }
 func (n *API) BlockChain() common.IBlockChain { return n.bc }
@@ -334,31 +340,25 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 		}
 	}
 
-	// Deferred mode keeps the capability but lags it: the backfiller rebuilds
-	// the index from changesets behind the head. Below the marker the index is
-	// complete and the answer is correct; above it there is a gap, and a gap
-	// reads as "untouched" and resolves to the CURRENT value. Refuse the gap.
-	// A missing marker means nothing has been backfilled, so nothing below the
-	// head can be served -- reading an absent marker as "all covered" would
-	// invert the check.
-	//
-	// The `*blockNr < head` guard is NOT redundant, and leaving it out broke a
-	// live fleet. A query at `latest` arrives here with blockNr == head, which
-	// is above any lagging marker, so a marker-only test refuses the CURRENT
-	// state as well as historical state: eth_getBalance at latest returned
-	// null, the benchmark's own faucet preflight failed with "invalid hex
-	// quantity", and every node in the round was unable to answer a
-	// present-tense question. Historical state is what the index is needed for;
-	// `latest` reads PlainState and never consults it.
+	// Historical lookup searches for the first change AFTER the requested
+	// height, falling back to current plain state when none is indexed. Even a
+	// query below the marker can need a change in the unindexed tail. Refuse
+	// all historical queries until the index covers this snapshot's head.
+	// Keep latest available: it needs no later change. Read the head through
+	// the same transaction as the marker and state so a concurrent import or
+	// reorg cannot mix different snapshots in this decision.
 	if state.HistoryIndexDeferred() {
-		head := n.currentHeadNumber()
+		head := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx))
+		if head == nil {
+			return nil // coverage cannot be established
+		}
 		indexed, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
 		if err != nil {
 			ok = false
 		}
-		if deferredRefusesQuery(*blockNr, head, indexed, ok) {
-			log.Debug("historical state refused: above the history backfill marker",
-				"block", *blockNr, "indexedThrough", indexed, "markerPresent", ok, "head", head)
+		if deferredRefusesQuery(*blockNr, *head, indexed, ok) {
+			log.Debug("historical state refused: history index has not reached the snapshot head",
+				"block", *blockNr, "indexedThrough", indexed, "markerPresent", ok, "head", *head)
 			return nil
 		}
 	}
@@ -368,23 +368,14 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 }
 
 // deferredRefusesQuery decides whether the deferred-index gate refuses a query.
-// Extracted because the bug it now encodes lived in the condition, and a
-// condition is testable where a method needing a whole API is not.
-//
-//   - blockNr == head is `latest`: NEVER refused. It reads PlainState and does
-//     not consult the index at all. Testing the marker alone refused it, which
-//     took a live fleet's nodes off the air for present-tense queries and
-//     failed the benchmark's own faucet preflight with "invalid hex quantity".
-//   - head unknown (0) fails OPEN, matching the sealed-horizon gate: refusing
-//     everything because the head is momentarily unreadable is a worse failure
-//     than the one being prevented.
-//   - no marker means nothing is backfilled, so every historical query is
-//     refused. Reading an absent marker as "all covered" inverts the check.
+// head must be known and belong to the same database snapshot as indexed.
+// Historical reads require the complete index through head, including changes
+// after blockNr. Current state remains available while backfill is running.
 func deferredRefusesQuery(blockNr, head, indexed uint64, markerPresent bool) bool {
-	if head == 0 || blockNr >= head {
+	if blockNr >= head {
 		return false
 	}
-	return !markerPresent || blockNr > indexed
+	return !markerPresent || indexed < head
 }
 
 // currentHeadNumber returns the chain head height, or 0 when it cannot be

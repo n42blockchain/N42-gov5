@@ -347,7 +347,8 @@ func envInt(key string, def int) int {
 
 // StateProofInfo describes how eth_getProof results are encoded and how to
 // verify them — so a client can detect a QMDB-backed chain and route each proof
-// blob to qmdb.VerifyEncodedProof instead of an MPT verifier.
+// blob to qmdb.VerifyEncodedProofForKey with the requested key hash instead of
+// an MPT verifier.
 type StateProofInfo struct {
 	Backend               string `json:"backend"`               // e.g. "qmdb", "jmt", "ethereum-mpt", "hash-only"
 	ProofRootScheme       string `json:"proofRootScheme"`       // commitment behind the proof
@@ -360,7 +361,7 @@ type StateProofInfo struct {
 // GetStateProofInfo reports the proof backend serving eth_getProof. For a QMDB
 // chain Backend == "qmdb": each accountProof/storageProof element is a single
 // hex blob to decode with qmdb.UnmarshalProof and check with
-// qmdb.VerifyEncodedProof against the block's stateRoot.
+// qmdb.VerifyEncodedProofForKey against the block's stateRoot and requested key.
 func (c *ConsensusAPI) GetStateProofInfo(ctx context.Context) (*StateProofInfo, error) {
 	bc, ok := c.api.BlockChain().(*internal.BlockChain)
 	if !ok {

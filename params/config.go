@@ -507,6 +507,10 @@ type HotStuffConfig struct {
 	BaseTimeout uint64 `json:"baseTimeout"` // Base timeout in milliseconds (default 60000)
 	MaxTimeout  uint64 `json:"maxTimeout"`  // Max timeout in milliseconds (default 120000)
 	EpochLength uint64 `json:"epochLength"` // Epoch length in blocks for validator set rotation
+	// LeaderTenure is the number of consecutive views assigned to one leader.
+	// Zero/absent means one, preserving the existing round-robin schedule.
+	// Consensus-critical: all members must use the same genesis setting.
+	LeaderTenure uint64 `json:"leaderTenure,omitempty"`
 
 	// FastPropose skips slot boundary wait, reducing consensus latency by ~72%.
 	// When enabled, the leader proposes immediately after receiving ViewChanged,
