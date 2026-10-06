@@ -36,8 +36,9 @@ var writeProbeLogger = struct {
 func WriteProbeEnabled() bool { return writeProbeEnabled }
 
 // SetWriteProbeLogger supplies the application logger used by the optional
-// write probe. Keeping the callback at the application boundary prevents the
-// storage package from depending on the node's top-level logging package.
+// write probe and native commit trace. Keeping the callback at the application
+// boundary prevents the storage package from depending on the node's top-level
+// logging package.
 func SetWriteProbeLogger(logger func(string, ...interface{})) {
 	if logger == nil {
 		logger = func(string, ...interface{}) {}

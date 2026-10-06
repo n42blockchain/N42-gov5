@@ -82,6 +82,29 @@ func (tx *MdbxTx) Put(table string, k, v []byte) error {
 	return nil
 }
 
+// PutWithCursor is Put using a cursor already opened by this transaction.
+// Transaction wrappers must explicitly opt in to this API: choosing it from
+// the cursor alone could bypass their write hooks or cache invalidation.
+func (tx *MdbxTx) PutWithCursor(cursor kv.RwCursor, key, value []byte) error {
+	var c *MdbxCursor
+	switch concrete := cursor.(type) {
+	case *MdbxCursor:
+		c = concrete
+	case *MdbxDupSortCursor:
+		c = concrete.MdbxCursor
+	}
+	if c == nil || c.tx != tx || c.c == nil {
+		return fmt.Errorf("PutWithCursor requires an open cursor owned by this transaction")
+	}
+	if err := cursor.Put(key, value); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	tx.writeBytes.Add(uint64(len(key) + len(value)))
+	tx.noteWrite(c.bucketName, len(key)+len(value), false)
+	return nil
+}
+
 func (tx *MdbxTx) Delete(table string, k []byte) error {
 	c, err := tx.statelessCursor(table)
 	if err != nil {
