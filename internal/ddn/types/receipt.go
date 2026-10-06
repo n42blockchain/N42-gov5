@@ -37,18 +37,53 @@ func (r DecisionResult) Validate() error {
 		return errors.New("too many answers")
 	}
 	for _, a := range r.Answers {
-		if a.Kind > 2 || a.ValuePPM > PPM || a.ConfidencePPM > PPM {
-			return errors.New("invalid answer")
-		}
-		if err := validateDistribution(a.ProbabilitiesPPM); err != nil {
+		if err := a.Validate(); err != nil {
 			return err
-		}
-		if len(a.ProbabilitiesPPM) > 0 && int(a.Selected) >= len(a.ProbabilitiesPPM) {
-			return errors.New("selected answer outside distribution")
 		}
 	}
 	return nil
 }
+
+// Validate enforces the governance tuple shape, including floor quantization.
+// Generic choice answers can contain up to 256 classes; templates impose their
+// narrower contract limits separately.
+func (a QuantizedAnswer) Validate() error {
+	if a.ConfidencePPM > PPM {
+		return errors.New("invalid answer confidence")
+	}
+	if a.Kind == 3 {
+		if a.ValuePPM > PPM || a.Selected != 0 || a.ConfidencePPM != 0 || len(a.ProbabilitiesPPM) != 0 {
+			return errors.New("invalid Noul answer")
+		}
+		return nil
+	}
+	n := len(a.ProbabilitiesPPM)
+	if (a.Kind != 1 && a.Kind != 2) || n < 2 || n > 256 || int(a.Selected) >= n {
+		return errors.New("invalid answer kind or dimensions")
+	}
+	var sum uint64
+	var maximum uint32
+	for _, v := range a.ProbabilitiesPPM {
+		if v > PPM {
+			return errors.New("invalid answer probability")
+		}
+		sum += uint64(v)
+		if v > maximum {
+			maximum = v
+		}
+	}
+	if sum > PPM || sum+uint64(n) < PPM {
+		return errors.New("invalid quantized distribution")
+	}
+	if a.Kind == 1 && (a.ValuePPM != 0 || a.ProbabilitiesPPM[a.Selected] != maximum) {
+		return errors.New("invalid choice selection")
+	}
+	if a.Kind == 2 && (n > 10 || a.Selected != 0 || uint64(a.ValuePPM) > uint64(n-1)*PPM) {
+		return errors.New("invalid score answer")
+	}
+	return nil
+}
+
 func validateDistribution(p []uint32) error {
 	if len(p) > 256 {
 		return errors.New("too many probabilities")
