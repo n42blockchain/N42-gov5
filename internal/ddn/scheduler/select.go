@@ -3,12 +3,13 @@ package scheduler
 
 import (
 	"errors"
+	"math/big"
+	"time"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ddn/provider"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"github.com/n42blockchain/N42/internal/distributed/coprocessor"
-	"math/big"
-	"time"
 )
 
 type Offer struct {

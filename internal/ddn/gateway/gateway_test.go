@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/ddn/provider"
+	"github.com/n42blockchain/N42/internal/ddn/quorum"
 	"github.com/n42blockchain/N42/internal/ddn/receipt"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"github.com/n42blockchain/N42/internal/mcp"
-	"strings"
 )
 
 func identity() provider.Identity {
@@ -117,13 +118,17 @@ func TestBackpressureNonceAndStop(t *testing.T) {
 	if _, err = g.Submit(r, "healthy"); err == nil {
 		t.Fatal("nonce replay accepted")
 	}
-	if _, err = g.Submit(request(2), "healthy"); err != nil {
+	queued, err := g.Submit(request(2), "healthy")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = g.Submit(request(3), "healthy"); err != ErrBusy {
 		t.Fatalf("expected bounded queue rejection, got %v", err)
 	}
 	g.Stop()
+	if rec, _ := g.GetReceipt(queued); rec == nil || rec.Status != "failed" || !rec.NeedEscalation {
+		t.Fatal("shutdown left queued request pending")
+	}
 	if _, err = g.Submit(request(4), "healthy"); err != ErrClosed {
 		t.Fatal("stopped gateway accepted work")
 	}
@@ -149,7 +154,7 @@ func TestInputAndTimeoutChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := awaitRecord(t, g, id); rec.Status != "failed" || rec.Receipt != nil {
+	if rec := awaitRecord(t, g, id); rec.Status != "failed" || rec.Receipt != nil || !rec.NeedEscalation {
 		t.Fatal("timeout manufactured receipt")
 	}
 }
@@ -199,5 +204,39 @@ func TestSignedShadowReceipt(t *testing.T) {
 	}
 	if err = receipt.Verify(*rec.Receipt, req, signer.Address(), uint64(time.Now().UnixMilli())); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestQuorumGatewayBindsEvidenceAndEscalatesSplit(t *testing.T) {
+	a, b := identity(), identity()
+	a.DID = "did:n42:a"
+	a.Family = "rules"
+	b.DID = "did:n42:b"
+	b.Family = "gli"
+	b.ModelHash = chain.Hash{2}
+	group, err := quorum.New("did:n42:aggregate", []quorum.Member{{Provider: provider.Stub{ID: a, Result: d.DecisionResult{Label: "NORMAL", ConfidencePPM: 900000}}}, {Provider: provider.Stub{ID: b, Result: d.DecisionResult{Label: "NETWORK", ConfidencePPM: 900000}}}}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config()
+	cfg.MaxQuorum = 2
+	g, err := New(cfg, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Stop()
+	req := request(3)
+	if _, err = g.Submit(req, "healthy"); err == nil {
+		t.Fatal("quorum downgrade accepted")
+	}
+	req.Quorum = 2
+	req.ModelRequirements.ModelHash = group.Identity().ModelHash
+	id, err := g.Submit(req, "healthy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := awaitRecord(t, g, id)
+	if rec.Receipt == nil || rec.Receipt.EvidenceCommitment == (chain.Hash{}) || !rec.Receipt.Result.NeedEscalation || !rec.NeedEscalation || rec.Receipt.Result.Label != "UNKNOWN" {
+		t.Fatalf("split quorum produced unsafe receipt %+v", rec)
 	}
 }

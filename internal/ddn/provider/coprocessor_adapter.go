@@ -3,10 +3,11 @@ package provider
 import (
 	"context"
 	"errors"
+	"strings"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"github.com/n42blockchain/N42/internal/distributed/coprocessor"
-	"strings"
 )
 
 // CoprocessorAdapter rechecks the existing provider registry before dispatch.

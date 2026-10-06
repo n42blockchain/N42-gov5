@@ -88,7 +88,7 @@ type MEVOptimizerCfg struct {
 // DefaultAICfg returns the default AI infrastructure configuration (all disabled).
 func DefaultAICfg() AICfg {
 	return AICfg{
-		DDN: DDNCfg{ShadowMode: true, MaxConcurrency: 2, QueueSize: 32, MaxItems: 1024, MaxInputBytes: 65536, MaxLatencyMs: 500, ReceiptTTLSec: 300, Tasks: []string{"node.anomaly"}, Schemas: []string{"health-v1"}},
+		DDN: DDNCfg{QuorumSize: 1, MaxProviderConcurrency: 2, ShadowMode: true, MaxConcurrency: 2, QueueSize: 32, MaxItems: 1024, MaxInputBytes: 65536, MaxLatencyMs: 500, ReceiptTTLSec: 300, Tasks: []string{"node.anomaly"}, Schemas: []string{"health-v1"}},
 		Wallet: WalletCfg{
 			MaxSessionKeys:    16,
 			DefaultSpendLimit: "1000000000000000000",
@@ -124,26 +124,42 @@ func DefaultAICfg() AICfg {
 }
 
 // DDNCfg controls the remote-sidecar shadow gateway, disabled by default.
-// Signing keys are deliberately absent: never reuse the validator key.
+// Optional signing uses a dedicated encrypted DDN key, never the validator key.
 type DDNCfg struct {
-	RequireRegisteredProvider bool     `json:"require_registered_provider" yaml:"require_registered_provider"`
-	MinProviderReputation     uint64   `json:"min_provider_reputation" yaml:"min_provider_reputation"`
-	SigningKeyFile            string   `json:"signing_key_file" yaml:"signing_key_file"`
-	Enabled                   bool     `json:"enabled" yaml:"enabled"`
-	GatewayEnabled            bool     `json:"gateway_enabled" yaml:"gateway_enabled"`
-	ShadowMode                bool     `json:"shadow_mode" yaml:"shadow_mode"`
-	SidecarURL                string   `json:"sidecar_url" yaml:"sidecar_url"`
-	ProviderDID               string   `json:"provider_did" yaml:"provider_did"`
-	Model                     string   `json:"model" yaml:"model"`
-	ModelVersion              string   `json:"model_version" yaml:"model_version"`
-	ModelHash                 string   `json:"model_hash" yaml:"model_hash"`
-	ModelFamily               string   `json:"model_family" yaml:"model_family"`
-	Tasks                     []string `json:"tasks" yaml:"tasks"`
-	Schemas                   []string `json:"schemas" yaml:"schemas"`
-	MaxConcurrency            int      `json:"max_concurrency" yaml:"max_concurrency"`
-	QueueSize                 int      `json:"queue_size" yaml:"queue_size"`
-	MaxItems                  int      `json:"max_items" yaml:"max_items"`
-	MaxInputBytes             int      `json:"max_input_bytes" yaml:"max_input_bytes"`
-	MaxLatencyMs              int      `json:"max_latency_ms" yaml:"max_latency_ms"`
-	ReceiptTTLSec             int      `json:"receipt_ttl_sec" yaml:"receipt_ttl_sec"`
+	QuorumSize                int             `json:"quorum_size" yaml:"quorum_size"`
+	MaxProviderConcurrency    int             `json:"max_provider_concurrency" yaml:"max_provider_concurrency"`
+	Sidecars                  []DDNSidecarCfg `json:"sidecars" yaml:"sidecars"`
+	RequireRegisteredProvider bool            `json:"require_registered_provider" yaml:"require_registered_provider"`
+	MinProviderReputation     uint64          `json:"min_provider_reputation" yaml:"min_provider_reputation"`
+	SigningKeyFile            string          `json:"signing_key_file" yaml:"signing_key_file"`
+	Enabled                   bool            `json:"enabled" yaml:"enabled"`
+	GatewayEnabled            bool            `json:"gateway_enabled" yaml:"gateway_enabled"`
+	ShadowMode                bool            `json:"shadow_mode" yaml:"shadow_mode"`
+	SidecarURL                string          `json:"sidecar_url" yaml:"sidecar_url"`
+	ProviderDID               string          `json:"provider_did" yaml:"provider_did"`
+	Model                     string          `json:"model" yaml:"model"`
+	ModelVersion              string          `json:"model_version" yaml:"model_version"`
+	ModelHash                 string          `json:"model_hash" yaml:"model_hash"`
+	ModelFamily               string          `json:"model_family" yaml:"model_family"`
+	Tasks                     []string        `json:"tasks" yaml:"tasks"`
+	Schemas                   []string        `json:"schemas" yaml:"schemas"`
+	MaxConcurrency            int             `json:"max_concurrency" yaml:"max_concurrency"`
+	QueueSize                 int             `json:"queue_size" yaml:"queue_size"`
+	MaxItems                  int             `json:"max_items" yaml:"max_items"`
+	MaxInputBytes             int             `json:"max_input_bytes" yaml:"max_input_bytes"`
+	MaxLatencyMs              int             `json:"max_latency_ms" yaml:"max_latency_ms"`
+	ReceiptTTLSec             int             `json:"receipt_ttl_sec" yaml:"receipt_ttl_sec"`
+}
+
+// DDNSidecarCfg pins each remote quorum member's identity and model claim.
+type DDNSidecarCfg struct {
+	URL          string   `json:"url" yaml:"url"`
+	ProviderDID  string   `json:"provider_did" yaml:"provider_did"`
+	Model        string   `json:"model" yaml:"model"`
+	ModelVersion string   `json:"model_version" yaml:"model_version"`
+	ModelHash    string   `json:"model_hash" yaml:"model_hash"`
+	ModelFamily  string   `json:"model_family" yaml:"model_family"`
+	Tasks        []string `json:"tasks" yaml:"tasks"`
+	Schemas      []string `json:"schemas" yaml:"schemas"`
+	Price        uint64   `json:"price" yaml:"price"`
 }

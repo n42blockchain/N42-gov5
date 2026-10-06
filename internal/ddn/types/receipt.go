@@ -2,8 +2,9 @@ package types
 
 import (
 	"errors"
-	chain "github.com/n42blockchain/N42/common/types"
 	"unicode/utf8"
+
+	chain "github.com/n42blockchain/N42/common/types"
 )
 
 // QuantizedAnswer matches the n42-26 governance Answer tuple.

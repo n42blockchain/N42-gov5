@@ -2,9 +2,10 @@ package types
 
 import (
 	"encoding/json"
-	chain "github.com/n42blockchain/N42/common/types"
 	"os"
 	"testing"
+
+	chain "github.com/n42blockchain/N42/common/types"
 )
 
 type vector struct {
@@ -99,6 +100,15 @@ func TestCanonicalAndValidationBoundaries(t *testing.T) {
 	for _, result := range []DecisionResult{{Label: "x", ConfidencePPM: PPM + 1}, {Label: "x", ProbabilitiesPPM: []uint32{1}}, {Label: "x", Answers: []QuantizedAnswer{{Selected: 2, ProbabilitiesPPM: []uint32{PPM}}}}} {
 		if result.Validate() == nil {
 			t.Fatal("invalid result accepted")
+		}
+	}
+}
+
+func TestUnknownSignedFieldsRejected(t *testing.T) {
+	for _, data := range []string{`{"unexpected":1}`, `{"policy_parameters":{"unknown":true}}`} {
+		var r DecisionRequest
+		if json.Unmarshal([]byte(data), &r) == nil {
+			t.Fatal("unsigned field accepted")
 		}
 	}
 }

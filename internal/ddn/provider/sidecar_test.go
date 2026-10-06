@@ -2,12 +2,13 @@ package provider
 
 import (
 	"context"
-	chain "github.com/n42blockchain/N42/common/types"
-	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	chain "github.com/n42blockchain/N42/common/types"
+	d "github.com/n42blockchain/N42/internal/ddn/types"
 )
 
 func TestSidecarRejectsUnboundAndOversizedResponse(t *testing.T) {

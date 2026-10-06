@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	chain "github.com/n42blockchain/N42/common/types"
-	d "github.com/n42blockchain/N42/internal/ddn/types"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
+
+	metrics "github.com/n42blockchain/N42/common/metrics"
+	chain "github.com/n42blockchain/N42/common/types"
+	d "github.com/n42blockchain/N42/internal/ddn/types"
 )
 
 // Sidecar calls POST /decide at a configured endpoint; it never fetches
@@ -39,6 +42,10 @@ func (s *Sidecar) Identity() Identity {
 	return id
 }
 func (s *Sidecar) Decide(ctx context.Context, r d.DecisionRequest, input string) (d.DecisionResult, error) {
+	started := time.Now()
+	defer func() {
+		metrics.GetOrCreateHistogram("ddn_sidecar_latency_seconds{provider_did=" + strconv.Quote(s.identity.DID) + "}").Observe(time.Since(started).Seconds())
+	}()
 	b, err := json.Marshal(struct {
 		Request d.DecisionRequest `json:"request"`
 		Input   string            `json:"input"`

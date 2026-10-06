@@ -3,11 +3,13 @@ package receipt
 import (
 	"encoding/hex"
 	"errors"
+	"strings"
+
 	"github.com/holiman/uint256"
+
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
-	"strings"
 )
 
 func Recover(hash chain.Hash, signature string) (chain.Address, error) {
