@@ -1,14 +1,15 @@
 package node
 
 import (
-	"github.com/n42blockchain/N42/internal/ddn/receipt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ddn/gateway"
 	"github.com/n42blockchain/N42/internal/ddn/provider"
+	"github.com/n42blockchain/N42/internal/ddn/receipt"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -32,7 +33,25 @@ func (n *Node) startDDNRuntime() {
 		log.Error("DDN disabled: unsupported chain ID")
 		return
 	}
-	g, err := gateway.New(gateway.Config{ChainID: n.config.ChainCfg.ChainID.Uint64(), ShadowMode: c.ShadowMode, MaxConcurrency: c.MaxConcurrency, QueueSize: c.QueueSize, MaxItems: c.MaxItems, MaxInputBytes: c.MaxInputBytes, MaxLatency: time.Duration(c.MaxLatencyMs) * time.Millisecond, ReceiptTTL: time.Duration(c.ReceiptTTLSec) * time.Second}, p)
+	var backend provider.DecisionProvider = p
+	if c.RequireRegisteredProvider {
+		if n.coprocessorService == nil {
+			log.Error("DDN disabled: provider registry unavailable")
+			return
+		}
+		var address types.Address
+		if !strings.HasPrefix(c.ProviderDID, "did:n42:") || address.UnmarshalText([]byte(strings.TrimPrefix(c.ProviderDID, "did:n42:"))) != nil {
+			log.Error("DDN disabled: invalid registry provider DID")
+			return
+		}
+		adapter := &provider.CoprocessorAdapter{Registry: n.coprocessorService.Providers(), Address: address, Backend: p, MinReputation: c.MinProviderReputation}
+		if err = adapter.Eligible(); err != nil {
+			log.Error("DDN disabled: provider not registered or eligible")
+			return
+		}
+		backend = adapter
+	}
+	g, err := gateway.New(gateway.Config{ChainID: n.config.ChainCfg.ChainID.Uint64(), ShadowMode: c.ShadowMode, MaxConcurrency: c.MaxConcurrency, QueueSize: c.QueueSize, MaxItems: c.MaxItems, MaxInputBytes: c.MaxInputBytes, MaxLatency: time.Duration(c.MaxLatencyMs) * time.Millisecond, ReceiptTTL: time.Duration(c.ReceiptTTLSec) * time.Second}, backend)
 	if err != nil {
 		log.Error("DDN disabled: invalid gateway configuration", "err", err)
 		return
