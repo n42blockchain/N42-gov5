@@ -62,3 +62,16 @@ checks occur before acceptance; signature recovery alone is insufficient.
 n42-26 relay, not from the Go implementation. Inputs mirror that relay's
 `quote_cannot_move_refund_or_hub`, `attestation_signature_is_domain_bound`, and
 `abi_answer_hash_matches_encoded_payload` tests.
+
+## Quorum commitments
+
+Quorum members are sorted by provider DID. The composite model hash is Keccak256
+of Go `json.Marshal` of the sorted provider Identity array (including its declared
+fields and capability arrays). Evidence is Keccak256 of an ordered JSON array
+with fields `provider_did`, `model_hash`, `result_hash`, `failed`. Each result hash
+is the canonical hash of a child receipt binding version, chain, request ID,
+provider DID, model hash, input/policy hashes, nonce and result; other fields are
+zero values. These two internal encodings use Go JSON's default HTML escaping.
+Missing outcomes remain explicit failed entries. Aggregator signatures attest
+to this evidence commitment; remote child results are not independently signed
+receipts or cryptographic model execution proofs.

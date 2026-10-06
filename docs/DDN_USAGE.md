@@ -2,17 +2,61 @@
 
 This is the companion usage guide to [`docs/DDN.md`](./DDN.md). Read that document first for the architecture and the implementation-status table.
 
-**Scope reminder**: the N42 Distributed Decision Network (DecisionRequest/DecisionReceipt/ModelManifest, Scheduler, Aggregator, Quorum) is a specification from the whitepaper in `n42-26` and has no implementation in this repository (N42-gov5). This guide covers two things only:
+The Go integration phases A–E are implemented as a disabled-by-default shadow service. The following sections also describe existing AI infrastructure and future whitepaper features; those are separate from the new off-chain DDN path.
 
-1. What exists **today** in N42-gov5 that a DDN implementation could be built on (AI inference precompile, agent wallet, agent discovery, dataset governance, ZK training/attestation scaffolding, MCP tools).
-2. What the whitepaper and `n42-26/docs/decision/` specify as **planned**, clearly marked as such, so you don't confuse a design doc for a shipped feature.
+## Remote shadow DDN
 
-Every code reference below was checked against the actual file on 2026-10-05 in `/data/blockchain/gov5-work/wt-r27`.
+Configure `AICfg.DDN` under the existing AI configuration. Enable both `enabled` and `gateway_enabled`, retain `shadow_mode: true`, and use a distributed-capable node profile. Example fields:
+
+```yaml
+ddn:
+  enabled: true
+  gateway_enabled: true
+  shadow_mode: true
+  sidecar_url: "http://sidecar.internal:8080/decide"
+  provider_did: "did:n42:YOUR_LOWERCASE_PROVIDER_ADDRESS"
+  model: "health-classifier"
+  model_version: "v1"
+  model_hash: "REPLACE_WITH_PINNED_0x_64_HEX_MODEL_HASH"
+  model_family: "health-family-a"
+  tasks: ["node.anomaly"]
+  schemas: ["health-v1"]
+  quorum_size: 1
+  max_provider_concurrency: 2
+  max_concurrency: 2
+  queue_size: 32
+  max_items: 1024
+  max_input_bytes: 65536
+  max_latency_ms: 500
+  receipt_ttl_sec: 300
+```
+
+Replace identity/hash placeholders with the deployed provider's values. No model or remote sidecar is installed by enabling this configuration. The URL is the complete POST endpoint. Use HTTPS where transport confidentiality is required.
+
+Submit through authenticated `n42_ddnSubmit` with parameters `[request, input]`; poll `n42_ddnGetReceipt` with `[request_id]`. These methods use the existing authenticated RPC or local IPC registration. They are not registered on public HTTP RPC. MCP equivalents are `ddn.decide` and `ddn.getReceipt`; add them to the existing server's `AllowedTools` list when an allowlist is configured.
+
+Construct requests with `internal/ddn/types.DecisionRequest`: version 1, actual chain ID, unique requester/nonce, task/schema matching the provider, `privacy_mode: "public"`, configured quorum, positive latency budget, decimal-string `max_cost`, and a millisecond deadline in the next 24 hours. `input_hash` must be Keccak256 of the exact inline UTF-8 input. A zero request ID lets the gateway derive it. Input locations and private delivery are not fetched or supported. Secret-bearing inputs are rejected; redact before hashing and submission. Unsigned requests rely on RPC/MCP access control and do not authorize payments.
+
+Records report `pending`, `complete`, or `failed`, with `shadow_mode` and `need_escalation`. Failed/time-out requests have no receipt and require escalation. Completed receipts expire at the earlier of their configured TTL and request deadline; consumers must verify expiry even if the cache still contains the record. Admission and nonce caches are bounded and process-local.
+
+The sidecar receives JSON `{"request": <request>, "input": "sanitized text"}` and returns:
+
+```json
+{"request_id":"0x...","model_hash":"0x...","result":{"label":"NORMAL","probabilities_ppm":[],"confidence_ppm":0,"need_escalation":false,"answers":[]}}
+```
+
+Return the exact request ID and pinned model hash. Ppm values are integers; nonempty probability arrays sum to 1000000. Empty arrays and zero confidence honestly represent unavailable scores. Unknown fields, invalid results, oversized responses, redirects and late responses are rejected. Logs contain identifiers and receipt hashes rather than raw input or output labels.
+
+For multiple providers, set `quorum_size` equal to the length of `sidecars`. Each entry has `url`, `provider_did`, `model`, `model_version`, `model_hash`, `model_family`, `tasks`, `schemas`, and integer `price`. The top-level provider DID identifies the aggregator. The group exposes its composite model identity through `quorum.Group.Identity`; requests pin that identity when model requirements are used. A shared `max_provider_concurrency` bound controls fan-out. The entire quorum must agree on typed outputs and distributions; confidence is the minimum and escalation is ORed. Splits, missing/invalid responses and multi-provider groups with fewer than two model families yield UNKNOWN/escalation. An evidence commitment binds the result set. Provider identity/model family are configured claims, not independently verified model execution.
+
+Optional `signing_key_file` must point to an encrypted Web3 keystore file inside a dedicated `ddn-keystore/` directory with mode 0600. Supply its password in `N42_DDN_KEY_PASSWORD`; the provider/aggregator DID must match its lowercase signing address. No validator or wallet key is borrowed. Use `receipt.Verify` with the trusted address and originating request, then `verify.Verifier.Consume` for replay rejection. Settlement needs durable nonce storage. `require_registered_provider` optionally checks the existing coprocessor registry; `min_provider_reputation` sets its threshold. The reusable scheduler also enforces capability, task/schema, model, ETA and total cost.
+
+Governance EIP-712 Quote/ResultAttestation compatibility is provided as a separate library format with Rust-derived test vectors. It does not activate DecisionHub settlement. Private encrypted transport, TEE/ZKML proof, automatic model registration and trained N42-System1 weights remain future work.
 
 ## Audiences
 
 - **App/agent developers**: want to call AI inference from a smart contract or MCP client today.
-- **Decision providers** (whitepaper role: nodes that run a model and answer requests): there is no provider role to run in this repo yet — see [How a provider will run](#how-a-provider-will-run-planned).
+- **Decision providers** (whitepaper role: nodes that run a model and answer requests): remote HTTP providers can serve the shadow path; full model registration remains planned — see [How a provider will run](#how-a-provider-will-run-planned).
 - **Node operators**: want to know which config flags turn on what, and which ports are involved.
 
 ## Prerequisites
@@ -49,11 +93,11 @@ All AI subsystem configuration lives in `conf/ai_config.go`, under `AICfg`. Ever
 | `AICfg.Inference.FuncName` | string | `"infer"` | WASM export invoked per inference request |
 | `AICfg.Inference.FuelLimit` | uint64 | `10_000_000` | Fuel bound per execution (see `internal/distributed/compute/wasm/wazero_runtime.go`) |
 
-Messaging-layer config relevant to a future DDN (DID identity, E2E encryption used as a private delivery channel) lives in `conf/messaging_config.go` under `MessagingCfg` — notably `DIDEnabled` (default `false`) and `EncryptionEnabled` (default `false`). Neither field is DDN-specific; they are generic messaging-platform switches. None of `conf/ai_config.go` or `conf/messaging_config.go` has a field named anything like `DDN`, `Decision*`, or `ModelManifest` — because that layer does not exist here.
+Messaging-layer config relevant to a future DDN (DID identity, E2E encryption used as a private delivery channel) lives in `conf/messaging_config.go` under `MessagingCfg` — notably `DIDEnabled` (default `false`) and `EncryptionEnabled` (default `false`). Neither field is DDN-specific; they are generic messaging-platform switches. `AICfg.DDN` configures the implemented shadow path above; messaging encryption is not wired into DDN private delivery.
 
 ## How an agent obtains a decision today
 
-There is no DDN `DecisionRequest`/`DecisionReceipt` round trip. What exists is a generic, model-agnostic inference request/response path through a precompile plus an off-chain result cache. This is the closest functional analog, and it is what you'd build a DDN `DecisionProvider` on top of if you were implementing one.
+The remote DDN round trip is documented above. The following generic inference precompile and result cache are separate existing AI infrastructure.
 
 ### 1. AI inference precompile (`0x0301`)
 
@@ -103,11 +147,11 @@ The executor itself is wazero-based (`internal/distributed/compute/inference/exe
 - `agent_wallet_tools.go` — `AgentWalletProvider` interface: `CreateAccount(ownerKey, agentDID)`, `GetBalance(address)`, `AccountCount()`. Backed by `internal/ai/wallet`.
 - `data_tools.go` — on-chain query tools (token transfers, address profiles, gas analytics, contract events) backed by the ExEx AI indexer (`internal/exex/extensions/`).
 
-None of these three tool files expose a "submit decision request" or "get decision receipt" tool — that would be new work, not present today.
+None of these three tool files expose a "submit decision request" or "get decision receipt" tool — the separate `internal/ddn/gateway/mcp_tools.go` provides those tools.
 
 ## How to register a model / dataset governance / training proof today
 
-These three packages are real, usable Go APIs independent of any DDN wiring. They are good building blocks for a DDN Model Manifest's "has this model's training data been ethically approved" and "was this model actually trained the way it claims" questions — but nothing here produces a `ModelManifest` struct, because that struct doesn't exist in this repo.
+These three packages are real, usable Go APIs independent of any DDN wiring. They are good building blocks for a DDN Model Manifest's "has this model's training data been ethically approved" and "was this model actually trained the way it claims" questions — but these packages do not automatically populate or validate the new DDN `ModelManifest`.
 
 ### Dataset governance (`internal/ai/governance/`)
 
@@ -164,7 +208,7 @@ Public inputs are 96 bytes: `modelHash(32) || inputHash(32) || outputHash(32)` (
 
 ## How a provider will run (Planned)
 
-The whitepaper's `Decision Provider` role — a node that registers a Model Manifest, listens for `DecisionRequest`s matching its capabilities, and returns signed `DecisionReceipt`s — has no implementation here. There is no provider daemon, no listener process, no manifest registration RPC, and no provider-side reputation/stake contract matching the whitepaper's design. The closest adjacent concepts that do exist (and could be extended) are:
+The whitepaper's `Decision Provider` role — a node that registers a Model Manifest, listens for `DecisionRequest`s matching its capabilities, and returns signed `DecisionReceipt`s — is partially implemented by the remote provider interface and gateway. This repository does not ship a model-serving daemon or automatic manifest registration RPC. The closest adjacent concepts that do exist (and could be extended) are:
 
 - `internal/ai/coord/registry.go`'s `AgentRegistry` — generic agent capability registration with min-stake (currently a package-level `var minStake = 1 ETH`, not the whitepaper's provider stake specifically).
 - `internal/distributed/coprocessor/provider.go` and `marketplace.go` — a generic distributed-compute provider registry and reverse-auction marketplace (stake, capabilities, reputation tracking) built for the broader coprocessor system, not DDN decisions specifically.
@@ -173,23 +217,23 @@ Building a real Decision Provider would mean wiring a process that: registers vi
 
 ## Shadow-gateway mode
 
-`n42-26/docs/decision/shadow-gateway.md` describes a **Rust/Python implementation in `n42-26`, not part of this Go repository.** Summary, attributed to that document: a read-only gateway (`scripts/decision_shadow.py`) that accepts one sanitized JSONL event per line, records a deterministic rule result alongside a shadow Jev classification, and cannot write node config, call N42 RPC, sign, submit, restart, or ban anything — critical deterministic alerts cannot be downgraded by model output, and API errors/malformed answers route to "deep analysis" rather than a silent healthy result. It has no counterpart in N42-gov5: there is no Go package here that ingests node/CI logs and runs a shadow AI classification pass.
+`n42-26/docs/decision/shadow-gateway.md` describes a **Rust/Python implementation in `n42-26`, not part of this Go repository.** Summary, attributed to that document: a read-only gateway (`scripts/decision_shadow.py`) that accepts one sanitized JSONL event per line, records a deterministic rule result alongside a shadow Jev classification, and cannot write node config, call N42 RPC, sign, submit, restart, or ban anything — critical deterministic alerts cannot be downgraded by model output, and API errors/malformed answers route to "deep analysis" rather than a silent healthy result. The Go gateway now accepts explicitly submitted sanitized input and calls the configured HTTP sidecar. Automatic node/CI log ingestion and deterministic-rule comparison are not enabled.
 
 ## Verifying a receipt
 
-The whitepaper's `DecisionReceipt` verification (signature + nonce/expiry + provider identity + optional ZK/TEE proof) is **Specification only** — there is no `DecisionReceipt` type to verify in this repo. The nearest usable analog, with real but different semantics, is `AttestationService.VerifyAttestation` (`internal/ai/attestation/service.go`): it checks an operator's secp256k1 signature over canonical attestation bytes (`canonicalBytes`), consults a pluggable `ZKProofProvider`, and for `SafetyCritical` attestations also checks `TrainingVerification`. Treat this as a structurally similar but functionally distinct primitive — it attests to one inference result's provenance chain, not to a DecisionRequest/DecisionReceipt pair with quorum aggregation.
+General DDN receipt verification is implemented in `internal/ddn/receipt` and replay consumption in `internal/ddn/verify`, as described above. ZK/TEE execution verification remains future work. The separate `AttestationService.VerifyAttestation` (`internal/ai/attestation/service.go`) handles inference provenance and its pluggable training/proof interfaces; it is not the DDN request/receipt verifier.
 
 ## Operational notes
 
 - **MCP server**: default port `8553` (`conf/mcp_config.go`, `DefaultMCPCfg().Port = 8553`). Exposes the agent/wallet/data tool surfaces listed above.
 - **Message stream (SSE)**: default port `8554` (`conf/messaging_config.go`, `StreamServerPort: 8554`), part of the generic messaging platform, not DDN-specific — would be a plausible transport for pushing decision results to subscribers in a future DDN build.
-- **DID identity**: `internal/distributed/messaging/identity/did.go` implements `did:n42:<address>`, generic to the messaging platform. A DDN `provider_did` field would plausibly reuse this method, but no code currently issues a DID scoped to "decision provider."
-- **Keys**: wallet session keys (`internal/ai/wallet/account.go`), ethics-committee voter keys, training-proof signer keys, and attestation operator keys are all independent secp256k1 keys managed by their respective packages — there is no unified "DDN provider key" concept.
+- **DID identity**: `internal/distributed/messaging/identity/did.go` implements `did:n42:<address>`, generic to the messaging platform. DDN uses this DID form for configured provider and aggregator identities.
+- **Keys**: wallet session keys (`internal/ai/wallet/account.go`), ethics-committee voter keys, training-proof signer keys, and attestation operator keys are all independent secp256k1 keys managed by their respective packages — optional DDN receipt signing uses its own dedicated encrypted keystore.
 - **Do not enable `ChainConfig.AIInferenceTime` on a multi-validator network** until model registry/result state moves into consensus-synchronized storage (see the precompile file's header warning, §"AI inference precompile" above).
 
 ## Limitations and roadmap pointers
 
-- The DDN protocol (request/receipt/manifest, scheduler, quorum, aggregation, settlement) does not exist in N42-gov5. Building it would be new, substantial work, not a wiring exercise over existing types.
+- The DDN shadow request/receipt, scheduler and quorum path exists; production settlement and model execution proof remain future work.
 - The pieces that do exist here (wallet, coord, governance, training, attestation, inference precompile) were built independently of the DDN whitepaper and are not currently cross-wired to each other as a pipeline — e.g., `AttestationService`'s `TrainingVerification` interface is optional and typically `nil` unless you construct and pass a concrete implementation yourself.
 - ZK proofs in `zkprover`/`zkverifier` and `ai/training` are simulated (hash-chain / fixed-size byte blobs), not production SNARK/STARK/SP1 circuits — do not treat `VerifyTrainingProof`/`ZKMLVerifier` success as a cryptographic correctness guarantee today.
 - For the actual, up-to-date DDN rollout status (on the `n42-26` side, not this repo), see `n42-26/docs/decision/roadmap-status-20260926.md` and the newer `n42-26/docs/decision/local-system1-roadmap.md`, which supersedes the whitepaper's phase ordering with a local-first (deterministic rules → local System-1 → Jev → System-2/human) sequence.

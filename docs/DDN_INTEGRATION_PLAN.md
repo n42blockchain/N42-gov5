@@ -159,6 +159,8 @@ Two separate compatibility surfaces, do not conflate them:
 
 ## 5. Phased delivery
 
+Implementation status and the resolved human decisions are recorded in the execution record below. Earlier unresolved questions describe the planning baseline.
+
 | Phase | Scope | Files (new) | Interfaces | Tests | Acceptance | Size | Difficulty |
 |---|---|---|---|---|---|---|---|
 | A | Types + canonical hashing + test vectors | `internal/ddn/types/{request,receipt,manifest,hash}.go` | `DecisionRequest`, `DecisionReceipt`, `ModelManifest` structs + `CanonicalHash()` | Unit tests incl. fixed test vectors checked into `internal/ddn/types/testdata/` | Hash is stable across runs; vectors documented for a future Rust-side port | ~600 LOC | Easy — pure data types |
@@ -261,3 +263,22 @@ vectors are documented in `docs/DDN_CANONICAL.md`.
   marketplace with shadow work. Optional `require_registered_provider` node
   configuration binds the configured sidecar to the existing registry.
   Capability/reputation/price/budget/quorum/status tests pass under race.
+
+- Phase E: bounded multi-provider fan-out, deterministic evidence commitments,
+  typed-output agreement, minimum confidence and escalation OR implemented.
+  Splits, missing/invalid outputs, duplicate identities and correlated-only
+  multi-provider quorum cannot silently produce a majority decision. Tests cover
+  agreement, split, partial failure, timeout, budget, quorum downgrade, global
+  concurrency and evidence binding under race detection.
+- Operational scope: all new decision execution remains opt-in and shadow-only.
+  No classifier weights or live remote service are deployed. Private delivery,
+  durable settlement, automatic manifest registration and TEE/ZKML execution
+  proof remain outside these integration phases. Updated DDN_USAGE.md describes
+  configuration, authenticated RPC/MCP, sidecar contract and signing.
+
+- Final validation: `make build`, full `make test-short`, targeted DDN/node race
+  tests, and `go vet` for DDN/node/config all passed. The final gateway shutdown
+  change additionally passed all DDN race tests. Core merge race coverage is
+  listed above. `make lint` remains unavailable because golangci-lint is missing.
+  Work was performed in an isolated worktree to preserve the original checkout's
+  uncommitted changes. Each logical phase was committed and pushed separately.

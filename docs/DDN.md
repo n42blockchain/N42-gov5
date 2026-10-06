@@ -4,7 +4,7 @@
 
 **Everything under "Specification" below describes the DDN protocol as defined in the N42 Distributed Decision Network Whitepaper v0.1 (`n42-26/docs/N42_Distributed_Decision_Network_Whitepaper_v0.1_EN.md`) and the design notes under `n42-26/docs/decision/`. That whitepaper and those design notes live in a different codebase (`n42-26`, a Rust/TypeScript workspace) and describe work that is, at most, prototype-stage there.**
 
-**In this repository (N42-gov5, Go), the DDN protocol itself — `DecisionRequest`, `DecisionReceipt`, `ModelRegistration`/`ModelManifest`, a `DecisionProvider` abstraction, a `Decision Scheduler`, `Decision Quorum`, or an aggregation/escalation engine — has NO implementation.** A repository-wide search confirms zero hits for `DDN`, `DecisionRequest`, `DecisionReceipt`, `ModelRegistration`, `DecisionProvider`, or `DecisionScheduler` under `internal/` and `modules/` (checked 2026-10-05).
+**In this repository (N42-gov5, Go), integration phases A–E now implement an opt-in, off-chain shadow DDN:** canonical request/receipt/manifest types, remote HTTP providers, a bounded gateway, receipt signing/verification, registry-backed scheduling, and conservative quorum aggregation. See [usage](./DDN_USAGE.md), [canonical encoding](./DDN_CANONICAL.md), and [execution record](./DDN_INTEGRATION_PLAN.md). Production settlement, private delivery, model training and execution proofs remain future work.
 
 What this repository does have is a set of AI infrastructure building blocks — an agent wallet, agent discovery/negotiation, dataset governance, ZK training/inference attestation scaffolding, and an EVM precompile for inference requests — that are plausible foundations for a future DDN integration, and which this document maps explicitly in the [Integration map](#integration-map). Every claim about this repo below was checked against the listed file paths on 2026-10-05.
 
@@ -62,7 +62,7 @@ Key architectural points from the whitepaper:
 - The Aggregator combines multiple provider outputs into one `DecisionReceipt`, escalating to more providers, heterogeneous model families, System-2, or a human on disagreement — never silently picking a majority vote.
 - Everything in this flow sits outside the consensus-critical path (see §6).
 
-## 3. Data structures and protocols (Specification — whitepaper v0.1, not yet implemented in this repo)
+## 3. Data structures and protocols (Specification — whitepaper v0.1; Go v1 details in DDN_CANONICAL.md)
 
 ### DecisionRequest
 
@@ -116,7 +116,7 @@ ModelManifest {
 
 Registration proves only "the network knows which model a node claims to run," not that the model is correct. TEE attestation and ZKML are listed as advanced-verification options still in prototype/feasibility testing on the whitepaper side.
 
-None of these three structures, or any RPC/wire format for them, exist as Go types, protobuf messages, or JSON schemas anywhere in this repository.
+Go v1 types exist in `internal/ddn/types`; their exact field names and hashing rules are documented in DDN_CANONICAL.md. Model registration remains future work.
 
 ## 4. N42-System1 model (Specification, ~1 page summary)
 
@@ -162,10 +162,10 @@ This repo's E2E encryption stack (`internal/distributed/messaging/crypto/`) and 
 
 | DDN component (whitepaper) | N42-gov5 package / feature | Status | File path(s) |
 |---|---|---|---|
-| DecisionRequest / DecisionReceipt / ModelManifest wire types | — | **Planned** (no code) | n/a |
-| Decision Gateway, Scheduler, Aggregator, Quorum | — | **Planned** (no code) | n/a |
+| DecisionRequest / DecisionReceipt / ModelManifest wire types | Canonical JSON + Keccak256 | **Implemented** | `internal/ddn/types/` |
+| Decision Gateway, Scheduler, Aggregator, Quorum | Bounded shadow gateway, coprocessor scheduler, conservative fan-out | **Implemented**, disabled by default | `internal/ddn/{gateway,scheduler,aggregate,quorum}/` |
 | N42-System1 model (ModernBERT-derived encoder, typed heads) | — | **Planned** (no code) | n/a |
-| Decision Provider abstraction (model-agnostic) | — | **Planned**; closest analog is the fixed-shape `InferenceBackend` interface below | n/a |
+| Decision Provider abstraction (model-agnostic) | Remote HTTP, test stub, registry adapter | **Implemented** | `internal/ddn/provider/` |
 | Generic AI inference request/response path on-chain | AI inference precompile at `0x0301`: `requestInference`/`getResult`/`getModel`/`listModels` | **Implemented** (precompile dispatch + gas metering); backend wiring is node-local, not consensus-synchronized (see file header warning) | `internal/vm/contracts_ai_inference.go` |
 | Inference result caching for repeated/verified queries | `ResultCache` (LRU + TTL, keyed by request hash) | **Implemented** | `internal/distributed/compute/inference/cache.go` |
 | Inference execution backend | WASM-based executor (fuel-metered, wazero) + `InferenceBackend` wired to the precompile | **Implemented** | `internal/distributed/compute/inference/executor_wazero.go`, `executor_wasm_stub.go`, `precompile_backend.go`, `service.go`, `model.go` |
@@ -179,7 +179,7 @@ This repo's E2E encryption stack (`internal/distributed/messaging/crypto/`) and 
 | ZK inference attestation (signed result + chain of custody) | `AttestationService`, `SignedAttestation`, `AttestationChain`, `SafetyLevel` | **Implemented** (structural scaffolding; depends on pluggable `ZKProofProvider`/`TrainingVerification` interfaces, not a production ZK backend) | `internal/ai/attestation/types.go`, `service.go` |
 | ZKML proof generation/verification for a model forward pass | `ZKMLProver` (circuit from layer structure, 96-byte public inputs) / `ZKMLVerifier` | **Implemented** (structural validation + simulated proof; not a production ZK circuit) | `internal/zkprover/zkml.go`, `zkml_trace.go`; `internal/zkverifier/zkml_verifier.go` |
 | Tiered verification (ZK default / Optimistic bond+challenge / TEE) | `TieredVerifier`, `OptimisticVerifier`, challenge manager, provider registry, marketplace, slashing | **Implemented** (generic distributed-compute verification tiers; TEE tier explicitly rejects everything until a real quote verifier is configured) | `internal/distributed/coprocessor/verification.go`, `challenge.go`, `provider.go`, `marketplace.go`, `slashing.go` |
-| MCP tools for agent discovery / wallet / data queries | `AgentProvider`, `AgentWalletProvider` MCP tool interfaces | **Implemented** (generic MCP surface; no DDN-specific decision-request tool) | `internal/mcp/agent_tools.go`, `agent_wallet_tools.go`, `data_tools.go` |
+| MCP tools for agent discovery / wallet / data queries | `AgentProvider`, `AgentWalletProvider` MCP tool interfaces | **Implemented** (generic MCP surface plus allowlisted `ddn.decide` / `ddn.getReceipt`) | `internal/mcp/agent_tools.go`, `agent_wallet_tools.go`, `data_tools.go` |
 | Block-STM conflict-prediction hint from an async System-1 model | — | **Planned**; `internal/parallel/` implements Block-STM-style parallel execution itself (conflict detection, not AI hinting) | `internal/parallel/` (executor.go et al.) |
 | PeerDAS peer-quality prediction hint | — | **Planned**; `internal/peerdas/` implements EIP-7594 custody/column sampling, no AI hinting layer | `internal/peerdas/` (custody.go, service.go, store.go) |
 | On-chain-adjacent Jev integration (public-proposal classification) | — | **Not in this repo.** Exists only in `n42-26` as an untracked prototype (`DecisionHub.sol`, `ProposalRouter.sol`, `n42-decision-relay`) | n/a (see `n42-26/docs/decision/README.md`) |
@@ -201,7 +201,7 @@ This repo's E2E encryption stack (`internal/distributed/messaging/crypto/`) and 
 | 8 | Edge network / device adaptation | Not started; N42-gov5 does have an unrelated, already-shipped mobile build path (`cmd/evmsdk/`, `make ios`/`make android`) that could host an edge model later, but no model ships today |
 | 9 | Core optimization (PeerDAS/Block-STM hints) | Research-only per whitepaper; N42-gov5's `internal/parallel/` and `internal/peerdas/` are mature, production Block-STM and PeerDAS implementations, but carry no AI hinting layer |
 
-**None of the above phases have any corresponding commits, packages, or tests in N42-gov5.** The AI infrastructure that *does* exist in this repo (wallet, coord, governance, training, attestation, inference precompile) was built independently of the DDN rollout plan and is not currently wired into it.
+The broader rollout above is distinct from the Go integration phases A–E. The Go shadow path now has packages and tests; this does not establish classifier calibration, production readiness, model training, or on-chain settlement.
 
 ## 10. Security threats (whitepaper §27)
 
