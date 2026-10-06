@@ -22,16 +22,17 @@ var systemRules = []healthRule{
 	{"PERFORMANCE", []string{"regression", "tps", "latency", "slow block"}},
 }
 var criticalPhrases = []string{"finality stalled", "qc mismatch", "state root mismatch", "data unavailable", "consensus halted"}
+var unknownPhrases = []string{"error", "failed", "panic", "timeout"}
 var degradedPhrases = []string{"failed", "error", "regression", "timeout", "conflict", "latency", "unavailable"}
 
 func SystemLabels() []string { return append([]string{}, systemLabels...) }
 func SystemHash() chain.Hash {
 	b, _ := json.Marshal(struct {
-		Algorithm          string
-		Labels             []string
-		Rules              []healthRule
-		Critical, Degraded []string
-	}{"n42-system1-rules-v1", systemLabels, systemRules, criticalPhrases, degradedPhrases})
+		Algorithm                   string
+		Labels                      []string
+		Rules                       []healthRule
+		Critical, Degraded, Unknown []string
+	}{"n42-system1-rules-v1", systemLabels, systemRules, criticalPhrases, degradedPhrases, unknownPhrases})
 	return crypto.Keccak256Hash(b)
 }
 func containsAny(s string, phrases []string) bool {
@@ -63,7 +64,7 @@ func System1(ctx context.Context, input string) (d.DecisionResult, error) {
 			break
 		}
 	}
-	if !matched && containsAny(s, []string{"error", "failed", "panic", "timeout"}) {
+	if !matched && containsAny(s, unknownPhrases) {
 		label = "UNKNOWN"
 	}
 	severity := uint8(0)
