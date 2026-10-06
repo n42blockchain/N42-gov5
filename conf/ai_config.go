@@ -126,22 +126,24 @@ func DefaultAICfg() AICfg {
 // DDNCfg controls the remote-sidecar shadow gateway, disabled by default.
 // Signing keys are deliberately absent: never reuse the validator key.
 type DDNCfg struct {
-	SigningKeyFile string   `json:"signing_key_file" yaml:"signing_key_file"`
-	Enabled        bool     `json:"enabled" yaml:"enabled"`
-	GatewayEnabled bool     `json:"gateway_enabled" yaml:"gateway_enabled"`
-	ShadowMode     bool     `json:"shadow_mode" yaml:"shadow_mode"`
-	SidecarURL     string   `json:"sidecar_url" yaml:"sidecar_url"`
-	ProviderDID    string   `json:"provider_did" yaml:"provider_did"`
-	Model          string   `json:"model" yaml:"model"`
-	ModelVersion   string   `json:"model_version" yaml:"model_version"`
-	ModelHash      string   `json:"model_hash" yaml:"model_hash"`
-	ModelFamily    string   `json:"model_family" yaml:"model_family"`
-	Tasks          []string `json:"tasks" yaml:"tasks"`
-	Schemas        []string `json:"schemas" yaml:"schemas"`
-	MaxConcurrency int      `json:"max_concurrency" yaml:"max_concurrency"`
-	QueueSize      int      `json:"queue_size" yaml:"queue_size"`
-	MaxItems       int      `json:"max_items" yaml:"max_items"`
-	MaxInputBytes  int      `json:"max_input_bytes" yaml:"max_input_bytes"`
-	MaxLatencyMs   int      `json:"max_latency_ms" yaml:"max_latency_ms"`
-	ReceiptTTLSec  int      `json:"receipt_ttl_sec" yaml:"receipt_ttl_sec"`
+	RequireRegisteredProvider bool     `json:"require_registered_provider" yaml:"require_registered_provider"`
+	MinProviderReputation     uint64   `json:"min_provider_reputation" yaml:"min_provider_reputation"`
+	SigningKeyFile            string   `json:"signing_key_file" yaml:"signing_key_file"`
+	Enabled                   bool     `json:"enabled" yaml:"enabled"`
+	GatewayEnabled            bool     `json:"gateway_enabled" yaml:"gateway_enabled"`
+	ShadowMode                bool     `json:"shadow_mode" yaml:"shadow_mode"`
+	SidecarURL                string   `json:"sidecar_url" yaml:"sidecar_url"`
+	ProviderDID               string   `json:"provider_did" yaml:"provider_did"`
+	Model                     string   `json:"model" yaml:"model"`
+	ModelVersion              string   `json:"model_version" yaml:"model_version"`
+	ModelHash                 string   `json:"model_hash" yaml:"model_hash"`
+	ModelFamily               string   `json:"model_family" yaml:"model_family"`
+	Tasks                     []string `json:"tasks" yaml:"tasks"`
+	Schemas                   []string `json:"schemas" yaml:"schemas"`
+	MaxConcurrency            int      `json:"max_concurrency" yaml:"max_concurrency"`
+	QueueSize                 int      `json:"queue_size" yaml:"queue_size"`
+	MaxItems                  int      `json:"max_items" yaml:"max_items"`
+	MaxInputBytes             int      `json:"max_input_bytes" yaml:"max_input_bytes"`
+	MaxLatencyMs              int      `json:"max_latency_ms" yaml:"max_latency_ms"`
+	ReceiptTTLSec             int      `json:"receipt_ttl_sec" yaml:"receipt_ttl_sec"`
 }

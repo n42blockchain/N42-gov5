@@ -253,3 +253,11 @@ vectors are documented in `docs/DDN_CANONICAL.md`.
   and signed gateway integration tests pass under race detection.
   The replay cache is process-local; settlement consumers must persist their
   nonce consumption transactionally before using receipts for real settlement.
+- Phase D: registry-backed provider adapter and thin scheduler reuse
+  `coprocessor.ProviderRegistry` snapshots and `Marketplace` bid/ranking logic.
+  Selection filters AI capability, active status, reputation, task/schema,
+  model requirements, ETA and total quorum cost; dispatch rechecks eligibility.
+  Per-selection auctions avoid filling the long-lived coprocessor settlement
+  marketplace with shadow work. Optional `require_registered_provider` node
+  configuration binds the configured sidecar to the existing registry.
+  Capability/reputation/price/budget/quorum/status tests pass under race.
