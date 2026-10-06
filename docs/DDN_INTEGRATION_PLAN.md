@@ -233,3 +233,14 @@ vectors are documented in `docs/DDN_CANONICAL.md`.
 - Merge validation: `make build` and targeted tests for txflood, HotStuff,
   ingest, QMDB, state/commitment, state, miner, API and internal passed.
   `make lint` cannot run: this environment has no golangci-lint binary.
+- Phase B: disabled-by-default remote HTTP provider, pinned model binding,
+  bounded worker/queue/cache, inline input validation/redaction gate, timeouts,
+  replay-resistant admission, structured receipt logs and Prometheus counters.
+  Authenticated `n42_ddnSubmit`/`n42_ddnGetReceipt` and allowlisted MCP tools are
+  registered with existing servers; no new unauthenticated listener is opened.
+  This uses the existing RPC/MCP ports rather than another listener, while
+  keeping decision work on its own bounded workers. Stub HTTP E2E, backpressure,
+  nonce/timeout, lifecycle and race tests pass. Node integration testing also
+  repaired MCP start/stop and checkpoint-pointer shutdown races.
+- Core merge race validation passed for HotStuff, miner, ingest, QMDB,
+  state/commitment and internal.
