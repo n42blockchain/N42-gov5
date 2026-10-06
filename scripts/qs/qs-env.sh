@@ -167,6 +167,10 @@ qs_build_args() {
   # so leaving it on makes the number incomparable with every earlier round.
   [[ ${QS_PROFILE_CONTENTION:-1} == 1 ]] && QS_ARGS+=(--pprof.mutex --pprof.block)
   [[ -n ${QS_EXTRA_ARGS:-} ]] && { local extra; read -ra extra <<<"$QS_EXTRA_ARGS"; QS_ARGS+=("${extra[@]}"); }
+  if [[ ${QS_INGEST_BASE:-0} != 0 ]]; then
+    [[ $QS_INGEST_BASE =~ ^[1-9][0-9]*$ && ${#QS_INGEST_BASE} -le 5 ]] && (( QS_INGEST_BASE > 1024 && QS_INGEST_BASE <= 65529 )) || return 1
+    QS_ARGS+=(--ingest.enabled --ingest.addr "127.0.0.1:$((QS_INGEST_BASE+i))" --ingest.hardcap "${QS_INGEST_HARDCAP:-100000}")
+  fi
   for j in {0..6}; do
     (( j == i )) && continue
     QS_ARGS+=(--p2p.peer "/ip4/127.0.0.1/tcp/$((QS_TCP_BASE + j))/p2p/${QS_PEERIDS[$j]}")
@@ -193,8 +197,12 @@ qs_place_keys() {
 # is reclaimed it must not take the fleet down with it.
 qs_launch_node() {
   local i=$1 bin=$2 txgen=${3:-0} d="$QS_NODE_ROOT$1"
+  local cpu_var="QS_CPUSET_$1" cpu_set
+  cpu_set=${!cpu_var:-}
+  local pin=()
+  if [[ -n $cpu_set ]]; then pin=(taskset -c "$cpu_set"); fi
   qs_rotate_logs "$d"
   qs_build_args "$i" "$txgen"
-  setsid "$bin" "${QS_ARGS[@]}" >"$d/run.log" 2>"$d/run.err" </dev/null &
+  setsid "${pin[@]}" "$bin" "${QS_ARGS[@]}" >"$d/run.log" 2>"$d/run.err" </dev/null &
   echo "node $i started: pid $! etherbase ${QS_ADDRS[$i]} http :$((QS_HTTP_BASE + i))"
 }
