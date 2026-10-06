@@ -282,3 +282,31 @@ vectors are documented in `docs/DDN_CANONICAL.md`.
   listed above. `make lint` remains unavailable because golangci-lint is missing.
   Work was performed in an isolated worktree to preserve the original checkout's
   uncommitted changes. Each logical phase was committed and pushed separately.
+
+## Native execution follow-up (2026-10-06)
+
+The user requested source-level execution without third-party inference and
+confirmed both trainable classification/rules and Transformer training/inference.
+The default backend becomes native-rules. Go-native multinomial Bayes and a
+bidirectional byte-token Transformer have local artifact loading and an offline
+training CLI. Native Transformer includes full reverse-mode gradients and AdamW;
+it is not advertised as a ModernBERT checkpoint. Rules take priority for node
+health alarms, including conflicting alarms. Model identity binds artifact and
+guard; native families cannot be invented by configuration. RPC/MCP identity
+discovery, native quorum and the existing signed receipt path are wired.
+See DDN_NATIVE.md for executable commands and precise resource/model limits.
+The separate-machine deployment now has its own Go-native `ddn-provider` daemon
+with bearer authentication, bounded HTTP admission and the existing sidecar wire
+contract. The node can call this repository's server over HTTP without depending
+on a third-party inference service. Native local execution remains the default.
+
+Native follow-up validation: full `make test-short` passed after serializing
+node suites (one concurrent run had a fixed devp2p test-port collision). Native
+DDN/node/CLI race tests, numerical gradient checks, native HTTP auth/binding/
+backpressure/deadline tests, and targeted vet passed. Actual `ddn-model` binaries
+trained both algorithms, saved/reloaded artifacts and predicted held-out toy
+strings. The toy Transformer loss changed from 1.26827567 to 0.00042300 over
+180 steps; this is a training-path check, not a production quality gate. The
+actual provider binary served `/info`, shut down on SIGINT, and refused anonymous
+non-loopback binding. `make lint` is still unavailable: golangci-lint is absent.
+Final source build: `make build` passed including both native CLI binaries and the node wiring.

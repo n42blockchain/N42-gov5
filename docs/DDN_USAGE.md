@@ -4,12 +4,17 @@ This is the companion usage guide to [`docs/DDN.md`](./DDN.md). Read that docume
 
 The Go integration phases A–E are implemented as a disabled-by-default shadow service. The following sections also describe existing AI infrastructure and future whitepaper features; those are separate from the new off-chain DDN path.
 
-## Remote shadow DDN
+## Native execution
+
+The default backend is now repository-native `native-rules`. Native Bayes and Transformer training/inference are also implemented in Go. See [DDN_NATIVE.md](DDN_NATIVE.md) for source, local training, configuration and limits. Use `n42_ddnInfo` / MCP `ddn.info` to discover the active identity and ordered labels.
+
+## Optional remote shadow DDN
 
 Configure `AICfg.DDN` under the existing AI configuration. Enable both `enabled` and `gateway_enabled`, retain `shadow_mode: true`, and use a distributed-capable node profile. Example fields:
 
 ```yaml
 ddn:
+  backend: http
   enabled: true
   gateway_enabled: true
   shadow_mode: true
@@ -93,7 +98,7 @@ All AI subsystem configuration lives in `conf/ai_config.go`, under `AICfg`. Ever
 | `AICfg.Inference.FuncName` | string | `"infer"` | WASM export invoked per inference request |
 | `AICfg.Inference.FuelLimit` | uint64 | `10_000_000` | Fuel bound per execution (see `internal/distributed/compute/wasm/wazero_runtime.go`) |
 
-Messaging-layer config relevant to a future DDN (DID identity, E2E encryption used as a private delivery channel) lives in `conf/messaging_config.go` under `MessagingCfg` — notably `DIDEnabled` (default `false`) and `EncryptionEnabled` (default `false`). Neither field is DDN-specific; they are generic messaging-platform switches. `AICfg.DDN` configures the implemented shadow path above; messaging encryption is not wired into DDN private delivery.
+Messaging-layer config relevant to a future DDN (DID identity, E2E encryption used as a private delivery channel) lives in `conf/messaging_config.go` under `MessagingCfg` — notably `DIDEnabled` (default `false`) and `EncryptionEnabled` (default `false`). Neither field is DDN-specific; they are generic messaging-platform switches. `AICfg.DDN` configures native or optional HTTP shadow execution; messaging encryption is not wired into DDN private delivery.
 
 ## How an agent obtains a decision today
 
