@@ -184,6 +184,15 @@ func applyTxPoolEnvOverrides(c TxsPoolConfig) TxsPoolConfig {
 	set(&c.GlobalQueue, "N42_TXPOOL_GLOBAL_QUEUE")
 	set(&c.AccountSlots, "N42_TXPOOL_ACCOUNT_SLOTS")
 	set(&c.AccountQueue, "N42_TXPOOL_ACCOUNT_QUEUE")
+	// N42_TXPOOL_NOLOCALS=1: treat RPC-submitted transactions as remote --
+	// no locals set, no journal, and no RemoteToLocals sweep of the whole
+	// pool every time a sender is seen for the first time. Round 35z3's
+	// profile: that sweep (accountSet.containsTx over 600k transactions per
+	// new sender) was 3 s of the 8.3 s the insert path held the pool lock
+	// in a 15 s window, on a bench whose 8,000 senders are all new.
+	if v := os.Getenv("N42_TXPOOL_NOLOCALS"); v == "1" || v == "true" {
+		c.NoLocals = true
+	}
 	if c.MinGlobalSlots > c.GlobalSlots {
 		c.MinGlobalSlots = c.GlobalSlots
 	}
@@ -199,6 +208,20 @@ type TxsPool struct {
 
 	currentState  ReadState
 	pendingNonces *txNoncer
+	// pendingSnap is the pending map as of the last reorg, published for
+	// Pending(false) to hand out without taking the pool lock: the lock is
+	// held by the inserts (two generators, ~250 batches a second) and by
+	// the reorg (~430 ms a block under lock at 140k-transaction blocks),
+	// and the leader's build waited 1-2 s in Pending() for it (round 35i).
+	// The slices are the lists' flatten caches, which are never mutated in
+	// place (Put/Filter drop the cache; Forward reslices), so a snapshot
+	// stays valid after the lists move on.
+	pendingSnap atomic.Pointer[map[types.Address][]*transaction.Transaction]
+	// reorgWaiting is set while a reorg waits for pool.mu; inserters yield
+	// to it (see addTxs).
+	reorgWaiting atomic.Bool
+	// insertGate serialises inserters ahead of pool.mu (see addTxs).
+	insertGate    sync.Mutex
 	currentMaxGas uint64
 
 	ctx    context.Context

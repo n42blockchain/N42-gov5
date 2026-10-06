@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -41,6 +42,22 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 	m, err := s.decodePubsubMessage(msg)
 	if err != nil {
 		return pubsub.ValidationReject, errors.Wrap(err, "Could not decode message")
+	}
+
+	// A duplicate of a block already stored, or being imported from the
+	// direct push, is ignored on its header alone -- before the full decode
+	// of its transactions under validateBlockLock and the second import it
+	// used to reach.
+	if raw, ok := m.(*rawSSZBytes); ok {
+		if h, perr := peekBlockHeader(raw.data); perr == nil && h.Number != nil {
+			hh := h.Hash()
+			if _, busy := s.pushInflight.Load(hh); busy {
+				return pubsub.ValidationIgnore, nil
+			}
+			if s.cfg.chain.HasBlock(hh, h.Number.Uint64()) {
+				return pubsub.ValidationIgnore, nil
+			}
+		}
 	}
 
 	s.validateBlockLock.Lock()
@@ -121,6 +138,9 @@ func (s *Service) hasBadBlock(root types.Hash) bool {
 
 // setBadBlock marks the block as bad in the cache, unless the context is cancelled.
 func (s *Service) setBadBlock(ctx context.Context, root types.Hash) {
+	if n := s.cfg.blockImportNotifier; n != nil {
+		n.NotifyBlockRejected(root)
+	}
 	s.badBlockLock.Lock()
 	defer s.badBlockLock.Unlock()
 	if ctx.Err() != nil {
@@ -141,4 +161,18 @@ func captureArrivalTimeMetric(headerTime uint64) error {
 	arrivalBlockPropagationHistogram.Observe(ms)
 	arrivalBlockPropagationGauge.Set(ms)
 	return nil
+}
+
+// peekBlockHeader decodes only the header of an RLP-encoded block (the first
+// element of the block list), leaving the transactions undecoded.
+func peekBlockHeader(data []byte) (*block.Header, error) {
+	st := rlp.NewStream(bytes.NewReader(data), uint64(len(data)))
+	if _, err := st.List(); err != nil {
+		return nil, err
+	}
+	var h block.Header
+	if err := st.Decode(&h); err != nil {
+		return nil, err
+	}
+	return &h, nil
 }

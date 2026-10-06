@@ -206,9 +206,11 @@ params/           → Chain parameters (config, blob_schedule, chainspecs/)
 conf/             → Node configuration (all subsystem configs, ai_config)
 accounts/         → Account management (keystore/, abi/, external/)
 contracts/        → Smart contracts (deposit contract with tiered staking)
-cmd/n42-datc/     → DATC any-height EIP-1186 proof archive (build/verify/proof/bench; format v2, see
-                     docs/ethel/datc-audit-format-v2-2026-09-01.md). Correctness harness:
-                     go test -tags "nosqlite,noboltdb" ./cmd/n42-datc/ -run TestE2E
+cmd/n42-datc/     → thin wrapper around internal/datc (build/verify/proof/bench/reframe/derive-ns/verify-ns ...)
+internal/datc/    → DATC: EIP-1186 proofs at ANY height (the eth-el archive-plus tier). Builder, offline derivation,
+                     reader library (archive.go: OpenArchive/Prove, served by eth-el via --publicrpc.datc).
+                     Read docs/ethel/datc-archive-plus.md first. Correctness harness:
+                     go test -tags "nosqlite,noboltdb" ./internal/datc/ -run TestE2E
 cmd/rpcdaemon/    → Standalone RPC daemon (gRPC remote KV)
 cmd/clef/         → External signer (IPC + rules + audit log)
 cmd/zkguest/      → ZK guest program (RISC-V64 target)

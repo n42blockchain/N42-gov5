@@ -34,6 +34,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
+	"github.com/n42blockchain/N42/params"
 )
 
 // errQMDBHistorical is returned for queries outside the recent-blocks undo
@@ -47,11 +48,14 @@ type QMDBStateProofProvider struct {
 	mu         sync.Mutex
 	rc         *commitment.QMDBRootComputer
 	loadedRoot types.Hash
+	// config decides what a header's Root means (its own state before the
+	// deferred-execution fork, the parent's after it).
+	config *params.ChainConfig
 }
 
 // NewQMDBStateProofProvider builds the provider (tree loaded lazily on first use).
-func NewQMDBStateProofProvider() *QMDBStateProofProvider {
-	return &QMDBStateProofProvider{}
+func NewQMDBStateProofProvider(config *params.ChainConfig) *QMDBStateProofProvider {
+	return &QMDBStateProofProvider{config: config}
 }
 
 // Descriptor reports the QMDB proof semantics so clients route verification to
@@ -93,7 +97,7 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	heads, err := readQMDBProofHeads(tx)
+	heads, err := readQMDBProofHeads(p.config, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -140,9 +144,13 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 	if targetHeader == nil {
 		return nil, fmt.Errorf("qmdb proof: header %d unavailable", target)
 	}
-	if types.Hash(root) != targetHeader.Root {
-		return nil, fmt.Errorf("qmdb proof: reconstructed root %x != header root %x at block %d",
-			root[:8], targetHeader.Root[:8], target)
+	targetExec, terr := ExecutedResultOfHeader(p.config, tx, targetHeader)
+	if terr != nil {
+		return nil, terr
+	}
+	if types.Hash(root) != targetExec.Root {
+		return nil, fmt.Errorf("qmdb proof: reconstructed root %x != executed root %x at block %d",
+			root[:8], targetExec.Root[:8], target)
 	}
 	if !found {
 		return []string{}, nil
@@ -190,7 +198,7 @@ type qmdbProofHeads struct {
 // the RPC-visible committed head. Under HotStuff, importing a proposal executes
 // it before the QC commits it, so applied can legitimately be ahead by a small
 // speculative window. The undo records bridge that gap for latest proofs.
-func readQMDBProofHeads(tx kv.Tx) (qmdbProofHeads, error) {
+func readQMDBProofHeads(config *params.ChainConfig, tx kv.Tx) (qmdbProofHeads, error) {
 	committedPtr := rawdb.ReadCurrentFullBlockNumber(tx)
 	if committedPtr == nil {
 		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: head block number unavailable")
@@ -204,9 +212,13 @@ func readQMDBProofHeads(tx kv.Tx) (qmdbProofHeads, error) {
 		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: committed header %d unavailable", *committedPtr)
 	}
 
+	committedExec, cerr := ExecutedResultOfHeader(config, tx, committedHeader)
+	if cerr != nil {
+		return qmdbProofHeads{}, cerr
+	}
 	heads := qmdbProofHeads{
 		applied:     *committedPtr,
-		appliedRoot: committedHeader.Root,
+		appliedRoot: committedExec.Root, // the state AFTER the committed block (its header carries the parent's under deferred execution)
 		committed:   *committedPtr,
 	}
 	appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
@@ -223,8 +235,12 @@ func readQMDBProofHeads(tx kv.Tx) (qmdbProofHeads, error) {
 	if appliedHeader == nil {
 		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: applied header %d/%x unavailable", appliedNum, appliedHash[:8])
 	}
+	appliedExec, aerr := ExecutedResultOfHeader(config, tx, appliedHeader)
+	if aerr != nil {
+		return qmdbProofHeads{}, aerr
+	}
 	heads.applied = appliedNum
-	heads.appliedRoot = appliedHeader.Root
+	heads.appliedRoot = appliedExec.Root
 	return heads, nil
 }
 

@@ -65,6 +65,13 @@ type ProcessPhases struct {
 	Prep               time.Duration // start-of-block system calls (EIP-4788 / EIP-2935)
 	Exec               time.Duration // pure EVM: the per-transaction ApplyTransaction loop
 	Finalize           time.Duration // engine.Finalize: rewards + state root #3
+	// Parallel path only (runParallel, strict mode); zero on the serial path.
+	// Setup is worker readers/IBS/EVM + block start + executor construction;
+	// Collect is the gap between the executor's last wave and applyMVSToIBS.
+	// On the parallel path Exec is the executor's wall time (execute +
+	// validate waves) and Finalize covers applyMVSToIBS through Finalize.
+	Setup   time.Duration
+	Collect time.Duration
 }
 
 // StateProcessor implements Processor and handles state transitions.
@@ -175,7 +182,11 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// the signature — so an imported block's declared senders must be
 		// verified against V/R/S or a byzantine leader could forge them.
 		// Reject before any execution touches state.
-		if err := verifyBlockSendersWithHints(signer, b.Transactions(), p.bc.senderHints); err != nil {
+		var hints SenderHintSource
+		if p.bc != nil {
+			hints = p.bc.senderHints
+		}
+		if _, err := verifyBlockSendersHinted(signer, b.Transactions(), hints); err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
 		// First pass: senders the pool already recovered at admission. Second
@@ -249,7 +260,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	}
 
 	transfersInstalled := false
-	if p.transferWorkers > 0 && len(b.Transactions()) >= 2048 && balCap == nil {
+	if p.transferWorkers > 0 && len(b.Transactions()) >= 2048 && balCap == nil && !chainConfig.IsDeferredExecution(concreteHeader.Time) {
 		started := time.Now()
 		candidateReceipts, installed, err := tryTransferExecution(chainConfig, p.engine, concreteHeader, b.Hash(), b.Transactions(), ibs, cfg, p.transferWorkers)
 		if err != nil {
@@ -301,7 +312,9 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		}
 	}
 
-	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {
+	// Under deferred execution the header's GasUsed is the parent's; this
+	// block's own is stored with its result and checked by the next header.
+	if !cfg.StatelessExec && !chainConfig.IsDeferredExecution(concreteHeader.Time) && *usedGas != concreteHeader.GasUsed {
 		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
 	}
 

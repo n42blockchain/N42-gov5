@@ -164,6 +164,21 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		tracing.Int64Attr("block.receipt_count", int64(len(receipts))),
 	)
 	defer func() {
+		if retErr == nil && bc.blockCache != nil {
+			// Commit-to-canonical of this block runs two views later and looks
+			// in the block cache first; nothing added the imported (or sealed)
+			// instance, so every commit decoded 163k transactions from MDBX
+			// inside the write transaction and hashed each again for the tx
+			// index (35zzm follower profile: 0.9 s + 3.1 s of 25). This
+			// instance has every transaction hash memoised.
+			//
+			// Unconditional (pre-existing, 6445f1bf): this is the HEAD
+			// behaviour and is NOT gated by N42_BLOCK_CACHE_PRIME. Only the
+			// CommitToCanonicalWith cache-miss prime below is gated (S64,
+			// docs/QS_QUEUE.md) -- commander's ruling 2026-10-01: unset must
+			// match today's behaviour exactly.
+			bc.blockCache.Add(concreteBlock.Hash(), concreteBlock)
+		}
 		if retErr != nil {
 			tracing.SetSpanError(span, retErr)
 		} else {
@@ -451,15 +466,43 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				if accts == nil && stor == nil {
 					return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
 				}
+				sealedRoot := blk.StateRoot()
+				if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
+					// The header carries the parent's root; the build's own
+					// root is what the live tree must reproduce.
+					own, ok := ibs.LastIntermediateRoot()
+					if !ok {
+						return fmt.Errorf("deferred execution: sealed block %d has no computed root", blockNumber.Uint64())
+					}
+					sealedRoot = own
+				}
 				tPhase = time.Now()
 				bc.qmdbRootComputer.SetCold(tx)
-				liveRoot, cerr := bc.qmdbRootComputer.ComputeRoot(accts, stor)
+				// S58 (docs/QS_BLOCK_TIME_BUDGET.md 6f9): N42_QMDB_SINGLE_FOLD
+				// routes this replay through ComputeRootShared's own explicit
+				// matched/mismatched counters instead of the inline comparison
+				// below; v1 still applies AND folds on the live tree (see its
+				// own doc comment) -- byte-for-byte the same cost as today,
+				// proving equivalence before a later round trusts sealedRoot
+				// alone and skips the live fold for the real ~59ms/block.
+				var liveRoot types.Hash
+				var cerr error
+				if QMDBSingleFoldEnabled() {
+					var matched bool
+					liveRoot, matched, cerr = bc.qmdbRootComputer.ComputeRootShared(accts, stor, sealedRoot)
+					if cerr == nil && !matched {
+						return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+							liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+					}
+				} else {
+					liveRoot, cerr = bc.qmdbRootComputer.ComputeRoot(accts, stor)
+					if cerr == nil && liveRoot != sealedRoot {
+						return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+							liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+					}
+				}
 				if cerr != nil {
 					return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
-				}
-				if liveRoot != blk.StateRoot() {
-					return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
-						liveRoot[:8], blk.StateRoot().Bytes()[:8], blockNumber.Uint64())
 				}
 				dRoot2 = time.Since(tPhase)
 			}
@@ -501,6 +544,30 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			}
 			if err := rawdb.WriteQMDBApplied(tx, blockNumber.Uint64(), blk.Hash()); err != nil {
 				return fmt.Errorf("writing QMDB applied marker for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
+				root, ok := ibs.LastIntermediateRoot()
+				if !ok {
+					return fmt.Errorf("deferred execution: block %d has no computed root to store", blockNumber.Uint64())
+				}
+				// The leader's build already computed this block's result (the
+				// receipts root and bloom over every receipt): the same state and
+				// the same receipts. Take it when its root agrees; otherwise
+				// derive it here as a follower does.
+				result, hinted := bc.takeExecutedResultHint(blk.Hash())
+				if !hinted || result.Root != root {
+					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
+				}
+				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
+					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)
+				}
+			}
+			if isolatedQMDBSeal {
+				// Own build, unverified by anyone yet: keep it out of the
+				// sibling convergence until the fleet commits it.
+				if err := rawdb.WriteOwnUnverifiedMark(tx, blk.Hash(), blockNumber.Uint64()); err != nil {
+					return fmt.Errorf("marking own block %d unverified: %w", blockNumber.Uint64(), err)
+				}
 			}
 			const qmdbUndoWindow = 256
 			if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {

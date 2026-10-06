@@ -14,6 +14,7 @@ package transaction
 import (
 	"bytes"
 	"fmt"
+	"github.com/n42blockchain/N42/crypto"
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -575,9 +576,31 @@ func (tx *Transaction) Hash() types.Hash {
 	if h := tx.hash.Load(); h != nil {
 		return *h
 	}
-	h := tx.inner.hash()
+	var h types.Hash
+	if p := tx.enc.Load(); p != nil && len(*p) > 0 && hashFromEncoding(tx.Type()) {
+		// The cached consensus encoding (kept by the wire decoder, or filled by
+		// the first encode) IS what the field hash re-derives: keccak of the
+		// legacy RLP list, or of type || RLP payload. The decoder rejects
+		// non-canonical RLP, so the bytes equal a fresh encode. Re-encoding
+		// was half of every transaction-hash computation on a follower
+		// (appendLegacyTxRLP 4.0 s of 7.9 s in a 25 s profile).
+		h = crypto.Keccak256Hash(*p)
+	} else {
+		h = tx.inner.hash()
+	}
 	tx.hash.Store(&h)
 	return h
+}
+
+// hashFromEncoding lists the transaction types whose hash is exactly keccak
+// of their cached consensus encoding. Blob transactions are excluded: their
+// network encoding can carry the sidecar, which the hash does not cover.
+func hashFromEncoding(txType uint8) bool {
+	switch txType {
+	case LegacyTxType, AccessListTxType, DynamicFeeTxType:
+		return true
+	}
+	return false
 }
 
 // BlobHashes returns the blob hashes for EIP-4844 blob transactions.

@@ -5,6 +5,7 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"testing"
 
@@ -134,6 +135,77 @@ func TestHistoryAggregatorChunkSplit(t *testing.T) {
 	for k, v := range la {
 		if !bytes.Equal(v, ag[k]) {
 			t.Fatalf("chunk %x diverged", k)
+		}
+	}
+}
+
+// TestHistoryAggregatorPrepareOutsideWrite: preparing the rows under a
+// read-only transaction and applying them in a later write transaction must
+// leave byte-identical tables to Flush inside one write transaction, across
+// merges into pre-existing chunks and a multi-chunk split.
+func TestHistoryAggregatorPrepareOutsideWrite(t *testing.T) {
+	ctx := context.Background()
+	flushDB := memdb.NewTestDB(t)
+	splitDB := memdb.NewTestDB(t)
+
+	hot := make([]byte, 20)
+	hot[0] = 0xaa
+	work := historyWorkload(400)
+	batch := func(from, to uint64) *HistoryAggregator {
+		agg := NewHistoryAggregator()
+		for b := from; b <= to; b++ {
+			agg.AddChanges(b, work[b], modules.AccountsHistory)
+			// sparse blocks on one key force a chunk split across batches
+			cs := changeset.NewAccountChangeSet()
+			_ = cs.Add(hot, []byte{1})
+			for j := uint64(0); j < 40; j++ {
+				agg.AddChanges(b*97+j*13, cs, modules.AccountsHistory)
+			}
+		}
+		return agg
+	}
+	for _, r := range [][2]uint64{{1, 150}, {151, 300}, {301, 400}} {
+		if err := flushDB.Update(ctx, func(tx kv.RwTx) error { return batch(r[0], r[1]).Flush(tx) }); err != nil {
+			t.Fatalf("flush %v: %v", r, err)
+		}
+		var prepared *PreparedHistory
+		if err := splitDB.View(ctx, func(tx kv.Tx) error {
+			var err error
+			prepared, err = batch(r[0], r[1]).Prepare(tx)
+			return err
+		}); err != nil {
+			t.Fatalf("prepare %v: %v", r, err)
+		}
+		if prepared.Len() == 0 {
+			t.Fatalf("prepare %v produced no rows", r)
+		}
+		if err := splitDB.Update(ctx, func(tx kv.RwTx) error { return prepared.Apply(tx) }); err != nil {
+			t.Fatalf("apply %v: %v", r, err)
+		}
+	}
+
+	var want, got map[string][]byte
+	if err := flushDB.View(ctx, func(tx kv.Tx) error { want = dumpTable(t, tx, modules.AccountsHistory); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := splitDB.View(ctx, func(tx kv.Tx) error { got = dumpTable(t, tx, modules.AccountsHistory); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	chunks := 0
+	for k := range want {
+		if bytes.HasPrefix([]byte(k), hot) {
+			chunks++
+		}
+	}
+	if chunks < 2 {
+		t.Fatalf("the hot key did not split: %d chunk(s)", chunks)
+	}
+	if len(want) != len(got) {
+		t.Fatalf("row count diverged: flush=%d prepared=%d", len(want), len(got))
+	}
+	for k, v := range want {
+		if !bytes.Equal(v, got[k]) {
+			t.Fatalf("row %x diverged:\n flush   =%x\n prepared=%x", k, v, got[k])
 		}
 	}
 }

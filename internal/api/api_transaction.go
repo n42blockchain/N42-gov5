@@ -13,6 +13,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -57,6 +58,12 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if len(input) == 0 {
 		return avmcommon.Hash{}, errors.New("empty transaction data")
 	}
+	// S49 (docs/QS_BLOCK_TIME_BUDGET.md 6f0/6f2): reject before spending
+	// decode + ECDSA sender recovery on a submission the pool would
+	// discard anyway once it is at N42_TX_INGEST_HIGH_WATER.
+	if rejectAboveHighWater(s.api.TxsPool()) {
+		return avmcommon.Hash{}, errAboveHighWater
+	}
 	tx, err := transaction.DecodeEthereumTransaction(input)
 	if err != nil {
 		return avmcommon.Hash{}, err
@@ -70,9 +77,19 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 		return avmcommon.Hash{}, err
 	}
 	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
-	from, err := transaction.Sender(signer, tx)
-	if err != nil {
-		return avmcommon.Hash{}, err
+	// S59 (docs/QS_BLOCK_TIME_BUDGET.md 6fa): N42_HINT_RECOVERY_POOL routes
+	// this single-tx recovery to the same bounded, dedicated pool the hint
+	// feed uses (unset = today, inline on this connection's own goroutine);
+	// RecoverSenderDeduped guarantees at most one real recovery per
+	// transaction even if the hint feed is recovering the same hash at the
+	// same instant.
+	var from types.Address
+	var recErr error
+	transaction.RecoverOnPool(func() {
+		from, recErr = transaction.RecoverSenderDeduped(signer, tx)
+	})
+	if recErr != nil {
+		return avmcommon.Hash{}, recErr
 	}
 	tx.SetFrom(from)
 	seedRecoveredSender(tx, transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID))
@@ -105,6 +122,13 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	if len(inputs) > MaxBatchSize {
 		return nil, fmt.Errorf("batch size %d exceeds maximum allowed %d", len(inputs), MaxBatchSize)
 	}
+	// S49 (docs/QS_BLOCK_TIME_BUDGET.md 6f0/6f2): reject the WHOLE batch
+	// before decoding any of it once the pool is at
+	// N42_TX_INGEST_HIGH_WATER -- decode + sender recovery below run once
+	// per entry regardless of whether the pool ultimately accepts it.
+	if rejectAboveHighWater(s.api.TxsPool()) {
+		return nil, errAboveHighWater
+	}
 
 	currentBlock, rules, err := s.transactionHeadAndRules()
 	if err != nil {
@@ -119,47 +143,53 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	// single endpoint. A batch also engages the pool's parallel sender
 	// pre-warm, which a size-1 add cannot.
 	poolSigner := transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID)
-	hs := make([]avmcommon.Hash, len(inputs))
-	txs := make([]*transaction.Transaction, 0, len(inputs))
-	slot := make([]int, 0, len(inputs))
-	var firstErr error
-	for i, t := range inputs {
+	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
+	// S53 (docs/QS_BLOCK_TIME_BUDGET.md 6f6): decode + sender recovery (the
+	// ~50us/tx ECDSA cost) spread over N42_INGEST_WORKERS instead of one
+	// goroutine doing all 200 entries serially -- off (0/1) reproduces
+	// exactly the old loop below, in order, entry by entry.
+	processOne := func(_ int, t hexutil.Bytes) (*transaction.Transaction, error) {
 		if len(t) == 0 {
-			if firstErr == nil {
-				firstErr = errors.New("empty transaction data")
-			}
-			continue
+			return nil, errors.New("empty transaction data")
 		}
 		metaTx, err := transaction.DecodeEthereumTransaction(t)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return nil, err
 		}
 		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return nil, err
 		}
-		signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
-		from, err := transaction.Sender(signer, metaTx)
+		// S59 (6fa): the batch path already has its own worker pool
+		// (N42_INGEST_WORKERS, S53) it may be dispatched onto, so this uses
+		// the dedup guarantee alone (RecoverSenderDeduped), not a nested
+		// RecoverOnPool -- at most one real recovery per transaction even if
+		// the hint feed is recovering the same hash concurrently.
+		from, err := transaction.RecoverSenderDeduped(signer, metaTx)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return nil, err
 		}
 		metaTx.SetFrom(from)
 		seedRecoveredSender(metaTx, poolSigner)
 		if err := checkTxFee(*metaTx.GasPrice(), s.api.rpcMaxGasPrice); err != nil {
+			return nil, err
+		}
+		return metaTx, nil
+	}
+	workers, jobs := ingestWorkers()
+	results := processBatchEntries(inputs, workers, jobs, processOne)
+
+	hs := make([]avmcommon.Hash, len(inputs))
+	txs := make([]*transaction.Transaction, 0, len(inputs))
+	slot := make([]int, 0, len(inputs))
+	var firstErr error
+	for i, r := range results {
+		if r.err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = r.err
 			}
 			continue
 		}
-		txs = append(txs, metaTx)
+		txs = append(txs, r.tx)
 		slot = append(slot, i)
 	}
 	if len(txs) > 0 {

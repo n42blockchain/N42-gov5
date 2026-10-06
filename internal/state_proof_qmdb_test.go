@@ -42,7 +42,7 @@ func TestReadQMDBProofHeadsSeparatesAppliedFromCommitted(t *testing.T) {
 	}
 
 	if err := db.View(context.Background(), func(tx kv.Tx) error {
-		heads, err := readQMDBProofHeads(tx)
+		heads, err := readQMDBProofHeads(nil, tx)
 		if err != nil {
 			return err
 		}
@@ -121,7 +121,7 @@ func TestQMDBProofSurvivesTxRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := NewQMDBStateProofProvider()
+	p := NewQMDBStateProofProvider(nil)
 	latest := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
 
 	// Serve two proofs, each in its own read tx that is rolled back — exactly

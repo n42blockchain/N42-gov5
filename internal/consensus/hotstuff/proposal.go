@@ -72,6 +72,37 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		}
 	}
 
+	// S34 (docs/OPEN_ISSUES.md "A follower re-decodes..." is unrelated; see
+	// the "stale-re-proposal" entry there and docs/QS_BLOCK_TIME_BUDGET.md
+	// 6dj/6dk): the check above fails OPEN when importedParents[blockHash] is
+	// unknown, which is the ORDINARY case for a leader's OWN sealed block --
+	// rememberImported/importedParents is populated only by internal/sync's
+	// import-notification call sites (catchup, block-by-hash, gossip
+	// subscriber, block push), never by the leader's own local write path.
+	// Round 35zzzk view 6557: the miner's sibling-suppression path
+	// (internal/miner/worker.go, "suppressing divergent same-height sibling")
+	// re-proposed a990bc.. -- this node's OWN already-committed block, whose
+	// QC was by then the highest known -- as if it were this view's fresh
+	// candidate. With importedParents empty for it, the check above let it
+	// through, and justifyQC below turned out to equal blockHash itself: a
+	// proposal that certifies nothing (a block cannot extend itself), which
+	// every voter correctly refused (extendsJustify, "import-gated vote
+	// REFUSED"), costing one view's timeout (~6s) for no reason -- the
+	// correct next block was already sealed and waiting.
+	//
+	// This guard is unconditional (no bookkeeping to fail open on) and MUST
+	// run before journalPrepareVote/EnterVoting below: rejecting here leaves
+	// the phase at WaitingForProposal, so if a genuinely fresh seal for THIS
+	// view arrives moments later (as it did in the incident, dropped instead
+	// by the phase-left-WaitingForProposal check above because the stale
+	// proposal had already consumed the phase), it still gets proposed.
+	if justify := e.roundState.LockedQC(); blockHash == justify.BlockHash {
+		log.Warn("hotstuff: sealed block dropped — proposal would justify itself (already-committed block re-proposed)",
+			"view", view, "block", blockHash.Hex()[:12], "justifyView", justify.View)
+		metricProposalSelfJustify.Inc()
+		return nil
+	}
+
 	// The proposal is signed over the SAME message as a Round 1 vote
 	// (SigningMessage(view, blockHash)) and the leader immediately self-votes
 	// with it, so proposing IS a vote commitment. Journal it before anything is
@@ -80,6 +111,15 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	// whereas an unjournalled commitment is not.
 	if err := e.journalPrepareVote(view, blockHash); err != nil {
 		return err
+	}
+
+	// S19 (6co): this node is proposing blockHash as leader for view -- record
+	// it so advanceToView can release a write latch waiting on
+	// journalCommitVote for THIS hash if the view is abandoned (a timeout)
+	// before that ever runs. No-op when the switch is off, matching every
+	// other leaderWriteAfterJournalEnabled call site.
+	if leaderWriteAfterJournalEnabled {
+		e.selfProposalHash = blockHash
 	}
 
 	justifyQC := e.roundState.LockedQC().Clone()
@@ -111,6 +151,7 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 
 	now := time.Now()
 	e.viewTiming.ProposalSent = &now
+	e.viewTiming.BlockHash = blockHash // S75: correlates with "miner: block timeline"
 
 	if err := e.emit(EngineOutput{
 		Type: OutputBroadcast,
@@ -121,6 +162,22 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	}); err != nil {
 		return err
 	}
+	// S75 (docs/QS_WIN2_RESIDUAL.md): "proposal handed to network" -- the
+	// microsecond timestamp also rides in "hotstuff view timing"'s us=...
+	// JSON (ProposalSent), this line exists for the case a view never
+	// commits (publishCommittedTiming only fires on commit).
+	log.Info("hotstuff: proposal broadcast", "view", view, "blockHash", blockHash.Hex(), "tUs", now.UnixMicro())
+
+	// Same-leader speculative build: with a leader tenure above one this
+	// node also leads view+1, and the vote-time hint never fires for its
+	// own block (a leader does not import what it built). Advise the
+	// producer now; it waits for the block to persist, then builds view+1
+	// on its post-state while the followers import it (round 35l: without
+	// this, tenure views proposed in 363-528 ms like rotation views, all
+	// twenty builds "triggered (leader view)", none a speculative hit).
+	if LeaderForView(view+1, vs) == e.myIndex {
+		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
+	}
 
 	// A consecutive leader self-voted above instead of going through
 	// sendVote, so it needs the same advisory build hint as a follower.
@@ -130,8 +187,22 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	return e.tryFormPrepareQC()
 }
 
-// processProposal processes a proposal from the leader.
-func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
+// processProposal processes a proposal from the leader. receivedAt is S14's
+// diagnostic arrival stamp (zero unless N42_CONTENTION_DIAG=1); tLocked is
+// taken here, the first line that runs once e.mu is held for this message.
+// The deferred recording covers every return path (safety-rule rejection,
+// bad signature, etc.), not just the success path.
+func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) error {
+	if contentionDiagEnabled && !mt.arrive.IsZero() {
+		tLocked := time.Now()
+		defer func() {
+			tDone := time.Now()
+			e.viewTiming.Contention.proposalLockWait = tLocked.Sub(mt.arrive)
+			e.viewTiming.Contention.proposalWork = tDone.Sub(tLocked)
+			e.viewTiming.Contention.proposalLockWaitOK = true
+			e.viewTiming.Contention.proposalWorkOK = true
+		}()
+	}
 	view := e.roundState.CurrentView()
 
 	if proposal.View != view {
@@ -203,6 +274,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 	e.roundState.EnterVoting()
 	now := time.Now()
 	e.viewTiming.ProposalReceived = &now
+	e.viewTiming.BlockHash = proposal.BlockHash // S75: correlates with "miner: block timeline"
 
 	// Request block execution.
 	if err := e.emit(EngineOutput{Type: OutputExecuteBlock, Hash: proposal.BlockHash}); err != nil {
@@ -218,20 +290,19 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 	e.pendingProposals[view] = proposal.BlockHash
 	e.pendingJustifyBlocks[view] = proposal.JustifyQC.BlockHash
 
-	// Two-phase mode: Round 1 votes on static validation alone (order-then-
-	// execute) — the leader's signature, JustifyQC and DA commitment were
-	// verified above; the execution guarantee moves to Round 2 (the
-	// CommitVote in processPrepareQC waits for the local import). The
-	// extends-rule is still enforced when the parent is already known.
-	if e.twoPhaseVote {
-		if e.importedBlocks[proposal.BlockHash] && !e.extendsJustify(view, proposal.BlockHash) {
-			return nil // extends-rule violation logged; do not vote
-		}
-		if err := e.journalPrepareVote(view, proposal.BlockHash); err != nil {
-			return err // abstain: the commitment is not durable
-		}
-		return e.sendVote(view, proposal.BlockHash)
-	}
+	// S26 (docs/OPEN_ISSUES.md "A quorum-committed block that no node
+	// stored", round 35zzzg): two-phase mode used to vote here immediately,
+	// gated only on "extendsJustify if the block happens to be already
+	// imported" -- which is essentially never true this early (a Proposal
+	// always arrives before the deferred-execution check or the full import
+	// completes), so the extends-rule was skipped on the common path. Round 1
+	// still only needs the CHEAP, non-executing guarantee ("static
+	// validation": CheckDeferredBlock via EventBlockChecked) -- the execution
+	// guarantee is Round 2's job either way (processPrepareQC / deferredAttested)
+	// -- so two-phase mode now shares the exact same checked/imported gate as
+	// import-gated voting below, with extendsJustify enforced every time the
+	// block's real parent becomes known instead of only when it happens to be
+	// known already.
 
 	// Import-gated voting (NOT optimistic): vote only once the block is imported
 	// locally, so a CommitQC proves a quorum actually holds the block — not just
@@ -250,13 +321,217 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		}
 		return e.sendVote(view, proposal.BlockHash)
 	}
+	if voted, err := e.tryHeaderVote(view); voted || err != nil {
+		return err
+	}
+	if voted, err := e.tryDeferredVote(view); voted || err != nil {
+		return err
+	}
 	log.Info("import-gated vote: deferring until block imported",
 		"view", view, "blockHash", proposal.BlockHash)
 	return nil
 }
 
+// tryHeaderVote casts the Round 1 prepare vote once this view's pending
+// proposal's HEADER is known (S31, docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh):
+// extendsJustify only ever reads the block's parent hash, which is a header
+// field, so it can be evaluated well before CheckDeferredBlock's own
+// per-transaction structural check completes (that check still gates Round
+// 2 unchanged, via deferredAttested/checkedBlocks). Two-phase mode only --
+// import-gated (non-two-phase) voting keeps its own documented guarantee
+// ("vote only once the block is imported locally") and never takes this
+// path. Returns whether it voted.
+func (e *ConsensusEngine) tryHeaderVote(view ViewNumber) (bool, error) {
+	if !e.twoPhaseVote {
+		return false, nil
+	}
+	pending, ok := e.pendingProposals[view]
+	if !ok || e.roundState.HasVotedInView(view) {
+		return false, nil
+	}
+	// The header-known map entry must be a REAL, positively-known parent --
+	// extendsJustify's own "fail open when parent unknown" branch must not
+	// be mistaken for a pass here, or a proposal whose header has not
+	// arrived yet would vote blind on the exact fail-open path extendsJustify
+	// uses for a genuinely untracked block.
+	if parent, known := e.importedParents[pending]; !known || parent == (types.Hash{}) {
+		return false, nil
+	}
+	if !e.extendsJustify(view, pending) {
+		return false, nil // extends-rule violation logged; do not vote
+	}
+	if err := e.journalPrepareVote(view, pending); err != nil {
+		return false, err // abstain: the commitment is not durable
+	}
+	log.Info("header vote: block header known and extends its JustifyQC block, voting",
+		"view", view, "blockHash", pending, "tMs", time.Now().UnixMilli())
+	return true, e.sendVote(view, pending)
+}
+
+// tryDeferredVote casts the prepare vote for view's pending proposal under
+// deferred execution: the block was checked (EventBlockChecked) and its
+// parent -- the JustifyQC block -- is imported. Returns whether it voted.
+func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
+	pending, ok := e.pendingProposals[view]
+	if !ok || !e.checkedBlocks[pending] || e.roundState.HasVotedInView(view) {
+		return false, nil
+	}
+	// S26: a zero-hash justify (the genesis QC, view 0 -- unlocked, nothing
+	// committed yet) has no real parent to wait for; treat it the same way
+	// extendsJustify itself already fails open for a zero justify, instead of
+	// blocking forever on "genesis imports". Any non-zero justify still must
+	// be imported before this attestation is trusted.
+	justify, ok := e.pendingJustifyBlocks[view]
+	if !ok || (justify != (types.Hash{}) && !e.importedBlocks[justify]) {
+		return false, nil
+	}
+	if !e.extendsJustify(view, pending) {
+		return false, nil // extends-rule violation logged; do not vote
+	}
+	if err := e.journalPrepareVote(view, pending); err != nil {
+		return false, err // abstain: the commitment is not durable
+	}
+	log.Info("deferred vote: block checked and parent imported, voting", "view", view, "blockHash", pending, "tMs", time.Now().UnixMilli())
+	return true, e.sendVote(view, pending)
+}
+
+// deferredAttested reports whether this node's execution guarantee for a block
+// is met the deferred way: it checked the block (the header carries this node's
+// own result of the parent, and the transactions are includable against that
+// post-state) and it has imported the parent. A CommitQC over such votes proves
+// a quorum executed the parent and validated this block, which is the guarantee
+// deferred execution moves one block back. Without this the Round-2 gate waits
+// for the block's own import and the cycle stays import-bound -- 35zzq measured
+// the same 1.33 s block time as the round without deferred execution.
+func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
+	if !e.checkedBlocks[blockHash] {
+		return false
+	}
+	parent, ok := e.importedParents[blockHash]
+	return ok && parent != (types.Hash{}) && e.importedBlocks[parent]
+}
+
+// castHeldCommitVoteIfAttested fires a parked Round-2 vote once its block is
+// attested (imported, or checked with the parent imported). gate names which
+// caller/condition is releasing it -- "own-import" | "parent-import" |
+// "checked" (see contentionStamps.commitVoteGate) -- recorded only when the
+// vote was actually held; ignored otherwise.
+func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gate string) {
+	if !e.twoPhaseVote || e.pendingCommitQC == nil || e.pendingCommitQC.BlockHash != blockHash {
+		return
+	}
+	if !e.importedBlocks[blockHash] && !e.deferredAttested(blockHash) {
+		return
+	}
+	held := e.pendingCommitQC
+	e.pendingCommitQC = nil
+	if held.View != e.roundState.CurrentView() {
+		return
+	}
+	if contentionDiagEnabled {
+		e.viewTiming.Contention.commitVoteGate = gate
+	}
+	log.Info("two-phase vote: casting held commit vote", "view", held.View, "blockHash", blockHash,
+		"deferred", !e.importedBlocks[blockHash], "tMs", time.Now().UnixMilli())
+	if err := e.processPrepareQC(held, msgTiming{}); err != nil {
+		log.Debug("two-phase held commit vote failed", "err", err)
+	}
+}
+
+// onBlockChecked records a block the service verified under deferred
+// execution and votes for it if its parent is already imported.
+func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.Hash) error {
+	if !e.checkedBlocks[blockHash] {
+		if len(e.checkedFIFO) >= MaxImportedBlocks {
+			oldest := e.checkedFIFO[0]
+			e.checkedFIFO = e.checkedFIFO[1:]
+			delete(e.checkedBlocks, oldest)
+			if !e.importedBlocks[oldest] {
+				delete(e.importedParents, oldest) // recorded here for the extends-check only
+			}
+		}
+		e.checkedBlocks[blockHash] = true
+		e.checkedFIFO = append(e.checkedFIFO, blockHash)
+	}
+	if parentHash != (types.Hash{}) {
+		e.importedParents[blockHash] = parentHash // the extends-check reads it
+	}
+	_, err := e.tryDeferredVote(e.roundState.CurrentView())
+	e.castHeldCommitVoteIfAttested(blockHash, "checked")
+	return err
+}
+
+// onBlockHeaderKnown records a block's parent as soon as its HEADER is known
+// (S31, docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh) -- well before
+// CheckDeferredBlock's own per-transaction check completes, and possibly
+// before the body's transactions have even finished decoding. This does NOT
+// set checkedBlocks: Round 2's execution guarantee (deferredAttested) is
+// completely unaffected and still requires the real check. Bounded by its
+// own FIFO, since a block may arrive here without ever being checked or
+// imported (a stale/abandoned header) and must not pin importedParents
+// forever; an entry already tracked by checkedBlocks/importedBlocks is left
+// alone by this FIFO's own eviction, matching checkedFIFO's existing guard.
+func (e *ConsensusEngine) onBlockHeaderKnown(blockHash, parentHash types.Hash, _ uint64) error {
+	if parentHash == (types.Hash{}) {
+		return nil // nothing to record; extendsJustify already fails open for this case
+	}
+	if _, known := e.importedParents[blockHash]; !known {
+		if len(e.headerKnownFIFO) >= MaxImportedBlocks {
+			oldest := e.headerKnownFIFO[0]
+			e.headerKnownFIFO = e.headerKnownFIFO[1:]
+			if !e.checkedBlocks[oldest] && !e.importedBlocks[oldest] {
+				delete(e.importedParents, oldest)
+			}
+		}
+		e.headerKnownFIFO = append(e.headerKnownFIFO, blockHash)
+	}
+	e.importedParents[blockHash] = parentHash
+	_, err := e.tryHeaderVote(e.roundState.CurrentView())
+	return err
+}
+
 // processPrepareQC processes a PrepareQC from the leader.
-func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
+// processPrepareQC processes an incoming PrepareQC and, once the two-phase
+// gate is satisfied, sends the Round 2 commit vote. receivedAt is S14's
+// diagnostic arrival stamp for a FRESH message; it is zero when this call is
+// a held-vote release re-entry from castHeldCommitVoteIfAttested, in which
+// case the original arrival's lockWait/work/arrival were already recorded on
+// first entry and must not be overwritten here.
+func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) error {
+	if contentionDiagEnabled && !mt.arrive.IsZero() {
+		tLocked := time.Now()
+		e.viewTiming.Contention.prepareQCArrival = mt.arrive
+		defer func() {
+			tDone := time.Now()
+			e.viewTiming.Contention.prepareQCLockWait = tLocked.Sub(mt.arrive)
+			e.viewTiming.Contention.prepareQCWork = tDone.Sub(tLocked)
+			e.viewTiming.Contention.prepareQCLockWaitOK = true
+			e.viewTiming.Contention.prepareQCWorkOK = true
+		}()
+		// S17: receiver-side t_rx->t_arrive for the one PrepareQC message
+		// this view. First arrival wins; a duplicate via the OTHER
+		// transport ("gossip is always sent" regardless of Rotor's own
+		// success, service.go) only flips Via to "both" and counts as a
+		// dup, never overwriting the first timing.
+		if !mt.rx.IsZero() {
+			rx := &e.viewTiming.Contention.rx
+			if !rx.seenPrepareQC {
+				rx.seenPrepareQC = true
+				rx.pqcRx2Arr = mt.arrive.Sub(mt.rx)
+				if rx.pqcRx2Arr < 0 {
+					rx.pqcRx2Arr = 0
+				}
+				rx.pqcRxAtMs = mt.rx.UnixMilli()
+				rx.pqcVia = mt.via
+				rx.pqcOK = true
+			} else {
+				rx.dupN++
+				if rx.pqcVia != "" && rx.pqcVia != mt.via {
+					rx.pqcVia = "both"
+				}
+			}
+		}
+	}
 	view := e.roundState.CurrentView()
 
 	if pqc.View != view {
@@ -287,18 +562,28 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	// it until the block is imported locally, so a CommitQC still proves
 	// 2f+1 validators EXECUTED the block. onBlockImported re-enters this
 	// function with the held message once the import lands.
-	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] {
+	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] && !e.deferredAttested(pqc.BlockHash) {
 		held := *pqc
 		e.pendingCommitQC = &held
+		if contentionDiagEnabled {
+			e.viewTiming.Contention.commitVoteHeld = true
+		}
 		log.Info("two-phase vote: holding commit vote until block imports",
 			"view", view, "blockHash", pqc.BlockHash)
 		return nil
 	}
 
-	// Round 1 may have voted before the parent was available. Once imported,
-	// enforce the proposal's extends rule before the execution-attesting vote,
-	// including when this method is resumed from pendingCommitQC.
-	if e.twoPhaseVote && !e.extendsJustify(view, pqc.BlockHash) {
+	// S26 (docs/OPEN_ISSUES.md "A quorum-committed block that no node
+	// stored"): defense in depth for the Round 1 fix above. A valid
+	// PrepareQC signature only proves 2f+1 validators SENT a prepare vote --
+	// not that the block they voted for actually extends the chain. By this
+	// point the block's real parent is known (imported, or checked with
+	// deferredAttested true), so extendsJustify can resolve for real instead
+	// of failing open; refuse the commit vote if it does not extend its own
+	// JustifyQC block (recorded from this view's Proposal).
+	if !e.extendsJustify(view, pqc.BlockHash) {
+		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block",
+			"view", view, "blockHash", pqc.BlockHash)
 		return nil
 	}
 
@@ -469,16 +754,19 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// Two-phase mode: a held Round-2 CommitVote fires as soon as its block
 	// imports (processPrepareQC parked it; re-entering is idempotent via
 	// HasCommitVotedInView).
-	if e.twoPhaseVote && e.pendingCommitQC != nil && e.pendingCommitQC.BlockHash == blockHash {
-		held := e.pendingCommitQC
-		e.pendingCommitQC = nil
-		if held.View == e.roundState.CurrentView() {
-			log.Info("two-phase vote: casting held commit vote after import",
-				"view", held.View, "blockHash", blockHash)
-			if err := e.processPrepareQC(held); err != nil {
-				log.Debug("two-phase held commit vote failed", "err", err)
-			}
+	if e.twoPhaseVote && e.pendingCommitQC != nil {
+		// This block, or a checked child of it whose guarantee this import
+		// completes (deferred execution attests the parent, not the block).
+		// blockHash (this onBlockImported call's own parameter) equal to the
+		// held vote's block means THIS block's own import satisfied the
+		// gate ("own-import"); any other value means some other import --
+		// in practice the parent's -- made deferredAttested newly true
+		// ("parent-import").
+		gate := "parent-import"
+		if blockHash == e.pendingCommitQC.BlockHash {
+			gate = "own-import"
 		}
+		e.castHeldCommitVoteIfAttested(e.pendingCommitQC.BlockHash, gate)
 	}
 
 	// Import-gated voting: now that this block is imported, cast the deferred
@@ -486,6 +774,13 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// view (recorded by processProposal). This is what advances the round once
 	// the block has actually propagated to and been imported by us.
 	view := e.roundState.CurrentView()
+	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash && e.viewTiming.BlockExecuted == nil {
+		// S75 (docs/QS_WIN2_RESIDUAL.md): "block executed" -- this import is
+		// this view's own pending proposal, i.e. local execution of this
+		// block just completed (not a parent/catch-up/leader-self import).
+		t := time.Now()
+		e.viewTiming.BlockExecuted = &t
+	}
 	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash &&
 		!e.roundState.HasVotedInView(view) {
 		if !e.extendsJustify(view, blockHash) {
@@ -501,7 +796,32 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// proposal, which is the common case (the leader importing its own block,
 	// catch-up imports, a re-import after a view change). It carried Info and
 	// fired on nearly every import, making it 8% of all log bytes.
+	// Deferred execution: the imported block may be the PARENT of the
+	// pending, already-checked proposal.
+	if voted, err := e.tryDeferredVote(view); voted || err != nil {
+		return err
+	}
 	log.Debug("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
 
 	return nil
+}
+
+// onBlockRejected withdraws the deferred-execution check evidence of a
+// block that failed on import (n42-rs found a rejected block keeping it:
+// a re-proposal of the hash was voted for unchecked).
+func (e *ConsensusEngine) onBlockRejected(blockHash types.Hash) {
+	if !e.checkedBlocks[blockHash] {
+		return
+	}
+	delete(e.checkedBlocks, blockHash)
+	for i, h := range e.checkedFIFO {
+		if h == blockHash {
+			e.checkedFIFO = append(e.checkedFIFO[:i], e.checkedFIFO[i+1:]...)
+			break
+		}
+	}
+	if !e.importedBlocks[blockHash] {
+		delete(e.importedParents, blockHash)
+	}
+	log.Warn("deferred vote evidence withdrawn: the checked block failed on import", "blockHash", blockHash)
 }

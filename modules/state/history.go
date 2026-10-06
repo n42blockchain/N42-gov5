@@ -50,7 +50,8 @@ func GetAsOf(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storage bool
 	if storage {
 		return tx.GetOne(modules.Storage, key)
 	}
-	return tx.GetOne(modules.Account, key)
+	// No change recorded after `timestamp`: the value then is the value now.
+	return modules.ReadLatestAccount(tx, key)
 }
 
 func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storage bool, key []byte, timestamp uint64) ([]byte, error) {

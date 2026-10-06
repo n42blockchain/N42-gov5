@@ -30,8 +30,13 @@ type pendingVote struct {
 	message  []byte
 }
 
-// processVote processes a Round 1 (Prepare) vote from a validator.
-func (e *ConsensusEngine) processVote(vote *Vote) error {
+// processVote processes a Round 1 (Prepare) vote from a validator. mt is
+// S14/S17's diagnostic arrival timing (zero unless N42_CONTENTION_DIAG=1);
+// tLocked is taken here, the first line that runs once e.mu is held for
+// this message -- see contentionStamps.
+func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
+	receivedAt := mt.arrive
+	tLocked := time.Now()
 	view := e.roundState.CurrentView()
 
 	if vote.View != view {
@@ -108,6 +113,16 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 	}
 	msg := e.voteSigningMessage(view, vote.BlockHash)
 
+	// S75 (docs/QS_WIN2_RESIDUAL.md): "first vote received" -- the first
+	// Round 1 vote for THIS view's collector hash to reach this point
+	// (unverified but hash-matched; equivocation/hash-mismatch votes above
+	// never reach here). Distinct from PrepareQCFormed (tryFormPrepareQC),
+	// which fires only once a full quorum is collected.
+	if e.viewTiming.FirstPrepareVoteAt == nil {
+		t := time.Now()
+		e.viewTiming.FirstPrepareVoteAt = &t
+	}
+
 	// Buffer vote for batch verification.
 	e.prepareVoteBuf = append(e.prepareVoteBuf, pendingVote{
 		voter:    vote.Voter,
@@ -129,7 +144,30 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 		}
 	}
 
+	if contentionDiagEnabled && !receivedAt.IsZero() {
+		// Total accounted for after this vote's own buffer-or-flush above:
+		// verified-in-collector plus still-buffered-unverified. Whether THIS
+		// is the quorum-completing vote is judged the same way the flush
+		// decision above already was.
+		total := e.prepareVoteCollectorCount() + len(e.prepareVoteBuf)
+		quorumReached := total >= quorum
+		e.viewTiming.Contention.round1.record(receivedAt, tLocked, time.Now(), quorumReached)
+		if !mt.rx.IsZero() {
+			rx := &e.viewTiming.Contention.rx
+			recordVoteRx(rx, &rx.seenPrepareVoteMask, &rx.pv, vote.Voter, mt, quorumReached)
+		}
+	}
+
 	return e.tryFormPrepareQC()
+}
+
+// prepareVoteCollectorCount is nil-safe VoteCollector.VoteCount() for the
+// Round 1 collector, used only by the S14 contention accounting above.
+func (e *ConsensusEngine) prepareVoteCollectorCount() int {
+	if e.voteCollector == nil {
+		return 0
+	}
+	return e.voteCollector.VoteCount()
 }
 
 // flushPrepareVotes batch-verifies all buffered Round 1 votes and adds valid
@@ -206,6 +244,16 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 		return err
 	}
 
+	// S19 (6co): journalCommitVote just returned successfully -- if this
+	// block is THIS node's own proposal and its write is parked waiting on
+	// WaitForCommitVoteJournal (N42_LEADER_WRITE_AFTER_JOURNAL=1), release
+	// it now. A no-op on followers (this whole function only reaches here
+	// when e.voteCollector is non-nil, i.e. only on the leader that proposed
+	// blockHash) and when the switch is off.
+	if leaderWriteAfterJournalEnabled {
+		e.fireWriteLatch(blockHash, "journal")
+	}
+
 	if err := e.emit(EngineOutput{
 		Type: OutputBroadcast,
 		Message: &ConsensusMsg{
@@ -226,8 +274,11 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 	return e.tryFormCommitQC()
 }
 
-// processCommitVote processes a Round 2 (Commit) vote from a validator.
-func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
+// processCommitVote processes a Round 2 (Commit) vote from a validator. mt
+// is S14/S17's diagnostic arrival timing; see processVote.
+func (e *ConsensusEngine) processCommitVote(cv *CommitVote, mt msgTiming) error {
+	receivedAt := mt.arrive
+	tLocked := time.Now()
 	view := e.roundState.CurrentView()
 
 	if cv.View != view {
@@ -316,7 +367,26 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		}
 	}
 
+	if contentionDiagEnabled && !receivedAt.IsZero() {
+		total := e.commitVoteCollectorCount() + len(e.commitVoteBuf)
+		quorumReached := total >= quorum
+		e.viewTiming.Contention.round2.record(receivedAt, tLocked, time.Now(), quorumReached)
+		if !mt.rx.IsZero() {
+			rx := &e.viewTiming.Contention.rx
+			recordVoteRx(rx, &rx.seenCommitVoteMask, &rx.cv, cv.Voter, mt, quorumReached)
+		}
+	}
+
 	return e.tryFormCommitQC()
+}
+
+// commitVoteCollectorCount is nil-safe VoteCollector.VoteCount() for the
+// Round 2 collector, used only by the S14 contention accounting above.
+func (e *ConsensusEngine) commitVoteCollectorCount() int {
+	if e.commitCollector == nil {
+		return 0
+	}
+	return e.commitCollector.VoteCount()
 }
 
 // flushCommitVotes batch-verifies all buffered Round 2 votes.

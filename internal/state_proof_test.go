@@ -65,7 +65,7 @@ func TestJMTProofDescriptorSeparatesProofAndHeaderSchemes(t *testing.T) {
 func TestQMDBProofDescriptorReportsQMDBHeaderScheme(t *testing.T) {
 	bc := &BlockChain{}
 	bc.SetQMDBRootComputer(commitment.NewQMDBRootComputer())
-	bc.SetStateProofProvider(NewQMDBStateProofProvider())
+	bc.SetStateProofProvider(NewQMDBStateProofProvider(nil))
 
 	desc := bc.StateProofDescriptor()
 	if desc.Backend != StateProofBackendQMDB {

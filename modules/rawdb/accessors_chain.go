@@ -27,6 +27,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -361,32 +363,99 @@ func decodeStoredTransaction(raw []byte) (*transaction.Transaction, error) {
 // marker), so mixed tables are fine. Set by replay-v2's --compact-headers.
 var CompactTxWrites = true
 
+// encodeTxForStorage is the per-transaction encoding WriteTransactions stores:
+// the compact codec when enabled and the type supports it, else the Ethereum
+// RLP, else the proto form. Every path returns a fresh slice.
+//
+// Ethereum typed transactions that do not yet have a compact storage codec
+// (for example EIP-7702 SetCode) must retain their complete wire payload. The
+// native protobuf fallback cannot represent an authorization list, so it
+// silently loses fields and cannot be read back as the original transaction.
+func encodeTxForStorage(tx *transaction.Transaction) ([]byte, error) {
+	if CompactTxWrites {
+		if data := tx.MarshalCompactStorage(); data != nil { // nil for unsupported types
+			return data, nil
+		}
+	}
+	data, err := transaction.EncodeEthereumTransaction(tx)
+	if err != nil {
+		return tx.Marshal()
+	}
+	return data, nil
+}
+
+// parallelTxEncodeMin is the block size from which WriteTransactions encodes
+// across the cores before the single-writer append loop. Round 35zy: the
+// "block" phase of a follower's write was 118 ms of a 213 ms write for a
+// 163k-transaction block -- an encode and an append per transaction on one
+// core, and only the append needs the write transaction.
+const parallelTxEncodeMin = 4096
+
+func encodeTxsParallel(txs []*transaction.Transaction) ([][]byte, error) {
+	encs := make([][]byte, len(txs))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 16 {
+		workers = 16
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	chunk := (len(txs) + workers - 1) / workers
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		start, end := w*chunk, (w+1)*chunk
+		if end > len(txs) {
+			end = len(txs)
+		}
+		if start >= end {
+			break
+		}
+		wg.Add(1)
+		go func(w, start, end int) {
+			defer wg.Done()
+			for i := start; i < end; i++ {
+				data, err := encodeTxForStorage(txs[i])
+				if err != nil {
+					errs[w] = err
+					return
+				}
+				encs[i] = data
+			}
+		}(w, start, end)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return encs, nil
+}
+
 func WriteTransactions(db kv.RwTx, txs []*transaction.Transaction, baseTxId uint64) error {
+	var encs [][]byte
+	if len(txs) >= parallelTxEncodeMin {
+		var err error
+		if encs, err = encodeTxsParallel(txs); err != nil {
+			return err
+		}
+	}
 	txIdKey := make([]byte, 8)
 	for i, tx := range txs {
 		binary.BigEndian.PutUint64(txIdKey, baseTxId+uint64(i))
 		var data []byte
-		if CompactTxWrites {
-			data = tx.MarshalCompactStorage() // nil for unsupported types
-		}
-		if data == nil {
-			// Ethereum typed transactions that do not yet have a compact storage
-			// codec (for example EIP-7702 SetCode) must retain their complete wire
-			// payload. The native protobuf fallback cannot represent an
-			// authorization list, so it silently loses fields and cannot be read
-			// back as the original transaction.
+		if encs != nil {
+			data = encs[i]
+		} else {
 			var err error
-			data, err = transaction.EncodeEthereumTransaction(tx)
-			if err != nil {
-				data, err = tx.Marshal()
-				if err != nil {
-					return err
-				}
+			if data, err = encodeTxForStorage(tx); err != nil {
+				return err
 			}
 		}
-		// If next Append returns KeyExists error - it means you need to open transaction
-		// in App code before calling this func. Batch is also fine.
-		if err := db.Append(modules.BlockTx, txIdKey, types.CopyBytes(data)); err != nil {
+		// If next Append returns KeyExists error - it means you need to open
+		// transaction in App code before calling this func. Batch is also fine.
+		if err := db.Append(modules.BlockTx, txIdKey, data); err != nil {
 			return err
 		}
 	}

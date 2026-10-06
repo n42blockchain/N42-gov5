@@ -38,6 +38,7 @@ package qmdb
 import (
 	"runtime"
 	"sync"
+	"time"
 
 	"lukechampine.com/blake3"
 	"lukechampine.com/blake3/guts"
@@ -342,6 +343,13 @@ type Tree struct {
 	// harmless garbage (never read), just unreclaimed.
 	deadFlushed []uint64
 
+	// flushedResident is the flushed cursor recorded by the last lagged
+	// eviction (EvictLag, K > 0): resident slots below it are ALSO on disk,
+	// so their deactivation schedules a dead-row delete exactly as an evicted
+	// slot's does. Without a lag every flushed slot is evicted before the next
+	// deactivation can reach it, and this stays 0.
+	flushedResident uint64
+
 	// stagedDead holds the deadFlushed slots whose Delete was issued by the last
 	// FlushTo but whose surrounding transaction has not committed yet. CommitFlush
 	// drops them (the deletes are durable); AbortFlush returns them to deadFlushed
@@ -434,6 +442,7 @@ func (t *Tree) entryAt(slot uint64) (entry, bool) {
 	if slot >= t.entriesBase {
 		i := slot - t.entriesBase
 		if i < uint64(len(t.entries)) {
+			noteResidentHit(slot)
 			return t.entries[i], true
 		}
 		return entry{}, false
@@ -441,6 +450,7 @@ func (t *Tree) entryAt(slot uint64) (entry, bool) {
 	if t.cold == nil {
 		return entry{}, false
 	}
+	coldReads.Add(1)
 	kh, v, ok := t.cold.ColdEntry(slot)
 	if !ok {
 		return entry{}, false
@@ -522,7 +532,7 @@ func (t *Tree) deactivate(slot uint64) {
 			t.entries[i].active = false
 		}
 	}
-	if slot < t.entriesBase || (slot < t.flushedThrough && t.leafStore != nil && t.hist == nil) {
+	if slot < t.entriesBase || (slot < max(t.flushedThrough, t.flushedResident) && t.leafStore != nil && t.hist == nil) {
 		// A committed row can still be resident in a retained hot window.
 		// Disk reclamation must not depend on whether RAM was evicted.
 		t.deadFlushed = append(t.deadFlushed, slot)
@@ -600,6 +610,43 @@ func (t *Tree) Get(keyHash Hash) ([]byte, bool) {
 		}
 	}
 	return nil, false
+}
+
+// GetVia is Get for a reader that is NOT the tree's owner: an evicted entry is
+// faulted through the supplied cold reader instead of t.cold, which is bound
+// to whichever transaction the owner last attached (and is nil between
+// blocks). The caller serialises against the owner's mutations; this method
+// only reads. The second result distinguishes "live but evicted and cold
+// cannot see it" (found=false, evicted=true) from "no live entry"
+// (found=false, evicted=false), so a reader holding a lagging transaction can
+// retry with a fresh one.
+func (t *Tree) GetVia(keyHash Hash, cold ColdReader) (value []byte, found bool, evicted bool) {
+	slot, ok := t.idx.Get(keyHash)
+	if !ok {
+		return nil, false, false
+	}
+	if slot >= t.entriesBase {
+		i := slot - t.entriesBase
+		if i < uint64(len(t.entries)) {
+			noteResidentHit(slot)
+			return t.entries[i].value, true, false
+		}
+		return nil, false, false
+	}
+	if cold == nil {
+		cold = t.cold
+	}
+	if cold == nil {
+		return nil, false, true
+	}
+	coldReads.Add(1)
+	t0 := time.Now()
+	_, v, ok := cold.ColdEntry(slot)
+	coldNanos.Add(int64(time.Since(t0)))
+	if !ok {
+		return nil, false, true
+	}
+	return v, true, false
 }
 
 // markUpperDirty records that twig id's root changed, so the next Root() folds

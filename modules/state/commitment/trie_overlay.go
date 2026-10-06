@@ -91,8 +91,9 @@ func (o *TrieOverlay) Get(table string, k []byte) ([]byte, bool) {
 func (o *TrieOverlay) Len() int { return o.acc.Len() + o.stor.Len() }
 
 // FlushTo applies the pending writes to the transaction in sorted order
-// (near-append B-tree insertion) and clears the overlay. TrieOfStorage keeps
-// the delete-before-put discipline (DupSort stale-version fix).
+// (near-append B-tree insertion) and clears the overlay. TrieOfStorage is
+// DupSort, so each path must end with exactly its current node (stale-version
+// fix): see replaceDup.
 func (o *TrieOverlay) FlushTo(tx kv.RwTx) error {
 	it := o.acc.Iter()
 	for ok := it.First(); ok; ok = it.Next() {
@@ -109,13 +110,8 @@ func (o *TrieOverlay) FlushTo(tx kv.RwTx) error {
 	it = o.stor.Iter()
 	for ok := it.First(); ok; ok = it.Next() {
 		e := it.Item()
-		if err := tx.Delete(modules.TrieOfStorage, e.k); err != nil {
+		if err := replaceDup(tx, modules.TrieOfStorage, e.k, e.v); err != nil {
 			return err
-		}
-		if e.v != nil {
-			if err := tx.Put(modules.TrieOfStorage, e.k, e.v); err != nil {
-				return err
-			}
 		}
 	}
 	it.Release()

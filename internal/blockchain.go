@@ -34,8 +34,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/big"
+	"os"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -84,6 +89,12 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	// proto keccak-concat root for historical hash continuity. Must be set
 	// before any block is produced or validated.
 	block.UseEthereumTxRoot = config != nil && (config.StateScheme == string(params.StateCommitmentPresetQMDB) || config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
+	block.TxRootBlake3Time = txRootBlake3Time(config)
+	block.DeferredExecutionTime = deferredExecutionTime(config)
+	if block.DeferredExecutionTime != 0 && !nativeQMDBChain(config) {
+		cancel()
+		return nil, errors.New("deferredExecutionTime is set but the chain is not the native QMDB chain: the stored execution results and the applied marker it relies on exist only there")
+	}
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
@@ -237,6 +248,26 @@ func (bc *BlockChain) SetExecutedHook(h func(hash, txHash, parentHash types.Hash
 // timeout passes. The early-vote path lets a view advance while the previous
 // block's persistence is still in flight, so a leader triggered at the view
 // change may need to wait a few milliseconds before building on it.
+// WaitBlockApplied waits until hash is the applied head (the QMDB applied
+// marker), the state a build on it must read. Persisted is not enough: a
+// sibling's header is stored before its state is applied.
+func (bc *BlockChain) WaitBlockApplied(hash types.Hash, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if bc.AppliedHeadIs(hash) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-bc.ctx.Done():
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func (bc *BlockChain) WaitBlockPersisted(hash types.Hash, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -293,6 +324,27 @@ func (bc *BlockChain) SetOnBlockCommitted(fn func(number uint64)) {
 	bc.onBlockCommittedMu.Lock()
 	bc.onBlockCommitted = fn
 	bc.onBlockCommittedMu.Unlock()
+}
+
+// RememberSealedHeader makes a just-sealed header findable by GetHeader /
+// GetHeaderByHash before its block is written: a speculative build chained
+// on this node's own unwritten block (track 3c) needs the engine's Prepare
+// to find the parent header -- its committee-evidence link (ParentBeaconRoot)
+// and its time derive from it. Round 35zo: without it the chained header
+// carried no link and every follower rejected the block. ForgetSealedHeader
+// drops it again when the seal is discarded.
+func (bc *BlockChain) RememberSealedHeader(h *block.Header) {
+	if h == nil || bc.headerCache == nil {
+		return
+	}
+	bc.headerCache.Add(h.Hash(), h)
+}
+
+func (bc *BlockChain) ForgetSealedHeader(hash types.Hash) {
+	if bc.headerCache == nil {
+		return
+	}
+	bc.headerCache.Remove(hash)
 }
 
 func (bc *BlockChain) notifyBlockCommitted(number uint64) {
@@ -394,9 +446,123 @@ func (bc *BlockChain) SetQMDBRootComputer(rc *commitment.QMDBRootComputer) {
 // falls back to the default MPT state root). tx must be a read tx at the parent
 // head; the QMDB DB state tracks the head because writeBlockWithState flushes
 // per block.
-func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
-	if !bc.qmdbEnabled {
+// BuildParallel runs the builder's candidate list through Block-STM on ibs
+// (lenient: failed candidates are dropped) and returns the survivors with
+// their receipts. See StateProcessor.BuildParallel.
+func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (included []*transaction.Transaction, receipts block.Receipts, usedGas uint64, failed int, err error) {
+	sp, ok := bc.process.(*StateProcessor)
+	if !ok || sp == nil {
+		return nil, nil, 0, 0, ErrParallelNotApplicable
+	}
+	run, err := sp.BuildParallel(header, txs, ibs, blockHashFunc)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	return run.Included, run.Receipts, run.UsedGas, run.Failed, nil
+}
+
+// logStartupStateFingerprint prints, on every node, what the startup repair
+// left behind: the live QMDB tree's root and append cursor, the applied
+// marker, and the canonical head. Round 35z5: one node came up holding an
+// uncommitted speculative block (slot 489598909 against the fleet's
+// 489543974), reverted it, led the next view and sealed a root the other six
+// did not compute -- and there was no way to tell from the logs whether its
+// tree was already wrong here or only diverged when it executed. Seven of
+// these lines, one per node, answer that in one grep.
+func (bc *BlockChain) logStartupStateFingerprint() {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return
+	}
+	root := bc.qmdbRootComputer.Root()
+	nextSlot := bc.qmdbRootComputer.Tree().NextSlot()
+	var appliedNum uint64
+	var appliedHash types.Hash
+	var haveApplied bool
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		n, h, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return err
+		}
+		appliedNum, appliedHash, haveApplied = n, types.Hash(h), ok
 		return nil
+	}); err != nil {
+		log.Warn("startup state fingerprint: applied marker unreadable", "err", err)
+	}
+	head := bc.CurrentBlock()
+	headNum := uint64(0)
+	headHash := types.Hash{}
+	if head != nil {
+		headNum = head.Number64().Uint64()
+		headHash = head.Hash()
+	}
+	log.Info("startup state fingerprint",
+		"treeRoot", fmt.Sprintf("%x", root[:8]), "nextSlot", nextSlot,
+		"appliedNum", appliedNum, "appliedHash", fmt.Sprintf("%x", appliedHash[:8]),
+		"haveApplied", haveApplied,
+		"headNum", headNum, "headHash", fmt.Sprintf("%x", headHash[:8]))
+}
+
+// voidMinerRootTrust makes the builder's persistent speculative computer
+// rebuild from the entry log on its next use. Its fast reload trusts its
+// index below a cursor for THIS store's layout; an unwind or a failed-block
+// revert rewrites entries below that cursor, and a trusted reload over the
+// new layout yields a root the followers cannot reproduce. Round 35m, node2
+// leading four views in a row: a stale seal at 13881479, a branch switch to
+// the lowest-hash sibling, and its next speculative build proposed 13881480
+// with a root six followers rejected (state root mismatch, zero
+// transactions). The full rebuild is 10-23 s at 13.9M blocks, so only the
+// mutating unwind voids it: the failed-block revert fires on routine paths
+// (35m's relaunch: 48 voids in four minutes, every build a full reload,
+// one block a minute).
+func (bc *BlockChain) voidMinerRootTrust(reason string) {
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	if bc.minerRC != nil {
+		bc.minerRC.VoidIndexTrust()
+		log.Warn("miner speculative tree: index trust voided; next build rebuilds", "reason", reason)
+	}
+}
+
+// minerAdoptAppends gates NewMinerRootComputer's own-block fast path; off by
+// default until a fleet round has read it (QS_BLOCK_TIME_BUDGET, round 35zf).
+var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
+
+// buildStallDiagEnabled gates S11's diagnostic mutex-wait timers on bc.lock
+// (AlignAppliedBranch, InsertChainAuthorized) and minerRCMu
+// (NewMinerRootComputer). Read once at start-up, same pattern as
+// minerAdoptAppends above. Off by default: the extra time.Now() pair around
+// each Lock() is skipped entirely, so a fleet round that has not opted in
+// pays nothing. See docs/QS_BLOCK_TIME_BUDGET.md 6by/S11 and the matching
+// switch in internal/miner/build_stall_watchdog.go.
+var buildStallDiagEnabled = os.Getenv("N42_BUILD_STALL_DIAG") == "1"
+
+// TakeBuildStallLockWait returns and resets the bc.lock wait time accumulated
+// by AlignAppliedBranch/InsertChainAuthorized calls since the last call to
+// this method. Diagnostic only: always zero unless N42_BUILD_STALL_DIAG=1.
+func (bc *BlockChain) TakeBuildStallLockWait() time.Duration {
+	return time.Duration(bc.buildStallLockWaitNs.Swap(0))
+}
+
+// TakeBuildStallRootLockWait is TakeBuildStallLockWait for minerRCMu (the
+// lock NewMinerRootComputer shares with the startup pre-warm).
+func (bc *BlockChain) TakeBuildStallRootLockWait() time.Duration {
+	return time.Duration(bc.buildStallRootLockWaitNs.Swap(0))
+}
+
+// MinerAdoptAppends reports whether the miner tree keeps its own appends
+// (N42_MINER_ADOPT_APPENDS=1), which is also what lets a speculative build
+// chain on an own unwritten block; the worker snapshots each sealed block's
+// post-state only in that mode.
+func MinerAdoptAppends() bool { return minerAdoptAppends }
+
+// NewMinerRootComputer returns the isolated computer a leader build seals
+// its state root on, or (nil, nil) when the chain does not commit with QMDB.
+// A reload failure is returned as an error rather than swallowed: the caller
+// used to seal on the default root instead, a block no follower accepts and
+// one whose stale write later panicked the worker (round 35r).
+func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx, parentRoot types.Hash) (state.RootComputer, error) {
+	if !bc.qmdbEnabled {
+		return nil, nil
 	}
 	// PERSISTENT speculative computer: a fresh instance pays a full index
 	// rescan (5.9M point reads, ~5s IO-bound — invisible on CPU profiles) on
@@ -408,8 +574,16 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 	// falls back to the full rebuild inside ReloadForBuild.
 	//
 	// Serialization: only the miner worker's single build goroutine calls
-	// this, so the computer needs no lock of its own.
-	bc.minerRCMu.Lock()
+	// this, so the computer needs no lock of its own. The lock exists for
+	// PrewarmMinerRootComputer (startup only); S11 times a wait on it here
+	// in case a slow pre-warm after a restart is what a future stall waits on.
+	if buildStallDiagEnabled {
+		t0 := time.Now()
+		bc.minerRCMu.Lock()
+		bc.buildStallRootLockWaitNs.Add(int64(time.Since(t0)))
+	} else {
+		bc.minerRCMu.Lock()
+	}
 	defer bc.minerRCMu.Unlock()
 	rc := bc.minerRC
 	if rc == nil {
@@ -418,20 +592,94 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 		bc.minerRC = rc
 	}
 	rc.SetCold(tx)
+	// Own-block fast path (N42_MINER_ADOPT_APPENDS=1): the block this tree
+	// built is the parent of the block about to be built -- its root is the
+	// parent header's root, the live tree's cursor is where this tree's
+	// appends end, and no branch switch is queued -- so the tree already IS
+	// the parent's post-state. Keep it instead of peeling and re-reading
+	// the same entries from disk (persistWait + reload, ~450 ms a block on
+	// the leader at 163k). Anything else falls through to the reload.
+	if minerAdoptAppends && len(bc.minerPendingUndo) == 0 && rc.HasUnwrittenBuild() &&
+		parentRoot != (types.Hash{}) && rc.Root() == parentRoot && bc.qmdbRootComputer != nil {
+		// The tree IS the parent's post-state. Whatever the live tree has
+		// written of it is adopted (dropped from the undo bookkeeping); what
+		// it has not written yet -- our own block still in flight, two-deep
+		// speculation, track 3c -- stays as pending appends and the next
+		// build chains on top. Either way: no peel, no reload.
+		liveNext, liveFlushed := bc.qmdbRootComputer.NextSlot(), bc.qmdbRootComputer.FlushedThrough()
+		adopted := rc.AdoptOwnAppends(liveNext, liveFlushed)
+		chained := rc.ChainPendingBuild()
+		log.Debug("miner speculative tree continues on its own build", "root", parentRoot.Hex()[:12],
+			"adopted", adopted, "chained", chained, "pending", rc.PendingBuilds(), "slot", rc.NextSlot(), "liveSlot", liveNext)
+		return rc, nil
+	}
+	if err := rc.PeelAll(); err != nil {
+		log.Debug("miner speculative tree peel failed; full reload", "err", err)
+		rc.VoidIndexTrust()
+	}
 	if undo := rc.TakeUndo(); undo != nil {
 		// Previous build's candidate ops are still on the speculative tree;
 		// peel them so the index matches the last loaded layout again. A
 		// failed peel just voids the trust — ReloadForBuild rebuilds.
-		if err := rc.Tree().ApplyUndo(undo); err != nil {
+		if err := rc.ApplyUndo(undo); err != nil {
 			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
 			rc.VoidIndexTrust()
 		}
 	}
+	bc.applyMinerRewindsLocked(rc, tx)
 	if err := rc.ReloadForBuild(tx); err != nil {
-		log.Warn("miner QMDB speculative reload failed; block uses default root", "err", err)
-		return nil
+		log.Warn("miner QMDB speculative reload failed; build abandoned", "err", err)
+		return nil, err
 	}
-	return rc
+	// The reload lands on the APPLIED head. A chained build whose parent is
+	// an own unwritten block reaches here only when the tree lost that
+	// block's pending build -- a branch-switch rewind peeled it (round
+	// 35zze: the leader unwound its own 13750006 to rebuild the height,
+	// re-proposed the first block, and the next build chained on it over a
+	// tree reloaded at 13750005; the reads were right through the snapshot,
+	// the root was computed from the wrong base, six followers rejected it).
+	// Refuse rather than seal a root nobody can reproduce; the production
+	// trigger aligns the applied head to the parent and builds again.
+	if parentRoot != (types.Hash{}) {
+		if got := rc.Root(); got != parentRoot {
+			return nil, fmt.Errorf("miner tree reloaded at root %x, build parent root %x: parent is not the applied head and its build is not on the tree",
+				got[:6], parentRoot[:6])
+		}
+	}
+	return rc, nil
+}
+
+// queueMinerRewind records a branch-switch undo for the miner's speculative
+// tree. Called from the live unwind (under bc.lock); consumed by the next
+// build under minerRCMu.
+func (bc *BlockChain) queueMinerRewind(undo *qmdb.BlockUndo) {
+	if undo == nil {
+		return
+	}
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	if bc.minerRC == nil {
+		return // no speculative tree yet: its first load sees the store as it is
+	}
+	bc.minerPendingUndo = append(bc.minerPendingUndo, undo)
+}
+
+// applyMinerRewindsLocked peels queued branch-switch undos off the miner's
+// speculative tree, newest-applied first as the live tree did. Caller holds
+// minerRCMu and has already peeled the dangling candidate.
+func (bc *BlockChain) applyMinerRewindsLocked(rc *commitment.QMDBRootComputer, tx kv.Tx) {
+	pending := bc.minerPendingUndo
+	bc.minerPendingUndo = nil
+	for _, u := range pending {
+		if err := rc.RewindForUndo(tx, u); err != nil {
+			log.Warn("miner speculative tree: branch-switch rewind failed; next reload rebuilds from the entry log",
+				"firstSlot", u.PrevNextSlot, "err", err)
+			return // trust is void; the remaining records are moot
+		}
+	}
+	if len(pending) > 0 {
+		log.Info("miner speculative tree rewound for a branch switch", "records", len(pending))
+	}
 }
 
 // PrewarmMinerRootComputer performs the startup pre-warm reload AND the
@@ -458,7 +706,7 @@ func (bc *BlockChain) PrewarmMinerRootComputer(tx kv.Tx) bool {
 	bc.minerRC = rc
 	rc.SetCold(tx)
 	if undo := rc.TakeUndo(); undo != nil {
-		if err := rc.Tree().ApplyUndo(undo); err != nil {
+		if err := rc.ApplyUndo(undo); err != nil {
 			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
 			rc.VoidIndexTrust()
 		}
@@ -583,6 +831,7 @@ func (bc *BlockChain) Start() error {
 	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
+	bc.logStartupStateFingerprint()
 
 	// Pre-warm the speculative build computer off the leader's critical path:
 	// the FIRST build after a restart otherwise pays the full ~5s index
@@ -590,18 +839,26 @@ func (bc *BlockChain) Start() error {
 	// every other build rides the ~0.4s trusted reload). This must run AFTER all
 	// startup state repair/revert operations: an earlier snapshot can leave the
 	// trusted miner index pointing at slots that a startup unwind removed.
+	//
+	// SYNCHRONOUS since round 35z2 (2026-09-08): run in the background it
+	// held minerRCMu for the whole ~3.5 min load while HotStuff was already
+	// running -- every leader's build of those minutes blocked on the lock,
+	// eleven consecutive views timed out, and when the lock freed, the
+	// stale candidates from all of them surfaced at one height: a sibling
+	// storm, branch switches on every node, and the root divergence that
+	// aborted rounds 35z and 35z2. Consensus starts after this returns, so
+	// the first view finds a warm builder.
 	if bc.qmdbEnabled {
-		go func() {
-			err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-				if bc.PrewarmMinerRootComputer(tx) {
-					log.Info("miner speculative computer pre-warmed")
-				}
-				return nil
-			})
-			if err != nil && bc.ctx.Err() == nil {
-				log.Warn("miner speculative computer pre-warm failed", "err", err)
+		t0 := time.Now()
+		err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			if bc.PrewarmMinerRootComputer(tx) {
+				log.Info("miner speculative computer pre-warmed", "elapsed", time.Since(t0))
 			}
-		}()
+			return nil
+		})
+		if err != nil && bc.ctx.Err() == nil {
+			log.Warn("miner speculative computer pre-warm failed", "err", err)
+		}
 	}
 	// One Add per goroutine started right here — an Add larger than the
 	// number of goroutines makes Close()'s wg.Wait() block forever and every
@@ -674,11 +931,18 @@ func (bc *BlockChain) verifyAppliedStateOnStartup() {
 			return nil
 		}
 		treeRoot := bc.qmdbRootComputer.Root()
-		if treeRoot == hdr.Root {
+		// The executed roots: a header's own Root before the deferred
+		// execution fork, the stored result after it.
+		hdrRoot, hok := bc.executedRootIn(tx, hdr)
+		if hok && treeRoot == hdrRoot {
 			return nil // marker and executed state agree
 		}
 		parent := rawdb.ReadHeader(tx, hdr.ParentHash, appliedNum-1)
-		if parent != nil && treeRoot == parent.Root {
+		parentRoot, pok := types.Hash{}, false
+		if parent != nil {
+			parentRoot, pok = bc.executedRootIn(tx, parent)
+		}
+		if parent != nil && pok && treeRoot == parentRoot {
 			log.Warn("applied marker was one block ahead of the executed state; rolling PlainState and marker back",
 				"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
 				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
@@ -969,7 +1233,18 @@ func (bc *BlockChain) processFutureBlocks() {
 		log.Warn("Skipping future block processing", "err", err)
 		return
 	}
-	if firstNumber.Uint64() > currentNumber.Uint64()+1 {
+	// Gate on the APPLIED head, not the canonical one: under HotStuff the
+	// canonical head trails the applied head by the two-chain commit lag, so
+	// a queued proposal (applied+1) always read as canonical+3 and never left
+	// the queue. Round 35zzc: after a leg restart every follower held its
+	// commit vote for a block whose parent it had just imported through
+	// fetch-on-miss, the queued child was never retried, the view timed out,
+	// and the fleet crawled one block per timeout for twelve minutes.
+	headNum := currentNumber.Uint64()
+	if an, ok := bc.appliedHeadNumber(); ok && an > headNum {
+		headNum = an
+	}
+	if firstNumber.Uint64() > headNum+1 {
 		return
 	}
 
@@ -982,7 +1257,9 @@ func (bc *BlockChain) processFutureBlocks() {
 	// stays for the next pass.
 	inserted := 0
 	for _, b := range blocks {
-		if _, err := bc.InsertChain([]block.IBlock{b}); err != nil {
+		// The queue holds proposals that arrived by push with consensus
+		// authority; retry them with the same authority the push path used.
+		if _, err := bc.InsertChainAuthorized([]block.IBlock{b}); err != nil {
 			log.Debug("insert future block failed", "number", b.Number64().Uint64(),
 				"hash", b.Hash().Hex()[:12], "err", err)
 			continue
@@ -1108,20 +1385,60 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	var dRead, dWalk, dLookup, dLock, dBody time.Duration
 	var indexed *block.Block
 	tCommit := time.Now()
+	// The committed block is two views old and almost always the instance
+	// this node imported, still in the block cache with every transaction
+	// hash memoised. Reading it from MDBX instead decoded 163,000
+	// transactions (80 ms cold) and then hashed each of them again for the
+	// transaction index (~200 ms, serial) -- inside the HotStuff loop, before
+	// the next view could start (round 35zg's commit-to-canonical phases).
+	var cached *block.Block
+	if bc.blockCache != nil {
+		if b, ok := bc.blockCache.Get(hash); ok && b != nil {
+			cached = b
+		}
+	}
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		tEnter := time.Now()
 		dLock = tEnter.Sub(tCommit)
 		defer func() { dBody = time.Since(tEnter) }()
 		tRead := time.Now()
-		blk, err := rawdb.ReadBlockByHash(tx, hash)
-		dRead = time.Since(tRead)
-		if err != nil {
-			return err
+		blk := cached
+		if blk == nil {
+			var err error
+			blk, err = rawdb.ReadBlockByHash(tx, hash)
+			if err != nil {
+				return err
+			}
+			// S64 (docs/QS_QUEUE.md): this decode is on the hot HotStuff commit
+			// loop; prime the cache with the instance already in hand so the
+			// next reader (sync body-range serving, api getBlockByNumber, miner
+			// ancestor walk) does not pay for the same decode again. Gated by
+			// N42_BLOCK_CACHE_PRIME; unset leaves this a read-only lookup as
+			// before.
+			//
+			// Why `cached` (above) was nil despite writeBlockWithState's own
+			// unconditional Add two views ago: bc.blockCache is an in-process
+			// LRU, not persisted, so it is empty after every restart, and a
+			// hash reached via the embedded-QC catch-up / fork-recovery path
+			// (CatchUp, headIsConsensusBlock below) can name a block this
+			// process never ran through writeBlockWithState at all -- it was
+			// written to MDBX by a prior process lifetime or by range-import
+			// tooling. The steady-state case (this process imported the block
+			// itself) is already caught by the `cached` lookup above and never
+			// reaches this branch.
+			if blk != nil && bc.blockCache != nil && BlockCachePrimeEnabled() {
+				bc.blockCache.Add(hash, blk)
+			}
 		}
+		dRead = time.Since(tRead)
 		if blk == nil {
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
 		committedNumber = blk.Number64().Uint64()
+		// The fleet committed it: an own build is a convergence candidate again.
+		if err := rawdb.ClearOwnUnverifiedMark(tx, hash); err != nil {
+			return err
+		}
 		// Applied-state guard: canonicalization must never run ahead of the
 		// EXECUTED chain. The embedded-QC catch-up path can name a block that
 		// is STORED locally but was never executed here (a known-skip during a
@@ -1286,8 +1603,28 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	if indexed != nil {
 		txs := indexed.Transactions()
 		hashes := make([]types.Hash, len(txs))
-		for i, tx := range txs {
-			hashes[i] = tx.Hash()
+		// Memoised on the cached instance; a fresh decode still hashes, but
+		// across the cores rather than one.
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 32 {
+			workers = 32
+		}
+		if len(txs) < 4096 || workers < 2 {
+			for i, tx := range txs {
+				hashes[i] = tx.Hash()
+			}
+		} else {
+			var wg sync.WaitGroup
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func(start int) {
+					defer wg.Done()
+					for i := start; i < len(txs); i += workers {
+						hashes[i] = txs[i].Hash()
+					}
+				}(w)
+			}
+			wg.Wait()
 		}
 		bc.txIndexer.Add(indexed.Number64().Uint64(), hashes)
 	}
@@ -1329,6 +1666,24 @@ func (bc *BlockChain) LowestSiblingAtHeight(number uint64, parentHash types.Hash
 				continue
 			}
 			hh := h.Hash()
+			// A sibling this node failed to validate is never the one to
+			// converge on: round 26 locked a fleet on exactly such a block.
+			if rawdb.IsBadHeaderMarked(tx, hh) {
+				continue
+			}
+			// A block this node built and wrote itself is not a candidate
+			// until the fleet vouched for it (the mark clears on commit):
+			// the builder never verifies its own block, and rounds 35zq /
+			// 35zw re-proposed a rejected own build after a restart.
+			if rawdb.IsOwnUnverifiedMarked(tx, hh) {
+				continue
+			}
+			bc.badSiblingsMu.RLock()
+			_, bad := bc.badSiblings[hh]
+			bc.badSiblingsMu.RUnlock()
+			if bad {
+				continue
+			}
 			if !found || bytes.Compare(hh.Bytes(), lowest.Bytes()) < 0 {
 				lowest, found = hh, true
 			}
@@ -1420,22 +1775,99 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 			"txs", len(b.Transactions()), "size", len(data), "limit", limit)
 		return fmt.Errorf("sealed block %d is %d bytes, above the %d byte p2p wire limit", b.Number64().Uint64(), len(data), limit)
 	}
-	bc.directPushBlock(b, data)
-	// Also gossip as a best-effort fallback.
-	return bc.p2p.BroadcastBlock(bc.ctx, data)
+	peerCount := bc.directPushBlock(b, data)
+	// Gossip as a best-effort fallback, off the seal path: the direct pushes
+	// are already in flight, and compressing and publishing an ~18 MB block
+	// here held the Proposal back (part of the leader's ~180 ms push phase).
+	//
+	// S15b (docs/QS_BLOCK_TIME_BUDGET.md 6cg): this same ~18-26 MB gossip
+	// publish (and, on every OTHER node, the receive side's validation/
+	// forwarding of it) rides the identical per-peer GossipSub streams the
+	// consensus messages (Proposal/Vote/PrepareQC/CommitVote/Decide) use,
+	// and 6cg's block profile shows the gossiped copy and the direct push of
+	// the SAME block contending for bc.lock on InsertChain. Hypothesis G is
+	// that this head-of-line-blocks the vote round-trip. N42_BLOCK_GOSSIP_FALLBACK=0
+	// skips this publish once the direct push was actually dispatched to at
+	// least one connected peer (peerCount>0) -- when there were zero peers,
+	// gossip is the only path left and always runs, switch or no switch.
+	// Default (unset or "1"): unchanged behaviour, always gossip.
+	if bc.p2p != nil {
+		number := b.Number64().Uint64()
+		if shouldGossipBlock(blockGossipFallbackEnabled(), peerCount) {
+			go func() {
+				if err := bc.p2p.BroadcastBlock(bc.ctx, data); err != nil {
+					log.Warn("sealed block gossip fallback failed", "number", number, "err", err)
+				}
+			}()
+		} else {
+			blockGossipFallbackSkipped.Add(1)
+			log.Debug("block gossip fallback skipped: direct push dispatched", "number", number, "peers", peerCount)
+		}
+	}
+	return nil
+}
+
+// blockGossipFallbackOnce/On/Skipped back blockGossipFallbackEnabled, S15b's
+// experiment switch (see the comment in SealedBlock above). Read once at
+// start-up like this codebase's other N42_* switches (e.g.
+// internal/miner/push_order.go's PushBeforeWrite); Skipped is a lightweight
+// counter, not logged per block, for whoever wants to confirm the switch
+// actually fired without grepping Debug-level logs.
+var (
+	blockGossipFallbackOnce    sync.Once
+	blockGossipFallbackOn      bool
+	blockGossipFallbackSkipped atomic.Int64
+)
+
+// parseBlockGossipFallback is N42_BLOCK_GOSSIP_FALLBACK's parser: anything
+// but the literal "0" (including unset, "") keeps today's behaviour.
+func parseBlockGossipFallback(v string) bool {
+	return v != "0"
+}
+
+// shouldGossipBlock is the pure decision blockGossipFallbackEnabled's switch
+// feeds SealedBlock: gossip when the fallback is on, OR when the direct push
+// reached no peers at all -- in that case gossip is the only delivery path
+// left, switch or no switch.
+func shouldGossipBlock(fallbackEnabled bool, peerCount int) bool {
+	return fallbackEnabled || peerCount == 0
+}
+
+// blockGossipFallbackEnabled reports whether SealedBlock's gossip fallback
+// runs unconditionally (true, the default/unset/"1" case) or only when the
+// direct push reached zero peers ("0"). N42_BLOCK_GOSSIP_FALLBACK=0 is an
+// experiment, not a production default: it trades the fallback's redundancy
+// for removing its ~18-26 MB publish from the same GossipSub streams the
+// vote round-trip uses (6cg).
+func blockGossipFallbackEnabled() bool {
+	blockGossipFallbackOnce.Do(func() {
+		blockGossipFallbackOn = parseBlockGossipFallback(os.Getenv("N42_BLOCK_GOSSIP_FALLBACK"))
+		if !blockGossipFallbackOn {
+			log.Info("block gossip fallback disabled (N42_BLOCK_GOSSIP_FALLBACK=0)")
+		}
+	})
+	return blockGossipFallbackOn
 }
 
 // directPushBlock opens a stream to each connected peer and writes the block as
 // a single chunked response (status code + fork digest + encoded block) — the
 // same wire format ReadChunkedBlock decodes in the sync block-push handler. The
 // RLP-encoded block bytes are passed in (encoded once by SealedBlock).
-func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
+//
+// Returns the number of connected peers a push was DISPATCHED to (goroutines
+// launched), not confirmed delivered -- each send is fire-and-forget on its
+// own goroutine (that is the whole point: SealedBlock must not block on
+// network I/O), so per-peer success is only known later, asynchronously, and
+// cheap dispatch-time visibility is what S15b's gossip-fallback switch needs
+// (see blockGossipFallbackEnabled). 0 when p2p is unavailable, the fork
+// digest cannot be computed, or there are no connected peers.
+func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) int {
 	if bc.p2p == nil {
-		return
+		return 0
 	}
 	digest, err := utils.CreateForkDigest(b.Number64(), bc.genesisBlock.Hash())
 	if err != nil {
-		return
+		return 0
 	}
 	protoID := protocol.ID(p2p.RPCBlockPushTopicV1 + bc.p2p.Encoding().ProtocolSuffix())
 	peers := bc.p2p.Peers().Connected()
@@ -1466,6 +1898,7 @@ func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
 			}
 		}(pid)
 	}
+	return len(peers)
 }
 
 // rawBlockBytes carries pre-encoded RLP block bytes through the SSZ length/snappy
@@ -1601,7 +2034,20 @@ func (bc *BlockChain) InsertChainAuthorized(chain []block.IBlock) (int, error) {
 	if len(chain) == 0 {
 		return 0, nil
 	}
-	bc.lock.Lock()
+	// S11: same bc.lock, same diagnostic as AlignAppliedBranch above. A build
+	// stall's InsertChainAuthorized call is the "import consensus parent"
+	// fallback below AlignAppliedBranch in worker.go's commitWork, so this
+	// wait lands in the same accumulator (TakeBuildStallLockWait), read right
+	// after each call from the single build goroutine -- routine gossip/sync
+	// imports calling this too could in principle add noise here, but that
+	// path is reserved for consensus-driven imports, not routine traffic.
+	if buildStallDiagEnabled {
+		t0 := time.Now()
+		bc.lock.Lock()
+		bc.buildStallLockWaitNs.Add(int64(time.Since(t0)))
+	} else {
+		bc.lock.Lock()
+	}
 	defer bc.lock.Unlock()
 	return bc.insertChain(chain, true)
 }
@@ -1785,7 +2231,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				stateReader = commitment.NewQMDBStateReader(src, stateReader, mode)
 			}
 		}
+		// The parallel processor seeds this layer with the block's
+		// delta-credited recipients, read across its workers, so the
+		// block-end fold does not read them from the store one by one.
+		prefetch := state.NewAccountPrefetch(stateReader)
+		stateReader = prefetch
 		ibs := state.New(stateReader)
+		ibs.SetAccountPrefetch(prefetch)
 		// Inject root computer for tree-based state root computation.
 		// JMT: only for fresh chains where all blocks use JMT from genesis.
 		// MPT: always inject when enabled (branches persisted in MDBX).
@@ -1825,6 +2277,18 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		dHdr, dBody := it.lastVerifyWait, it.lastBodyCheck
 		var dAlign, dProcess, dValidate, dWrite time.Duration
 		var procPhases ProcessPhases
+
+		// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): tIter above IS the start
+		// of InsertChain's own per-block processing -- 6dr's own
+		// "MISSING-STAMP", distinct from the block-push handler's
+		// socket-receipt "arrived" stamp and from whatever lock/queue wait
+		// sits between the handler's own SetQueueTMs (just before this call)
+		// and here.
+		if contentionDiagEnabled {
+			if b, ok := blk.(interface{ SetInsertStartTMs(int64) }); ok {
+				b.SetInsertStartTMs(tIter.UnixMilli())
+			}
+		}
 
 		log.Tracef("Current block: number=%v, hash=%v, difficult=%v | Insert block block: number=%v, hash=%v, difficult= %v",
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), blk.Number64(), blk.Hash(), blk.Difficulty())
@@ -1980,6 +2444,22 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				defer prefetcher.Close()
 			}
 
+			if bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(concreteBlock.Header().(*block.Header).Time) {
+				hdr := concreteBlock.Header().(*block.Header)
+				parentHdr := rawdb.ReadHeader(tx, hdr.ParentHash, hdr.Number.Uint64()-1)
+				if parentHdr == nil {
+					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], hdr.Number.Uint64())
+				}
+				if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parentHdr); err != nil {
+					if errors.Is(err, ErrDeferredResultUnknown) {
+						// The parent is stored but not applied here yet: queue
+						// and retry after it lands, like a missing ancestor.
+						return nil, fmt.Errorf("%w: %w", ErrPrunedAncestor, err)
+					}
+					bc.reportBlock(blk, nil, err)
+					return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
+				}
+			}
 			pstart := time.Now()
 			var nopay map[types.Address]*uint256.Int
 			if bc.parallelEVM {
@@ -2008,10 +2488,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			}
 			ptime := time.Since(pstart)
 			dProcess = ptime
-			// Split Process into EVM execution vs state root #3. Only the serial
-			// StateProcessor records the breakdown; the parallel path leaves the
-			// sub-phases zero (dProcess still covers the whole call).
-			if sp, ok := bc.process.(*StateProcessor); ok && !bc.parallelEVM {
+			// Split Process into EVM execution vs state root #3. Both the serial
+			// Process and the strict parallel run publish their breakdown (the
+			// parallel one adds setup and collect).
+			if sp, ok := bc.process.(*StateProcessor); ok {
 				procPhases = sp.LastPhases()
 			}
 
@@ -2116,7 +2596,43 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"hdr", dHdr, "body", dBody, "align", dAlign,
 				"recov", procPhases.Recover, "prefetch", procPhases.Prefetch, "prep", procPhases.Prep,
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
+				"setup", procPhases.Setup, "collect", procPhases.Collect,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
+				"tMs", time.Now().UnixMilli(),
+			}
+			// S32 (docs/QS_BLOCK_TIME_BUDGET.md 6di/6dj,
+			// N42_BLOCK_DECODE_REUSE_POOL): counters only, no per-block info
+			// log of their own -- how many of this block's transactions were
+			// reused from the pool vs freshly decoded on the block-push
+			// receive path. Zero/zero for a block that took any other path
+			// (gossip, catch-up fetch) or arrived with the switch off.
+			if rs, ok := blk.(interface{ DecodeReuseStats() (int, int) }); ok {
+				reused, decoded := rs.DecodeReuseStats()
+				fields = append(fields, "reuse", reused, "dec", decoded)
+			}
+			// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the named hand-off
+			// stamps a follower's block-push receive path recorded, gated on
+			// the WRITER's own N42_CONTENTION_DIAG (internal/sync's and this
+			// package's own copies) -- all zero for a block that took a
+			// different path (gossip, catch-up fetch) or arrived with the
+			// diag off, exactly like reuse/dec above. rxEnd/decStart/decEnd
+			// bracket the chunk read and full decode; chkStart/chkEnd bracket
+			// CheckDeferredBlock; q is the instant the handler called
+			// InsertChain; insStart is this loop's own tIter, the
+			// "MISSING-STAMP" 6dr asked for -- q -> insStart is the lock/
+			// queue wait between the handler and InsertChain's own
+			// processing. insDispatch (S42, N42_DEFERRED_CHECK_CONCURRENT) is
+			// set at the same call site as q; comparing it against
+			// chkStart/chkEnd shows whether the check ran sequentially before
+			// InsertChain (today) or concurrently beside it.
+			if is, ok := blk.(interface {
+				ImportStamps() (rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart int64)
+			}); ok {
+				rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart := is.ImportStamps()
+				fields = append(fields,
+					"rxEndTMs", rxEnd, "decStartTMs", decStart, "decEndTMs", decEnd,
+					"chkStartTMs", chkStart, "chkEndTMs", chkEnd,
+					"qTMs", q, "insDispatchTMs", insDispatch, "insStartTMs", insStart)
 			}
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
@@ -2201,7 +2717,11 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator, auth
 				externTd = *pt
 				continue
 			}
-			if canonical != nil && canonical.StateRoot() == blk.StateRoot() {
+			deferredSibling := false
+			if h, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(h.Time) {
+				deferredSibling = true // siblings carry the same parent root by construction
+			}
+			if canonical != nil && !deferredSibling && canonical.StateRoot() == blk.StateRoot() {
 				log.Warn("Sidechain ghost-state mismatch detected", "number", blk.Number64(), "sideroot", blk.StateRoot(), "canonroot", canonical.StateRoot())
 				return it.index, errors.New("sidechain ghost-state mismatch")
 			}
@@ -2559,6 +3079,7 @@ func isUnknownAncestorErr(err error) bool {
 
 // reportBlock logs a bad block error.
 func (bc *BlockChain) reportBlock(blk block.IBlock, receipts []*block.Receipt, err error) {
+	bc.markBadSibling(blk)
 	var receiptString string
 	for i, receipt := range receipts {
 		receiptString += fmt.Sprintf("\t %d: cumulative: %v gas: %v contract: %v status: %v tx: %v logs: %v bloom: %x state: %x\n",
@@ -2575,6 +3096,48 @@ Hash: %#x
 Error: %v
 ##############################
 `, blk.Number64().String(), blk.Hash(), receiptString, err))
+}
+
+// markBadSibling persists a validation failure so this node's leader never
+// converges on the stored block again (LowestSiblingAtHeight, and the miner's
+// deterministic-rebuild short circuit). Written from its own transaction on
+// another goroutine: reportBlock runs inside the import's read transaction.
+// The mark is advisory for PROPOSING only -- import never consults it, so a
+// transient local failure cannot make this node refuse the committed chain.
+func (bc *BlockChain) markBadSibling(blk block.IBlock) {
+	if blk == nil {
+		return
+	}
+	hash, number := blk.Hash(), blk.Number64().Uint64()
+	bc.badSiblingsMu.Lock()
+	if bc.badSiblings == nil {
+		bc.badSiblings = make(map[types.Hash]struct{})
+	}
+	bc.badSiblings[hash] = struct{}{}
+	bc.badSiblingsMu.Unlock()
+	go func() {
+		if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+			return rawdb.WriteBadHeaderMark(tx, hash, number)
+		}); err != nil {
+			log.Warn("bad-sibling mark not persisted", "hash", hash.Hex()[:12], "number", number, "err", err)
+		}
+	}()
+}
+
+// BadSibling reports whether this node recorded a validation failure for hash
+// (in memory this process, or persisted by an earlier one).
+func (bc *BlockChain) BadSibling(hash types.Hash) bool {
+	bc.badSiblingsMu.RLock()
+	_, ok := bc.badSiblings[hash]
+	bc.badSiblingsMu.RUnlock()
+	if ok {
+		return true
+	}
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		ok = rawdb.IsBadHeaderMarked(tx, hash)
+		return nil
+	})
+	return ok
 }
 
 // tryZKFastPath attempts to verify the block's ZK proof. Returns true if
@@ -2611,7 +3174,17 @@ func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash)
 	// unwind the live QMDB tree, whose in-memory mutations are not covered by
 	// the MDBX transaction. Serialize the whole operation with InsertChain and
 	// WriteBlockWithState so a leader cannot consume an import's in-flight undo.
-	bc.lock.Lock()
+	//
+	// S11: bc.lock is exactly the mutex a leader build shares with import/
+	// write, so time the wait for it when diagnosing a build stall
+	// (docs/QS_BLOCK_TIME_BUDGET.md 6by). Off by default -- no timing calls.
+	if buildStallDiagEnabled {
+		t0 := time.Now()
+		bc.lock.Lock()
+		bc.buildStallLockWaitNs.Add(int64(time.Since(t0)))
+	} else {
+		bc.lock.Lock()
+	}
 	defer bc.lock.Unlock()
 	return bc.unwindForReimport(childNum, parentHash, true)
 }
@@ -2656,7 +3229,23 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 		return nil
 	}
 	treeRoot := bc.qmdbRootComputer.Root()
-	if treeRoot == pHdr.Root {
+	// A header's Root is the state after that block before the deferred
+	// execution fork and the PARENT's after it; the tree is compared with
+	// each header's EXECUTED root.
+	execRootOf := func(h *block.Header) (types.Hash, bool) {
+		if bc.chainConfig == nil || !bc.chainConfig.IsDeferredExecution(h.Time) || h.Number.Uint64() == 0 {
+			return h.Root, true
+		}
+		var r rawdb.ExecutedResult
+		var found bool
+		_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			var err error
+			r, found, err = rawdb.ReadExecutedResult(tx, h.Hash())
+			return err
+		})
+		return r.Root, found
+	}
+	if pr, ok := execRootOf(pHdr); ok && treeRoot == pr {
 		return nil
 	}
 	// Out-of-order arrival, not a discontinuity: the applied state simply has
@@ -2681,7 +3270,7 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 	// failure leaves everything exactly as it was.
 	cur := pHdr
 	for depth := 0; depth < 256 && cur != nil; depth++ {
-		if treeRoot == cur.Root {
+		if cr, ok := execRootOf(cur); ok && treeRoot == cr {
 			target, targetHash := cur.Number.Uint64(), cur.Hash()
 			if werr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 				return realignAppliedToTree(tx, target, targetHash)
@@ -2782,6 +3371,33 @@ func (bc *BlockChain) clearReadThroughCache() {
 	}
 }
 
+// appliedHeadNumber reports the QMDB applied marker's block number.
+func (bc *BlockChain) appliedHeadNumber() (uint64, bool) {
+	var num uint64
+	var have bool
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		an, _, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err == nil && ok {
+			num, have = an, true
+		}
+		return nil
+	})
+	return num, have
+}
+
+func (bc *BlockChain) AppliedHeadIsExactly(hash types.Hash, number uint64) bool {
+	at := false
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		an, ah, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok {
+			return nil
+		}
+		at = an == number && types.Hash(ah) == hash
+		return nil
+	})
+	return at
+}
+
 // HasAppliedBlock reports whether the block's state has actually been
 // EXECUTED onto the world state — it sits on the applied-marker lineage —
 // as opposed to merely having its body stored, future-queued, or named by a
@@ -2792,8 +3408,8 @@ func (bc *BlockChain) clearReadThroughCache() {
 // QC, and wedged the whole network's committed head on an inexecutable
 // block). Canonical membership is deliberately insufficient: commit can
 // rewrite canonical rows before a lagging QMDB state has switched off a losing
-// speculative branch. Only non-QMDB chains without a marker retain the legacy
-// stored-header fallback. A QMDB chain must have explicit execution evidence.
+// speculative branch. QMDB chains require an applied marker; only non-QMDB
+// chains retain the stored-header fallback.
 func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 	applied := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
@@ -2846,7 +3462,7 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 		// leaves through it. Re-point at a live tx for the duration.
 		bc.qmdbRootComputer.SetCold(tx)
 		defer bc.qmdbRootComputer.SetCold(nil)
-		return bc.qmdbRootComputer.Tree().ApplyUndo(undo)
+		return bc.qmdbRootComputer.ApplyUndo(undo)
 	})
 	if err == nil {
 		log.Debug("peeled failed block's appends off the QMDB tree", "number", blockNum)
@@ -2878,6 +3494,13 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	bc.PeelDanglingQMDBAppends()
 	mutated := false
 	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
+	// The speculative computer is NOT voided here any more (359e1f89 did,
+	// and ea76069e narrowed it to this path): the post-switch bad roots
+	// were builds on a persisted-but-unapplied sibling, fixed by waiting
+	// for the applied marker (580d2f32), and the void's full rebuild takes
+	// 10-23 s at 13.9M blocks -- long enough to time out the view, whose
+	// stale seal then causes the next switch (35o A1: four blocks in a
+	// 400 s decay). voidMinerRootTrust stays for an operator/debug path.
 	if err != nil && !mutated {
 		// Pre-check rejections (finality floor, lineage mismatch → future
 		// queue, unauthorized passive switch) fail BEFORE any tree mutation:
@@ -3088,6 +3711,11 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 				// leaves the in-memory tree untouched; the tx rolls back on return.
 				return fmt.Errorf("unwind block %d: qmdb revert: %w: %w", appliedNum, err, errRevertUnavailable)
 			}
+			// The miner's speculative tree loaded this block from the store;
+			// hand it the same undo so its next build peels it too (applied
+			// on the build goroutine, never here -- a build may be reading
+			// that tree right now).
+			bc.queueMinerRewind(undo)
 			// The tree is mutated from here on: a failure below this point
 			// (or in a LATER iteration) leaves the in-memory tree ahead of
 			// the rolled-back transaction — the caller must reload it.
@@ -3149,4 +3777,82 @@ func (bc *BlockChain) tryZKFastPath(blk block.IBlock) bool {
 
 func (bc *BlockChain) syncChain(remoteBlock uint64, peerID peer.ID) {
 	log.Debugf("syncChain.......")
+}
+
+// txRootBlake3Time is the chain's txRootBlake3Time, or -- on a bench chain
+// whose built-in chainspec has none -- N42_TXROOT_BLAKE3_TIME (a Unix
+// timestamp), so a fleet can run the BLAKE3 binary transactions root from
+// a chosen block time before the chainspec carries the fork. Logged loudly:
+// every node of the chain must agree on it.
+func txRootBlake3Time(config *params.ChainConfig) uint64 {
+	if config != nil && config.TxRootBlake3Time != nil {
+		return gateFrom(config.TxRootBlake3Time)
+	}
+	if v := os.Getenv("N42_TXROOT_BLAKE3_TIME"); v != "" {
+		if !nativeQMDBChain(config) {
+			log.Warn("N42_TXROOT_BLAKE3_TIME ignored: not the native QMDB chain")
+			return 0
+		}
+		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
+			if config != nil {
+				config.TxRootBlake3Time = new(big.Int).SetUint64(t)
+			}
+			log.Warn("transactions root: BLAKE3 binary root from N42_TXROOT_BLAKE3_TIME (bench override; every node must set the same value)", "time", t)
+			return t
+		}
+		log.Warn("N42_TXROOT_BLAKE3_TIME ignored (not a positive integer)", "value", v)
+	}
+	return 0
+}
+
+// deferredExecutionTime is the chain's deferredExecutionTime, or -- on a
+// bench chain whose built-in chainspec has none -- N42_DEFERRED_EXECUTION_TIME
+// (a Unix timestamp), applied to the chain config too so every fork check
+// in the node sees it. Logged loudly: every node of the chain must agree.
+func deferredExecutionTime(config *params.ChainConfig) uint64 {
+	if config != nil && config.DeferredExecutionTime != nil {
+		return gateFrom(config.DeferredExecutionTime)
+	}
+	if v := os.Getenv("N42_DEFERRED_EXECUTION_TIME"); v != "" {
+		if !nativeQMDBChain(config) {
+			log.Warn("N42_DEFERRED_EXECUTION_TIME ignored: not the native QMDB chain")
+			return 0
+		}
+		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
+			if config != nil {
+				config.DeferredExecutionTime = new(big.Int).SetUint64(t)
+			}
+			log.Warn("deferred execution from N42_DEFERRED_EXECUTION_TIME (bench override; every node must set the same value)", "time", t)
+			return t
+		}
+		log.Warn("N42_DEFERRED_EXECUTION_TIME ignored (not a positive integer)", "value", v)
+	}
+	return 0
+}
+
+// nativeQMDBChain: the bench-only fork overrides apply to the native chain
+// (QMDB state scheme) only, never to an Ethereum-EL chain.
+func nativeQMDBChain(config *params.ChainConfig) bool {
+	return config != nil && config.StateScheme == string(params.StateCommitmentPresetQMDB) && !config.EthereumReceiptEncoding()
+}
+
+// gateFrom turns a configured fork timestamp into the process-global: a
+// present zero means "from genesis" (isForked(0, t) is true for every t),
+// which the global expresses as 1, since 0 means "never" there.
+func gateFrom(v *big.Int) uint64 {
+	if v.Sign() <= 0 {
+		return 1
+	}
+	return v.Uint64()
+}
+
+// executedRootIn is ExecutedResultOfHeader's root read inside tx: the
+// header's Root before the deferred-execution fork (and for genesis), the
+// stored result after it; ok is false when the result is not stored.
+func (bc *BlockChain) executedRootIn(tx kv.Getter, h *block.Header) (types.Hash, bool) {
+	r, err := ExecutedResultOfHeader(bc.chainConfig, tx, h)
+	if err != nil {
+		return types.Hash{}, false
+	}
+	return r.Root, true
 }

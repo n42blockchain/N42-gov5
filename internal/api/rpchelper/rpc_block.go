@@ -32,11 +32,14 @@ import (
 )
 
 func GetLatestBlockNumber(tx kv.Tx) (*uint256.Int, error) {
-	current := rawdb.ReadCurrentBlock(tx)
-	if current == nil {
+	// The head's number, not the head block: ReadCurrentBlock decoded every
+	// transaction of the head (163k on the bench) to answer
+	// eth_getTransactionCount("latest") -- ~2 s of a node's 25 s profile.
+	n := rawdb.ReadCurrentFullBlockNumber(tx)
+	if n == nil {
 		return nil, fmt.Errorf("cannot get current block")
 	}
-	return current.Number64(), nil
+	return uint256.NewInt(*n), nil
 }
 
 // GetFinalizedBlockNumber returns the finalized block number.

@@ -246,6 +246,7 @@ func cloneChainConfig(src *params.ChainConfig) *params.ChainConfig {
 	dst.LtHashTime = cloneBig(src.LtHashTime)
 	dst.BALTime = cloneBig(src.BALTime)
 	dst.MobileAnchorTime = cloneBig(src.MobileAnchorTime)
+	dst.NativeAssetTime = cloneBig(src.NativeAssetTime)
 	dst.NanoBlock = cloneBig(src.NanoBlock)
 	dst.MoranBlock = cloneBig(src.MoranBlock)
 	dst.BeijingBlock = cloneBig(src.BeijingBlock)

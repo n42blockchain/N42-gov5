@@ -440,6 +440,7 @@ func (t *Tree) resetForLoad() {
 	t.nDirtyTwigs = 0
 	t.deadFlushed = nil
 	t.stagedDead = nil
+	t.flushedResident = 0
 	// A reload replaces the in-memory tree wholesale, so any death stamps still
 	// pending in the recorder describe the ABANDONED tree (e.g. a failed
 	// execution's recordDeath that never reached FlushHistory). Flushing them
@@ -537,7 +538,11 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	scratch := new([2 * TwigSize]Hash)
 	for id := 0; id < numTwigs; id++ {
 		if err := t.loadTwigFrom(g, id, nextSlot, trustedThrough, activeTwig, nil, scratch); err != nil {
-			return err
+			// Name the twig: two fleet starts (rounds 35g/35h) logged a short
+			// index (2.2M and 6.2M of 8.5M keys) and never reached the next
+			// line, and the next start of the same store loaded all 8.5M.
+			return fmt.Errorf("qmdb: load twig %d of %d (nextSlot %d, active %d, indexed so far %d): %w",
+				id, numTwigs, nextSlot, activeTwig, t.idx.Len(), err)
 		}
 	}
 	// Entry records are not retained — start the resident window empty at the
@@ -547,6 +552,7 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	t.flushedThrough = nextSlot
 	t.evicted = nextSlot
 	t.nextSlot = nextSlot
+	t.flushedResident = 0
 	// Drop pre-reload in-memory bookkeeping that refers to the abandoned tree
 	// state. deadFlushed is the load-bearing one: a failed execution marks
 	// flushed slots dead in RAM, its tx rolls back (rows survive on disk), and

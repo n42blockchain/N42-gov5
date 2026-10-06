@@ -10,6 +10,7 @@
 package hotstuff
 
 import (
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +18,16 @@ import (
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
+
+// contentionDiagEnabled gates S14's vote-path contention stamps (see
+// contentionStamps in view_timing.go) and the runtime mutex/block profiling
+// enabled alongside it in cmd/n42/app.go. Read once at start-up, same pattern
+// as internal/miner's N42_BUILD_STALL_DIAG (which keeps working independently
+// of this switch). Off by default: no time.Now() calls, no extra fields
+// touched, no change to "hotstuff view timing"'s existing output.
+// docs/QS_BLOCK_TIME_BUDGET.md 6cb-6ce found ~450ms of an in-tenure cycle's
+// 520ms consensus round-trip unattributed to any named wait; this measures it.
+var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
 
 // Protocol constants.
 const (
@@ -58,6 +69,13 @@ type EngineOutput struct {
 	NewEpoch       uint64
 	ValidatorCount uint32
 	Removed        bool // true if this node was removed from the validator set
+
+	// EmittedAt is S17's diagnostic sender-side stamp (t_emit): set inside
+	// emit() itself, so every output carries it with no change at any call
+	// site. Zero unless N42_CONTENTION_DIAG=1. See
+	// docs/QS_BLOCK_TIME_BUDGET.md 6ck ("the stamps stop before the actual
+	// publish") and ConsensusEngine.recordSendStamp.
+	EmittedAt time.Time
 }
 
 // EngineOutputType identifies the kind of output action.
@@ -120,9 +138,19 @@ type ConsensusEngine struct {
 	outputCh chan<- EngineOutput
 
 	// Block tracking
-	importedBlocks   map[types.Hash]bool
-	importedParents  map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
-	importedFIFO     []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
+	importedBlocks  map[types.Hash]bool
+	importedParents map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
+	importedFIFO    []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
+	// checkedBlocks: under deferred execution, blocks the service verified
+	// without executing them (the header carries this node's result of the
+	// parent; the transactions are includable). Such a block is voted for
+	// once its parent is imported. Bounded like importedBlocks.
+	checkedBlocks map[types.Hash]bool
+	checkedFIFO   []types.Hash
+	// headerKnownFIFO (S31): bounded eviction for importedParents entries
+	// populated ONLY by EventBlockHeaderKnown (the block has neither been
+	// checked nor imported yet) -- see onBlockHeaderKnown.
+	headerKnownFIFO  []types.Hash
 	pendingTxRoots   map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	pendingProposals map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
 	// pendingJustifyBlocks records, per view, the proposal's JustifyQC.BlockHash
@@ -169,6 +197,19 @@ type ConsensusEngine struct {
 	timingMu            sync.RWMutex
 	lastCommittedTiming *ViewTiming
 
+	// sendByView holds S17's sender-side publish stamps (t_emit -> t_deq ->
+	// t_pub0/t_pub1), keyed by the view the message belongs to. Written from
+	// handleBroadcast/handleSendToValidator's background goroutines --
+	// AFTER the output has already left the engine via emit(), so these
+	// goroutines never hold e.mu. sendMu is therefore a second leaf lock,
+	// exactly like timingMu: never held while e.mu is held, e.mu never
+	// acquired while it is held. publishCommittedTiming claims (pops) a
+	// view's entry when that view commits; recordSendStamp bounds the map
+	// so a view whose commit vote/broadcast never gets claimed (a timed-out
+	// view) cannot leak forever.
+	sendMu     sync.Mutex
+	sendByView map[ViewNumber]*perViewSendStamps
+
 	// Set when this validator is removed at an epoch boundary.
 	removed bool
 
@@ -177,6 +218,24 @@ type ConsensusEngine struct {
 	// and restores the pre-journal behaviour.
 	voteJournal      VoteJournal
 	captureVoteEpoch bool
+
+	// S19 (docs/QS_BLOCK_TIME_BUDGET.md 6co, write_latch.go): selfProposalHash
+	// is the block THIS node most recently proposed as leader, tracked so
+	// advanceToView can release a still-waiting write latch
+	// (N42_LEADER_WRITE_AFTER_JOURNAL) if the view is abandoned (a timeout)
+	// before journalCommitVote ever ran for it. Guarded by e.mu, like every
+	// other field above. Zero hash = nothing pending. Only ever set when
+	// leaderWriteAfterJournalEnabled.
+	selfProposalHash types.Hash
+
+	// writeLatchMu/writeLatches hand a per-block-hash signal from the engine
+	// to the leader's own write path (internal/miner), fired once
+	// journalCommitVote succeeds in tryFormPrepareQC or once advanceToView
+	// abandons the view first. A separate leaf lock from e.mu -- like
+	// timingMu/sendMu above -- because the miner's write path waits on the
+	// returned latch OUTSIDE e.mu. See write_latch.go.
+	writeLatchMu sync.Mutex
+	writeLatches map[types.Hash]*writeLatch
 }
 
 // VoteJournal persists the engine's safety state. Implementations MUST make the
@@ -243,7 +302,19 @@ func (e *ConsensusEngine) journalPrepareVote(view ViewNumber, hash types.Hash) e
 	}
 	st := e.snapshotState()
 	st.LastVotedView, st.LastVotedHash = view, hash
-	if err := e.voteJournal.JournalVote(st); err != nil {
+	// S18 (docs/QS_BLOCK_TIME_BUDGET.md 6cm): time the journal write itself,
+	// diagnostic only -- no change to what is written, when, or under which
+	// lock. Aggregated (summed) per view as jpvMs.
+	var tJournal time.Time
+	if contentionDiagEnabled {
+		tJournal = time.Now()
+	}
+	err := e.voteJournal.JournalVote(st)
+	if contentionDiagEnabled {
+		e.viewTiming.Contention.journalPrepareVoteMs += time.Since(tJournal)
+		e.viewTiming.Contention.journalPrepareVoteOK = true
+	}
+	if err != nil {
 		log.Error("hotstuff: ABSTAINING — could not journal prepare vote before sending",
 			"view", view, "blockHash", hash, "err", err)
 		return err
@@ -261,7 +332,23 @@ func (e *ConsensusEngine) journalCommitVote(view ViewNumber, hash types.Hash) er
 	}
 	st := e.snapshotState()
 	st.LastCommitVotedView, st.LastCommitVotedHash = view, hash
-	if err := e.voteJournal.JournalVote(st); err != nil {
+	// S18: same as journalPrepareVote above; jcvAt is the absolute start
+	// time (unix ms) of this call -- on the leader this IS the self-
+	// commit-vote journal write inside tryFormPrepareQC (voting.go), the
+	// one call in the unstamped PrepareQCFormed->emit() gap (L0, 6cm) that
+	// can block on the MDBX writer.
+	var tJournal time.Time
+	if contentionDiagEnabled {
+		tJournal = time.Now()
+	}
+	err := e.voteJournal.JournalVote(st)
+	if contentionDiagEnabled {
+		d := time.Since(tJournal)
+		e.viewTiming.Contention.journalCommitVoteMs += d
+		e.viewTiming.Contention.journalCommitVoteAtMs = tJournal.UnixMilli()
+		e.viewTiming.Contention.journalCommitVoteOK = true
+	}
+	if err != nil {
 		log.Error("hotstuff: ABSTAINING — could not journal commit vote before sending",
 			"view", view, "blockHash", hash, "err", err)
 		return err
@@ -305,6 +392,23 @@ type ViewTiming struct {
 	CommitQCFormed   *time.Time
 	PrepareVoteCount uint32
 	CommitVoteCount  uint32
+
+	// S75 additions (docs/QS_WIN2_RESIDUAL.md): BlockHash correlates this
+	// view's timing with the miner's "miner: block timeline" line.
+	// FirstPrepareVoteAt is LEADER only: the first Round 1 vote matching the
+	// collector's block hash (processVote), distinct from PrepareQCFormed
+	// (the quorum-completing moment) -- the gap between the two is the
+	// vote-fan-in tail. BlockExecuted is FOLLOWER only: the own-import that
+	// satisfies the current view's pending proposal (onBlockImported).
+	BlockHash          types.Hash
+	FirstPrepareVoteAt *time.Time
+	BlockExecuted      *time.Time
+
+	// Contention is S14's vote-path timing accumulator (diagnostic only,
+	// N42_CONTENTION_DIAG=1; see contentionStamps in view_timing.go). It
+	// rides along with ViewTiming so it resets/snapshots/publishes exactly
+	// where the timestamps above already do, with no separate plumbing.
+	Contention contentionStamps
 }
 
 func newViewTiming(view ViewNumber) ViewTiming {
@@ -344,6 +448,7 @@ func NewConsensusEngineWithEpochManager(
 		outputCh:                  outputCh,
 		importedBlocks:            make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
+		checkedBlocks:             make(map[types.Hash]bool),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
 		pendingProposals:          make(map[ViewNumber]types.Hash),
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
@@ -385,6 +490,7 @@ func WithRecoveredState(
 		outputCh:                  outputCh,
 		importedBlocks:            make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
+		checkedBlocks:             make(map[types.Hash]bool),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
 		pendingProposals:          make(map[ViewNumber]types.Hash),
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
@@ -605,11 +711,18 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 
 	switch event.Type {
 	case EventMessage:
-		return e.processMessage(event.Msg)
+		return e.processMessage(event.Msg, msgTiming{arrive: event.ReceivedAt, rx: event.RxAt, via: event.Via})
 	case EventBlockReady:
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
 		return e.onBlockImported(event.Hash, event.TxRootHash, event.ParentHash)
+	case EventBlockChecked:
+		return e.onBlockChecked(event.Hash, event.ParentHash)
+	case EventBlockRejected:
+		e.onBlockRejected(event.Hash)
+		return nil
+	case EventBlockHeaderKnown:
+		return e.onBlockHeaderKnown(event.Hash, event.ParentHash, event.Number)
 	default:
 		return nil
 	}
@@ -646,7 +759,34 @@ type ConsensusEvent struct {
 	Msg        ConsensusMsg
 	Hash       types.Hash
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
-	ParentHash types.Hash // EventBlockImported only: imported block's parent (extends-check; zero = unknown, check skipped)
+	ParentHash types.Hash // EventBlockImported / EventBlockChecked / EventBlockHeaderKnown: the block's parent (extends-check; zero = unknown, check skipped)
+	Number     uint64     // EventBlockHeaderKnown: the block's own height, for logging only (extendsJustify never reads it)
+	// ReceivedAt is S14's diagnostic arrival stamp for an EventMessage: the
+	// first line of the network handler (processGossipMessage), before
+	// decode. Zero unless N42_CONTENTION_DIAG=1; every downstream contention
+	// stamp is gated on it being non-zero, so leaving it unset costs nothing.
+	ReceivedAt time.Time
+	// RxAt is S17's diagnostic t_rx: the EARLIEST point this message's bytes
+	// were in this process -- right after sub.Next() returns (gossip) or
+	// right after the Rotor stream read completes (direct/relay) -- taken
+	// BEFORE ReceivedAt (which is after snappy/RLP decode). Via names which
+	// transport delivered THIS copy ("rotor" | "gossip"). Both zero/empty
+	// unless N42_CONTENTION_DIAG=1.
+	RxAt time.Time
+	Via  string
+}
+
+// msgTiming bundles S14/S17's diagnostic inbound timestamps for one
+// consensus message as it flows from processMessage down to the process*
+// handler that runs under e.mu -- a small value type instead of three
+// separate parameters threaded through processMessage/dispatchMessage/
+// processProposal/processVote/processCommitVote/processPrepareQC. Zero
+// value (Arrive.IsZero()) means "not measured," which every recorder
+// already checks.
+type msgTiming struct {
+	arrive time.Time // t_arrive (S14): first line of processGossipMessage, before decode
+	rx     time.Time // t_rx (S17): earliest point the bytes were in-process
+	via    string    // "rotor" | "gossip": which transport delivered THIS copy
 }
 
 // ConsensusEventType identifies the type of consensus event.
@@ -656,6 +796,26 @@ const (
 	EventMessage       ConsensusEventType = 1
 	EventBlockReady    ConsensusEventType = 2
 	EventBlockImported ConsensusEventType = 3
+	// EventBlockChecked: deferred execution -- the block's header carries this
+	// node's result of its parent and its transactions are includable; the
+	// vote no longer waits for the block's own import, only for the parent's.
+	EventBlockChecked ConsensusEventType = 4
+	// EventBlockRejected: the block failed validation on import; any
+	// deferred-execution check evidence for it is withdrawn.
+	EventBlockRejected ConsensusEventType = 5
+	// EventBlockHeaderKnown (S31, docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh):
+	// the block-push receive path has decoded (peeked, when the reader
+	// allows it) this block's HEADER -- its parent hash is now known, well
+	// before the (possibly 160k-transaction) body finishes decoding and
+	// before CheckDeferredBlock's own per-transaction walk runs. This is
+	// enough for extendsJustify (which only ever reads the parent hash) to
+	// evaluate, so a two-phase Round 1 prepare vote can fire on it directly
+	// -- Round 2's own execution guarantee (deferredAttested / the full
+	// import gate) is completely unchanged and still waits for the real
+	// check. Two-phase only: for import-gated (non-two-phase) voting the
+	// event still records the parent (harmless, already-covered
+	// bookkeeping) but never by itself unlocks a vote.
+	EventBlockHeaderKnown ConsensusEventType = 6
 )
 
 // Internal helpers
@@ -714,6 +874,9 @@ func (e *ConsensusEngine) ReconfigManager() *ReconfigurationManager {
 }
 
 func (e *ConsensusEngine) emit(output EngineOutput) error {
+	if contentionDiagEnabled {
+		output.EmittedAt = time.Now()
+	}
 	select {
 	case e.outputCh <- output:
 		return nil
@@ -734,10 +897,121 @@ func isCriticalOutput(t EngineOutputType) bool {
 		t == OutputEpochTransition
 }
 
+// sendStampsMaxViews bounds ConsensusEngine.sendByView: a view whose
+// message is never published (a timed-out view, a dropped output) or
+// whose record is never claimed by publishCommittedTiming leaves an entry
+// behind. Pruned oldest-first once the map exceeds this, under sendMu.
+const sendStampsMaxViews = 64
+
+// recordSendStamp is S17's sender-side timing recorder, called from
+// handleBroadcast/handleSendToValidator's background goroutines (Service,
+// service.go) after the actual publish completes -- i.e. AFTER the output
+// already left the engine via emit(), on a goroutine that never holds
+// e.mu. Guarded by sendMu, a leaf lock (see the struct field comment):
+// never held while e.mu is held, and e.mu is never acquired while this is
+// held, so it cannot contend with or deadlock against the consensus hot
+// path. No-op unless the diagnostic is on.
+func (e *ConsensusEngine) recordSendStamp(view ViewNumber, msgType ConsensusMsgType, emit, deq, pub0, pub1 time.Time, path string) {
+	// No contentionDiagEnabled check here: both call sites (handleBroadcast,
+	// handleSendToValidator) already gate on it before ever computing a
+	// non-zero emit, so this stays a pure function of its arguments --
+	// straightforward to unit test without the env-gated package var.
+	if emit.IsZero() {
+		return
+	}
+	stamp := sendMsgStamp{
+		emit2Deq: durSince(emit, deq),
+		deq2Pub:  durSince(deq, pub0),
+		pubDur:   durSince(pub0, pub1),
+		pubAtMs:  pub1.UnixMilli(),
+		path:     path,
+		ok:       true,
+	}
+	e.sendMu.Lock()
+	defer e.sendMu.Unlock()
+	if e.sendByView == nil {
+		e.sendByView = make(map[ViewNumber]*perViewSendStamps)
+	}
+	rec, ok := e.sendByView[view]
+	if !ok {
+		if len(e.sendByView) >= sendStampsMaxViews {
+			e.pruneOldestSendStampLocked()
+		}
+		rec = &perViewSendStamps{}
+		e.sendByView[view] = rec
+	}
+	switch msgType {
+	case MsgProposal:
+		rec.proposal = stamp
+	case MsgVote:
+		rec.prepareVote = stamp
+	case MsgPrepareQC:
+		rec.prepareQC = stamp
+	case MsgCommitVote:
+		rec.commitVote = stamp
+	}
+}
+
+// pruneOldestSendStampLocked drops the lowest-numbered view's entry.
+// Caller must hold sendMu. Views only increase, so "lowest" is "oldest."
+func (e *ConsensusEngine) pruneOldestSendStampLocked() {
+	var oldest ViewNumber
+	first := true
+	for v := range e.sendByView {
+		if first || v < oldest {
+			oldest, first = v, false
+		}
+	}
+	if !first {
+		delete(e.sendByView, oldest)
+	}
+}
+
+// takeSendStamps claims (pops) a view's sender-side stamps, called once
+// from publishCommittedTiming when that view commits. Returns nil if no
+// message this node sent for that view has finished publishing yet (a
+// slow publish that outlives the view is simply not attributed -- see
+// docs/QS_BLOCK_TIME_BUDGET.md 6cl's method note).
+func (e *ConsensusEngine) takeSendStamps(view ViewNumber) *perViewSendStamps {
+	e.sendMu.Lock()
+	defer e.sendMu.Unlock()
+	rec := e.sendByView[view]
+	delete(e.sendByView, view)
+	return rec
+}
+
+// durSince is time.Time.Sub with a floor of zero, guarding against a
+// non-monotonic pair (clock adjustment) producing a negative duration.
+func durSince(earlier, later time.Time) time.Duration {
+	d := later.Sub(earlier)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
 func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	if newView <= e.roundState.CurrentView() {
 		return nil
 	}
+
+	// S19 (6co): the view this node (possibly as leader) is about to leave is
+	// ending, one way or another. If it proposed a block that never reached
+	// journalCommitVote (a timeout: PrepareQC never formed, so tryFormPrepareQC
+	// never got there), release any write latch waiting on it now rather than
+	// making the write path sit out its full configured timeout. On the
+	// ordinary success path this block's latch was already fired ("journal")
+	// before advanceToView is ever reached here (voting.go's tryFormCommitQC
+	// calls advanceToView AFTER emitting OutputBlockCommitted, which itself
+	// only runs once CommitQC formed, which requires PrepareQC to have formed
+	// first) -- so this is a harmless, idempotent no-op fire in that case
+	// (writeLatch.Fire: first writer wins). No-op entirely when the switch is
+	// off: selfProposalHash is only ever set when it is on.
+	if leaderWriteAfterJournalEnabled && e.selfProposalHash != (types.Hash{}) {
+		e.fireWriteLatch(e.selfProposalHash, "abandoned")
+		e.selfProposalHash = types.Hash{}
+	}
+
 	epochBoundary := e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView)
 
 	// Save current PrepareQC for piggybacking.
@@ -886,7 +1160,10 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	}
 
 	for _, msg := range toReplay {
-		if err := e.dispatchMessage(msg); err != nil {
+		// time.Time{}: a replayed future-buffered message's original network
+		// arrival time is not retained in futureMsg, so its contention stamps
+		// (S14) are correctly left unmeasured rather than misattributed.
+		if err := e.dispatchMessage(msg, msgTiming{}); err != nil {
 			log.Debug("buffered message replay failed", "view", newView, "err", err)
 		}
 	}
@@ -896,7 +1173,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 
 // Message processing
 
-func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
+func (e *ConsensusEngine) processMessage(msg ConsensusMsg, mt msgTiming) error {
 	// SyncInfo: adopt any piggybacked TC before view gating, so a lagging node
 	// catches up from a vote/timeout even if it missed the NewView.
 	if err := e.processEmbeddedTC(&msg); err != nil {
@@ -934,7 +1211,7 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
 			} else if jumped {
 				newCurrent := e.roundState.CurrentView()
 				if msgView == newCurrent {
-					return e.dispatchMessage(msg)
+					return e.dispatchMessage(msg, mt)
 				} else if msgView > newCurrent && msgView <= newCurrent+FutureViewWindow &&
 					len(e.futureMsgBuffer) < MaxFutureMessages {
 					e.futureMsgBuffer = append(e.futureMsgBuffer, futureMsg{view: msgView, msg: msg})
@@ -949,10 +1226,14 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
 		return nil
 	}
 
-	return e.dispatchMessage(msg)
+	return e.dispatchMessage(msg, mt)
 }
 
-func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg) error {
+// dispatchMessage routes a decoded consensus message to its handler. mt is
+// S14/S17's diagnostic arrival timing (zero unless N42_CONTENTION_DIAG=1,
+// or for a replayed future-buffered message whose original timing is not
+// retained -- see advanceToView).
+func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg, mt msgTiming) error {
 	if msg.Payload == nil {
 		return ErrInvalidMessage
 	}
@@ -962,25 +1243,25 @@ func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg) error {
 		if !ok || p == nil {
 			return ErrInvalidMessage
 		}
-		return e.processProposal(p)
+		return e.processProposal(p, mt)
 	case MsgVote:
 		v, ok := msg.Payload.(*Vote)
 		if !ok || v == nil {
 			return ErrInvalidMessage
 		}
-		return e.processVote(v)
+		return e.processVote(v, mt)
 	case MsgCommitVote:
 		cv, ok := msg.Payload.(*CommitVote)
 		if !ok || cv == nil {
 			return ErrInvalidMessage
 		}
-		return e.processCommitVote(cv)
+		return e.processCommitVote(cv, mt)
 	case MsgPrepareQC:
 		pqc, ok := msg.Payload.(*PrepareQCMsg)
 		if !ok || pqc == nil {
 			return ErrInvalidMessage
 		}
-		return e.processPrepareQC(pqc)
+		return e.processPrepareQC(pqc, mt)
 	case MsgTimeout:
 		tm, ok := msg.Payload.(*TimeoutMessage)
 		if !ok || tm == nil {

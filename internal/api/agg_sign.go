@@ -145,6 +145,18 @@ LOOP:
 }
 
 func MachineVerify(ctx context.Context) error {
+	// With no verifier registered there is nothing to sign, but the
+	// subscription alone is not free: the miner builds the MinedEntireEvent
+	// whenever HasSubscribers says someone listens, and that is every
+	// transaction of the block marshalled plus a snapshot copy -- 252 ms of
+	// "assemble" on the leader at 163,000 transfers (round 35zd), on the
+	// path between one proposal and the next. Nothing populates
+	// validVerifiers at runtime today, so do not subscribe at all.
+	if len(validVerifiers) == 0 {
+		log.Info("machine verify: no verifiers registered; not subscribing to mined blocks")
+		<-ctx.Done()
+		return nil
+	}
 	entire := make(chan common.MinedEntireEvent, 10)
 	blocksSub, err := event.GlobalEvent.Subscribe(entire)
 	if err != nil {

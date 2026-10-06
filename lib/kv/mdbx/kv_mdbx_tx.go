@@ -68,6 +68,8 @@ func (tx *MdbxTx) Has(bucket string, key []byte) (bool, error) {
 	return bytes.Equal(key, k), nil
 }
 
+// The tx-level writes below delegate to a cursor, and the cursor records the
+// row in the write probe; recording it here as well counted every row twice.
 func (tx *MdbxTx) Put(table string, k, v []byte) error {
 	c, err := tx.statelessCursor(table)
 	if err != nil {
@@ -78,7 +80,24 @@ func (tx *MdbxTx) Put(table string, k, v []byte) error {
 	}
 	tx.writeCount.Add(1)
 	tx.writeBytes.Add(uint64(len(k) + len(v)))
-	tx.noteWrite(table, len(k)+len(v), false)
+	return nil
+}
+
+// Upsert makes k hold exactly v in table (see kv.Upserter).
+func (tx *MdbxTx) Upsert(table string, k, v []byte) error {
+	c, err := tx.statelessCursor(table)
+	if err != nil {
+		return err
+	}
+	up, ok := c.(interface{ Upsert(k, v []byte) error })
+	if !ok {
+		return fmt.Errorf("table %s: cursor %T cannot upsert", table, c)
+	}
+	if err := up.Upsert(k, v); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	tx.writeBytes.Add(uint64(len(k) + len(v)))
 	return nil
 }
 
@@ -114,7 +133,6 @@ func (tx *MdbxTx) Delete(table string, k []byte) error {
 		return err
 	}
 	tx.writeCount.Add(1)
-	tx.noteWrite(table, 0, true)
 	return nil
 }
 
@@ -128,7 +146,6 @@ func (tx *MdbxTx) Append(bucket string, k, v []byte) error {
 	}
 	tx.writeCount.Add(1)
 	tx.writeBytes.Add(uint64(len(k) + len(v)))
-	tx.noteWrite(bucket, len(k)+len(v), false)
 	return nil
 }
 func (tx *MdbxTx) AppendDup(bucket string, k, v []byte) error {
@@ -141,7 +158,6 @@ func (tx *MdbxTx) AppendDup(bucket string, k, v []byte) error {
 	}
 	tx.writeCount.Add(1)
 	tx.writeBytes.Add(uint64(len(k) + len(v)))
-	tx.noteWrite(bucket, len(k)+len(v), false)
 	return nil
 }
 

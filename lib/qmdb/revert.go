@@ -165,6 +165,9 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 	if t.evicted > prev {
 		t.evicted = prev
 	}
+	if t.flushedResident > prev {
+		t.flushedResident = prev
+	}
 
 	// --- 4. Revive the block's deactivations. ------------------------------
 	touched := make(map[int]struct{}, len(u.Entries)+1)

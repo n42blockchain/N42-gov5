@@ -143,13 +143,33 @@ var beaconArchiveSection = Section{
 	Optional: true,
 }
 
-// minimal: compact state snapshot + caplin checkpoint-sync seed (~25.7 GB +
-// ~150 MB beacon state, weekly). Headers/bodies/codes for the snapshot→tip
-// catch-up are fetched live (IDC/peers), not bundled; older data missing locally
-// is requested from peers on demand. The beacon-checkpoint seed lets it run
-// embedded consensus validation (Sync-to-tip) without an external CL.
+// headersSection and codeSection are shared by every tier that ships them.
+// They were duplicated per tier until minimal started shipping them too, at
+// which point three copies of the same two globs was one copy too many.
+var headersSection = Section{
+	Name:     "headers",
+	Patterns: []string{"chain/freezer/headerc.cidx", "chain/freezer/headerc.*.cdat"},
+}
+
+var codeSection = Section{
+	Name:     "code",
+	Patterns: []string{"chain/freezer/codes.cidx", "chain/freezer/codes.*.cdat"},
+}
+
+// minimal: compact state snapshot + headers + codes + caplin checkpoint-sync
+// seed (~47 GB weekly). Bodies and receipts are NOT bundled — the snapshot→tip
+// catch-up fetches those live (IDC/peers).
+//
+// headerc and codes ARE bundled (operator decision, 2026-08-30, restoring the
+// §6b spec): a snapshot-direct node needs the header chain to validate what it
+// catches up on and the content-addressed code freezer to execute it, and
+// pulling either at start-up is exactly what a seed exists to avoid. The
+// earlier snapshot-only build shipped 24.6 GB against a 47 GB spec, and the
+// three-mode tests only passed because the test dirs were assembled by hand
+// with headerc + codes added — a node installed from the manifest had neither.
 func minimalSelector() *Selector {
-	s := &Selector{Mode: "minimal", Sections: append([]Section{}, snapshotSections...)}
+	s := &Selector{Mode: "minimal", Sections: []Section{headersSection, codeSection}}
+	s.Sections = append(s.Sections, snapshotSections...)
 	s.Sections = append(s.Sections, beaconCheckpointSection)
 	return s
 }
@@ -162,8 +182,9 @@ func minimalSelector() *Selector {
 const DefaultFullBodiesWindow = 56
 
 // full: snapshot + headers + codes + 1-yr hot bodies + txindex (~160 GB). Receipts
-// and history (accthist/storhist) are NOT shipped — receipts/logs serve the latest
-// window; bodies older than ~1 yr stay on cold seeders (1-of-N).
+// and history (accthist/storhist) are NOT shipped — a full node's receipts are the
+// ones it produces itself while catching up and following the tip (kept, not
+// pruned); bodies older than ~1 yr stay on cold seeders (1-of-N).
 //
 // The one-year bodies window is enforced HERE rather than left to whoever
 // assembles the datadir: freezer segment numbering is monotonic in block
@@ -173,10 +194,7 @@ const DefaultFullBodiesWindow = 56
 func fullSelector() *Selector { return fullSelectorWindowed(DefaultFullBodiesWindow) }
 
 func fullSelectorWindowed(window int) *Selector {
-	s := &Selector{Mode: "full", Sections: []Section{
-		{Name: "headers", Patterns: []string{"chain/freezer/headerc.cidx", "chain/freezer/headerc.*.cdat"}},
-		{Name: "code", Patterns: []string{"chain/freezer/codes.cidx", "chain/freezer/codes.*.cdat"}},
-	}}
+	s := &Selector{Mode: "full", Sections: []Section{headersSection, codeSection}}
 	s.Sections = append(s.Sections, snapshotSections...)
 	s.Sections = append(s.Sections,
 		Section{
@@ -206,9 +224,9 @@ func SelectorForWithWindow(mode string, window int) (*Selector, error) {
 // download vs shipping the derived data). No snapshot — archive rebuilds state.
 func archiveSelector() *Selector {
 	return &Selector{Mode: "archive", Sections: []Section{
-		{Name: "headers", Patterns: []string{"chain/freezer/headerc.cidx", "chain/freezer/headerc.*.cdat"}},
+		headersSection,
 		{Name: "bodies", Patterns: []string{"chain/freezer/bodyc.cidx", "chain/freezer/bodyc.*.cdat"}},
-		{Name: "code", Patterns: []string{"chain/freezer/codes.cidx", "chain/freezer/codes.*.cdat"}},
+		codeSection,
 		{Name: "witness", Patterns: []string{"chain/freezer/witness.cidx", "chain/freezer/witness.*.cdat"}},
 		{Name: "tx-index", Patterns: []string{"chain/freezer/txindex.cidx", "chain/freezer/txindex.*.cdat"}},
 		{Name: "anchors", Patterns: []string{"chain/freezer/anchorc.cidx", "chain/freezer/anchorc.*.cdat", "chain/freezer/anchorc.blocks"}},

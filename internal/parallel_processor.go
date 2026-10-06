@@ -23,11 +23,19 @@
 package internal
 
 import (
+	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"sync"
+	"time"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -36,9 +44,25 @@ import (
 	"github.com/n42blockchain/N42/internal/parallel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/qmdb"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
+
+// parallelWorkers is the Block-STM worker count: N42_PARALLEL_WORKERS, default
+// 32. One read transaction per worker is a different resource than one
+// goroutine per worker (94775a0a), so this is not NumCPU (256 here).
+func parallelWorkers() int {
+	if v := os.Getenv("N42_PARALLEL_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 32
+}
 
 // parallelTxResult stores per-transaction execution output from parallel execution.
 type parallelTxResult struct {
@@ -46,6 +70,91 @@ type parallelTxResult struct {
 	gasUsed uint64
 	err     error
 	logs    []*block.Log
+	fees    []deferredFee
+}
+
+// txResultsFree keeps a block's worth of parallelTxResult slots across blocks.
+// A fresh 163k-element slice per block is ~10 MB the runtime hands back to
+// the OS under the memory limit and page-faults in again on the next block;
+// with the executor arena in place that fault was the whole 60 ms "executorMs"
+// of a follower's import (round 35zza). Two slots: import and builder.
+var txResultsFree struct {
+	mu   sync.Mutex
+	list [][]parallelTxResult
+}
+
+func takeTxResults(n int) []parallelTxResult {
+	txResultsFree.mu.Lock()
+	defer txResultsFree.mu.Unlock()
+	for i := len(txResultsFree.list) - 1; i >= 0; i-- {
+		if r := txResultsFree.list[i]; cap(r) >= n {
+			txResultsFree.list = append(txResultsFree.list[:i], txResultsFree.list[i+1:]...)
+			r = r[:n]
+			clear(r)
+			return r
+		}
+	}
+	return make([]parallelTxResult, n)
+}
+
+func giveTxResults(r []parallelTxResult) {
+	clear(r) // drop the receipt and log pointers now, not at the next take
+	txResultsFree.mu.Lock()
+	defer txResultsFree.mu.Unlock()
+	if len(txResultsFree.list) < 2 {
+		txResultsFree.list = append(txResultsFree.list, r[:0])
+		return
+	}
+	// Full: replace the smallest kept slice if this one is larger, so two
+	// small slices from a leg's ramp cannot hold the list for the run (the
+	// same trap as the executor arena's free list, round 35zzh).
+	smallest := 0
+	for i, k := range txResultsFree.list {
+		if cap(k) < cap(txResultsFree.list[smallest]) {
+			smallest = i
+		}
+	}
+	if cap(txResultsFree.list[smallest]) < cap(r) {
+		txResultsFree.list[smallest] = r[:0]
+	}
+}
+
+// deferredFee is a block-producer credit a transaction diverted to its fee
+// sink; ProcessParallel sums them and credits the state once per recipient.
+type deferredFee struct {
+	recipient types.Address
+	amount    *uint256.Int
+}
+
+// deferredFeeRecipients lists the accounts whose credits ProcessParallel
+// defers to the end of the block: the priority-fee recipient and, when the
+// chain collects the base fee, the collector.
+func deferredFeeRecipients(cfg *params.ChainConfig, header *block.Header) []types.Address {
+	policy := newTransitionChainPolicy(cfg)
+	recipients := []types.Address{policy.priorityFeeRecipient(header.Coinbase)}
+	if cfg != nil && cfg.Eip1559FeeCollector != nil {
+		if c := *cfg.Eip1559FeeCollector; c != recipients[0] {
+			recipients = append(recipients, c)
+		}
+	}
+	return recipients
+}
+
+// touchesAny reports whether any transaction sends from or to one of the
+// addresses. Such a transaction would observe a coinbase balance that the
+// deferred credit has not yet reached, so the block must run sequentially.
+func touchesAny(txs []*transaction.Transaction, addrs []types.Address) bool {
+	for _, tx := range txs {
+		for _, a := range addrs {
+			if from := tx.From(); from != nil && *from == a {
+				return true
+			}
+			if to := tx.To(); to != nil && *to == a {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ProcessParallel executes all transactions in the block using Block-STM
@@ -63,85 +172,379 @@ type parallelTxResult struct {
 // Note: the stateWriter parameter may be a NoopWriter (from evmRecord). All
 // state changes MUST be applied to ibs, which CommitBlock later flushes to
 // the real database writer.
+// ErrParallelNotApplicable says a lenient (builder) run cannot use the
+// parallel path for this transaction list; the caller runs its serial fill.
+var ErrParallelNotApplicable = errors.New("parallel build not applicable")
+
+// parallelRun is the outcome of one Block-STM execution of a transaction
+// list. In strict mode every transaction succeeded; in lenient mode the
+// failed ones (a nonce, funds or gas pre-check) are dropped -- they wrote
+// nothing, so the state is exactly what the survivors alone produce -- and
+// Included/Receipts hold the survivors in order with cumulative gas and
+// indices renumbered.
+type parallelRun struct {
+	Included []*transaction.Transaction
+	Receipts block.Receipts
+	Logs     []*block.Log
+	UsedGas  uint64
+	Failed   int
+	Nopay    map[types.Address]*uint256.Int
+}
+
+// ProcessParallel executes a block's transactions with Block-STM (strict:
+// any transaction failure fails the block) and finalizes it.
 func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
 	txs := b.Transactions()
-	numTxs := len(txs)
-
-	// Fall back to sequential for small blocks (overhead not worth it).
-	if numTxs <= 4 {
+	if len(txs) <= 4 {
 		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
 	}
-
 	concreteHeader, ok := b.Header().(*block.Header)
 	if !ok {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: invalid header type assertion for block %v", b.Number64())
 	}
+	if touchesAny(txs, deferredFeeRecipients(p.config, concreteHeader)) {
+		// A block that sends from or to a fee recipient cannot defer the
+		// credit (see runParallel) and runs sequentially.
+		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
+	}
+	run, err := p.runParallel(concreteHeader, b.Hash(), txs, ibs, blockHashFunc, false)
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	return run.Receipts, run.Nopay, run.Logs, run.UsedGas, nil
+}
+
+// BuildParallel is the builder's lenient run over a candidate list: the
+// header is the one being built (GasUsed unset), failed candidates are
+// dropped, and neither block end nor Finalize runs -- the builder's assemble
+// does that. ErrParallelNotApplicable when a candidate touches a fee
+// recipient.
+func (p *StateProcessor) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
+		return nil, ErrParallelNotApplicable
+	}
+	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true)
+}
+
+// runParallel is the shared core: sender gate, per-worker readers, the
+// executor, the fold into ibs, the deferred fee credit; strict mode then
+// validates gas against the header and finalizes.
+func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient bool) (*parallelRun, error) {
+	numTxs := len(txs)
+	tStart := time.Now()
+	senderHintHits := 0
+	senderHintFills := 0
 
 	// Same consensus-safety gate as the serial Process: this executor also
 	// reaches AsMessage, which trusts a wire-declared `From`. Without it a
 	// parallel-EVM node would accept a block a sequential node rejects —
 	// worse than the original hole, because the fleet splits instead of
 	// agreeing. (Blocks of <=4 txs took the gated Process path above.)
+	var signer transaction.Signer
 	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
-		signer := transaction.MakeSignerWithTimestamp(p.config, hdrNum.ToBig(), concreteHeader.Time)
-		if err := verifyBlockSenders(signer, txs); err != nil {
-			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+		signer = transaction.MakeSignerWithTimestamp(p.config, hdrNum.ToBig(), concreteHeader.Time)
+		var hints SenderHintSource
+		if p.bc != nil {
+			hints = p.bc.senderHints
 		}
+		hits, err := verifyBlockSendersHinted(signer, txs, hints)
+		if err != nil {
+			return nil, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+		}
+		senderHintHits = hits
+		// The pool already recovered the sender of every transaction it
+		// holds; copy those onto the wire copies first (the serial import
+		// path has done this since the hint source existed; the parallel
+		// path only ran the gate, which is inert for wire transactions).
+		// Round 35z4: recovery was 321 ms of a follower's 1.25 s import at
+		// 163k transactions, on the round's critical path (r2 waits for the
+		// import), with every one of those transactions sitting in the pool.
+		senderHintFills = applySenderHints(hints, signer, txs)
+		// A block off the wire carries RLP only: From() is nil until the
+		// signature is recovered. The affinity key below needs every sender
+		// before the first wave, so recover the rest here in parallel
+		// (memoised on the transaction; AsMessage reuses it). Round 35d/t:
+		// with From() nil the key fell back to the index, a sender's nonce
+		// chain ran on 32 workers at once, and every link but the first
+		// failed its nonce check wave after wave until the 64-wave limit.
+		recoverBlockSenders(signer, txs)
 	}
+	tRecovered := time.Now()
 
 	chainConfig := p.config
 	cfg := vm2.Config{}
+
+	// The fee credit is the one write every transaction shares. Deferred to
+	// the end of the block it leaves Block-STM only the real conflicts; a
+	// block that sends from or to a fee recipient cannot defer (the credit
+	// would be visible to those transactions in serial order) and runs
+	// sequentially. Contract calls that read the coinbase balance (COINBASE +
+	// BALANCE) are not covered by the address scan; the benchmark workload is
+	// plain transfers, and an EVM-visible difference shows as a BAD BLOCK.
+	feeRecipients := deferredFeeRecipients(chainConfig, concreteHeader)
+
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
-		return nil, nil, nil, 0, err
+		return nil, err
 	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
 
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
-	txResults := make([]parallelTxResult, numTxs)
+	tBlockStart := time.Now()
+	txResults := takeTxResults(numTxs)
+	defer giveTxResults(txResults)
 
-	// Use var + assignment to allow the closure to reference executor via capture.
-	// When the closure executes (during executor.Run), executor is already assigned.
+	// Every worker owns its base reader. 3709ca6a proved the shared one was a
+	// shared MDBX cursor (a read transaction is bound to the OS thread that
+	// opened it, and GetOne pulls a per-bucket cursor out of an unsynchronised
+	// map), and 94775a0a set the shape of the fix: a read transaction opened
+	// on the worker's own goroutine, a worker count chosen for transactions
+	// rather than for CPUs, and every worker reading the SAME snapshot. The
+	// snapshot is the live QMDB tree at the parent, static for the whole
+	// execution (its owner is this goroutine, which is waiting), read through
+	// LookupSource under the tree's reader lock with the worker's own
+	// transaction as the cold getter; code and storage rows come from that
+	// same transaction. A worker whose transaction cannot be opened fails its
+	// transactions, and the block, rather than reading through anything shared.
+	mode := commitment.QMDBStateReadMode()
+	useQMDB := mode != commitment.QMDBReadOff && p.bc != nil && p.bc.qmdbEnabled && p.bc.qmdbRootComputer != nil
+	if p.bc == nil || p.bc.ChainDB == nil {
+		return nil, fmt.Errorf("ProcessParallel: no chain database for per-worker readers")
+	}
+	// A worker owns one IntraBlockState, one EVM, one reader and one writer
+	// for the whole block and rebinds them per transaction: allocating them
+	// per transaction was 46% of the executor's CPU in round 35g's profile
+	// (mallocgc under 32 workers serialises on the heap lock, and the
+	// garbage drives the GC), with the workers running at ~7 cores of 32.
+	type workerCtx struct {
+		tx       kv.Tx
+		base     state.StateReader
+		reader   *parallel.ParallelStateReader
+		writer   *parallel.ParallelStateWriter
+		ibs      *state.IntraBlockState
+		evm      *vm2.EVM
+		observed map[types.Address]struct{}
+	}
+	// A chained speculative build reads its unwritten own parents through
+	// post-state snapshots layered on the block's reader; the per-worker
+	// readers below open their own store transactions and must carry the
+	// same layers, or the workers execute against a store that lacks the
+	// parent (round 35zu: the faucet's funding block lost the parent's
+	// reward and every follower rejected it on the state root). Followers
+	// and unchained builds have no layers; this is a no-op for them.
+	postLayers := ibs.PostStateLayers()
+	if postLayers == nil {
+		postLayers, _ = state.PostStateLayers(ibs.GetStateReader())
+	}
 	var executor *parallel.Executor
-	executor = parallel.NewExecutor(numTxs, 0, func(txIndex int, rw *parallel.ReadWriteSet) error {
+	// One base-read cache for this block, shared by every worker (see
+	// parallel.BaseCache). Sized for the distinct accounts a block touches:
+	// the bench's blocks are ~163k transfers over ~23k recipients.
+	baseCache := parallel.NewBaseCache(len(txs)/4 + 64)
+	setup := func(workerID int) (any, func(), error) {
+		tx, err := p.bc.ChainDB.BeginRo(context.Background())
+		if err != nil {
+			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
+		}
+		var base state.StateReader = state.NewPlainStateReader(tx)
+		if useQMDB {
+			base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
+		}
+		base = state.LayerPostStates(postLayers, base)
+		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
+		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
+		// One base-read cache for the whole block, shared by every worker: the
+		// base is the parent's post-state and cannot change while the block
+		// executes, and each transaction otherwise pays its own read of the
+		// accounts it touches (~163k reads for ~23k accounts at the bench's
+		// block size).
+		wc.reader.SetBaseCache(baseCache)
+		wc.ibs = state.New(wc.reader)
+		wc.writer = parallel.NewParallelStateWriter(nil)
+		// Every explicit balance read (GetBalance, Empty) of a transaction
+		// is recorded: an account it credits without ever observing gets a
+		// delta write, and its read of that account (for code, nonce) is
+		// validated on every field but the balance.
+		wc.ibs.SetBalanceReadHook(func(a types.Address) { wc.observed[a] = struct{}{} })
+		wc.writer.SetDeltaEligible(func(a types.Address) bool { _, seen := wc.observed[a]; return !seen })
+		wc.evm = vm2.NewEVM(blockContext, evmtypes.TxContext{}, wc.ibs, chainConfig, cfg)
+		return wc, tx.Rollback, nil
+	}
+	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
 		tx := txs[txIndex]
+		wc, ok := ctx.(*workerCtx)
+		if !ok || wc == nil || wc.base == nil {
+			return fmt.Errorf("parallel worker has no state reader for tx %d", txIndex)
+		}
 
-		// Each tx gets its own IntraBlockState with MVS-backed reader.
-		// NOTE: stateReader (base reader) must be safe for concurrent reads.
-		// PlainStateReader wraps a kv.Tx (read-only MDBX transaction) which
-		// supports concurrent reads from multiple goroutines.
-		pReader := parallel.NewParallelStateReader(stateReader, executor.MVS(), rw, txIndex)
-		txIBS := state.New(pReader)
-		pWriter := parallel.NewParallelStateWriter(rw)
+		// Rebind the worker's state to this transaction: the reader serves
+		// its MVS view, the writer records into its read/write set, the
+		// IntraBlockState forgets the previous transaction's objects.
+		wc.reader.Rebind(rw, txIndex)
+		wc.writer.Rebind(rw)
+		wc.ibs.Reset()
+		clear(wc.observed)
+		txIBS, pWriter := wc.ibs, wc.writer
 
-		txIBS.Prepare(tx.Hash(), b.Hash(), txIndex)
+		txIBS.Prepare(tx.Hash(), blockHash, txIndex)
 
 		// Each tx gets its own gas pool (block-level gas validation happens after).
 		gp := new(common.GasPool)
-		gp.AddGas(b.GasLimit())
+		gp.AddGas(concreteHeader.GasLimit)
 
-		vmenv := vm2.NewEVM(blockContext, evmtypes.TxContext{}, txIBS, chainConfig, cfg)
+		vmenv := wc.evm
 
-		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg)
+		var fees []deferredFee
+		sink := func(recipient types.Address, amount *uint256.Int) {
+			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
+		}
+		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink, signer)
+		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
 		txResults[txIndex] = parallelTxResult{
 			receipt: receipt,
 			gasUsed: gasUsed,
 			err:     err,
 			logs:    logs,
+			fees:    fees,
 		}
 
 		return err
 	})
 
-	// Run parallel execution with wave-based validation.
+	// Pin each sender's transactions to one worker, in index order: the
+	// nonce chain of a sender is then executed by the worker that already
+	// applied its predecessor, and only cross-sender conflicts (a recipient
+	// credited by several senders in one wave) reach the validator.
+	executor.SetAffinity(func(txIndex int) uint64 {
+		tx := txs[txIndex]
+		if from := tx.From(); from != nil {
+			return binary.LittleEndian.Uint64(from[:8])
+		}
+		if signer != nil {
+			if from, err := transaction.Sender(signer, tx); err == nil {
+				return binary.LittleEndian.Uint64(from[:8])
+			}
+		}
+		return uint64(txIndex)
+	})
+	// Run parallel execution with wave-based validation. The tree's reader
+	// lock is held once for the whole run (the workers' lookups skip it);
+	// nothing in the run takes the writer side -- the owner is this
+	// goroutine.
+	tExecutorMade := time.Now()
+	tRunStart := time.Now()
+	// S81 measurement-only snapshot: coldReads/residentHits/coldNanos
+	// (lib/qmdb/evict.go) are process-wide atomics, but in production the
+	// ONLY caller that reaches Tree.GetVia (the function that bumps them) is
+	// this wave's own per-worker LookupSource -- see docs/QS_EXEC_WAVE_WAIT.md
+	// and the confirmation note below. Taking a before/after snapshot across
+	// executor.Run() therefore isolates this block's wave reads WITHOUT
+	// resetting the counters, which would be unsafe: a leader's isolated
+	// build tree and a follower's live tree can both be bumping the same
+	// atomics in the same process. Caveat: if a future caller ever reaches
+	// GetVia from outside the wave (e.g. a second concurrent block build),
+	// this snapshot would double-count that caller's reads too.
+	var waveCold0, waveResident0 uint64
+	var waveColdNs0 int64
+	if useQMDB {
+		waveCold0, waveResident0 = qmdb.ReadCounters()
+		waveColdNs0 = qmdb.ReadColdNanos()
+	}
+	var unlockReaders func()
+	if useQMDB {
+		unlockReaders = p.bc.qmdbRootComputer.LockReaders()
+	}
 	results := executor.Run()
+	if unlockReaders != nil {
+		unlockReaders()
+	}
+	tRunEnd := time.Now()
+	var waveReads, waveColdReads uint64
+	var waveColdMs int64
+	if useQMDB {
+		cold1, resident1 := qmdb.ReadCounters()
+		waveColdReads = cold1 - waveCold0
+		waveReads = waveColdReads + (resident1 - waveResident0)
+		waveColdMs = (qmdb.ReadColdNanos() - waveColdNs0) / 1e6
+	}
+	waveBusyMs := executor.BusyNanos() / 1e6
+	wkStats := executor.WorkerStats() // S82: per-worker wall/queue/setup/mvs timings for this block's waves
 
-	// Check if any transaction had a hard error.
+	// Strict: any transaction failure fails the block. Lenient: a failed
+	// candidate wrote nothing (the failure is a pre-check, before FinalizeTx),
+	// so it is dropped and the survivors are renumbered.
+	failed := 0
+	// Why the lenient run dropped what it dropped. Round 35r's A2 leg had a
+	// third of the leader fills execute 22,857 candidates and drop every one,
+	// with the stale-nonce trim finding nothing -- and no record of the
+	// reason. Counted by class so the log line answers that next time.
+	var failNonceLow, failNonceHigh, failFunds, failFeeCap, failOther int
+	var failSample error
 	for i, r := range results {
-		if r.Err != nil {
-			return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w",
-				i, b.Number64(), txs[i].Hash().String(), r.Err)
+		if r.Err == nil {
+			continue
+		}
+		if !lenient {
+			return nil, fmt.Errorf("could not apply tx %d from block %d [%v]: %w",
+				i, concreteHeader.Number.Uint64(), txs[i].Hash().String(), r.Err)
+		}
+		failed++
+		switch {
+		case errors.Is(r.Err, ErrNonceTooLow):
+			failNonceLow++
+		case errors.Is(r.Err, ErrNonceTooHigh):
+			failNonceHigh++
+			if failNonceHigh <= 2 && lenient {
+				// Round 35v A legs: after every full block the next fill
+				// dropped all 22,857 candidates as nonce-too-high while the
+				// stale-nonce trim (the build's own reader) had just removed
+				// the previous block's mined prefix. The worker's error text
+				// carries the nonce it saw; read the same sender through the
+				// build's reader so the two views sit side by side.
+				var buildNonce int64 = -1
+				if from := txs[i].From(); from != nil {
+					if acc, aerr := ibs.GetStateReader().ReadAccountData(*from); aerr == nil && acc != nil {
+						buildNonce = int64(acc.Nonce)
+					} else if aerr == nil {
+						buildNonce = 0
+					}
+				}
+				// Every candidate of this sender in the list, with its outcome:
+				// tells a missing head (pool gap) from a head whose write the
+				// same worker's next transaction did not see (executor).
+				chain := ""
+				if from := txs[i].From(); from != nil {
+					n := 0
+					for j := range txs {
+						if f := txs[j].From(); f == nil || *f != *from {
+							continue
+						}
+						st := "ok"
+						if results[j].Err != nil {
+							st = results[j].Err.Error()
+							if len(st) > 24 {
+								st = st[:24]
+							}
+						}
+						chain += fmt.Sprintf(" [%d:%d %s]", j, txs[j].Nonce(), st)
+						if n++; n >= 5 {
+							break
+						}
+					}
+				}
+				log.Info("parallel fill nonce-high sample", "n", concreteHeader.Number.Uint64(), "tx", i,
+					"txNonce", txs[i].Nonce(), "buildReaderNonce", buildNonce, "workerErr", r.Err, "senderChain", chain)
+			}
+		case errors.Is(r.Err, ErrInsufficientFunds):
+			failFunds++
+		case errors.Is(r.Err, ErrFeeCapTooLow):
+			failFeeCap++
+		default:
+			failOther++
+			if failSample == nil {
+				failSample = r.Err
+			}
 		}
 	}
 
@@ -149,43 +552,135 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	usedGas := uint64(0)
 	var receipts block.Receipts
 	var allLogs []*block.Log
-
+	included := txs
+	if failed > 0 {
+		included = make([]*transaction.Transaction, 0, numTxs-failed)
+	}
 	for i := 0; i < numTxs; i++ {
+		if results[i].Err != nil {
+			continue
+		}
 		tr := txResults[i]
 		usedGas += tr.gasUsed
-
 		if tr.receipt != nil {
 			tr.receipt.CumulativeGasUsed = usedGas
+			if failed > 0 {
+				tr.receipt.TransactionIndex = uint(len(included))
+				for _, l := range tr.receipt.Logs {
+					l.TxIndex = uint(len(included))
+					l.Index = uint(len(allLogs))
+					allLogs = append(allLogs, l)
+				}
+			}
 			receipts = append(receipts, tr.receipt)
 		}
-
-		allLogs = append(allLogs, tr.logs...)
+		if failed == 0 {
+			allLogs = append(allLogs, tr.logs...)
+		}
+		if failed > 0 {
+			included = append(included, txs[i])
+		}
 	}
 
 	// Apply MVS final state to the real IntraBlockState.
 	// This is critical: the caller (evmRecord) expects ibs to contain all state
 	// changes. writeBlockWithState later calls ibs.CommitBlock() to flush to DB.
+	tApplyStart := time.Now()
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
-		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
+		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
+	}
+	executor.Release()
+	tApplied := time.Now()
+
+	// Read the delta-credited recipients ahead of the block-end fold, across
+	// goroutines with their own store readers (the workers' view), and seed
+	// the state's prefetch layer so the fold's sorted, serial reads become
+	// map hits. Skipped when the state has no layer (a caller that did not
+	// wire one) -- the fold then reads the store as before.
+	var prefetched int
+	if pf := ibs.AccountPrefetch(); pf != nil {
+		// The prefetch readers use the locked lookup source, whose contract
+		// is the tree's readers lock for their lifetime (on the leader the
+		// live tree is being written by the import of the previous block
+		// while the next build runs; a read racing an append, an eviction or
+		// a resize is a crash or a seeded "absent" account).
+		var unlock func()
+		if useQMDB {
+			unlock = p.bc.qmdbRootComputer.LockReaders()
+		}
+		n, err := p.prefetchPendingCredits(ibs, pf, useQMDB, mode, postLayers)
+		if unlock != nil {
+			unlock()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("ProcessParallel: prefetch pending credits: %w", err)
+		}
+		prefetched = n
+	}
+	tPrefetched := time.Now()
+
+	// Credit the deferred fees once per recipient, in transaction order. A
+	// zero total still goes through AddBalance: the serial path touches the
+	// recipient in every transaction, and the touch decides whether an empty
+	// account survives the block.
+	totals := make(map[types.Address]*uint256.Int, len(feeRecipients))
+	var order []types.Address
+	for i := 0; i < numTxs; i++ {
+		for _, f := range txResults[i].fees {
+			t, ok := totals[f.recipient]
+			if !ok {
+				t = new(uint256.Int)
+				totals[f.recipient] = t
+				order = append(order, f.recipient)
+			}
+			t.Add(t, f.amount)
+		}
+	}
+	for _, r := range order {
+		ibs.AddBalance(r, totals[r])
 	}
 
-	// Validate total gas used.
-	if usedGas != concreteHeader.GasUsed {
-		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
-	}
-	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
-		return nil, nil, nil, 0, err
-	}
-
-	// Finalize block (rewards, etc.) — operates on ibs which now has all changes.
+	// Strict: validate gas against the header, then block end and Finalize
+	// (rewards, the state root). Lenient: the builder's assemble does those.
 	var nopay map[types.Address]*uint256.Int
-	var err error
-	_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
-	if err != nil {
-		return nil, nil, nil, 0, err
+	if !lenient {
+		if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
+			return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
+		}
+		if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
+			return nil, err
+		}
+		var err error
+		_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !lenient {
+		// Publish this block's breakdown for the "blockimport phases" line,
+		// which otherwise has nothing to print for a parallel block.
+		p.lastPhases.Store(&ProcessPhases{
+			Recover:  tRecovered.Sub(tStart),
+			Setup:    tRunStart.Sub(tRecovered),
+			Exec:     tRunEnd.Sub(tRunStart),
+			Collect:  tApplyStart.Sub(tRunEnd),
+			Finalize: time.Since(tApplyStart),
+		})
+	}
+	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
+		execNs, valNs := executor.WaveTimes()
+		if lenient && failed > 0 {
+			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
+				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
+		}
+		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
+			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
+			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs)
 	}
 
-	return receipts, nopay, allLogs, usedGas, nil
+	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Nopay: nopay}, nil
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.
@@ -201,6 +696,8 @@ func parallelApplyTx(
 	tx *transaction.Transaction,
 	evm vm2.VMInterface,
 	cfg vm2.Config,
+	sink FeeSink,
+	signer transaction.Signer,
 ) (*block.Receipt, uint64, []*block.Log, error) {
 	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
 	if err != nil {
@@ -208,7 +705,13 @@ func parallelApplyTx(
 	}
 	rules := evm.ChainRules()
 
-	msg, err := tx.AsMessage(transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time), header.BaseFee)
+	// The block's signer, built once per block by the caller (it re-derived
+	// the fork rules for every transaction: 0.49 s of a follower's 25 s
+	// profile). Nil falls back to building it here.
+	if signer == nil {
+		signer = transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time)
+	}
+	msg, err := tx.AsMessage(signer, header.BaseFee)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -217,7 +720,7 @@ func parallelApplyTx(
 	txContext := NewEVMTxContext(&msg)
 	evm.Reset(txContext, ibs)
 
-	result, err := ApplyMessage(evm, &msg, gp, true, false)
+	result, err := ApplyMessageWithFeeSink(evm, &msg, gp, true, false, sink)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -267,7 +770,8 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	// Collect all MVS entries, separated by type.
 	type accountEntry struct {
 		addr  types.Address
-		value []byte // nil = deleted
+		value []byte       // nil = deleted, unless delta is set
+		delta *uint256.Int // set when the block only credited the account
 	}
 	type storageEntry struct {
 		addr  types.Address
@@ -285,12 +789,12 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	var wipes []types.Address
 
 	// Single pass to collect and categorize all MVS entries.
-	if err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte) error {
+	if err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte, delta *uint256.Int) error {
 		switch key.Field {
 		case parallel.FieldBalance:
-			// FieldBalance stores the full protobuf-encoded StateAccount
-			// (balance + nonce + codeHash + incarnation), not just balance.
-			accounts = append(accounts, accountEntry{addr: key.Address, value: value})
+			// FieldBalance stores the full encoded StateAccount (balance +
+			// nonce + codeHash + root), or only a balance delta.
+			accounts = append(accounts, accountEntry{addr: key.Address, value: value, delta: delta})
 		case parallel.FieldStorage:
 			storages = append(storages, storageEntry{addr: key.Address, slot: key.Slot, value: value})
 		case parallel.FieldCode:
@@ -312,7 +816,7 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	// Track which accounts are deleted in the final state.
 	deletedAccounts := make(map[types.Address]bool)
 	for _, ae := range accounts {
-		if ae.value == nil {
+		if ae.value == nil && ae.delta == nil {
 			deletedAccounts[ae.addr] = true
 		}
 	}
@@ -334,6 +838,12 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 
 	// Pass 1: Apply account-level changes.
 	for _, ae := range accounts {
+		if ae.delta != nil {
+			// The block only credited the account: add onto the base value,
+			// which is the same deferred increment the serial path takes.
+			ibs.AddBalance(ae.addr, ae.delta)
+			continue
+		}
 		if ae.value == nil {
 			// Account was deleted (selfdestructed).
 			// Selfdestruct handles accounts that exist in base state;
@@ -373,4 +883,77 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	}
 
 	return nil
+}
+
+// ParallelWorkers reports the configured Block-STM worker count (for logs).
+func ParallelWorkers() int { return parallelWorkers() }
+
+// prefetchPendingCredits reads the state's pending balance-increase
+// addresses across goroutines, each on its own read transaction through the
+// same reader stack the workers used, and seeds the prefetch layer with the
+// result. Small sets are not worth the transactions and read through the
+// fold as before.
+func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, useQMDB bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
+	addrs := ibs.PendingBalanceIncreases()
+	if len(addrs) < 256 {
+		return 0, nil
+	}
+	workers := parallelWorkers()
+	if workers > 16 {
+		workers = 16
+	}
+	if workers > len(addrs)/64 {
+		workers = len(addrs) / 64
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	results := make([]*account.StateAccount, len(addrs))
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	per := (len(addrs) + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		lo, hi := w*per, (w+1)*per
+		if hi > len(addrs) {
+			hi = len(addrs)
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(w, lo, hi int) {
+			defer wg.Done()
+			tx, err := p.bc.ChainDB.BeginRo(context.Background())
+			if err != nil {
+				errs[w] = fmt.Errorf("prefetch worker %d: open read transaction: %w", w, err)
+				return
+			}
+			defer tx.Rollback()
+			var base state.StateReader = state.NewPlainStateReader(tx)
+			if useQMDB {
+				base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
+			}
+			base = state.LayerPostStates(postLayers, base)
+			for i := lo; i < hi; i++ {
+				a, err := base.ReadAccountData(addrs[i])
+				if err != nil {
+					errs[w] = fmt.Errorf("prefetch worker %d: %w", w, err)
+					return
+				}
+				results[i] = a
+			}
+		}(w, lo, hi)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return 0, err
+		}
+	}
+	accts := make(map[types.Address]*account.StateAccount, len(addrs))
+	for i, addr := range addrs {
+		accts[addr] = results[i]
+	}
+	pf.Seed(accts)
+	return len(addrs), nil
 }

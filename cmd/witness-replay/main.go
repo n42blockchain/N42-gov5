@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -80,7 +81,8 @@ func main() {
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
 			&cli.BoolFlag{Name: "write-witness", Usage: "Write witness.cdat to the output freezer alongside acctcs/storcs. Off by default — replay typically reads existing witness, so re-emitting it is duplicate work."},
-			&cli.BoolFlag{Name: "receipts", Usage: "Opt in to writing receipts.cdat. Off by default — witness-replay's primary outputs are witness + acctcs + storcs; the receipt-copy subcommand owns receipts in chain/freezer/. Per-block receipt-root check still runs regardless of this flag."},
+			&cli.StringFlag{Name: "native-asset", Value: "off", Usage: "EXPERIMENTAL native asset module (USDT transfer without the interpreter), forced on through NativeAssetTime=0 on a copy of the mainnet config. off | shadow: every eligible call runs through the module AND the interpreter, their effects are compared and the interpreter's result is kept (the differential test) | on: the module's result is used (CPU A/B; counters off)."},
+			&cli.BoolFlag{Name: "receipts",Usage: "Opt in to writing receipts.cdat. Off by default — witness-replay's primary outputs are witness + acctcs + storcs; the receipt-copy subcommand owns receipts in chain/freezer/. Per-block receipt-root check still runs regardless of this flag."},
 			&cli.StringFlag{Name: "cpu-profile", Usage: "Write a CPU pprof profile directly to this file for the full replay run (does not require the HTTP pprof endpoint)"},
 			&cli.StringFlag{Name: "heap-profile", Usage: "Write an end-of-run in-use heap pprof profile directly to this file after a forced GC"},
 			&cli.StringFlag{Name: "block-profile", Usage: "Write an end-of-run goroutine blocking profile to this file (enables full block profiling and adds overhead)"},
@@ -224,6 +226,19 @@ func run(c *cli.Context) error {
 	}
 
 	chainCfg := params.EthereumMainnetChainConfig
+	switch mode := c.String("native-asset"); mode {
+	case "", "off":
+	case "shadow", "on":
+		forced := *chainCfg
+		forced.NativeAssetTime = new(big.Int)
+		chainCfg = &forced
+		vm2.NativeAssetShadow = mode == "shadow"
+		vm2.NativeAssetStatsEnabled = mode == "shadow"
+		log.Info("Native asset module forced on", "mode", mode, "counters", vm2.NativeAssetStatsEnabled)
+		defer logNativeAssetStats()
+	default:
+		return fmt.Errorf("--native-asset must be off, shadow or on (got %q)", mode)
+	}
 	engine := ethel.NewEthReplayEngine(chainCfg)
 
 	cfg := ethel.WitnessReplayConfig{
@@ -285,6 +300,18 @@ func run(c *cli.Context) error {
 				hbPath, datadir, outputPath))
 	}
 	return nil
+}
+
+func logNativeAssetStats() {
+	s := &vm2.NativeAssetCounters
+	log.Info("Native asset module summary",
+		"native", s.Native.Load(),
+		"shadowMatched", s.ShadowMatched.Load(),
+		"shadowMismatch", s.ShadowMismatch.Load(),
+		"fallbackShape", s.FallbackShape.Load(),
+		"fallbackGuard", s.FallbackGuard.Load(),
+		"fallbackBalance", s.FallbackBalance.Load(),
+		"fallbackGas", s.FallbackGas.Load())
 }
 
 type replayRange struct {

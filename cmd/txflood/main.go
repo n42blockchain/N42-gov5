@@ -11,6 +11,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -37,6 +38,206 @@ import (
 var httpClient = &http.Client{
 	Timeout:   10 * time.Second,
 	Transport: &http.Transport{MaxIdleConns: 512, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 128, IdleConnTimeout: 30 * time.Second},
+}
+
+// unlimitedCredit is injectionCredit's own return value when neither
+// -target-depth nor -rate constrains this tick -- a sentinel far larger than
+// any real single-tick injection count this generator could ever reach
+// (senders * pertx tops out in the tens of millions), not a literal permit
+// count the caller loops that many times: in production this path is never
+// reached (the depth branch that calls injectionCredit only runs when
+// -target-depth > 0), but a defined, tested contract costs less than an
+// undefined one.
+const unlimitedCredit = 1 << 30
+
+// injectionCredit computes how many transactions the depth-throttle tick
+// (S46/S47, docs/QS_BLOCK_TIME_BUDGET.md 6e7) may release THIS second,
+// combining -target-depth and -rate: the depth throttle's own shortfall
+// (targetDepth-depth, positive only while the pool estimate reads BELOW
+// target) is capped so it never exceeds rate, regardless of how large the
+// shortfall is -- "submit at most rate per second AND only while the depth
+// estimate is below target-depth" (both conditions must hold; whichever is
+// smaller/stricter wins). targetDepth<=0 means the depth throttle itself is
+// off (this generator is really in the separate, unthrottled-by-depth
+// -rate-only branch further down commitWork's caller, `else if *rate > 0`)
+// -- modelled here as "unconstrained by depth", reducing to rate alone, or
+// fully unlimited if rate is ALSO off. This is a pure extraction of the
+// SAME arithmetic the depth branch always used (see its own call site) --
+// no behaviour change, just a named, independently testable seam.
+func injectionCredit(targetDepth, depth, rate int) int {
+	if targetDepth <= 0 {
+		if rate <= 0 {
+			return unlimitedCredit
+		}
+		return rate
+	}
+	short := targetDepth - depth
+	if rate > 0 && short > rate {
+		short = rate // never exceed the requested ceiling
+	}
+	return short
+}
+
+// nextSample returns the next `size` sender indices to refresh, starting at
+// cursor and wrapping mod total, plus the cursor to use next tick. A full
+// sweep (every sender refreshed exactly once) takes ceil(total/size) calls.
+// size is clamped to total so a fleet smaller than the sample cannot repeat
+// an index within one call.
+func nextSample(cursor, total, size int) (sample []int, nextCursor int) {
+	if total <= 0 {
+		return nil, cursor
+	}
+	if size > total {
+		size = total
+	}
+	cursor %= total
+	sample = make([]int, size)
+	for i := 0; i < size; i++ {
+		sample[i] = (cursor + i) % total
+	}
+	return sample, (cursor + size) % total
+}
+
+// sampleDepthExact extrapolates the fleet-wide in-flight backlog from a
+// same-tick sample of senders, instead of accumulating per-sender chain
+// nonces across ticks (-depth-by-nonce's own mechanism below, which only
+// refreshes depth-sample of the senders each second and leaves the rest at
+// whatever they read on a PREVIOUS tick -- with depth-sample=128 and 1000
+// senders that is up to an 8-second-old mined count, still charged as
+// in-flight; round 35zzzy's B2 read 3-6x high and capped a 300k target at
+// 26-33% block fill, docs/QS_BLOCK_TIME_BUDGET.md 6e10). Every sender in
+// `sample` is queried fresh THIS tick via chainNonceOf, so there is no
+// staleness to compound; the mean shortfall over the sample, scaled by
+// totalSenders, estimates the whole fleet's backlog. A sender chainNonceOf
+// fails to reach is skipped, not counted as zero or as the whole target.
+func sampleDepthExact(sample []int, nextNonceToSend func(s int) int64, chainNonceOf func(s int) (uint64, error), totalSenders int) (depth int64, sampled int) {
+	var sum int64
+	for _, s := range sample {
+		n, err := chainNonceOf(s)
+		if err != nil {
+			continue
+		}
+		shortfall := nextNonceToSend(s) - int64(n)
+		if shortfall < 0 {
+			shortfall = 0
+		}
+		sum += shortfall
+		sampled++
+	}
+	if sampled == 0 {
+		return 0, 0
+	}
+	mean := float64(sum) / float64(sampled)
+	return int64(mean*float64(totalSenders) + 0.5), sampled
+}
+
+// rpcBatchNonces fetches eth_getTransactionCount for several senders in one
+// JSON-RPC batch request (an array of request objects; the node's own codec
+// already accepts standard batches -- modules/rpc/jsonrpc/json.go readBatch)
+// instead of len(sample) sequential round trips. The request id carries the
+// sender index so responses, which the spec does not promise are returned in
+// request order, still map back to the right sender.
+func rpcBatchNonces(url string, addrs []types.Address, sample []int, tag string) (map[int]uint64, error) {
+	if len(sample) == 0 {
+		return nil, nil
+	}
+	reqs := make([]map[string]interface{}, len(sample))
+	for i, s := range sample {
+		reqs[i] = map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      s,
+			"method":  "eth_getTransactionCount",
+			"params":  []interface{}{addrs[s].Hex(), tag},
+		}
+	}
+	body, err := json.Marshal(reqs)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+	var out []struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	res := make(map[int]uint64, len(out))
+	for _, r := range out {
+		if r.Error != nil {
+			continue
+		}
+		var h string
+		if json.Unmarshal(r.Result, &h) != nil {
+			continue
+		}
+		res[r.ID] = hexToU64(h)
+	}
+	return res, nil
+}
+
+// isPoolBackpressure reports whether an RPC submission error means the pool
+// itself is temporarily out of room -- N42_TX_INGEST_HIGH_WATER's own
+// "txpool: above high water" (internal/api/tx_ingest_high_water.go) or the
+// pool's own pre-existing overflow, "txpool is full"
+// (internal/txspool/txs_pool_types.go ErrTxPoolOverflow) -- rather than
+// something wrong with the transaction itself (underpriced, bad nonce,
+// malformed). The caller retries the SAME submission instead of treating it
+// as failed: skipping to the next index here is not recoverable -- every
+// later transaction from that sender then sits queued behind the permanent
+// gap for the rest of the run (S49 PART 1(b)).
+func isPoolBackpressure(msg string) bool {
+	return strings.Contains(msg, "above high water") || strings.Contains(msg, "txpool is full")
+}
+
+// waitForBarrier is the funding barrier's pure core: call onWait exactly
+// once, then poll exists via sleep until it reports true. Real callers pass
+// an os.Stat-backed exists and a time.Sleep-backed sleep; a test passes fakes
+// so it exercises the polling loop without a real file or a real wait.
+func waitForBarrier(exists func() bool, sleep func(), onWait func()) {
+	onWait()
+	for !exists() {
+		sleep()
+	}
+}
+
+// submitWithBackoff calls submit and, on a pool-backpressure error, retries
+// the SAME call (same nonce(s), nothing advances) after a backoff that
+// starts at 20ms and doubles to a 100ms ceiling -- mirroring n42-rs's own
+// generators, which push against a node-side high-water gate and simply
+// retry (docs/QS_BLOCK_TIME_BUDGET.md 6f0). Any other error is returned
+// immediately, unretried, for the caller's existing handling. retries counts
+// how many backpressure attempts were made before success or a different
+// error, so the caller can charge that many transactions to `deferred`
+// instead of `failed`.
+func submitWithBackoff(submit func() (json.RawMessage, error)) (ok bool, err error, retries int64) {
+	backoff := 20 * time.Millisecond
+	const maxBackoff = 100 * time.Millisecond
+	for {
+		_, e := submit()
+		if e == nil {
+			return true, nil, retries
+		}
+		if !isPoolBackpressure(e.Error()) {
+			return false, e, retries
+		}
+		retries++
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 // poolDepth reports how much EXECUTABLE work is waiting, as the largest
@@ -235,20 +436,60 @@ func getNonce(url string, a types.Address) (uint64, error) {
 	return getNonceAt(url, a, "pending")
 }
 
+// faucetNonce returns the highest pending nonce any node reports for the
+// faucet -- the nonce the next funding batch must start from. A single node
+// can be a block behind the leader that just mined the previous generator's
+// batch; the maximum across the fleet cannot. Errors only when every node
+// fails.
+func faucetNonce(urls []string, a types.Address) (uint64, error) {
+	var (
+		best    uint64
+		got     bool
+		lastErr error
+	)
+	for _, u := range urls {
+		n, err := getNonceAt(u, a, "pending")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !got || n > best {
+			best, got = n, true
+		}
+	}
+	if !got {
+		return 0, lastErr
+	}
+	return best, nil
+}
+
 func getBalanceAt(url string, a types.Address, tag string) (*big.Int, error) {
-	r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
-	if err != nil {
-		return nil, err
+	// Retried: with eight generators funding at once a node under load
+	// answered one preflight with an empty quantity and the whole leg died
+	// (round 35q warm-up). Five tries, a second apart.
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+		}
+		r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var h string
+		if err := json.Unmarshal(r, &h); err != nil {
+			lastErr = err
+			continue
+		}
+		n, err := hexToBig(h)
+		if err != nil {
+			lastErr = fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
+			continue
+		}
+		return n, nil
 	}
-	var h string
-	if err := json.Unmarshal(r, &h); err != nil {
-		return nil, err
-	}
-	n, err := hexToBig(h)
-	if err != nil {
-		return nil, fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
-	}
-	return n, nil
+	return nil, lastErr
 }
 
 func fundingAmounts(senders, perTx int, gasPrice uint64) (*uint256.Int, *big.Int) {
@@ -296,6 +537,95 @@ func deriveRecipient(i int) types.Address {
 
 var nonceFailures int64
 
+// hintStreamer copies every submitted batch to the fleet's hint-only ingest
+// endpoints (internal/ingest, N42_... --ingest.hint-only): one goroutine and
+// one TCP connection per peer, a bounded queue in between, and a batch that
+// finds the queue full is dropped and counted rather than slowing the submit
+// path. The wire format is the ingest server's: u32 count, then per
+// transaction u16 length, the raw bytes and a 20-byte sender the hint mode
+// ignores; the server answers each batch with a u32 the streamer must read.
+type hintStreamer struct {
+	peers   []string
+	queues  []chan [][]byte
+	dropped atomic.Int64
+	sent    atomic.Int64
+	errs    atomic.Int64
+}
+
+func newHintStreamer(peers []string) *hintStreamer {
+	h := &hintStreamer{peers: peers}
+	for range peers {
+		h.queues = append(h.queues, make(chan [][]byte, 256))
+	}
+	for i := range peers {
+		go h.run(i)
+	}
+	return h
+}
+
+func (h *hintStreamer) offer(raws [][]byte) {
+	for _, q := range h.queues {
+		select {
+		case q <- raws:
+		default:
+			h.dropped.Add(int64(len(raws)))
+		}
+	}
+}
+
+func (h *hintStreamer) run(i int) {
+	var conn net.Conn
+	var zero [20]byte
+	buf := make([]byte, 0, 1<<20)
+	for raws := range h.queues[i] {
+		if conn == nil {
+			c, err := net.DialTimeout("tcp", h.peers[i], 2*time.Second)
+			if err != nil {
+				h.errs.Add(1)
+				h.dropped.Add(int64(len(raws)))
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			conn = c
+		}
+		buf = buf[:0]
+		var n [4]byte
+		binary.LittleEndian.PutUint32(n[:], uint32(len(raws)))
+		buf = append(buf, n[:]...)
+		for _, raw := range raws {
+			var l [2]byte
+			binary.LittleEndian.PutUint16(l[:], uint16(len(raw)))
+			buf = append(buf, l[:]...)
+			buf = append(buf, raw...)
+			buf = append(buf, zero[:]...)
+		}
+		if _, err := conn.Write(buf); err != nil {
+			h.errs.Add(1)
+			h.dropped.Add(int64(len(raws)))
+			conn.Close()
+			conn = nil
+			continue
+		}
+		var resp [4]byte
+		if _, err := io.ReadFull(conn, resp[:]); err != nil {
+			h.errs.Add(1)
+			conn.Close()
+			conn = nil
+			continue
+		}
+		h.sent.Add(int64(len(raws)))
+	}
+}
+
+// rawBytes decodes the 0x-prefixed hex a submit batch carries back to bytes.
+func rawBytes(hexStr string) []byte {
+	b, err := hex.DecodeString(strings.TrimPrefix(hexStr, "0x"))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 func main() {
 	debug.SetMaxThreads(200000)
 	defaultFaucetKey := os.Getenv("N42_DEV_FAUCET_KEY")
@@ -311,6 +641,16 @@ func main() {
 	conc := flag.Int("conc", 48, "concurrent HTTP submitters")
 	rate := flag.Int("rate", 0, "submissions per second (0 = as fast as possible)")
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
+	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
+	depthByNonce := flag.Bool("depth-by-nonce", false, "with -target-depth: measure depth as THIS generator's submitted minus mined, from its own senders' chain nonces (sampled: -depth-sample senders a second, round-robin over the ones with anything in flight). Exact per generator whatever else is on the chain. -depth-by-blocks with -depth-share credits N generators with 1/N of every block, which is a fixed point at ANY rate: round 35s ran at 35k TPS and 16% occupancy with every generator believing it had 25k in flight")
+	lazySign := flag.Bool("lazy-sign", false, "sign each transaction when it is submitted instead of pre-signing the whole run. Pre-signing 8 x 1000 x 4500 transactions is ~29 GB of resident memory across the generators, which is what pushed the box under its memory watchdog on 2026-09-08 while a neighbouring build held 29 GB. Signing costs ~50 us a transaction, so one generator at 8k tx/s spends under half a core on it")
+	sweep := flag.Bool("sweep", false, "return the derived senders' balances (-senders from -sender-offset) to the faucet and exit: each sender sends balance minus one transfer's gas. Round 35y: fresh senders every leg left ~44k ETH stranded across a day's offsets and the faucet ran dry")
+	fundGasPrice := flag.Uint64("fund-gasprice", 0, "gas price for the faucet's funding transfers (0 = twice -gasprice). The builder orders equal-tip candidates account by account, so a faucet batch at the flood's price gets ~1 slot per block among thousands of flooding senders: round 35u A1 confirmed 4 of 1,000 funding transfers a block and timed out. A strictly higher price puts the whole batch in the next block")
+	depthSample := flag.Int("depth-sample", 128, "with -depth-by-nonce: senders whose chain nonce is refreshed each second")
+	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
+	depthByNonceExact := flag.Bool("depth-by-nonce-exact", false, "with -target-depth -depth-by-nonce: replace the rotating per-sender chain-nonce accumulator with a fresh sample each second (-depth-sample-exact senders, one JSON-RPC batch call) extrapolated by its mean to every sender. -depth-by-nonce refreshes only depth-sample of up to -senders chain nonces a tick, so most senders' own mined count is up to a full sweep old and still counts already-mined transactions as in flight -- round 35zzzy read 3-6x high and capped a 300k target at 26-33% block fill. A same-tick sample has no such staleness")
+	depthSampleExact := flag.Int("depth-sample-exact", 100, "with -depth-by-nonce-exact: senders sampled fresh each second; a full sweep over -senders takes senders/depth-sample-exact seconds")
+	waitForFile := flag.String("wait-for-file", "", "a funding barrier: once this generator's own funding/pre-signing is done, print 'waiting for barrier' once and poll every 200ms for this file to exist before starting to flood. S49 (docs/QS_BLOCK_TIME_BUDGET.md 6f1/6f2): with N42_TX_INGEST_HIGH_WATER on, bench-run.sh's existing sequential start let the FIRST generator begin flooding (unthrottled) while later generators were still funding -- the first one alone held every node's pool at the high-water mark, so the later generators' own funding transactions were rejected forever (one generator recorded deferred=16,903,400 and never reached the flooding stage). bench-run.sh passes this flag to every generator and touches the file only once ALL of them report the barrier line, so funding for the whole fleet completes before any of them floods")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
@@ -327,8 +667,13 @@ func main() {
 	// so recorded rounds stay reproducible; set it to make the state work real.
 	recipients := flag.Int("recipients", 0, "spread transfers over N derived recipients (0 = the single 0x..dEaD sink, the historical behaviour)")
 	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
+	fundTimeout := flag.Int("fund-timeout", 300, "seconds to wait for the funding batch to mine before aborting (35zc warm-up: the eighth generator's batch took >80 s behind seven flooding generators)")
+	hintPeers := flag.String("hint-peers", "", "comma-separated host:port ingest endpoints (hint-only mode) that receive every submitted transaction as well, so followers recover senders ahead of the block")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
+	if *lazySign {
+		*stream = true
+	}
 	if *key == "" {
 		*key = defaultFaucetKey
 	}
@@ -381,6 +726,11 @@ func main() {
 	}
 	rustIngest := useIngest && *ingestProtocol == "n42-rs"
 	nativeEncoding := useIngest && !rustIngest
+	var hints *hintStreamer
+	if *hintPeers != "" {
+		hints = newHintStreamer(strings.Split(*hintPeers, ","))
+		fmt.Printf("hint peers: %d ingest endpoints receive every batch\n", len(hints.peers))
+	}
 	signer := transaction.NewLondonSigner(big.NewInt(*chainID))
 	dead := types.HexToAddress("0x000000000000000000000000000000000000dEaD")
 	sink := "single 0x..dEaD sink"
@@ -389,8 +739,8 @@ func main() {
 	}
 	fmt.Printf("faucet=%s chainId=%d rpcs=%d senders=%d recipients=%s\n", from.Hex(), *chainID, len(urls), *senders, sink)
 
-	signOne := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas uint64, native bool) string {
-		inner := &transaction.LegacyTx{Nonce: nonce, GasPrice: uint256.NewInt(*gasPrice), Gas: gas, To: &to, Value: value, From: &from}
+	signAt := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas, price uint64, native bool) string {
+		inner := &transaction.LegacyTx{Nonce: nonce, GasPrice: uint256.NewInt(price), Gas: gas, To: &to, Value: value, From: &from}
 		signed, _ := transaction.SignTx(transaction.NewTx(inner), signer, priv)
 		var raw []byte
 		if native {
@@ -400,12 +750,32 @@ func main() {
 		}
 		return "0x" + fmt.Sprintf("%x", raw)
 	}
+	signOne := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas uint64, native bool) string {
+		return signAt(priv, from, to, nonce, value, gas, *gasPrice, native)
+	}
+	fundPrice := 2 * *gasPrice
+	if *fundGasPrice > 0 {
+		fundPrice = *fundGasPrice
+	}
+
+	if *sweep {
+		os.Exit(runSweep(urls, priv, from, *senders, *conc, *gasPrice, func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas, price uint64) string {
+			return signAt(priv, from, to, nonce, value, gas, price, false)
+		}))
+	}
 
 	// ---------- build the raw tx list ----------
 	var raws []string
 	var rawCount int
 	var rawAt func(int) string
 	var senderAt func(int) types.Address
+	// Per-sender address and pre-sign base nonce, kept for -depth-by-nonce:
+	// sender s owns raws[s*perTx : (s+1)*perTx], so its submitted count is a
+	// function of the shared claim index and its mined count is its chain
+	// nonce minus the base.
+	var senderAddrs []types.Address
+	var senderBase []uint64
+	var totalTxs int64
 	if *senders <= 0 {
 		startNonce, err := getNonce(urls[0], from)
 		if err != nil {
@@ -414,6 +784,7 @@ func main() {
 		}
 		fmt.Printf("single-faucet: startNonce=%d, transactions=%d stream=%v...\n", startNonce, *count, *stream)
 		rawCount = *count
+		totalTxs = int64(rawCount)
 		senderAt = func(int) types.Address { return from }
 		rawAt = func(i int) string {
 			return signOne(priv, from, dead, startNonce+uint64(i), uint256.NewInt(1), 21000, nativeEncoding)
@@ -441,12 +812,29 @@ func main() {
 			keys[i] = deriveKey(i)
 			addrs[i] = crypto.PubkeyToAddress(keys[i].PublicKey)
 		}
-		fn, err := getNonce(urls[0], from)
+		senderAddrs = addrs
+		senderBase = make([]uint64, *senders)
+		// The faucet nonce is the HIGHEST pending nonce any node reports, not
+		// the one node this generator talks to. Round 35zb warm-up: eight
+		// generators fund in sequence, each from its own node; the previous
+		// generator's 1000 funding transactions had just been mined on the
+		// leader, this generator's node had not imported that block yet, and
+		// its pending nonce was 1000 behind -- the whole batch went out with
+		// used nonces, nothing was mined, and five of eight generators died
+		// at the 80 s funding deadline (3 generators, 33 full blocks, no
+		// window). A node that is behind cannot know; the max across the
+		// fleet can.
+		fn, err := faucetNonce(urls, from)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "faucet nonce: %v\n", err)
 			os.Exit(1)
 		}
 		fundVal, fundingCost := fundingAmounts(*senders, *perTx, *gasPrice)
+		if fundPrice > *gasPrice {
+			// The transfer itself is paid at the funding price.
+			extra := new(big.Int).Mul(big.NewInt(21000), new(big.Int).SetUint64(fundPrice-*gasPrice))
+			fundingCost.Add(fundingCost, extra.Mul(extra, big.NewInt(int64(*senders))))
+		}
 		fmt.Printf("funding %d senders (nonce %d..), value=%s wei each...\n", *senders, fn, fundVal.Dec())
 		if !*skipFunding {
 			faucetBalance, err := getBalanceAt(urls[0], from, "latest")
@@ -462,15 +850,35 @@ func main() {
 			}
 		}
 		var lastFundHash string
-		for i := 0; !*skipFunding && i < *senders; i++ {
-			raw := signOne(priv, from, addrs[i], fn+uint64(i), fundVal, 21000, false)
-			r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
-			if err != nil {
-				fmt.Printf("fund %d err: %v\n", i, err)
-				continue
+		// A "nonce too low" on the first funding transaction means the nonce
+		// read above was still stale (or another generator raced this one):
+		// re-read the fleet-wide nonce and start the batch over, up to three
+		// times, instead of sending 999 more doomed transactions and waiting
+		// 80 s to find out.
+		for attempt := 0; !*skipFunding && attempt < 3; attempt++ {
+			restart := false
+			for i := 0; i < *senders; i++ {
+				raw := signAt(priv, from, addrs[i], fn+uint64(i), fundVal, 21000, fundPrice, false)
+				r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
+				if err != nil {
+					if i == 0 && strings.Contains(err.Error(), "nonce too low") && attempt < 2 {
+						nfn, nerr := faucetNonce(urls, from)
+						fmt.Printf("fund 0 err: %v -- re-reading the faucet nonce (%d -> %d, err=%v) and restarting the batch\n", err, fn, nfn, nerr)
+						if nerr == nil && nfn > fn {
+							fn = nfn
+							restart = true
+							break
+						}
+					}
+					fmt.Printf("fund %d err: %v\n", i, err)
+					continue
+				}
+				if i == *senders-1 {
+					_ = json.Unmarshal(r, &lastFundHash)
+				}
 			}
-			if i == *senders-1 {
-				_ = json.Unmarshal(r, &lastFundHash)
+			if !restart {
+				break
 			}
 		}
 		// Wait until the last sender is funded (balance > 0), and ABORT if it
@@ -486,7 +894,7 @@ func main() {
 		} else {
 			fmt.Println("waiting for funding to mine...")
 		}
-		for w := 0; !funded && w < 40; w++ {
+		for w := 0; !funded && w < *fundTimeout/2; w++ {
 			time.Sleep(2 * time.Second)
 			r, _ := rpcCall(urls[0], "eth_getBalance", []interface{}{addrs[*senders-1].Hex(), "latest"})
 			var h string
@@ -519,16 +927,19 @@ func main() {
 		if !funded {
 			latestNonce, latestErr := getNonceAt(urls[0], from, "latest")
 			pendingNonce, pendingErr := getNonceAt(urls[0], from, "pending")
-			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within 80s (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
-				latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
+			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within %ds (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
+				*fundTimeout, latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
 			os.Exit(1)
 		}
 		// pre-sign perTx transfers from each sender
 		total := *senders * *perTx
 		fmt.Printf("preparing %d txs (%d senders x %d), stream=%v...\n", total, *senders, *perTx, *stream)
 		rawCount = total
+		totalTxs = int64(total)
+		senderAddrs = addrs
+		senderBase = make([]uint64, *senders)
 		senderAt = func(i int) types.Address { return addrs[i / *perTx] }
-		baseNonces := make([]uint64, *senders)
+		baseNonces := senderBase
 		rawAt = func(i int) string {
 			s, j := i / *perTx, i%*perTx
 			to := dead
@@ -578,9 +989,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
 		os.Exit(1)
 	}
-	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d)...\n", rawCount, len(urls), *broadcast, *conc)
+	// Funding barrier (S49, docs/QS_BLOCK_TIME_BUDGET.md 6f1/6f2): funding is
+	// done and this generator is about to start flooding. If -wait-for-file is
+	// set, stop here until bench-run.sh has seen every generator reach this
+	// same point and releases them together -- otherwise the first generator
+	// to finish floods, unthrottled, while the others are still funding, and
+	// under N42_TX_INGEST_HIGH_WATER the first one alone can hold every node's
+	// pool at the mark, rejecting the others' own funding forever.
+	if *waitForFile != "" {
+		path := *waitForFile
+		waitForBarrier(
+			func() bool { _, err := os.Stat(path); return err == nil },
+			func() { time.Sleep(200 * time.Millisecond) },
+			func() { fmt.Println("waiting for barrier") },
+		)
+	}
+	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d lazySign=%v)...\n", totalTxs, len(urls), *broadcast, *conc, *stream)
 	var idx int64 = -1
 	var submitted, failed int64
+	// deferred (S49 PART 2, docs/QS_BLOCK_TIME_BUDGET.md 6f0/6f2): count of
+	// submissions retried after a pool-backpressure error (isPoolBackpressure)
+	// -- these are NOT failures, the same nonce is re-sent until it is
+	// accepted, so they must not advance idx or inflate `failed`.
+	var deferred int64
 	tf := time.Now()
 	var wg sync.WaitGroup
 
@@ -604,19 +1035,143 @@ func main() {
 		batchSize := max(*rpcBatch, 1)
 		frames := *targetDepth/batchSize + 1
 		permits = make(chan struct{}, frames)
+		// -depth-by-blocks: round 29 found the pool reporting 200-250k pending
+		// that were already mined and not yet demoted, so the loop believed
+		// the pool full and fed it ~21k a second. Counting what the CHAIN has
+		// taken is exact for a single generator and does not depend on the
+		// pool's reorg keeping up.
+		var minedSinceStart int64
+		lastCounted := uint64(0)
+		chainNonce := make([]uint64, len(senderAddrs))
+		for s := range chainNonce {
+			chainNonce[s] = senderBase[s]
+		}
+		nonceCursor := 0
+		exactCursor := 0
+		if *depthByBlocks {
+			if r, err := rpcCall(urls[0], "eth_blockNumber", nil); err == nil {
+				var h string
+				if json.Unmarshal(r, &h) == nil {
+					lastCounted = hexToU64(h)
+				}
+			}
+		}
 		go func() {
 			t := time.NewTicker(time.Second)
 			defer t.Stop()
 			for range t.C {
-				depth, err := poolDepth(urls)
-				if err != nil {
-					refillDepthPermits(permits, 0, 0, batchSize, int(inFlight.Load()), 0)
-					fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
-					continue
+				var depth int
+				var err error
+				if *depthByNonce && len(senderAddrs) > 0 {
+					// Claimed (not acknowledged) indexes count as in flight:
+					// a batch inside its HTTP call is about to be.
+					claimed := atomic.LoadInt64(&idx) + 1
+					per := int64(*perTx)
+					refreshed := 0
+					inflight := int64(0)
+					for k := 0; k < len(senderAddrs); k++ {
+						s := (nonceCursor + k) % len(senderAddrs)
+						sub := claimed - int64(s)*per
+						if sub <= 0 {
+							continue // not reached yet (senders are claimed in order)
+						}
+						if sub > per {
+							sub = per
+						}
+						mined := int64(chainNonce[s]) - int64(senderBase[s])
+						if mined >= sub {
+							continue // fully mined as of the last refresh
+						}
+						if refreshed < *depthSample {
+							if n, e := getNonceAt(urls[s%len(urls)], senderAddrs[s], "latest"); e == nil {
+								chainNonce[s] = n
+								mined = int64(n) - int64(senderBase[s])
+							}
+							refreshed++
+							nonceCursor = s + 1
+						}
+						if mined < sub {
+							inflight += sub - mined
+						}
+					}
+					depth = int(inflight)
+
+					if *depthByNonceExact {
+						sample, nc := nextSample(exactCursor, len(senderAddrs), *depthSampleExact)
+						exactCursor = nc
+						nonces, e := rpcBatchNonces(urls[0], senderAddrs, sample, "latest")
+						if e != nil {
+							refillDepthPermits(permits, 0, 0, batchSize, int(inFlight.Load()), 0)
+							fmt.Printf("  !! exact depth sample failed, keeping the rotating estimate: %v\n", e)
+						} else {
+							nextNonceToSend := func(s int) int64 {
+								c := claimed - int64(s)*per
+								if c < 0 {
+									c = 0
+								} else if c > per {
+									c = per
+								}
+								return int64(senderBase[s]) + c
+							}
+							chainNonceOf := func(s int) (uint64, error) {
+								n, ok := nonces[s]
+								if !ok {
+									return 0, fmt.Errorf("sender %d missing from batch", s)
+								}
+								return n, nil
+							}
+							if exact, sampled := sampleDepthExact(sample, nextNonceToSend, chainNonceOf, len(senderAddrs)); sampled > 0 {
+								fmt.Printf("  pool=%d est=%d\n", exact, depth)
+								depth = int(exact)
+							}
+						}
+					}
+				} else if *depthByBlocks {
+					r, e := rpcCall(urls[0], "eth_blockNumber", nil)
+					var h string
+					if e != nil || json.Unmarshal(r, &h) != nil {
+						refillDepthPermits(permits, 0, 0, batchSize, int(inFlight.Load()), 0)
+						fmt.Printf("  !! head probe failed, refusing to inject blind: %v\n", e)
+						continue
+					}
+					head := hexToU64(h)
+					for b := lastCounted + 1; b <= head; b++ {
+						rc, e := rpcCall(urls[0], "eth_getBlockTransactionCountByNumber", []interface{}{fmt.Sprintf("0x%x", b)})
+						var hc string
+						if e != nil || json.Unmarshal(rc, &hc) != nil {
+							err = fmt.Errorf("block %d tx count: %v", b, e)
+							break
+						}
+						minedSinceStart += int64(hexToU64(hc))
+						lastCounted = b
+					}
+					if err != nil {
+						refillDepthPermits(permits, 0, 0, batchSize, int(inFlight.Load()), 0)
+						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
+						continue
+					}
+					// N symmetric generators share every block about equally;
+					// counting the whole block as this generator's own read
+					// the pool as empty N times too early (round 35r).
+					share := int64(*depthShare)
+					if share < 1 {
+						share = 1
+					}
+					depth = int(atomic.LoadInt64(&submitted) - minedSinceStart/share - atomic.LoadInt64(&failed))
+					if depth < 0 {
+						depth = 0
+					}
+				} else {
+					depth, err = poolDepth(urls)
+					if err != nil {
+						refillDepthPermits(permits, 0, 0, batchSize, int(inFlight.Load()), 0)
+						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
+						continue
+					}
 				}
 				active := int(inFlight.Load())
 				change := refillDepthPermits(permits, *targetDepth, depth, batchSize, active, *rate)
-				fmt.Printf("  pool=%d credit_delta=%d queued=%d in_flight=%d\n", depth, change, len(permits), active)
+				fmt.Printf("  pool=%d credit_delta=%d queued=%d in_flight=%d deferred=%d\n", depth, change, len(permits), active, atomic.LoadInt64(&deferred))
 			}
 		}()
 	} else if *rate > 0 {
@@ -646,6 +1201,21 @@ func main() {
 					default: // submitters are behind; do not let credit pile up
 					}
 				}
+			}
+		}()
+	} else {
+		// Flat-out (S49 PART 2(iii)): rate<=0 and targetDepth<=0 means
+		// permits stays nil and nothing above throttles submission at all --
+		// n42-rs's own "generators simply push and retry" shape. Neither
+		// other branch prints a periodic line in this mode, so add one here
+		// purely for visibility into `deferred` (pool-backpressure retries)
+		// while the round runs; nothing here affects submission itself.
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for range t.C {
+				fmt.Printf("  flat-out submitted=%d failed=%d deferred=%d\n",
+					atomic.LoadInt64(&submitted), atomic.LoadInt64(&failed), atomic.LoadInt64(&deferred))
 			}
 		}()
 	}
@@ -711,6 +1281,15 @@ func main() {
 						for i := range batch {
 							batch[i] = rawAt(int(lo) + i)
 						}
+						if hints != nil && !nativeEncoding {
+							raws := make([][]byte, 0, len(batch))
+							for _, hx := range batch {
+								if b := rawBytes(hx); b != nil {
+									raws = append(raws, b)
+								}
+							}
+							hints.offer(raws)
+						}
 						var frame []byte
 						if useIngest {
 							claims := make([]types.Address, len(batch))
@@ -736,7 +1315,11 @@ func main() {
 								}
 								err = client.submit(frame, len(batch))
 							} else {
-								_, err = rpcCall(target, "eth_batchRawTransaction", []interface{}{batch})
+								var retries int64
+								_, err, retries = submitWithBackoff(func() (json.RawMessage, error) {
+									return rpcCall(target, "eth_batchRawTransaction", []interface{}{batch})
+								})
+								atomic.AddInt64(&deferred, retries*int64(len(batch)))
 							}
 							if err != nil {
 								lastErr = fmt.Errorf("%s: %w", target, err)
@@ -761,7 +1344,10 @@ func main() {
 		}
 		wg.Wait()
 		el := time.Since(tf)
-		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(rawCount)/el.Seconds())
+		fmt.Printf("DONE submitted=%d failed=%d deferred=%d in %s (%.0f tx/s offered)\n", submitted, failed, atomic.LoadInt64(&deferred), el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+		if hints != nil {
+			fmt.Printf("hint peers: sent=%d dropped=%d errors=%d\n", hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
+		}
 		return
 	}
 
@@ -805,7 +1391,13 @@ func main() {
 				} else {
 					url = urls[int(i)%len(urls)]
 				}
-				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raw}); err != nil {
+				ok, err, retries := submitWithBackoff(func() (json.RawMessage, error) {
+					return rpcCall(url, "eth_sendRawTransaction", []interface{}{raw})
+				})
+				if retries > 0 {
+					atomic.AddInt64(&deferred, retries)
+				}
+				if !ok {
 					// The first few distinct failures are the diagnosis; a
 					// counter alone hid an 8.88M-transaction rejection.
 					if n := atomic.AddInt64(&failed, 1); n <= 5 || n%1000000 == 0 {
@@ -822,5 +1414,59 @@ func main() {
 	}
 	wg.Wait()
 	el := time.Since(tf)
-	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(rawCount)/el.Seconds())
+	fmt.Printf("DONE submitted=%d failed=%d deferred=%d in %s (%.0f tx/s offered)\n", submitted, failed, atomic.LoadInt64(&deferred), el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+}
+
+// runSweep sends every derived sender's balance, less one transfer's gas,
+// back to the faucet. Senders that hold less than that are skipped. Runs
+// -conc senders at a time; one eth_sendRawTransaction each.
+func runSweep(urls []string, priv *ecdsa.PrivateKey, faucet types.Address, senders, conc int, gasPrice uint64,
+	signAt func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas, price uint64) string) int {
+	gasCost := new(big.Int).Mul(big.NewInt(21000), new(big.Int).SetUint64(gasPrice))
+	var swept, skipped, failed int64
+	total := new(big.Int)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	if conc < 1 {
+		conc = 1
+	}
+	sem := make(chan struct{}, conc)
+	for i := 0; i < senders; i++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			k := deriveKey(i)
+			addr := crypto.PubkeyToAddress(k.PublicKey)
+			url := urls[i%len(urls)]
+			bal, err := getBalanceAt(url, addr, "latest")
+			if err != nil || bal.Cmp(gasCost) <= 0 {
+				atomic.AddInt64(&skipped, 1)
+				return
+			}
+			nonce, err := getNonceAt(url, addr, "pending")
+			if err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			value := new(big.Int).Sub(bal, gasCost)
+			raw := signAt(k, addr, faucet, nonce, new(uint256.Int).SetBytes(value.Bytes()), 21000, gasPrice)
+			if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raw}); err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			atomic.AddInt64(&swept, 1)
+			mu.Lock()
+			total.Add(total, value)
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	fmt.Printf("SWEEP offset=%d senders=%d swept=%d skipped=%d failed=%d returned=%s wei (%.1f ETH)\n",
+		senderOffset, senders, swept, skipped, failed, total, new(big.Float).Quo(new(big.Float).SetInt(total), big.NewFloat(1e18)))
+	if failed > 0 {
+		return 1
+	}
+	return 0
 }

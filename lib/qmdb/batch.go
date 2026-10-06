@@ -129,6 +129,10 @@ func (t *Tree) EndLeafBatch() {
 // Prefetching is only a hint, so a stale old slot (the same key written twice
 // in one batch) is harmless: the apply loop re-resolves authoritatively.
 func (t *Tree) ApplyOps(ops []Op) {
+	if w := ParallelApplyWorkers; w > 0 && t.parallelApplyEligible(ops) {
+		t.applyOpsParallel(ops, w)
+		return
+	}
 	if fi, ok := t.idx.(*flatIndex); ok {
 		for i := range ops {
 			fi.prefetch(ops[i].KeyHash)
@@ -195,7 +199,10 @@ func (t *Tree) foldTouched() {
 	}
 	t.batchTouched = t.batchTouched[:0]
 	if len(g) == 0 {
+		// Every touched twig was dirty or evicted: nothing to fold, but the
+		// liveness bitmaps flipped in this batch still need their roots.
 		t.foldScratch = g
+		t.recombineBitsTouched()
 		return
 	}
 	for level := 0; level < TwigHeight; level++ {
