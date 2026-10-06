@@ -218,3 +218,18 @@ Phase B stretch test, not a blocker, since it requires Python deps
 3. Where does the model/sidecar actually run — colocated with the node
    process (shares the CPU-saturated box) or on a separate machine reachable
    over the network? This changes the shadow-mode CPU-isolation design in §4.
+
+## Execution decisions and progress (2026-10-05)
+
+The user confirmed JSON + Keccak256 canonical encoding, governance EIP-712
+compatibility in scope, and a remote HTTP sidecar. Canonical v1 details and fixed
+vectors are documented in `docs/DDN_CANONICAL.md`.
+
+- Branch integration: main and qs/block-time-budget merged at `e2edebe0`,
+  preserving applied-state evidence, durable voting and the newer deferred
+  execution checks. Both remote branches advanced without rewriting history.
+- Phase A: Go wire types, integer ppm answers, request validation, canonical
+  hashing and fixed vectors implemented. `go test ./internal/ddn/types` passes.
+- Merge validation: `make build` and targeted tests for txflood, HotStuff,
+  ingest, QMDB, state/commitment, state, miner, API and internal passed.
+  `make lint` cannot run: this environment has no golangci-lint binary.
