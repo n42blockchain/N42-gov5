@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strconv"
 
 	"time"
 
@@ -34,13 +35,14 @@ import (
 
 // QMDBRootComputer maintains a qmdb.Tree across blocks.
 type QMDBRootComputer struct {
-	t              *qmdb.Tree
-	flushedThrough uint64         // entry-log slots already persisted (for incremental flush)
-	stagedFlushed  uint64         // FlushTo's advanced cursor, adopted only by CommitFlushed
-	stagedValid    bool           // stagedFlushed holds a not-yet-committed FlushTo
-	mdbxIdx        *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
-	indexTrusted   uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
-	indexDelta     int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
+	t               *qmdb.Tree
+	retainedEntries uint64         // optional bounded hot window; does not change persistence
+	flushedThrough  uint64         // entry-log slots already persisted (for incremental flush)
+	stagedFlushed   uint64         // FlushTo's advanced cursor, adopted only by CommitFlushed
+	stagedValid     bool           // stagedFlushed holds a not-yet-committed FlushTo
+	mdbxIdx         *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
+	indexTrusted    uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
+	indexDelta      int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
 
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
@@ -128,9 +130,27 @@ func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
 	return u
 }
 
+// Keep the memory tradeoff opt-in and bounded even for an accidental large
+// environment setting. Four million slots cost several hundred MB, depending
+// on values, plus their twig heaps; this is a slot limit, not a byte limit.
+const maxQMDBRetainedEntries = uint64(4 * 1024 * 1024)
+
+var qmdbRetainedEntries = parseQMDBRetainedEntries(os.Getenv("N42_QMDB_RETAIN_ENTRIES"))
+
+func parseQMDBRetainedEntries(value string) uint64 {
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	if n > maxQMDBRetainedEntries {
+		return maxQMDBRetainedEntries
+	}
+	return n
+}
+
 // NewQMDBRootComputer creates an empty in-memory QMDB root computer.
 func NewQMDBRootComputer() *QMDBRootComputer {
-	return &QMDBRootComputer{t: qmdb.New()}
+	return &QMDBRootComputer{t: qmdb.New(), retainedEntries: qmdbRetainedEntries}
 }
 
 // VoidIndexTrust marks the in-RAM index untrusted, forcing the next
@@ -444,11 +464,19 @@ func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
 
 // EvictFlushed drops, up to the flushed cursor and recoverable from cold, both
 // the entry records AND the sealed twig leaf arrays from RAM — bounding the
-// resident footprint to the unflushed window plus the active/touched twigs. Must
-// be called after FlushTo and after SetCold.
+// resident footprint to the unflushed window plus the configured recent slots
+// and active/touched twigs. With a zero hot window, retain the original policy.
+// Must be called after CommitFlushed and after SetCold; no disk work is deferred.
 func (r *QMDBRootComputer) EvictFlushed() {
-	r.t.EvictThrough(r.flushedThrough)
-	r.t.EvictTwigsThrough(r.flushedThrough)
+	through := uint64(0)
+	if r.flushedThrough > r.retainedEntries {
+		through = r.flushedThrough - r.retainedEntries
+	}
+	r.t.EvictThrough(through)
+	r.t.EvictTwigsThrough(through)
+	if r.retainedEntries > 0 {
+		log.Info("QMDB hot window", "limit", r.retainedEntries, "residentEntries", r.t.ResidentEntries(), "residentTwigs", r.t.ResidentTwigLeaves())
+	}
 }
 
 // ResidentTwigLeaves exposes how many twigs still hold their leaf array (for the
@@ -506,6 +534,10 @@ func (r *QMDBRootComputer) ComputeRoot(
 		r.t.StartUndoRecording()
 	}
 	tApply := time.Now()
+	// A block appends adjacent leaves. Folding after every Set repeats the
+	// same ancestor hashes; settle their union once, preserving operation
+	// order, slots, liveness bits, undo recording and the resulting root.
+	r.t.BeginLeafBatch()
 	for _, o := range ops {
 		if o.value == nil {
 			r.t.Delete(o.kh)
@@ -513,6 +545,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 			r.t.Set(o.kh, o.value)
 		}
 	}
+	r.t.EndLeafBatch()
 	if r.undoRecording {
 		r.lastUndo = r.t.StopUndoRecording()
 	}

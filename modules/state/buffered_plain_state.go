@@ -772,7 +772,7 @@ func (snap *BufferSnapshot) ApplyTo(tx kv.RwTx) error {
 			return err
 		}
 		var keysToDelete [][]byte
-		for k, _, err := cursor.Seek(prefix); k != nil; k, _, err = cursor.Next() {
+		for k, _, err := cursor.Seek(prefix); k != nil || err != nil; k, _, err = cursor.Next() {
 			if err != nil {
 				cursor.Close()
 				return err
@@ -1461,7 +1461,7 @@ func (r *BufferedPlainStateReader) ForEachStorage(address types.Address, f func(
 	}
 	defer cursor.Close()
 	prefix := address[:]
-	for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+	for k, v, err := cursor.Seek(prefix); k != nil || err != nil; k, v, err = cursor.Next() {
 		if err != nil {
 			return err
 		}
@@ -2242,7 +2242,7 @@ func (w *BufferedPlainStateWriter) collectPreWipeSlots(address types.Address) (m
 			return nil, err
 		}
 		prefix := address[:]
-		for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+		for k, v, err := cursor.Seek(prefix); k != nil || err != nil; k, v, err = cursor.Next() {
 			if err != nil {
 				cursor.Close()
 				return nil, err

@@ -35,29 +35,19 @@ import (
 	"github.com/n42blockchain/N42/modules/ethdb/bitmapdb"
 )
 
-func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {
+func writeIndexBeforeCursor(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {
 	if changes.Len() == 0 {
 		return nil
 	}
 	// GetAccountChanges/GetStorageChanges materialize maps afresh, so the
 	// sorting done by WriteChangeSets does not carry over here. Visit the
-	// history B-tree in key order and reuse one cursor for the reads and writes of this whole block.
+	// history B-tree in key order and reuse a cursor for this whole block.
 	sort.Sort(changes)
-	cursor, err := changeDb.RwCursor(bucket)
+	cursor, err := changeDb.Cursor(bucket)
 	if err != nil {
 		return err
 	}
 	defer cursor.Close()
-	// Keep transaction counters and write-probe attribution when reusing an
-	// MDBX cursor; other backends retain their transaction Put behavior.
-	put := func(key, value []byte) error { return changeDb.Put(bucket, key, value) }
-	if recorded, ok := changeDb.(interface {
-		PutWithCursor(kv.RwCursor, []byte, []byte) error
-	}); ok {
-		put = func(key, value []byte) error { return recorded.PutWithCursor(cursor, key, value) }
-	}
-	tailKey := make([]byte, changes.KeySize()+8)
-	binary.BigEndian.PutUint64(tailKey[changes.KeySize():], math.MaxUint64)
 	seekKey := make([]byte, changes.KeySize()+8)
 	binary.BigEndian.PutUint64(seekKey[changes.KeySize():], math.MaxUint32)
 	var singleton []byte
@@ -71,7 +61,6 @@ func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, ch
 	for _, change := range changes.Changes {
 		k := change.Key
 		copy(seekKey, k)
-		copy(tailKey, k)
 		found, value, err := cursor.Seek(seekKey)
 		if err != nil {
 			return fmt.Errorf("find chunk failed: %w", err)
@@ -88,13 +77,19 @@ func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, ch
 					return err
 				}
 			}
-			if err := put(tailKey, singleton); err != nil {
+			tailKey := make([]byte, len(k)+8)
+			copy(tailKey, k)
+			binary.BigEndian.PutUint64(tailKey[len(k):], math.MaxUint64)
+			if err := changeDb.Put(bucket, tailKey, singleton); err != nil {
 				return err
 			}
 			continue
 		}
 		if merged, ok := mergedTails[string(value)]; ok {
-			if err := put(tailKey, merged); err != nil {
+			tailKey := make([]byte, len(k)+8)
+			copy(tailKey, k)
+			binary.BigEndian.PutUint64(tailKey[len(k):], math.MaxUint64)
+			if err := changeDb.Put(bucket, tailKey, merged); err != nil {
 				return err
 			}
 			continue
@@ -114,12 +109,15 @@ func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, ch
 			if _, err := index.WriteTo(buf); err != nil {
 				return err
 			}
+			tailKey := make([]byte, len(k)+8)
+			copy(tailKey, k)
+			binary.BigEndian.PutUint64(tailKey[len(k):], math.MaxUint64)
 			encoded := types.CopyBytes(buf.Bytes())
 			if len(mergedTails) < maxMergedTails && uint64(len(value)) <= bitmapdb.ChunkLimit {
 				// Copy the original MDBX bytes before Put can invalidate them.
 				mergedTails[string(value)] = encoded
 			}
-			if err := put(tailKey, encoded); err != nil {
+			if err := changeDb.Put(bucket, tailKey, encoded); err != nil {
 				return err
 			}
 			continue
@@ -129,7 +127,7 @@ func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, ch
 			if _, err = chunk.WriteTo(buf); err != nil {
 				return err
 			}
-			return put(chunkKey, types.CopyBytes(buf.Bytes()))
+			return changeDb.Put(bucket, chunkKey, types.CopyBytes(buf.Bytes()))
 		}); err != nil {
 			return err
 		}

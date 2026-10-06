@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"unsafe"
 
@@ -51,9 +52,18 @@ func sortedAddresses[V any](m map[types.Address]V) []types.Address {
 	for addr := range m {
 		addrs = append(addrs, addr)
 	}
-	sort.Slice(addrs, func(i, j int) bool {
-		return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
-	})
+	// Avoid reflection allocations for the empty/sender/recipient/beneficiary
+	// sets common in transaction finalization. Comparing Address values by
+	// value is slower on large block sets; retain the indexed sorter there.
+	if len(addrs) <= 3 {
+		slices.SortFunc(addrs, func(a, b types.Address) int {
+			return bytes.Compare(a[:], b[:])
+		})
+	} else {
+		sort.Slice(addrs, func(i, j int) bool {
+			return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
+		})
+	}
 	return addrs
 }
 
@@ -238,12 +248,20 @@ func (sdb *IntraBlockState) captureWipedSlots(addr types.Address) {
 		return
 	}
 	slots := make(map[types.Hash]uint256.Int)
-	_ = enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+	err := enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
 		var v uint256.Int
 		v.SetBytes(value)
 		slots[slot] = v
 		return true
 	})
+	if err != nil {
+		// An unavailable capability retains the touched-slot fallback. A real
+		// read failure invalidates execution; never publish a partial capture.
+		if !errors.Is(err, ErrNoStorageEnumeration) {
+			sdb.setErrorUnsafe(err)
+		}
+		return
+	}
 	sdb.wipedStorageSlots[addr] = slots
 }
 
@@ -1221,6 +1239,9 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 
 // FinalizeTx should be called after every transaction.
 func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter StateWriter) error {
+	if sdb.savedErr != nil {
+		return sdb.savedErr
+	}
 	policy := newAccountWritePolicy(chainRules)
 	// Sort addresses before iteration. getStateObject falls through to
 	// sdb.stateReader.ReadAccountData when the object isn't cached, and
@@ -1231,6 +1252,11 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 		if bi := sdb.balanceInc[addr]; !bi.transferred {
 			sdb.getStateObject(addr)
 		}
+	}
+	// Materializing deferred credits can discover a read error. Do not emit
+	// any writes or finalize the journal from an incomplete account view.
+	if sdb.savedErr != nil {
+		return sdb.savedErr
 	}
 	for _, addr := range sortedAddresses(sdb.journal.dirties) {
 		so, exist := sdb.stateObjects[addr]
@@ -1283,6 +1309,9 @@ func (sdb *IntraBlockState) promoteWipes() {
 // CommitBlock finalizes the state by removing the self destructed objects
 // and clears the journal as well as the refunds.
 func (sdb *IntraBlockState) CommitBlock(chainRules *params.Rules, stateWriter StateWriter) error {
+	if sdb.savedErr != nil {
+		return sdb.savedErr
+	}
 	// Sorted iteration: see note on FinalizeTx — getStateObject can read
 	// through the block-witness recorder, so iteration order is visible
 	// in the witness stream.
@@ -1305,6 +1334,9 @@ func (sdb *IntraBlockState) BalanceIncreaseSet() map[types.Address]uint256.Int {
 }
 
 func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter StateWriter) error {
+	if sdb.savedErr != nil {
+		return sdb.savedErr
+	}
 	policy := newAccountWritePolicy(chainRules)
 	// The first loop only populates the stateObjectsDirty set and doesn't
 	// read state; iteration order here is irrelevant. The second loop

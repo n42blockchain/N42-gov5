@@ -38,6 +38,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // QMDBReadMode selects where account and storage point reads are answered from.
@@ -152,8 +153,8 @@ func NewQMDBStateReader(src qmdbValueSource, inner plainReader, mode QMDBReadMod
 	return &QMDBStateReader{src: src, inner: inner, mode: mode}
 }
 
-// Mismatches reports how many divergences verify mode has seen, and how many
-// reads it compared.
+// Mismatches reports divergent or failed comparisons in verify mode, and the
+// total attempted comparisons. A read/decode error cannot certify equality.
 func (r *QMDBStateReader) Mismatches() (accounts, storage, compared uint64) {
 	return r.accountMismatch.Load(), r.storageMismatch.Load(), r.compared.Load()
 }
@@ -183,7 +184,10 @@ func emptyByPlainPolicy(a *account.StateAccount) bool {
 }
 
 func (r *QMDBStateReader) qmdbAccount(address types.Address) (*account.StateAccount, bool, error) {
-	enc, ok := r.src.Get(qmdb.Hash(AccountKeyHash(address)))
+	enc, ok, err := r.readValue(qmdb.Hash(AccountKeyHash(address)))
+	if err != nil {
+		return nil, ok, err
+	}
 	if !ok || len(enc) == 0 {
 		return nil, ok, nil
 	}
@@ -199,6 +203,16 @@ func (r *QMDBStateReader) qmdbAccount(address types.Address) (*account.StateAcco
 	return &a, true, nil
 }
 
+func (r *QMDBStateReader) readValue(key qmdb.Hash) ([]byte, bool, error) {
+	if checked, ok := r.src.(interface {
+		GetChecked(qmdb.Hash) ([]byte, bool, error)
+	}); ok {
+		return checked.GetChecked(key)
+	}
+	value, ok := r.src.Get(key)
+	return value, ok, nil
+}
+
 func (r *QMDBStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	if r.mode == QMDBReadOff {
 		return r.inner.ReadAccountData(address)
@@ -211,14 +225,15 @@ func (r *QMDBStateReader) ReadAccountData(address types.Address) (*account.State
 	// block's outcome while it is being measured.
 	want, werr := r.inner.ReadAccountData(address)
 	r.compared.Add(1)
-	noteCompared()
-	if err == nil && werr == nil && !sameAccount(got, want) {
+	if err != nil || werr != nil || !sameAccount(got, want) {
 		verifyAccountMismatch.Add(1)
 		if n := r.accountMismatch.Add(1); n <= 8 {
 			log.Warn("qmdb state read: account diverges from the plain table",
-				"address", address, "qmdbNil", got == nil, "plainNil", want == nil)
+				"address", address, "qmdbNil", got == nil, "plainNil", want == nil,
+				"qmdbError", err, "plainError", werr)
 		}
 	}
+	noteCompared()
 	return want, werr
 }
 
@@ -227,25 +242,27 @@ func (r *QMDBStateReader) ReadAccountStorage(address types.Address, key *types.H
 		return r.inner.ReadAccountStorage(address, key)
 	}
 	var got []byte
-	if enc, ok := r.src.Get(qmdb.Hash(StorageKeyHash(address, *key))); ok {
+	enc, ok, err := r.readValue(qmdb.Hash(StorageKeyHash(address, *key)))
+	if ok && err == nil {
 		// QMDB stores 32 bytes zero-padded; the plain Storage table stores the
 		// value trimmed to ByteLen. Match the plain representation, or every
 		// non-full-width slot reads as a divergence that is not one.
 		got = trimLeadingZeros(enc)
 	}
 	if r.mode == QMDBReadOn {
-		return got, nil
+		return got, err
 	}
 	want, werr := r.inner.ReadAccountStorage(address, key)
 	r.compared.Add(1)
-	noteCompared()
-	if werr == nil && !bytes.Equal(got, want) {
+	if err != nil || werr != nil || !bytes.Equal(got, want) {
 		verifyStorageMismatch.Add(1)
 		if n := r.storageMismatch.Add(1); n <= 8 {
 			log.Warn("qmdb state read: storage slot diverges from the plain table",
-				"address", address, "slot", key, "qmdbLen", len(got), "plainLen", len(want))
+				"address", address, "slot", key, "qmdbLen", len(got), "plainLen", len(want),
+				"qmdbError", err, "plainError", werr)
 		}
 	}
+	noteCompared()
 	return want, werr
 }
 
@@ -256,6 +273,16 @@ func (r *QMDBStateReader) ReadAccountCode(address types.Address, codeHash types.
 
 func (r *QMDBStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
 	return r.inner.ReadAccountCodeSize(address, codeHash)
+}
+
+// ForEachStorage preserves the wrapped reader's complete pre-block slot scan.
+// Hashed QMDB keys cannot supply it, but dropping it changes storage wipes and
+// CREATE collision detection even in verify mode, where reads use plain state.
+func (r *QMDBStateReader) ForEachStorage(addr types.Address, f func(types.Hash, []byte) bool) error {
+	if enum, ok := r.inner.(state.StorageEnumerator); ok {
+		return enum.ForEachStorage(addr, f)
+	}
+	return state.ErrNoStorageEnumeration
 }
 
 func trimLeadingZeros(b []byte) []byte {

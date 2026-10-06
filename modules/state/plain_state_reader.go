@@ -185,7 +185,7 @@ func (r *PlainStateReader) ForEachStorage(addr types.Address, f func(slot types.
 	}
 	defer cursor.Close()
 	prefix := addr[:]
-	for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+	for k, v, err := cursor.Seek(prefix); k != nil || err != nil; k, v, err = cursor.Next() {
 		if err != nil {
 			return err
 		}

@@ -48,7 +48,9 @@ import (
 // This interface is used by the EVM and other components that need
 // to query account data, storage, and code without modifying state.
 //
-// Thread Safety: Implementations must be safe for concurrent reads.
+// Thread Safety: implementation-specific. Readers backed by a transaction or
+// mutable cache must not be shared across goroutines unless they explicitly
+// support it. Read-only access does not imply concurrency-safe cursor use.
 // Error Handling: nil return with nil error means the data doesn't exist.
 //
 // Reth-style note: methods take only (address, slot|codeHash) — no
