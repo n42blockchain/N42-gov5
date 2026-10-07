@@ -35,8 +35,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/crypto/sha3"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 func Hash256toS(data []byte) string {
@@ -203,10 +203,10 @@ func ConvertH256ToUint256Int(h256 *types_pb.H256) *uint256.Int {
 	if h256 == nil {
 		return &i
 	}
-	i[3] = h256.Hi.Hi
-	i[2] = h256.Hi.Lo
-	i[1] = h256.Lo.Hi
-	i[0] = h256.Lo.Lo
+	i[3] = h256.GetHi().GetHi()
+	i[2] = h256.GetHi().GetLo()
+	i[1] = h256.GetLo().GetHi()
+	i[0] = h256.GetLo().GetLo()
 	return &i
 }
 
@@ -232,23 +232,23 @@ func ConvertH256ToHash(h256 *types_pb.H256) [32]byte {
 	if h256 == nil {
 		return hash
 	}
-	binary.BigEndian.PutUint64(hash[0:], h256.Hi.Hi)
-	binary.BigEndian.PutUint64(hash[8:], h256.Hi.Lo)
-	binary.BigEndian.PutUint64(hash[16:], h256.Lo.Hi)
-	binary.BigEndian.PutUint64(hash[24:], h256.Lo.Lo)
+	binary.BigEndian.PutUint64(hash[0:], h256.GetHi().GetHi())
+	binary.BigEndian.PutUint64(hash[8:], h256.GetHi().GetLo())
+	binary.BigEndian.PutUint64(hash[16:], h256.GetLo().GetHi())
+	binary.BigEndian.PutUint64(hash[24:], h256.GetLo().GetLo())
 	return hash
 }
 
 func ConvertH512ToHash(h512 *types_pb.H512) [64]byte {
 	var b [64]byte
-	binary.BigEndian.PutUint64(b[0:], h512.Hi.Hi.Hi)
-	binary.BigEndian.PutUint64(b[8:], h512.Hi.Hi.Lo)
-	binary.BigEndian.PutUint64(b[16:], h512.Hi.Lo.Hi)
-	binary.BigEndian.PutUint64(b[24:], h512.Hi.Lo.Lo)
-	binary.BigEndian.PutUint64(b[32:], h512.Lo.Hi.Hi)
-	binary.BigEndian.PutUint64(b[40:], h512.Lo.Hi.Lo)
-	binary.BigEndian.PutUint64(b[48:], h512.Lo.Lo.Hi)
-	binary.BigEndian.PutUint64(b[56:], h512.Lo.Lo.Lo)
+	binary.BigEndian.PutUint64(b[0:], h512.GetHi().GetHi().GetHi())
+	binary.BigEndian.PutUint64(b[8:], h512.GetHi().GetHi().GetLo())
+	binary.BigEndian.PutUint64(b[16:], h512.GetHi().GetLo().GetHi())
+	binary.BigEndian.PutUint64(b[24:], h512.GetHi().GetLo().GetLo())
+	binary.BigEndian.PutUint64(b[32:], h512.GetLo().GetHi().GetHi())
+	binary.BigEndian.PutUint64(b[40:], h512.GetLo().GetHi().GetLo())
+	binary.BigEndian.PutUint64(b[48:], h512.GetLo().GetLo().GetHi())
+	binary.BigEndian.PutUint64(b[56:], h512.GetLo().GetLo().GetLo())
 	return b
 }
 
@@ -289,9 +289,9 @@ func ConvertHashToH512(hash [64]byte) *types_pb.H512 {
 
 func ConvertH160toAddress(h160 *types_pb.H160) [20]byte {
 	var addr [20]byte
-	binary.BigEndian.PutUint64(addr[0:], h160.Hi.Hi)
-	binary.BigEndian.PutUint64(addr[8:], h160.Hi.Lo)
-	binary.BigEndian.PutUint32(addr[16:], h160.Lo)
+	binary.BigEndian.PutUint64(addr[0:], h160.GetHi().GetHi())
+	binary.BigEndian.PutUint64(addr[8:], h160.GetHi().GetLo())
+	binary.BigEndian.PutUint32(addr[16:], h160.GetLo())
 	return addr
 }
 
@@ -350,12 +350,12 @@ func ConvertBytesToH512(b []byte) *types_pb.H512 {
 
 func ConvertH384ToPublicKey(h384 *types_pb.H384) [48]byte {
 	var pub [48]byte
-	binary.BigEndian.PutUint64(pub[0:], h384.Hi.Hi.Hi)
-	binary.BigEndian.PutUint64(pub[8:], h384.Hi.Hi.Lo)
-	binary.BigEndian.PutUint64(pub[16:], h384.Hi.Lo.Hi)
-	binary.BigEndian.PutUint64(pub[24:], h384.Hi.Lo.Lo)
-	binary.BigEndian.PutUint64(pub[32:], h384.Lo.Hi)
-	binary.BigEndian.PutUint64(pub[40:], h384.Lo.Lo)
+	binary.BigEndian.PutUint64(pub[0:], h384.GetHi().GetHi().GetHi())
+	binary.BigEndian.PutUint64(pub[8:], h384.GetHi().GetHi().GetLo())
+	binary.BigEndian.PutUint64(pub[16:], h384.GetHi().GetLo().GetHi())
+	binary.BigEndian.PutUint64(pub[24:], h384.GetHi().GetLo().GetLo())
+	binary.BigEndian.PutUint64(pub[32:], h384.GetLo().GetHi())
+	binary.BigEndian.PutUint64(pub[40:], h384.GetLo().GetLo())
 	return pub
 }
 
@@ -390,19 +390,19 @@ func H384sToPubs(ps []*types_pb.H384) []types.PublicKey {
 
 func ConvertH768ToSignature(h768 *types_pb.H768) [96]byte {
 	var b [96]byte
-	binary.BigEndian.PutUint64(b[0:], h768.Hi.Hi.Hi.Hi)
-	binary.BigEndian.PutUint64(b[8:], h768.Hi.Hi.Hi.Lo)
-	binary.BigEndian.PutUint64(b[16:], h768.Hi.Hi.Lo.Hi)
-	binary.BigEndian.PutUint64(b[24:], h768.Hi.Hi.Lo.Lo)
-	binary.BigEndian.PutUint64(b[32:], h768.Hi.Lo.Hi)
-	binary.BigEndian.PutUint64(b[40:], h768.Hi.Lo.Lo)
+	binary.BigEndian.PutUint64(b[0:], h768.GetHi().GetHi().GetHi().GetHi())
+	binary.BigEndian.PutUint64(b[8:], h768.GetHi().GetHi().GetHi().GetLo())
+	binary.BigEndian.PutUint64(b[16:], h768.GetHi().GetHi().GetLo().GetHi())
+	binary.BigEndian.PutUint64(b[24:], h768.GetHi().GetHi().GetLo().GetLo())
+	binary.BigEndian.PutUint64(b[32:], h768.GetHi().GetLo().GetHi())
+	binary.BigEndian.PutUint64(b[40:], h768.GetHi().GetLo().GetLo())
 
-	binary.BigEndian.PutUint64(b[48:], h768.Lo.Hi.Hi.Hi)
-	binary.BigEndian.PutUint64(b[56:], h768.Lo.Hi.Hi.Lo)
-	binary.BigEndian.PutUint64(b[64:], h768.Lo.Hi.Lo.Hi)
-	binary.BigEndian.PutUint64(b[72:], h768.Lo.Hi.Lo.Lo)
-	binary.BigEndian.PutUint64(b[80:], h768.Lo.Lo.Hi)
-	binary.BigEndian.PutUint64(b[88:], h768.Lo.Lo.Lo)
+	binary.BigEndian.PutUint64(b[48:], h768.GetLo().GetHi().GetHi().GetHi())
+	binary.BigEndian.PutUint64(b[56:], h768.GetLo().GetHi().GetHi().GetLo())
+	binary.BigEndian.PutUint64(b[64:], h768.GetLo().GetHi().GetLo().GetHi())
+	binary.BigEndian.PutUint64(b[72:], h768.GetLo().GetHi().GetLo().GetLo())
+	binary.BigEndian.PutUint64(b[80:], h768.GetLo().GetLo().GetHi())
+	binary.BigEndian.PutUint64(b[88:], h768.GetLo().GetLo().GetLo())
 	return b
 }
 
