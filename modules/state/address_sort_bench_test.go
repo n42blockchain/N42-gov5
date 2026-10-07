@@ -51,3 +51,30 @@ func BenchmarkSortedAddresses(b *testing.B) {
 		}
 	}
 }
+
+// Measure the buffered QMDB flush sort separately from map collection.
+func BenchmarkBufferedAddressSort(b *testing.B) {
+	for _, count := range []int{3, 32000, 163000} {
+		input := make([]types.Address, count)
+		for i := range input {
+			binary.BigEndian.PutUint64(input[i][:8], uint64(i)*0x9e3779b97f4a7c15)
+			binary.BigEndian.PutUint64(input[i][12:], uint64(i))
+		}
+		for _, name := range []string{"reflect", "buffered"} {
+			b.Run(fmt.Sprintf("%d/%s", count, name), func(b *testing.B) {
+				out := make([]types.Address, count)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					copy(out, input)
+					if name == "buffered" {
+						sortAddressesByBucket(out)
+					} else {
+						sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+					}
+				}
+				addressSortSink = out
+			})
+		}
+	}
+}
