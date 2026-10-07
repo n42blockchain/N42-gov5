@@ -223,7 +223,7 @@ func (g *Gateway) execute(t item) {
 		err = ctx.Err()
 	}
 	if err == nil {
-		err = result.Validate()
+		err = result.ValidateSchema(t.r.SchemaID)
 	}
 	finished := time.Now()
 	elapsed := uint64(finished.UnixMilli() - started.UnixMilli())

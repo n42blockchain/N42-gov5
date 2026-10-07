@@ -261,3 +261,10 @@ EIP-712 vectors remain covered. These are regression checks, not a calibrated
 real-world quality benchmark. Go still does not import GLiClass/ModernBERT weights
 or tokenizers, and does not provide n42-26's full DecisionHub/ProposalRouter,
 relay/watch, and TypeScript wallet workflow. Full capability parity is not claimed.
+
+System1 provider version 2 synchronizes the third signed escalation answer with
+RequireHuman and minimum-confidence policy gates. Receipt verification rejects
+contradictory top-level and typed escalation. Upgrade existing System1 model hash
+pins; the classification rules and label order are unchanged. Other governance
+Noul values retain their business meaning. See the
+[October source audit](engineering/THREE_MONTH_AUDIT_20261006.md).

@@ -133,7 +133,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "decision deadline exceeded", http.StatusGatewayTimeout)
 		return
 	}
-	if err != nil || result.Validate() != nil {
+	if err != nil || result.ValidateSchema(req.SchemaID) != nil {
 		http.Error(w, "decision unavailable", http.StatusBadGateway)
 		return
 	}

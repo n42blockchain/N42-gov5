@@ -12,7 +12,7 @@ import (
 	d "github.com/n42blockchain/N42/internal/ddn/types"
 )
 
-var systemLabels = []string{"NORMAL", "NETWORK", "CONSENSUS", "EXECUTION", "STORAGE", "CONFIGURATION", "PERFORMANCE", "UNKNOWN"}
+var systemLabels = d.System1Labels()
 var systemRules = []healthRule{
 	{"CONSENSUS", []string{"consensus", "finality", "quorum", "qc mismatch"}},
 	{"STORAGE", []string{"qmdb", "storage", "state root", "database"}},

@@ -28,7 +28,7 @@ func TestSystem1ReferenceCases(t *testing.T) {
 		if r.Label != c.label || r.NeedEscalation != c.escalation || r.Answers[0].Selected != c.severity {
 			t.Fatalf("%s: %+v", c.text, r)
 		}
-		if err = r.Validate(); err != nil {
+		if err = r.ValidateSchema("system1-v1"); err != nil {
 			t.Fatal(err)
 		}
 	}
