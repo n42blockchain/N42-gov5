@@ -10,11 +10,11 @@ import (
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
 	types "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 // bodiesByRangeRPCHandler looks up the requested blocks from the database from a given start block.
@@ -52,14 +52,12 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 		}
 	}
 
-	// Only process range requests with a step of 1.
-	if m.Step > 1 {
-		m.Step = 1
-	}
-
 	// Clamp the initial batch count to the allowed blocks-per-second limit.
 	count := m.Count
-	allowedBlocksPerSecond := uint64(s.cfg.p2p.GetConfig().P2PLimit.BlockBatchLimit)
+	allowedBlocksPerSecond := uint64(maxRequestBlocks)
+	if cfg := s.cfg.p2p.GetConfig(); cfg != nil && cfg.P2PLimit != nil && cfg.P2PLimit.BlockBatchLimit > 0 {
+		allowedBlocksPerSecond = uint64(cfg.P2PLimit.BlockBatchLimit)
+	}
 	if count > allowedBlocksPerSecond {
 		count = allowedBlocksPerSecond
 	}
@@ -195,6 +193,9 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 }
 
 func (s *Service) validateRangeRequest(r *sync_pb.BodiesByRangeRequest) error {
+	if r == nil {
+		return p2ptypes.ErrInvalidRequest
+	}
 	startSlot := utils.ConvertH256ToUint256Int(r.StartBlockNumber)
 	count := r.Count
 	step := r.Step
@@ -213,8 +214,9 @@ func (s *Service) validateRangeRequest(r *sync_pb.BodiesByRangeRequest) error {
 		return p2ptypes.ErrInvalidRequest
 	}
 
-	endSlot := new(uint256.Int).AddUint64(startSlot, step*(count-1))
-	if endSlot.Uint64()-startSlot.Uint64() > rangeLimit {
+	span := step * (count - 1)
+	_, overflow := new(uint256.Int).AddOverflow(startSlot, uint256.NewInt(span))
+	if overflow || span > rangeLimit {
 		return p2ptypes.ErrInvalidRequest
 	}
 	return nil
