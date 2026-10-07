@@ -575,7 +575,7 @@ func LoadPendingVotes(tx kv.Tx) (*PendingVotesState, error) {
 	if len(data) < 48 {
 		return nil, fmt.Errorf("pending votes record truncated: %d bytes", len(data))
 	}
-	pv := &PendingVotesState{View: ViewNumber(binary.LittleEndian.Uint64(data)), BlockHash: types.BytesToHash(data[8:40])}
+	pv := &PendingVotesState{View: binary.LittleEndian.Uint64(data), BlockHash: types.BytesToHash(data[8:40])}
 	pos := 40
 	readVotes := func() (map[ValidatorIndex][]byte, error) {
 		if len(data)-pos < 4 {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
