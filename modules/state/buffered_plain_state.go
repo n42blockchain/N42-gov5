@@ -894,9 +894,16 @@ type stoKV struct {
 	value []byte
 }
 
+// addressOrder avoids reflection in swaps and compares addresses in place.
+type addressOrder []types.Address
+
+func (a addressOrder) Len() int           { return len(a) }
+func (a addressOrder) Less(i, j int) bool { return bytes.Compare(a[i][:], a[j][:]) < 0 }
+func (a addressOrder) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
 // sortAddressesByBucket sorts a slice of 20-byte addresses in-place using
 // 256-bucket parallel partition (radix-style first pass) followed by per-
-// bucket Slice sort. For small inputs it falls back to plain sort.Slice
+// bucket sort. Small inputs use the same address sorter without partitioning
 // since goroutine launch overhead would dominate.
 //
 // Concurrency safety: each bucket is owned by exactly one goroutine
@@ -905,9 +912,7 @@ type stoKV struct {
 func sortAddressesByBucket(addrs []types.Address) {
 	const parallelThreshold = 100_000
 	if len(addrs) < parallelThreshold {
-		sort.Slice(addrs, func(i, j int) bool {
-			return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
-		})
+		sort.Sort(addressOrder(addrs))
 		return
 	}
 	// First-byte counting sort to scatter into 256 buckets. The +1
@@ -941,9 +946,7 @@ func sortAddressesByBucket(addrs []types.Address) {
 		go func(lo, hi int) {
 			defer wg.Done()
 			sub := bucketed[lo:hi]
-			sort.Slice(sub, func(i, j int) bool {
-				return bytes.Compare(sub[i][:], sub[j][:]) < 0
-			})
+			sort.Sort(addressOrder(sub))
 		}(start, end)
 	}
 	wg.Wait()
