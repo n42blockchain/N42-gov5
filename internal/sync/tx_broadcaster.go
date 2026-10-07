@@ -75,7 +75,7 @@ func (s *Service) broadcastTxs() {
 			if len(batch) == 0 {
 				return
 			}
-			payload, err := encodeTxBatch(batch)
+			payloads, err := txBroadcastPayloads(batch)
 			n := uint64(len(batch))
 			batch, batchBytes = batch[:0], 0
 			if err != nil {
@@ -83,19 +83,23 @@ func (s *Service) broadcastTxs() {
 				log.Warn("tx broadcaster: batch encode failed", "txs", n, "failed", failed, "err", err)
 				return
 			}
-			if err := s.cfg.p2p.BroadcastTransaction(s.ctx, payload); err != nil {
-				failed += n
-				// Loud: a silent Debug here cost a diagnosis round — every
-				// prior tx-path failure in this codebase hid the same way.
-				if failed <= 3 || failed%100 == 0 {
-					log.Warn("tx broadcaster: publish failed", "txs", n, "failed", failed, "err", err)
+			for _, payload := range payloads {
+				count := n
+				if len(payloads) > 1 {
+					count = 1
 				}
-				return
-			}
-			before := published
-			published += n
-			if before == 0 || before/500 != published/500 {
-				log.Info("tx broadcaster: publishing", "published", published, "failed", failed, "batch", n)
+				if err := s.cfg.p2p.BroadcastTransaction(s.ctx, payload); err != nil {
+					failed += count
+					if failed <= 3 || failed%100 == 0 {
+						log.Warn("tx broadcaster: publish failed", "txs", count, "failed", failed, "err", err)
+					}
+					continue
+				}
+				before := published
+				published += count
+				if before == 0 || before/500 != published/500 {
+					log.Info("tx broadcaster: publishing", "published", published, "failed", failed, "batch", count)
+				}
 			}
 		}
 

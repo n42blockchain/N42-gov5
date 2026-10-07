@@ -65,6 +65,17 @@ func decodeTxBatch(payload []byte) ([]*transaction.Transaction, error) {
 	if len(payload) == 0 || payload[0] != txBatchMarker {
 		return nil, errNotABatch
 	}
+	if len(payload) > txBatchMaxBytes {
+		return nil, errors.New("batch exceeds byte cap")
+	}
+	content, rest, err := rlp.SplitList(payload[1:])
+	if err != nil || len(rest) != 0 {
+		return nil, errors.New("invalid batch envelope")
+	}
+	count, err := rlp.CountValues(content)
+	if err != nil || count == 0 || count > txBatchMaxTxs {
+		return nil, errors.New("invalid batch item count")
+	}
 	var rawTxs [][]byte
 	if err := rlp.DecodeBytes(payload[1:], &rawTxs); err != nil {
 		return nil, fmt.Errorf("batch envelope: %w", err)
@@ -84,4 +95,17 @@ func decodeTxBatch(payload []byte) ([]*transaction.Transaction, error) {
 		txs = append(txs, tx)
 	}
 	return txs, nil
+}
+
+// txBroadcastPayloads falls back to legacy single messages when the encoded
+// batch crosses the byte cap, including its RLP framing. No transaction is lost.
+func txBroadcastPayloads(raws [][]byte) ([][]byte, error) {
+	payload, err := encodeTxBatch(raws)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > txBatchMaxBytes {
+		return raws, nil
+	}
+	return [][]byte{payload}, nil
 }

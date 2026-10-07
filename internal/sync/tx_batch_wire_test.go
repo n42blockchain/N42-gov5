@@ -132,3 +132,45 @@ func TestTxBatchCap(t *testing.T) {
 		t.Fatal("oversized batch decoded")
 	}
 }
+
+func TestTxBatchRejectsBytesBeforeDecode(t *testing.T) {
+	payload := make([]byte, txBatchMaxBytes+1)
+	payload[0] = txBatchMarker
+	if _, err := decodeTxBatch(payload); err == nil {
+		t.Fatal("oversized batch accepted")
+	}
+}
+
+func TestTxBatchFramingFallsBackWithoutDroppingTransactions(t *testing.T) {
+	raws := [][]byte{bytes.Repeat([]byte{1}, txBatchMaxBytes/2), bytes.Repeat([]byte{2}, txBatchMaxBytes/2)}
+	payloads, err := txBroadcastPayloads(raws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 2 || !bytes.Equal(payloads[0], raws[0]) || !bytes.Equal(payloads[1], raws[1]) {
+		t.Fatal("oversized framing lost transaction")
+	}
+	small, _ := signedRawTxs(t, 2)
+	payloads, err = txBroadcastPayloads(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 1 {
+		t.Fatal("small batch split")
+	}
+	if _, err = decodeTxBatch(payloads[0]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func FuzzDecodeTxBatch(f *testing.F) {
+	f.Add([]byte{txBatchMarker, 0xc0})
+	f.Add([]byte{txBatchMarker, 0xc2, 0x80, 0x80})
+	f.Add([]byte{txBatchMarker, 0xff, 0})
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		txs, err := decodeTxBatch(payload)
+		if err == nil && (len(txs) == 0 || len(txs) > txBatchMaxTxs || len(payload) > txBatchMaxBytes) {
+			t.Fatal("accepted out-of-bounds batch")
+		}
+	})
+}
