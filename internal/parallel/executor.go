@@ -19,6 +19,7 @@ package parallel
 import (
 	"os"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,6 +112,72 @@ type Executor struct {
 	// reflects the last wave only -- the first (initial) wave dominates
 	// transaction count on a full block, so that is the wave worth seeing.
 	workerStats []workerStat
+
+	// S83: distinct affinity keys and the longest per-key chain of the most
+	// recent executeParallel call. Only computed in LPT mode (0 otherwise).
+	waveKeys     int
+	waveTopChain int
+}
+
+// waveLPT (N42_WAVE_LPT=1) replaces the modulo sender-to-worker assignment
+// with longest-processing-time greedy assignment (S83). Read once at init.
+var waveLPT = os.Getenv("N42_WAVE_LPT") == "1"
+
+// partitionByAffinity splits txIndices (ascending) into one in-order queue per
+// worker. Equal affinity keys always land on one worker. With lpt false the
+// worker is key % workers; with lpt true keys are sorted by chain length
+// (descending, ties by first appearance) and each goes to the least-loaded
+// worker. keys and topChain are reported only in LPT mode.
+func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64, lpt bool) (queues [][]int, keys, topChain int) {
+	queues = make([][]int, workers)
+	if !lpt {
+		for _, idx := range txIndices {
+			w := int(affinity(idx) % uint64(workers))
+			queues[w] = append(queues[w], idx)
+		}
+		return queues, 0, 0
+	}
+	type chain struct {
+		key   uint64
+		count int
+	}
+	pos := make(map[uint64]int)
+	var chains []chain
+	for _, idx := range txIndices {
+		k := affinity(idx)
+		i, ok := pos[k]
+		if !ok {
+			i = len(chains)
+			pos[k] = i
+			chains = append(chains, chain{key: k})
+		}
+		chains[i].count++
+	}
+	order := make([]int, len(chains))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return chains[order[a]].count > chains[order[b]].count })
+	load := make([]int, workers)
+	assigned := make(map[uint64]int, len(chains))
+	for _, ci := range order {
+		best := 0
+		for w := 1; w < workers; w++ {
+			if load[w] < load[best] {
+				best = w
+			}
+		}
+		load[best] += chains[ci].count
+		assigned[chains[ci].key] = best
+		if chains[ci].count > topChain {
+			topChain = chains[ci].count
+		}
+	}
+	for _, idx := range txIndices {
+		w := assigned[affinity(idx)]
+		queues[w] = append(queues[w], idx)
+	}
+	return queues, len(chains), topChain
 }
 
 // workerStat is one worker's timings for a single executeParallel call
@@ -136,6 +203,8 @@ type WorkerStatsSummary struct {
 	MvsWriteMs    int64
 	MvsDeleteMs   int64
 	SlowestWorker int
+	Keys          int // S83: distinct affinity keys (LPT mode only)
+	TopChain      int // S83: longest per-key chain (LPT mode only)
 }
 
 // WorkerStats summarizes the per-worker timings recorded during the last
@@ -171,6 +240,7 @@ func (e *Executor) WorkerStats() WorkerStatsSummary {
 		mvsDeleteNs += ws.mvsDeleteNs
 		sumWallNs += ws.wallNs
 	}
+	s.Keys, s.TopChain = e.waveKeys, e.waveTopChain
 	s.WallMeanMs = float64(sumWallNs) / float64(len(e.workerStats)) / 1e6
 	s.SetupMs = setupNs / 1e6
 	s.MvsWriteMs = mvsWriteNs / 1e6
@@ -423,11 +493,7 @@ func (e *Executor) executeParallel(txIndices []int) {
 	var queues [][]int
 	work := make(chan int, len(txIndices))
 	if e.affinity != nil {
-		queues = make([][]int, e.workers)
-		for _, idx := range txIndices { // txIndices is ascending
-			w := int(e.affinity(idx) % uint64(e.workers))
-			queues[w] = append(queues[w], idx)
-		}
+		queues, e.waveKeys, e.waveTopChain = partitionByAffinity(txIndices, e.workers, e.affinity, waveLPT)
 	}
 
 	// S82: fresh per-call worker stats. Each goroutine below writes only its
