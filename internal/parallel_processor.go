@@ -157,6 +157,37 @@ func touchesAny(txs []*transaction.Transaction, addrs []types.Address) bool {
 	return false
 }
 
+// canDeferParallelFees runs after sender recovery and block-start processing.
+// One executable transaction makes deferral unsafe for the entire block.
+func canDeferParallelFees(txs []*transaction.Transaction, recipients []types.Address, ibs *state.IntraBlockState, precompiles []types.Address) (bool, error) {
+	if touchesAny(txs, recipients) {
+		return false, nil
+	}
+	seen := make(map[types.Address]bool)
+	for _, tx := range txs {
+		to := tx.To()
+		if to == nil || len(tx.Data()) != 0 || len(tx.AuthList()) != 0 || tx.From() == nil {
+			return false, nil
+		}
+		for _, address := range precompiles {
+			if *to == address {
+				return false, nil
+			}
+		}
+		if seen[*to] {
+			continue
+		}
+		seen[*to] = true
+		if len(ibs.GetCode(*to)) != 0 {
+			return false, ibs.Error()
+		}
+		if err := ibs.Error(); err != nil {
+			return false, fmt.Errorf("parallel fee eligibility: %w", err)
+		}
+	}
+	return true, nil
+}
+
 // ProcessParallel executes all transactions in the block using Block-STM
 // wave-based parallel execution. It falls back to sequential execution
 // when the block has too few transactions or when parallel execution
@@ -274,16 +305,16 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	chainConfig := p.config
 	cfg := vm2.Config{}
 
-	// The fee credit is the one write every transaction shares. Deferred to
-	// the end of the block it leaves Block-STM only the real conflicts; a
-	// block that sends from or to a fee recipient cannot defer (the credit
-	// would be visible to those transactions in serial order) and runs
-	// sequentially. Contract calls that read the coinbase balance (COINBASE +
-	// BALANCE) are not covered by the address scan; the benchmark workload is
-	// plain transfers, and an EVM-visible difference shows as a BAD BLOCK.
 	feeRecipients := deferredFeeRecipients(chainConfig, concreteHeader)
 
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
+		return nil, err
+	}
+	// Only bytecode-free transfers can hide fee credits until block end.
+	// Contract execution, creation and authorization can observe or modify any
+	// recipient dynamically; keep their credits in the validated MVS instead.
+	deferFees, err := canDeferParallelFees(txs, feeRecipients, ibs, vm2.ActivePrecompiles(chainConfig.RulesWithTimestamp(concreteHeader.Number.Uint64(), concreteHeader.Time)))
+	if err != nil {
 		return nil, err
 	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
@@ -395,8 +426,11 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		vmenv := wc.evm
 
 		var fees []deferredFee
-		sink := func(recipient types.Address, amount *uint256.Int) {
-			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
+		var sink FeeSink
+		if deferFees {
+			sink = func(recipient types.Address, amount *uint256.Int) {
+				fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
+			}
 		}
 		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink, signer)
 		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
@@ -416,6 +450,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// nonce chain of a sender is then executed by the worker that already
 	// applied its predecessor, and only cross-sender conflicts (a recipient
 	// credited by several senders in one wave) reach the validator.
+	defer executor.Release()
 	executor.SetAffinity(func(txIndex int) uint64 {
 		tx := txs[txIndex]
 		if from := tx.From(); from != nil {
