@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -120,6 +121,55 @@ func TestHeaderFramedReaderMatchesLegacy(t *testing.T) {
 		}
 		if got.Hash() != want.Hash() {
 			t.Fatalf("block %d: hash %x != %x", b, got.Hash(), want.Hash())
+		}
+	}
+}
+
+func TestHeaderCompactConcurrentReads(t *testing.T) {
+	headers := make([]*block.Header, 600)
+	for i := range headers {
+		headers[i] = makeTestHeader(byte(i))
+		headers[i].Number = uint256.NewInt(uint64(i))
+	}
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	for _, framed := range []bool{false, true} {
+		dir := t.TempDir()
+		payload := encodeHeaderSegment(headers, enc)
+		if framed {
+			payload = encodeHeaderSegmentFramed(headers, enc, headerFrameSize)
+		}
+		writeOneHeaderSegmentStore(t, dir, payload)
+		r, err := OpenHeaderCompact(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		for worker := 0; worker < 8; worker++ {
+			wg.Add(1)
+			go func(worker int) {
+				defer wg.Done()
+				for j := 0; j < 100; j++ {
+					n := uint64((worker*71 + j*137) % len(headers))
+					h, err := r.ReadHeader(n)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if h.Number.Uint64() != n {
+						t.Errorf("number %d != %d", h.Number.Uint64(), n)
+					}
+				}
+			}(worker)
+		}
+		wg.Wait()
+		r.Close()
+		r.Close()
+		if _, err := r.ReadHeader(0); err == nil {
+			t.Fatal("read after close succeeded")
 		}
 	}
 }

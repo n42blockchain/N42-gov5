@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -627,6 +628,8 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 // HeaderCompactReader provides random and sequential access to headers
 // stored in headerc.NNNN.cdat + headerc.cidx. Caches current segment.
 type HeaderCompactReader struct {
+	mu        sync.Mutex
+	closed    bool
 	dir       string
 	idxFile   *os.File
 	dataFiles map[uint16]*os.File
@@ -670,6 +673,12 @@ func OpenHeaderCompact(dir string) (*HeaderCompactReader, error) {
 
 // Close releases all resources.
 func (r *HeaderCompactReader) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	r.closed = true
 	r.dec.Close()
 	r.idxFile.Close()
 	for _, f := range r.dataFiles {
@@ -686,6 +695,11 @@ func (r *HeaderCompactReader) MaxBlock() uint64 { return r.segments * HeaderSegm
 // ReadHeader returns the header for blockNum. Sequential reads within the
 // same segment hit the cache (zero IO, zero decompression).
 func (r *HeaderCompactReader) ReadHeader(blockNum uint64) (*block.Header, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, os.ErrClosed
+	}
 	seg := int64(blockNum / HeaderSegmentSize)
 	idx := int(blockNum % HeaderSegmentSize)
 
