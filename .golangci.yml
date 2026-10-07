@@ -1,140 +1,115 @@
-# golangci-lint configuration for N42 Blockchain
-# https://golangci-lint.run/usage/configuration/
-
+# golangci-lint v2 configuration; preserve the existing incremental lint gate.
+version: "2"
 run:
   timeout: 10m
-  tests: true
   build-tags:
     - integration
-
+  tests: true
 output:
   formats:
-    - format: colored-line-number
+    text:
       path: stdout
-  print-issued-lines: true
-  print-linter-name: true
-  sort-results: true
-
+      print-linter-name: true
+      print-issued-lines: true
 linters:
-  disable-all: true
+  default: none
   enable:
-    # Security
-    - gosec
-
-    # Bugs
-    - govet
-    - staticcheck
     - errcheck
+    - gosec
+    - govet
     - ineffassign
-
-    # Code quality
-    - unconvert
     - misspell
-    - gofmt
-    - goimports
-
-    # Performance
     - prealloc
-
-linters-settings:
-  gosec:
-    severity: high
-    confidence: high
-    excludes:
-      - G104  # Audit errors not checked (too many false positives)
-      - G304  # File path provided as taint input (intentional in CLI)
-    config:
-      G306: "0644"  # Expect WriteFile permissions to be 0644
-
-  govet:
-    enable-all: false
-    enable:
-      - atomic
-      - bools
-      - buildtag
-      - copylocks
-      - httpresponse
-      - loopclosure
-      - lostcancel
-      - nilfunc
-      - printf
-      - shift
-      - stdmethods
-      - structtag
-      - tests
-      - unmarshal
-      - unreachable
-      - unusedresult
-
-  staticcheck:
-    checks:
-      - all
-      - '-SA1019'  # Deprecated (too noisy during refactoring)
-      - '-SA4006'  # Value assigned but never used (context-dependent)
-
-  errcheck:
-    check-type-assertions: false
-    check-blank: false
-    exclude-functions:
-      - io.Copy
-      - io.CopyBuffer
-      - io.CopyN
-      - (io.Closer).Close
-      - (*os.File).Close
-      - (net.Conn).Close
-      - (*database/sql.Rows).Close
-      - (github.com/syndtr/goleveldb/leveldb.DB).Close
-
-  misspell:
-    locale: US
-    ignore-words:
-      - Initialised
-
-  gofmt:
-    simplify: true
-
-  goimports:
-    local-prefixes: github.com/n42blockchain/N42
-
-  prealloc:
-    simple: true
-    range-loops: true
-    for-loops: false
-
-issues:
-  exclude-dirs:
-    - tests/eth-tests
-    - vendor
-    - third_party
-  exclude-files:
-    - ".*_gen\\.go$"
-    - ".*\\.pb\\.go$"
-  exclude-rules:
-    # Exclude some linters from running on tests files
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - prealloc
-
-    # Exclude known issues in generated files
-    - path: ".*\\.pb\\.go"
-      linters:
+    - staticcheck
+    - unconvert
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+      exclude-functions:
+        - io.Copy
+        - io.CopyBuffer
+        - io.CopyN
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (*database/sql.Rows).Close
+        - (github.com/syndtr/goleveldb/leveldb.DB).Close
+    gosec:
+      excludes:
+        - G104
+        - G304
+      severity: high
+      confidence: high
+      config:
+        G306: "0644"
+    govet:
+      enable:
+        - atomic
+        - bools
+        - buildtag
+        - copylocks
+        - httpresponse
+        - loopclosure
+        - lostcancel
+        - nilfunc
+        - printf
+        - shift
+        - stdmethods
+        - structtag
+        - tests
+        - unmarshal
+        - unreachable
+        - unusedresult
+      enable-all: false
+    misspell:
+      locale: US
+      ignore-rules:
+        - Initialised
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+    staticcheck:
+      checks:
         - all
-
-    # Allow fmt.Print* in cmd packages
-    - path: cmd/
-      linters:
-        - forbidigo
-
+        - -SA1019
+        - -SA4006
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gosec
+          - prealloc
+        path: _test\.go
+      - linters:
+          - all
+        path: .*\.pb\.go
+      - linters:
+          - forbidigo
+        path: cmd/
+    paths:
+      - .*_gen\.go$
+      - .*\.pb\.go$
+      - tests/eth-tests
+      - vendor
+      - third_party
+      - third_party$
+      - builtin$
+      - examples$
+issues:
   max-issues-per-linter: 50
   max-same-issues: 10
-  # This repository carries significant historical lint debt. Gate regressions
-  # in the current patch instead of blocking all work on unrelated legacy issues.
+  # Existing lint debt remains outside this patch gate.
   new: true
-
 severity:
-  default-severity: warning
+  default: warning
   rules:
     - linters:
         - gosec
@@ -145,3 +120,24 @@ severity:
     - linters:
         - errcheck
       severity: warning
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/n42blockchain/N42
+  exclusions:
+    generated: lax
+    paths:
+      - .*_gen\.go$
+      - .*\.pb\.go$
+      - tests/eth-tests
+      - vendor
+      - third_party
+      - third_party$
+      - builtin$
+      - examples$
