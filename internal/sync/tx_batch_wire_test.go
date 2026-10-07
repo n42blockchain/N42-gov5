@@ -134,10 +134,26 @@ func TestTxBatchCap(t *testing.T) {
 }
 
 func TestTxBatchRejectsBytesBeforeDecode(t *testing.T) {
-	payload := make([]byte, txBatchMaxBytes+1)
-	payload[0] = txBatchMarker
-	if _, err := decodeTxBatch(payload); err == nil {
-		t.Fatal("oversized batch accepted")
+	to := types.Address{0xab}
+	tx := transaction.NewTransaction(0, types.Address{}, &to, uint256.NewInt(0), 50000000, uint256.NewInt(1), bytes.Repeat([]byte{1}, txBatchMaxBytes/2))
+	raw, err := transaction.EncodeEthereumTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both transactions are individually decodable. Only the combined wire
+	// payload, including signatures and framing, crosses the batch byte cap.
+	if _, err = transaction.DecodeEthereumTransaction(raw); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := encodeTxBatch([][]byte{raw, raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) <= txBatchMaxBytes {
+		t.Fatal("fixture is below byte cap")
+	}
+	if _, err = decodeTxBatch(payload); err == nil {
+		t.Fatal("oversized valid batch accepted")
 	}
 }
 
