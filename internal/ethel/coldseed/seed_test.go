@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,10 +78,13 @@ func TestScanPrefix_NoMatchesReturnsNil(t *testing.T) {
 // deterministic infohash derived from the name, so assertions can check
 // exactly which files were (re)seeded.
 type fakeSink struct {
+	mu    sync.Mutex
 	calls []string
 }
 
 func (f *fakeSink) Seed(_ context.Context, name string, _ []byte, _ int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, name)
 	return "ih-" + name, nil
 }
@@ -101,7 +105,7 @@ func TestRunOnce_SeedsAllOnFirstRunAndSkipsUnchangedSealed(t *testing.T) {
 	}
 
 	require.NoError(t, RunOnce(context.Background(), opts, sink))
-	require.ElementsMatch(t, []string{"bodyc.0000.cdat", "bodyc.0001.cdat"}, sink.calls)
+	require.ElementsMatch(t, []string{"bodyc.0000.cdat", "bodyc.0001.cdat"}, sink.Calls())
 
 	m, err := torrentsync.LoadManifest(manifestPath)
 	require.NoError(t, err)
@@ -119,7 +123,7 @@ func TestRunOnce_EmptyDirIsNoop(t *testing.T) {
 	sink := &fakeSink{}
 	opts := Options{Dir: dir, Prefixes: []string{"bodyc"}, ManifestPath: manifestPath}
 	require.NoError(t, RunOnce(context.Background(), opts, sink))
-	require.Empty(t, sink.calls)
+	require.Empty(t, sink.Calls())
 }
 
 func TestService_StartStopSinglePass(t *testing.T) {
@@ -134,7 +138,7 @@ func TestService_StartStopSinglePass(t *testing.T) {
 	require.NoError(t, svc.Start(context.Background()))
 
 	require.Eventually(t, func() bool {
-		return len(sink.calls) > 0
+		return len(sink.Calls()) > 0
 	}, time.Second, 10*time.Millisecond)
 
 	require.NoError(t, svc.Stop())
@@ -151,10 +155,16 @@ func TestService_StopBeforeIntervalElapses(t *testing.T) {
 	require.NoError(t, svc.Start(context.Background()))
 
 	require.Eventually(t, func() bool {
-		return len(sink.calls) > 0
+		return len(sink.Calls()) > 0
 	}, time.Second, 10*time.Millisecond)
 
 	// Stop should cancel the ctx and the loop should exit promptly even
 	// though Interval is long.
 	require.NoError(t, svc.Stop())
+}
+
+func (f *fakeSink) Calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }
