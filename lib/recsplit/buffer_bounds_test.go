@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
-	"unsafe"
 )
 
 func TestGolombRiceWriteBoundedBuffers(t *testing.T) {
@@ -17,7 +16,10 @@ func TestGolombRiceWriteBoundedBuffers(t *testing.T) {
 		if got := binary.BigEndian.Uint64(out.Bytes()[:8]); got != uint64(len(words)) {
 			t.Fatalf("count %d", got)
 		}
-		raw := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(words))), len(words)*8)
+		raw := make([]byte, len(words)*8)
+		for i, word := range words {
+			binary.NativeEndian.PutUint64(raw[i*8:], word)
+		}
 		if !bytes.Equal(out.Bytes()[8:], raw) {
 			t.Fatal("native word encoding changed")
 		}
