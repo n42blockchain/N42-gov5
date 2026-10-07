@@ -111,6 +111,20 @@ Round B TPS (win1/win2): B1 140,887 / 129,168; B2 143,384 / 121,845; mean
 133.8k, below the standing best 146.5k (35zzzba) and the 136-146k band. A
 legs: A1 71,619 / 73,142; A2 67,809 / 69,714.
 
+## S83 plan (2026-10-07, America/New_York)
+
+S82 located the import bound in wave queue imbalance (wkQMax p50 24k vs mean
+5.1k, wkQMin 0). S83 adds `N42_WAVE_LPT=1` (internal/parallel/executor.go
+`partitionByAffinity`): sender chains are sorted longest-first and each is
+given to the least-loaded worker; indices are appended in index order so every
+nonce chain stays in order on one worker. Env unset keeps the modulo
+partition. New log fields `wkKeys`, `wkTopChain` (LPT mode only). Binary
+n42-r113 = r112 + this diff; round 35zzzbi runs it with the env on all 7 nodes
+against S82's 35zzzbh as baseline. Prediction and pass/fail criteria are in
+docs/QS_QUEUE.md row S83. If wkTopChain itself is near wkQMax, a single
+sender chain is the floor and only splitting chains (not possible with
+nonce ordering) would help.
+
 ## Operational notes
 
 - Lineage binaries: /data/blockchain/bin/n42-r1NN AND a copy in
