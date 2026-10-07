@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -109,7 +108,7 @@ func Combine(req d.DecisionRequest, outcomes []Outcome) (Combined, error) {
 	if bad || first {
 		result = d.DecisionResult{Label: "UNKNOWN", NeedEscalation: true}
 	}
-	result.NeedEscalation = result.NeedEscalation || req.PolicyParameters.RequireHuman || result.ConfidencePPM < req.PolicyParameters.MinConfidencePPM || strings.EqualFold(result.Label, "UNKNOWN") || strings.EqualFold(result.Label, "ABSTAIN")
+	result = result.EnforcePolicy(req)
 	b, err := json.Marshal(ev)
 	if err != nil {
 		return Combined{}, err

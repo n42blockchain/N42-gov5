@@ -29,7 +29,7 @@ func NewNativeSystem1(did string) (*Native, error) {
 	if did == "" {
 		return nil, errors.New("native provider DID required")
 	}
-	return &Native{identity: Identity{DID: did, Model: "N42-system1-rules", ModelVersion: "1", ModelHash: native.SystemHash(), Family: "native-system1-rules", Tasks: []string{"node.anomaly"}, Schemas: []string{"system1-v1"}}, system1: true}, nil
+	return &Native{identity: Identity{DID: did, Model: "N42-system1-rules", ModelVersion: "2", ModelHash: native.SystemHash(), Family: "native-system1-rules", Tasks: []string{"node.anomaly"}, Schemas: []string{"system1-v1"}}, system1: true}, nil
 }
 func NewNativeModel(did string, a native.Artifact) (*Native, error) {
 	if did == "" {
@@ -54,7 +54,8 @@ func (n *Native) Decide(ctx context.Context, r d.DecisionRequest, input string) 
 		return d.DecisionResult{}, errors.New("native task/schema mismatch")
 	}
 	if n.system1 {
-		return native.System1(ctx, input)
+		result, err := native.System1(ctx, input)
+		return result.EnforcePolicy(r), err
 	}
 	if n.classifier == nil {
 		return native.Health(ctx, input)

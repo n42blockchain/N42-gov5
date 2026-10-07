@@ -56,9 +56,11 @@ func Verify(r d.DecisionReceipt, req d.DecisionRequest, expected chain.Address, 
 	if err := r.Result.Validate(); err != nil {
 		return err
 	}
-	if (req.PolicyParameters.RequireHuman || r.Result.ConfidencePPM < req.PolicyParameters.MinConfidencePPM || strings.EqualFold(r.Result.Label, "UNKNOWN") || strings.EqualFold(r.Result.Label, "ABSTAIN")) && !r.Result.NeedEscalation {
-		return errors.New("required escalation suppressed")
+	policyResult := r.Result.EnforcePolicy(req)
+	if policyResult.NeedEscalation != r.Result.NeedEscalation || (req.SchemaID == "system1-v1" && len(r.Result.Answers) == 3 && r.Result.Answers[2].ValuePPM != policyResult.Answers[2].ValuePPM) {
+		return errors.New("required escalation suppressed or inconsistent")
 	}
+
 	hash, err := r.CanonicalHash()
 	if err != nil {
 		return err
