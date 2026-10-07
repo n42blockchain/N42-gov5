@@ -64,6 +64,53 @@ Then: fill the S82 row, pick the row above, dispatch one Opus code change
 (env-gated so the fleet can A/B it at the standing config), prediction on
 the board first.
 
+## S82 result (35zzzbh, r112) -- 2026-10-07
+
+Node3, "parallel block" lines with txs >= 100k, bounded by the round-log LEG
+windows (America/New_York): B1 18:54:58-19:08:16 (n=148), B2 19:08:16-19:22:26
+(n=147). All wk* fields present. wkMvsWrMs/wkMvsDelMs/wkSetupMs are sums over
+the 32 workers; wkWall*/wkQ* are per-worker max/min/mean.
+
+| field (B1+B2, n=295) | p50 | p90 | max |
+|---|---|---|---|
+| runMs | 352 | 479 | 746 |
+| execMs | 331 | 459 | 709 |
+| waveBusyMs | 1715 | 2530 | 4554 |
+| wkWallMaxMs | 311 | 440 | 670 |
+| wkWallMeanMs | 66.8 | 99.6 | 215 |
+| wkWallMinMs | 0.00 | 0.01 | 0.05 |
+| wkQMax | 24000 | 33332 | 53000 |
+| wkQMin | 0 | 0 | 0 |
+| wkSetupMs (sum) | 0 | 0 | 7 |
+| wkMvsWrMs (sum) | 142 | 325 | 1388 |
+| wkMvsDelMs (sum) | 203 | 248 | 1309 |
+| wkWallMax / wkWallMean | 4.42 | 5.98 | 11.1 |
+| wkWallMax / runMs | 0.89 | 0.93 | 0.95 |
+| wkWallMean / runMs | 0.20 | 0.26 | 0.38 |
+| (MvsWr+MvsDel) / (32 * wkWallMean) | 0.16 | - | - |
+| wkSetup / (32 * wkWallMean) | 0.00 | 0.00 | 0.04 |
+| waveBusyMs / (32 * wkWallMeanMs) | 0.80 | 0.81 | 0.89 |
+| waveBusyMs / (32 * runMs) | ~0.16 | - | - |
+
+B1 and B2 separately agree (B1 wkWallMax p50 329, B2 293; queue max p50
+24000 / 23179). Note: the table's row 2 ratio, taken literally as
+(MvsWr+MvsDel)/wkWallMean, reads 5.3 only because the Mvs fields are summed
+over workers while wkWallMean is per worker; normalised per worker the MVS
+share is ~16% of worker wall, under the 50% threshold.
+
+Verdict: row 1 matches (queue imbalance under the static sender-affinity
+partition). Every heavy block has at least one worker with an empty queue
+(wkQMin = 0, wkWallMin ~ 0 ms) while the busiest holds ~24k of 163k txs
+(~4.7x the 5.1k mean) and runs for ~89% of the wave; the other workers
+finish in ~67 ms on average. MVS locks (16%), setup (~0) and uniform CPU
+starvation (mean wall is only 20% of runMs) are each refuted. Next lever:
+work stealing / finer partition in internal/parallel_processor.go:419 and
+executor.go:345-416 (one Opus task, env-gated for fleet A/B).
+
+Round B TPS (win1/win2): B1 140,887 / 129,168; B2 143,384 / 121,845; mean
+133.8k, below the standing best 146.5k (35zzzba) and the 136-146k band. A
+legs: A1 71,619 / 73,142; A2 67,809 / 69,714.
+
 ## Operational notes
 
 - Lineage binaries: /data/blockchain/bin/n42-r1NN AND a copy in
