@@ -211,8 +211,7 @@ func (ef *EliasFano) Write(w io.Writer) error {
 	if _, e := w.Write(numBuf[:]); e != nil {
 		return e
 	}
-	p := (*[maxDataSize]byte)(unsafe.Pointer(&ef.data[0]))
-	b := (*p)[:]
+	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(ef.data))), len(ef.data)*8)
 	if _, e := w.Write(b[:len(ef.data)*8]); e != nil {
 		return e
 	}
@@ -225,8 +224,7 @@ func ReadEliasFano(r []byte) (*EliasFano, int) {
 	ef.count = binary.BigEndian.Uint64(r[:8])
 	ef.u = binary.BigEndian.Uint64(r[8:16])
 	ef.minDelta = binary.BigEndian.Uint64(r[16:24])
-	p := (*[maxDataSize / 8]uint64)(unsafe.Pointer(&r[24]))
-	ef.data = p[:]
+	ef.data = unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.SliceData(r[24:]))), (len(r)-24)/8)
 	ef.deriveFields()
 	return ef, 24 + 8*len(ef.data)
 }
@@ -510,8 +508,7 @@ func (ef *DoubleEliasFano) Write(w io.Writer) error {
 	if _, e := w.Write(numBuf[:]); e != nil {
 		return e
 	}
-	p := (*[maxDataSize]byte)(unsafe.Pointer(&ef.data[0]))
-	b := (*p)[:]
+	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(ef.data))), len(ef.data)*8)
 	if _, e := w.Write(b[:len(ef.data)*8]); e != nil {
 		return e
 	}
@@ -525,8 +522,7 @@ func (ef *DoubleEliasFano) Read(r []byte) int {
 	ef.uPosition = binary.BigEndian.Uint64(r[16:24])
 	ef.cumKeysMinDelta = binary.BigEndian.Uint64(r[24:32])
 	ef.posMinDelta = binary.BigEndian.Uint64(r[32:40])
-	p := (*[maxDataSize / 8]uint64)(unsafe.Pointer(&r[40]))
-	ef.data = p[:]
+	ef.data = unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.SliceData(r[40:]))), (len(r)-40)/8)
 	ef.deriveFields()
 	return 40 + 8*len(ef.data)
 }

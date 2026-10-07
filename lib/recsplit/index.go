@@ -213,8 +213,10 @@ func (idx *Index) parseData(fName string) error {
 
 	l := binary.BigEndian.Uint64(idx.data[offset:])
 	offset += 8
-	p := (*[maxDataSize / 8]uint64)(unsafe.Pointer(&idx.data[offset]))
-	idx.grData = p[:l]
+	if l > uint64((len(idx.data)-offset)/8) {
+		return fmt.Errorf("%w: truncated Golomb Rice data", IncompatibleErr)
+	}
+	idx.grData = unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.SliceData(idx.data[offset:]))), int(l))
 	offset += 8 * int(l)
 	idx.ef.Read(idx.data[offset:])
 
@@ -246,10 +248,10 @@ func (idx *Index) BaseDataID() uint64 { return idx.baseDataID }
 
 // Enums reports whether this index is two-level (Lookup returns an insertion
 // ordinal; OrdinalLookup maps it to the stored offset via the built-in EF).
-func (idx *Index) Enums() bool { return idx.enums }
-func (idx *Index) FilePath() string   { return idx.filePath }
-func (idx *Index) FileName() string   { return idx.fileName }
-func (idx *Index) IsOpen() bool       { return idx != nil && idx.f != nil }
+func (idx *Index) Enums() bool      { return idx.enums }
+func (idx *Index) FilePath() string { return idx.filePath }
+func (idx *Index) FileName() string { return idx.fileName }
+func (idx *Index) IsOpen() bool     { return idx != nil && idx.f != nil }
 
 func (idx *Index) Close() {
 	if idx == nil {
