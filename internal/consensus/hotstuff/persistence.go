@@ -568,41 +568,53 @@ func SavePendingVotes(tx kv.RwTx, pv *PendingVotesState) error {
 
 // LoadPendingVotes loads persisted pending votes.
 func LoadPendingVotes(tx kv.Tx) (*PendingVotesState, error) {
-	data, err := tx.GetOne(modules.HotStuffState, pendingVotesKey)
-	if err != nil || len(data) < 44 {
+	data, err := readRecoveryRecord(tx, pendingVotesKey, "pending votes")
+	if err != nil || data == nil {
 		return nil, err
 	}
-	pv := &PendingVotesState{
-		PrepareVotes: make(map[ValidatorIndex][]byte),
-		CommitVotes:  make(map[ValidatorIndex][]byte),
+	if len(data) < 48 {
+		return nil, fmt.Errorf("pending votes record truncated: %d bytes", len(data))
 	}
-	pos := 0
-	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:]))
-	pos += 8
-	copy(pv.BlockHash[:], data[pos:])
-	pos += 32
-
-	readVotes := func() (map[ValidatorIndex][]byte, int) {
-		count := int(binary.LittleEndian.Uint32(data[pos:]))
+	pv := &PendingVotesState{View: ViewNumber(binary.LittleEndian.Uint64(data)), BlockHash: types.BytesToHash(data[8:40])}
+	pos := 40
+	readVotes := func() (map[ValidatorIndex][]byte, error) {
+		if len(data)-pos < 4 {
+			return nil, fmt.Errorf("pending votes missing count")
+		}
+		count := uint64(binary.LittleEndian.Uint32(data[pos:]))
 		pos += 4
-		m := make(map[ValidatorIndex][]byte, count)
-		for i := 0; i < count && pos+8 <= len(data); i++ {
+		if count > uint64(len(data)-pos)/8 {
+			return nil, fmt.Errorf("pending votes impossible count")
+		}
+		m := make(map[ValidatorIndex][]byte, int(count))
+		for i := uint64(0); i < count; i++ {
+			if len(data)-pos < 8 {
+				return nil, fmt.Errorf("pending votes truncated entry")
+			}
 			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			sLen := int(binary.LittleEndian.Uint32(data[pos:]))
+			size := uint64(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if pos+sLen > len(data) {
-				break
+			if size == 0 || size > uint64(len(data)-pos) {
+				return nil, fmt.Errorf("pending votes invalid signature length")
 			}
-			sig := make([]byte, sLen)
-			copy(sig, data[pos:pos+sLen])
-			pos += sLen
-			m[idx] = sig
+			if _, ok := m[idx]; ok {
+				return nil, fmt.Errorf("pending votes duplicate validator %d", idx)
+			}
+			m[idx] = append([]byte(nil), data[pos:pos+int(size)]...)
+			pos += int(size)
 		}
-		return m, pos
+		return m, nil
 	}
-	pv.PrepareVotes, pos = readVotes()
-	pv.CommitVotes, _ = readVotes()
+	if pv.PrepareVotes, err = readVotes(); err != nil {
+		return nil, err
+	}
+	if pv.CommitVotes, err = readVotes(); err != nil {
+		return nil, err
+	}
+	if pos != len(data) {
+		return nil, fmt.Errorf("pending votes trailing bytes")
+	}
 	return pv, nil
 }
 
