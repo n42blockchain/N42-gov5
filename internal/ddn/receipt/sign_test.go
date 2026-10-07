@@ -91,7 +91,7 @@ func TestSystem1ReceiptRejectsContradictoryEscalationAnswer(t *testing.T) {
 	req.SchemaID = "system1-v1"
 	req.PolicyParameters.RequireHuman = true
 	r.RequestID, _ = req.CanonicalHash()
-	r.Result = d.DecisionResult{Label: "NORMAL", NeedEscalation: true, Answers: []d.QuantizedAnswer{{Kind: 1, ProbabilitiesPPM: []uint32{d.PPM, 0, 0}}, {Kind: 1, ProbabilitiesPPM: []uint32{d.PPM, 0, 0, 0, 0, 0, 0, 0}}, {Kind: 3}}}
+	r.Result = d.DecisionResult{Label: "NORMAL", NeedEscalation: true, ProbabilitiesPPM: []uint32{d.PPM, 0, 0, 0, 0, 0, 0, 0}, Answers: []d.QuantizedAnswer{{Kind: 1, ProbabilitiesPPM: []uint32{d.PPM, 0, 0}}, {Kind: 1, ProbabilitiesPPM: []uint32{d.PPM, 0, 0, 0, 0, 0, 0, 0}}, {Kind: 3}}}
 	signed, err := s.Sign(r)
 	if err != nil {
 		t.Fatal(err)

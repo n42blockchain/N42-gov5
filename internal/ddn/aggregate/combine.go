@@ -65,7 +65,7 @@ func Combine(req d.DecisionRequest, outcomes []Outcome) (Combined, error) {
 	var agreed []byte
 	first := true
 	for _, o := range outcomes {
-		invalid := o.Failed || o.ProviderDID == "" || seen[o.ProviderDID] || o.ModelHash == (chain.Hash{}) || o.Result.Validate() != nil
+		invalid := o.Failed || o.ProviderDID == "" || seen[o.ProviderDID] || o.ModelHash == (chain.Hash{}) || o.Result.ValidateSchema(req.SchemaID) != nil
 		seen[o.ProviderDID] = true
 		if o.Family != "" {
 			families[o.Family] = true

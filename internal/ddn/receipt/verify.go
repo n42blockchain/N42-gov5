@@ -53,7 +53,7 @@ func Verify(r d.DecisionReceipt, req d.DecisionRequest, expected chain.Address, 
 	if r.Expiry <= now || r.Expiry > req.Deadline || r.CompletedAt > now || r.StartedAt > r.CompletedAt || r.CompletedAt >= r.Expiry || r.LatencyMs != r.CompletedAt-r.StartedAt || r.LatencyMs > req.MaxLatencyMs {
 		return errors.New("invalid or expired receipt timing")
 	}
-	if err := r.Result.Validate(); err != nil {
+	if err := r.Result.ValidateSchema(req.SchemaID); err != nil {
 		return err
 	}
 	policyResult := r.Result.EnforcePolicy(req)

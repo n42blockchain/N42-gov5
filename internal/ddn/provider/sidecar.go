@@ -98,5 +98,5 @@ func (s *Sidecar) Decide(ctx context.Context, r d.DecisionRequest, input string)
 	if result.RequestID != r.RequestID || result.ModelHash != s.identity.ModelHash {
 		return d.DecisionResult{}, errors.New("sidecar request/model binding mismatch")
 	}
-	return result.Result, result.Result.Validate()
+	return result.Result, result.Result.ValidateSchema(r.SchemaID)
 }
