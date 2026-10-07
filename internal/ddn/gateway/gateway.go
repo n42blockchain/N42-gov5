@@ -236,7 +236,7 @@ func (g *Gateway) execute(t item) {
 		metrics.GetOrCreateCounter("ddn_provider_errors_total", false).Inc()
 	} else {
 		id := g.provider.Identity()
-		result.NeedEscalation = result.NeedEscalation || result.ConfidencePPM < t.r.PolicyParameters.MinConfidencePPM || t.r.PolicyParameters.RequireHuman || strings.EqualFold(result.Label, "UNKNOWN") || strings.EqualFold(result.Label, "ABSTAIN")
+		result = result.EnforcePolicy(t.r)
 		rec.NeedEscalation = result.NeedEscalation
 		expiry := uint64(finished.Add(g.cfg.ReceiptTTL).UnixMilli())
 		if expiry > t.r.Deadline {

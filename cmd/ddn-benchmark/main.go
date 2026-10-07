@@ -126,7 +126,7 @@ func run() error {
 				if r.NeedEscalation {
 					esc = "YES"
 				}
-				preds = append(preds, benchmark.Prediction{ID: e.ID, Label: r.Label, NeedEscalation: esc, LatencyMs: float64(time.Since(start).Nanoseconds()) / 1e6, Model: "N42-system1-rules-v1"})
+				preds = append(preds, benchmark.Prediction{ID: e.ID, Label: r.Label, NeedEscalation: esc, LatencyMs: float64(time.Since(start).Nanoseconds()) / 1e6, Model: "N42-system1-rules-v2"})
 			}
 		} else {
 			preds, err = readJSONL[benchmark.Prediction](*predictions)

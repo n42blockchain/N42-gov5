@@ -85,3 +85,26 @@ func TestDedicatedEncryptedKeystore(t *testing.T) {
 		t.Fatal("public key file accepted")
 	}
 }
+
+func TestSystem1ReceiptRejectsContradictoryEscalationAnswer(t *testing.T) {
+	s, req, r, now := signedFixture(t)
+	req.SchemaID = "system1-v1"
+	req.PolicyParameters.RequireHuman = true
+	r.RequestID, _ = req.CanonicalHash()
+	r.Result = d.DecisionResult{Label: "NORMAL", NeedEscalation: true, Answers: []d.QuantizedAnswer{{Kind: 1, ProbabilitiesPPM: []uint32{d.PPM, 0, 0}}, {Kind: 1, ProbabilitiesPPM: []uint32{d.PPM, 0, 0, 0, 0, 0, 0, 0}}, {Kind: 3}}}
+	signed, err := s.Sign(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Verify(signed, req, s.Address(), now) == nil {
+		t.Fatal("signed contradictory escalation accepted")
+	}
+	r.Result = r.Result.EnforcePolicy(req)
+	signed, err = s.Sign(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Verify(signed, req, s.Address(), now); err != nil {
+		t.Fatal(err)
+	}
+}

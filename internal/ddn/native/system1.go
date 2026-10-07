@@ -32,7 +32,7 @@ func SystemHash() chain.Hash {
 		Labels                      []string
 		Rules                       []healthRule
 		Critical, Degraded, Unknown []string
-	}{"n42-system1-rules-v1", systemLabels, systemRules, criticalPhrases, degradedPhrases, unknownPhrases})
+	}{"n42-system1-rules-v2", systemLabels, systemRules, criticalPhrases, degradedPhrases, unknownPhrases})
 	return crypto.Keccak256Hash(b)
 }
 func containsAny(s string, phrases []string) bool {

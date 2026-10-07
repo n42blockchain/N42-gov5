@@ -137,7 +137,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "decision unavailable", http.StatusBadGateway)
 		return
 	}
-	result.NeedEscalation = result.NeedEscalation || result.ConfidencePPM < req.PolicyParameters.MinConfidencePPM || req.PolicyParameters.RequireHuman || strings.EqualFold(result.Label, "UNKNOWN") || strings.EqualFold(result.Label, "ABSTAIN")
+	result = result.EnforcePolicy(req)
 	json.NewEncoder(w).Encode(struct {
 		RequestID chain.Hash       `json:"request_id"`
 		ModelHash chain.Hash       `json:"model_hash"`
