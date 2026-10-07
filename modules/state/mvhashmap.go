@@ -25,7 +25,7 @@
 //     Inserts: O(log n + n) (binary search + memmove). Reads: O(log n)
 //     (binary search for first entry.txIdx < readerTxIdx). Typical
 //     per-key versionList length is 1-3 (one writer per tx per interval)
-//     so the asymptotic is irrelevant; absolute cost is nanoseconds.
+//     Hot keys promote to a B-tree after 64 versions to bound insertion costs.
 //
 // Block-STM states a reader can observe:
 //
@@ -45,6 +45,8 @@ import (
 	"hash/fnv"
 	"sort"
 	"sync"
+
+	"github.com/google/btree"
 )
 
 // ReadStatus classifies the outcome of a versioned read.
@@ -79,12 +81,14 @@ type entry struct {
 	isEstimate bool
 }
 
-// versionList holds all writes for a single key, sorted DESCENDING by
-// txIdx. Descending order lets readers find the "highest txIdx < readerTxIdx"
-// in O(log n) via sort.Search.
+// versionList keeps short histories in descending order, then promotes hot
+// keys to an ordered index. A fee recipient can have one version per transaction;
+// moving its entire history on every insertion would make full blocks quadratic.
+// Both representations return the strict predecessor of the reader transaction.
 type versionList struct {
 	mu    sync.RWMutex
 	items []entry
+	tree  *btree.BTreeG[entry]
 }
 
 // findIndexLocked returns the position in items where an entry with
@@ -100,6 +104,17 @@ func (v *versionList) findIndexLocked(txIdx int) int {
 func (v *versionList) upsert(e entry) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.tree == nil && len(v.items) >= 64 {
+		v.tree = btree.NewG(16, func(a, b entry) bool { return a.txIdx < b.txIdx })
+		for _, old := range v.items {
+			v.tree.ReplaceOrInsert(old)
+		}
+		v.items = nil
+	}
+	if v.tree != nil {
+		_, replaced := v.tree.ReplaceOrInsert(e)
+		return !replaced
+	}
 	i := v.findIndexLocked(e.txIdx)
 	if i < len(v.items) && v.items[i].txIdx == e.txIdx {
 		v.items[i] = e
@@ -116,6 +131,10 @@ func (v *versionList) upsert(e entry) bool {
 func (v *versionList) remove(txIdx int) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.tree != nil {
+		_, removed := v.tree.Delete(entry{txIdx: txIdx})
+		return removed
+	}
 	i := v.findIndexLocked(txIdx)
 	if i >= len(v.items) || v.items[i].txIdx != txIdx {
 		return false
@@ -129,6 +148,15 @@ func (v *versionList) remove(txIdx int) bool {
 func (v *versionList) markEstimate(txIdx int) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.tree != nil {
+		e, ok := v.tree.Get(entry{txIdx: txIdx})
+		if !ok {
+			return false
+		}
+		e.isEstimate = true
+		v.tree.ReplaceOrInsert(e)
+		return true
+	}
 	i := v.findIndexLocked(txIdx)
 	if i >= len(v.items) || v.items[i].txIdx != txIdx {
 		return false
@@ -144,6 +172,16 @@ func (v *versionList) markEstimate(txIdx int) bool {
 func (v *versionList) read(readerTxIdx int) (val []byte, writerIdx int, writerInc uint32, estimate bool, found bool) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	if v.tree != nil {
+		v.tree.DescendLessOrEqual(entry{txIdx: readerTxIdx}, func(e entry) bool {
+			if e.txIdx == readerTxIdx {
+				return true
+			} // Exclude self without subtracting and overflowing.
+			val, writerIdx, writerInc, estimate, found = e.value, e.txIdx, e.incarn, e.isEstimate, true
+			return false
+		})
+		return
+	}
 	// items is DESCENDING by txIdx; find first entry with txIdx < readerTxIdx.
 	// sort.Search on ">=" target condition.
 	i := sort.Search(len(v.items), func(i int) bool {
