@@ -32,8 +32,8 @@ func (s Scheduler) Select(r d.DecisionRequest, offers []Offer) (Selection, error
 	if s.Registry == nil || r.Quorum < 1 || r.Quorum > 16 || len(offers) > 64 || r.MaxLatencyMs < 1 || r.MaxLatencyMs > 60000 || r.PrivacyMode != "public" {
 		return Selection{}, errors.New("invalid DDN selection request")
 	}
-	budget, ok := new(big.Int).SetString(r.MaxCost, 10)
-	if !ok || budget.Sign() < 0 || budget.BitLen() > 256 {
+	budget, err := d.ParseMaxCost(r.MaxCost)
+	if err != nil {
 		return Selection{}, errors.New("invalid DDN selection budget")
 	}
 	requestID, err := r.CanonicalHash()

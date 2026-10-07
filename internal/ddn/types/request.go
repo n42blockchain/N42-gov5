@@ -65,7 +65,7 @@ func (r DecisionRequest) Validate(now uint64) error {
 	if r.Quorum < 1 || r.Quorum > 16 || r.MaxLatencyMs < 1 || r.MaxLatencyMs > 60000 {
 		return errors.New("invalid quorum or latency bound")
 	}
-	if r.Deadline <= now || r.Deadline > now+86400000 {
+	if r.Deadline <= now || r.Deadline-now > 86400000 {
 		return errors.New("request deadline must be within the next 24 hours")
 	}
 	if r.PolicyParameters.MinConfidencePPM > PPM {
@@ -74,9 +74,8 @@ func (r DecisionRequest) Validate(now uint64) error {
 	if r.PrivacyMode != "public" && r.PrivacyMode != "private" {
 		return errors.New("privacy_mode must be public or private")
 	}
-	cost, ok := new(big.Int).SetString(r.MaxCost, 10)
-	if !decimal(r.MaxCost) || !ok || cost.BitLen() > 256 {
-		return errors.New("max_cost must be canonical unsigned decimal")
+	if _, err := ParseMaxCost(r.MaxCost); err != nil {
+		return err
 	}
 	id, err := r.CanonicalHash()
 	if err != nil {
@@ -86,6 +85,18 @@ func (r DecisionRequest) Validate(now uint64) error {
 		return fmt.Errorf("request_id does not match canonical hash")
 	}
 	return nil
+}
+
+// ParseMaxCost bounds the input before big-integer parsing on every entry path.
+func ParseMaxCost(value string) (*big.Int, error) {
+	if !decimal(value) {
+		return nil, errors.New("max_cost must be canonical unsigned decimal")
+	}
+	cost, ok := new(big.Int).SetString(value, 10)
+	if !ok || cost.BitLen() > 256 {
+		return nil, errors.New("max_cost exceeds uint256")
+	}
+	return cost, nil
 }
 
 func decimal(s string) bool {

@@ -106,8 +106,8 @@ func (g *Group) ValidateRequest(r d.DecisionRequest) error {
 	if int(r.Quorum) != len(g.members) {
 		return errors.New("request quorum must match the configured provider group")
 	}
-	budget, ok := new(big.Int).SetString(r.MaxCost, 10)
-	if !ok || budget.Sign() < 0 {
+	budget, err := d.ParseMaxCost(r.MaxCost)
+	if err != nil {
 		return errors.New("invalid quorum budget")
 	}
 	total := new(big.Int)
