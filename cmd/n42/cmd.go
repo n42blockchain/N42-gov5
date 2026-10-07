@@ -69,14 +69,6 @@ var networkFlags = []cli.Flag{
 }
 
 var nodeFlg = []cli.Flag{
-	&cli.BoolFlag{
-		Name: "ingest.enabled", Usage: "启用基准测试二进制交易入口（交易池仍执行验签）", Category: "NODE",
-		Value: false, Destination: &DefaultConfig.IngestCfg.Enabled,
-	},
-	&cli.StringFlag{
-		Name: "ingest.addr", Usage: "二进制交易入口监听地址", Category: "NODE",
-		Value: conf.DefaultIngestCfg().Addr, Destination: &DefaultConfig.IngestCfg.Addr,
-	},
 	&cli.IntFlag{
 		Name: "ingest.hardcap", Usage: "二进制入口暂停接收时的 pending 交易数", Category: "NODE",
 		Value: conf.DefaultIngestCfg().HardCap, Destination: &DefaultConfig.IngestCfg.HardCap,
@@ -784,6 +776,7 @@ var (
 var (
 	IngestFlag = &cli.BoolFlag{
 		Name:        "ingest",
+		Aliases:     []string{"ingest.enabled"},
 		Usage:       "启用二进制 TCP 交易注入端点 (基准测试用)",
 		Category:    "DEVELOPMENT",
 		Value:       false,
@@ -793,7 +786,7 @@ var (
 		Name:        "ingest.addr",
 		Usage:       "注入端点监听地址",
 		Category:    "DEVELOPMENT",
-		Value:       ":9100",
+		Value:       conf.DefaultIngestCfg().Addr,
 		Destination: &DefaultConfig.IngestCfg.Addr,
 	}
 	IngestHintOnlyFlag = &cli.BoolFlag{
