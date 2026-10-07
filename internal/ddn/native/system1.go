@@ -3,10 +3,10 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
-	"errors"
 	chain "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	d "github.com/n42blockchain/N42/internal/ddn/types"
