@@ -202,3 +202,21 @@ txflood (floods 290-420 MB each, flat). Per-node RSS is not in the mem log
 - qs-replay offline profiling needs a reflink snapshot taken AT ROUND DONE
   (undo window is 256 blocks); the chain scripts now do this
   (qs-replay-node3-<round>).
+
+## S84 plan (35zzzbj, r114) -- 2026-10-08
+
+S83 (35zzzbi) removed the modulo imbalance but the wave floor is now one
+sender's nonce chain: wkKeys 16, wkTopChain 12,000 per 163k-tx block, with
+~8000 senders pending. Cause is in the builder, not the executor:
+internal/miner/builder/ordering.go keeps the just-shifted sender at the heap
+root when effective tips tie. S84 adds env-gated `N42_MINER_SENDER_ROTATE=1`
+(per-set seq counter; lower seq wins after the tip and blobFeeCap tie-breaks),
+giving round-robin across equal-tip senders. worker.go only ever calls Peek()
+again after Shift()/Pop() (no same-sender assumption), so it needs no change.
+Binary n42-r114 = r113 + the builder diff; round 35zzzbj runs it with
+N42_WAVE_LPT=1 and N42_MINER_SENDER_ROTATE=1 on all 7 nodes. Prediction and
+pass/fail are registered verbatim in docs/QS_QUEUE.md (S84).
+
+Note on the S83 abort: it coincided with a foreign Shmem of 28.4 GB (vs
+13.8 GB in 35zzzbh) already present at launch, so the abort was not caused by
+r113 growth. Dates America/New_York.

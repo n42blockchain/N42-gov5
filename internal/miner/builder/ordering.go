@@ -24,11 +24,17 @@ package builder
 
 import (
 	"container/heap"
+	"os"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+// senderRotate enables deterministic round-robin across senders whose head
+// transactions have equal effective tip. Read once at start-up; off keeps the
+// historical ordering byte-identical.
+var senderRotate = os.Getenv("N42_MINER_SENDER_ROTATE") == "1"
 
 // TxByPriceAndNonce implements a transaction ordering where transactions
 // from the same account are ordered by nonce, and across accounts ordered
@@ -39,6 +45,8 @@ type TxByPriceAndNonce struct {
 	heads   txsByPrice                                   // Heap of next tx per account (by price)
 	signer  transaction.Signer                           // Used if From() is nil
 	baseFee *uint256.Int                                 // Current block base fee
+	seq     uint64                                       // Rotation counter (senderRotate only)
+	rotate  bool                                         // Equal-tip rotation active
 }
 
 // NewTxByPriceAndNonce creates a transaction set sorted by effective tip.
@@ -48,6 +56,7 @@ func NewTxByPriceAndNonce(pending map[types.Address][]*transaction.Transaction, 
 	t := &TxByPriceAndNonce{
 		txs:     pending,
 		baseFee: baseFee,
+		rotate:  senderRotate,
 	}
 
 	t.heads = make(txsByPrice, 0, len(pending))
@@ -61,6 +70,13 @@ func NewTxByPriceAndNonce(pending map[types.Address][]*transaction.Transaction, 
 			baseFee: baseFee,
 		}
 		wrapped.computeEffectiveTip()
+		wrapped.rotate = t.rotate
+		if t.rotate {
+			// Map iteration order is random; seed order only matters among
+			// equal-tip heads, where the heap tie-break is arbitrary anyway.
+			wrapped.seq = t.seq
+			t.seq++
+		}
 		t.heads = append(t.heads, wrapped)
 		t.txs[from] = accTxs[1:]
 	}
@@ -87,6 +103,11 @@ func (t *TxByPriceAndNonce) Shift() {
 			baseFee: t.baseFee,
 		}
 		wrapped.computeEffectiveTip()
+		wrapped.rotate = t.rotate
+		if t.rotate {
+			wrapped.seq = t.seq
+			t.seq++
+		}
 		t.heads[0] = wrapped
 		t.txs[from] = txs[1:]
 		heap.Fix(&t.heads, 0)
@@ -109,6 +130,8 @@ type txWithPrice struct {
 	baseFee      *uint256.Int
 	effectiveTip uint256.Int
 	blobFeeCap   uint256.Int
+	seq          uint64 // Insertion order, used only when rotate is set
+	rotate       bool
 }
 
 func (t *txWithPrice) computeEffectiveTip() {
@@ -150,7 +173,18 @@ func (s txsByPrice) Less(i, j int) bool {
 	// blob fee cap. Apart from making the order deterministic for blob-heavy
 	// blocks, this avoids filling the block with lower-fee single-blob
 	// transactions before a higher-fee multi-blob transaction can fit.
-	return s[i].blobFeeCap.Cmp(&s[j].blobFeeCap) > 0
+	if cmp := s[i].blobFeeCap.Cmp(&s[j].blobFeeCap); cmp != 0 {
+		return cmp > 0
+	}
+	// Equal tip and equal blob fee cap: with rotation on, the head that was
+	// queued earlier goes first, so a just-shifted sender (fresh, highest seq)
+	// sits behind every other equal-priced sender. The blob tie-break stays
+	// ahead of this so blob ordering semantics are unchanged; rotation only
+	// reorders heads that were fully tied before.
+	if s[i].rotate {
+		return s[i].seq < s[j].seq
+	}
+	return false
 }
 func (s txsByPrice) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
