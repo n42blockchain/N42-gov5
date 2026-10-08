@@ -366,6 +366,50 @@ mainnet cadence) with no state-root mismatch in the log.
 
 ## 8. Run log
 
+### 2026-10-06/07 (full cycle + three-mode test)
+
+Source: geth ancient frozen **26,130,712** -> target **26,130,711** (hash
+`0x5eddacb1d1bc55535172b7ea0bbeb12b4c710d2441f6e3499e6b2026aff362ae`, stateRoot
+`0x72bdb919ab81cce4527b2aa88c8b3239383772f914550f9ce41452ce3ba0863b`; prior week
+26,015,205; d 115,506). reth2k finished at exactly 26,130,711 (read from
+`BlockBodyIndices`). geth stopped, no fleet running. All `wk-*.exe` rebuilt from
+source first (including `wk-eth-el.exe` with `-tags n42el`).
+
+- Step 1: senders 67s / 66s, headerc 2s, bodyc 7m32s, receipts 5m09s. All exit 0.
+- Step 2 replay: **1h19m12s @ ~22-27 blk/s** (reth was syncing/IO-contending at the
+  start). Witness spot-check 26,060,000 / 26,100,000 / 26,130,711: **gas diff +0**.
+- Step 2b txindex: archive 4m30s (27 segments, 3,776,203,615 tx, 16.74 GB,
+  35.47 bits/key); window 4m27s (4 segments from base 23,000,000, 868,260,984 tx,
+  4.76 GB, 43.88). Window was extended IN PLACE on last week's directory
+  (renamed to `d:/n42-txindex-window-26130711`) — its files are hard-linked into
+  `n42-publish-25943310-full`, so that older root's manifest no longer verifies.
+  Copy the directory first next time (the 09-10 rule).
+- Step 3 codes 14m58s: **2,829,445** codes, 6.6 GB, `codes.coverage=26130711`.
+- Snapshot 1h35m28s: storage 1,665,423,887 entries (.val 25.72 GB -> .zst 19.37 GB,
+  75.3%), 16 shards, 56 GB.
+- N42-hashed migration 2h03m: acc 422,785,946 / sto 1,665,423,887 / tacc 31,558,405 /
+  tsto 146,112,432 / code 2,829,445, decodeFail/shortVal/badSub 0, **vtrie OK: root
+  == expect**, `ethel-last-block=26130711`, 160 GB. sto and code counts equal the
+  snapshot and codes exports.
+- **Three-mode test (E:, :30403 / 20115, serialized) — all three PASS.** Each caught
+  up to the live tip (~10.5k blocks) and then followed at ~5 blocks/min with
+  `eth_syncing=false`: archive 26,130,711 -> 26,141,287 (165 GB), minimal ->
+  26,141,430 (44 GB), full -> 26,141,582 (142 GB). `level=error`/panic/state-root
+  mismatch: 0 in all three. Catch-up ran 2-4 blk/s with long silent gaps between
+  batches (a batch of ~2k blocks logs only when it finishes, 10 min) — the CPU
+  counter, not the log, tells you it is alive.
+- **Manifests** (hard-link roots, active tails copied, verified file-by-file: 0
+  missing, 0 size mismatch): minimal `d:/n42-publish-26130711` 106 files / 36.44 GB
+  `f02de08e22e7b170…`; archive same root 486 files / 824.24 GB `bd0ec56216def0c1…`;
+  full `d:/n42-publish-26130711-full` 167 files / 134.30 GB `85cfd5dac2ef80f2…`.
+- Traps hit: the background waiter was killed by the memory watchdog during the
+  snapshot export (the export itself was unaffected — check the log, not the
+  waiter); `wk-hdr-probe` is pre-framing and cannot read current headerc (use
+  `wk-geth-hdr-probe` against the ancient dir for the stateRoot).
+- NOT run: DATC, anchors/bpp, Linux cross-check on n42dev. Cleanup of the
+  2026-09-10/09-20/10-06-superseded test dirs and artefacts is pending the
+  operator's go-ahead.
+
 ### 2026-09-10/11 (full cycle; first week generated with framed segments)
 
 Source: geth ancient frozen **25,943,311** -> target **25,943,310** (prior week
