@@ -44,7 +44,8 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
 
 1. **准备变更集**：在执行节点上追到 T，确认 `acctcs.Items() > T` 且 `storcs` 同高
    （Linux 侧可用 `go run ./cmd/freezer-items <freezer 目录>` 查看项数）。
-2. **同步到 Linux（先放暂存目录验收，再替换）**：
+2. **同步到 Linux**：一条命令，`python -I scripts/datc/ship-inputs.py --tip <T>`（不带 `--apply` 先看计划，确认后加 `--apply`）。脚本把下面三条规则做成了代码，不再靠人手：整文件替换尾段并先放暂存目录、逐文件 sha256 校验、新段和尾段 `.cdat` 先于 `.cidx`、用 rename 原子替换（符号链接本身被替换，不会写穿到 `witness/`）、封存段大小不一致就中止、剩余空间不足就拒绝；旧文件以硬链接留在 `datc-input-backup-<T>/`，暂存在 `datc-input-staging-<T>/`，两者在周更新验收通过后删除。以下是它依据的规则（2026-10-08 首次使用，9.5 GB）：
+   （手动同步时的完整说明）：
    - **变更集尾段不是纯追加**：批量模式下，旧表最后一个不满 64 项的批次会在**原偏移处被重新编码成满批**
      （2026-09-14 实测：`acctcs.0078.cdat` 最后约 35 万字节、`storcs.0149.cdat` 最后约 49 万字节被改写，
      cidx 前缀不变）。因此这两个尾段**必须整文件替换**（写临时文件再 rename，rsync 默认行为），
