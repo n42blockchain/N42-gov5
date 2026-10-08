@@ -125,6 +125,68 @@ docs/QS_QUEUE.md row S83. If wkTopChain itself is near wkQMax, a single
 sender chain is the floor and only splitting chains (not possible with
 nonce ordering) would help.
 
+## S83 result (35zzzbi, r113, B1 only) -- 2026-10-08
+
+Round 35zzzbi (binary n42-r113, N42_WAVE_LPT=1 on all 7 nodes, confirmed by the
+ENV lines) ran A1 and B1, then was ABORTED on memory at 16:51:14 ET
+2026-10-07 (round ended 16:54:17); B2 never ran. Node3 "parallel block" lines
+with txs >= 100k, bounded by the round-log leg windows (A1 16:28:07-16:40:26,
+B1 16:40:26-16:54:17). A1 has no qualifying block (max txs per block 22,857);
+B1 n=154 (every heavy block has exactly 163,000 txs). S82 column is B1+B2,
+n=295, from the S82 section above.
+
+| field | S82 p50 | S83 p50 | S82 p90 | S83 p90 | S83 max |
+|---|---|---|---|---|---|
+| runMs | 352 | 244 | 479 | 381 | 743 |
+| execMs | 331 | 219 | 459 | 337 | 722 |
+| finalizeMs | n/a | 119.5 | n/a | 179 | 318 |
+| waveBusyMs | 1715 | 1864 | 2530 | 3270 | 9998 |
+| wkWallMaxMs | 311 | 178 | 440 | 288 | 672 |
+| wkWallMeanMs | 66.8 | 73.5 | 99.6 | 127 | 401 |
+| wkWallMinMs | 0.00 | 0.00 | 0.01 | 0.01 | 0.06 |
+| wkQMax | 24000 | 12000 | 33332 | 12000 | 12000 |
+| wkQMin | 0 | 0 | 0 | 0 | 0 |
+| wkSetupMs (sum) | 0 | 0 | 0 | 1 | 3 |
+| wkMvsWrMs (sum) | 142 | 163 | 325 | 438 | 1305 |
+| wkMvsDelMs (sum) | 203 | 222 | 248 | 326 | 1460 |
+| wkKeys (new) | - | 16 | - | 21 | 28 |
+| wkTopChain (new) | - | 12000 | - | 12000 | 12000 |
+| wkWallMax / wkWallMean | 4.42 | 2.45 | 5.98 | 2.69 | 3.76 |
+| wkWallMax / runMs | 0.89 | 0.75 | 0.93 | 0.81 | 0.90 |
+| wkWallMean / runMs | 0.20 | 0.31 | 0.26 | 0.37 | 0.57 |
+| (MvsWr+MvsDel) / (32*wkWallMean) | 0.16 | 0.17 | - | 0.19 | 0.32 |
+| waveBusyMs / (32*wkWallMean) | 0.80 | 0.80 | 0.81 | 0.82 | 0.89 |
+
+Mean queue is 163000/32 = 5,094. wkQMax equals wkTopChain (12,000) in every
+block: the busiest worker holds exactly the longest single-sender nonce chain
+(2.36x the mean queue), and the block has only ~16 distinct senders, so with
+LPT the queue floor is that chain. wkQMin stays 0 (16 senders cannot fill 32
+workers). 12,000 txs take ~178 ms wall at the observed rate.
+
+Ruling against the S83 row (pre-registered):
+- runMs p50 352 -> 244 = -30.7%: PASS on the >= 30% line, by 0.7 pt (not the
+  <= 200 ms stretch target; p90 479 -> 381).
+- wkWallMax p50 <= 120: FAIL (178). The remaining cost is the single 12k chain.
+- wkQMax p50 <= max(1.2 x mean queue, wkTopChain) = max(6.1k, 12k) = 12k:
+  PASS (equal to the bound).
+- TPS half (B mean >= 146.5k) is PARTIAL, one B leg: B1 win1/win2 149,877 /
+  133,725 vs S82 B1 140,887 / 129,168 (win1 +6.4%, win2 +3.5%) and vs the
+  standing best 146.5k (win1 above, win2 below). The B2 leg is missing, and the
+  memory abort (16:51:14) fired inside win2 (87 blocks, blockTime 0.69 s vs
+  0.50 s in win1), so win2 is suspect.
+Overall: INCONCLUSIVE. The executor half works as designed (wkWallMax/mean
+4.4 -> 2.5, runMs -31%) but the 120 ms target is not reachable while one
+sender owns a 12,000-tx chain; only a workload with more senders or splitting
+chains would lower it. Needs a clean B1+B2 rerun for the TPS criterion.
+
+Abort cause (r35zzzbi-mem.log): total AnonPages peaked at 83.6 GB in B1 (80.1
+GB in A1) and MemAvailable fell to 18 GB, the same anon footprint as 35zzzbh
+B1 (84.5 GB peak, MemAvailable min 29 GB). The difference is Shmem 28.4 GB
+in 35zzzbi (already present at 16:08) vs 13.8 GB in 35zzzbh, i.e. ~14.6 GB
+less available at equal node+flood anon, not growth in the n42 nodes or
+txflood (floods 290-420 MB each, flat). Per-node RSS is not in the mem log
+(nodesAnon field empty), so r113 vs r112 per-node RSS is not separable here.
+
 ## Operational notes
 
 - Lineage binaries: /data/blockchain/bin/n42-r1NN AND a copy in
