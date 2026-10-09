@@ -17,7 +17,7 @@ func TestPrefetchPendingCreditsSkipsSmallSet(t *testing.T) {
 	sp := NewStateProcessor(fx.Config, fx.Chain, coreTFakerEngine{})
 
 	ibs := state.New(nil)
-	n, err := sp.prefetchPendingCredits(ibs, nil, false, 0, nil)
+	n, err := sp.prefetchPendingCredits(ibs, nil, nil, 0, nil)
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
 }

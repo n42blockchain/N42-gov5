@@ -42,3 +42,34 @@ func TestBeginRoNestedTakesNoPermit(t *testing.T) {
 	}
 	sem.Release(1)
 }
+
+// TestAcquireRoPermit checks that a permit taken without a transaction blocks
+// BeginRo on a one-permit limiter, covers a nested transaction, and releases
+// exactly once however often its release is called.
+func TestAcquireRoPermit(t *testing.T) {
+	sem := semaphore.NewWeighted(1)
+	db := NewMDBX(log.New()).InMem(t.TempDir()).RoTxsLimiter(sem).MustOpen()
+	defer db.Close()
+
+	release, err := kv.AcquireRoPermit(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sem.TryAcquire(1) {
+		t.Fatal("permit not taken")
+	}
+	inner, err := kv.BeginRoNested(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner.Rollback()
+	release()
+	release()
+	if !sem.TryAcquire(1) {
+		t.Fatal("release did not return the permit")
+	}
+	if sem.TryAcquire(1) {
+		t.Fatal("a second release returned a permit twice")
+	}
+	sem.Release(1)
+}

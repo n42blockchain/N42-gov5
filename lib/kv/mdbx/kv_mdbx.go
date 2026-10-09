@@ -348,6 +348,16 @@ func (db *MdbxKV) BeginRoNested(ctx context.Context) (txn kv.Tx, err error) {
 	}, nil
 }
 
+// AcquireRoPermit implements kv.RoPermitDB: it takes one roTxsLimiter permit
+// without opening a transaction. The returned func releases it, once.
+func (db *MdbxKV) AcquireRoPermit(ctx context.Context) (func(), error) {
+	if err := db.roTxsLimiter.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("mdbx.MdbxKV.AcquireRoPermit: roTxsLimiter error %w", err)
+	}
+	var once sync.Once
+	return func() { once.Do(func() { db.roTxsLimiter.Release(1) }) }, nil
+}
+
 func (db *MdbxKV) BeginRw(ctx context.Context) (kv.RwTx, error) {
 	return db.beginRw(ctx, 0)
 }

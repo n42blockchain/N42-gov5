@@ -154,6 +154,12 @@ func (db *LayeredDB) BeginRoNested(ctx context.Context) (kv.Tx, error) {
 	}, nil
 }
 
+// AcquireRoPermit implements kv.RoPermitDB. The node opens both databases
+// on one limiter, so the state database's permit is the pair's.
+func (db *LayeredDB) AcquireRoPermit(ctx context.Context) (func(), error) {
+	return kv.AcquireRoPermit(ctx, db.stateDB)
+}
+
 func (db *LayeredDB) View(ctx context.Context, f func(tx kv.Tx) error) error {
 	tx, err := db.BeginRo(ctx)
 	if err != nil {

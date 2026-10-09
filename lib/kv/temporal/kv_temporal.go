@@ -59,6 +59,11 @@ func (db *DB) BeginRoNested(ctx context.Context) (kv.Tx, error) {
 	return db.wrapTx(kvTx), nil
 }
 
+// AcquireRoPermit implements kv.RoPermitDB over the wrapped database.
+func (db *DB) AcquireRoPermit(ctx context.Context) (func(), error) {
+	return kv.AcquireRoPermit(ctx, db.RwDB)
+}
+
 func (db *DB) View(ctx context.Context, f func(tx kv.Tx) error) error {
 	tx, err := db.BeginTemporalRo(ctx)
 	if err != nil {

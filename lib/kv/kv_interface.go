@@ -255,6 +255,25 @@ func BeginRoNested(ctx context.Context, db RoDB) (Tx, error) {
 	return db.BeginRo(ctx)
 }
 
+// RoPermitDB is implemented by databases whose read transactions are bounded
+// by a limiter: AcquireRoPermit takes one permit without opening a
+// transaction. A caller that must not wait for a permit while it holds some
+// other lock (a reader lock other readers queue on while holding permits)
+// takes the permit first, then the lock, and opens its transactions with
+// BeginRoNested under that permit.
+type RoPermitDB interface {
+	AcquireRoPermit(ctx context.Context) (release func(), err error)
+}
+
+// AcquireRoPermit takes one read-transaction limiter permit from db, or
+// returns a no-op release when db has no limiter to take it from.
+func AcquireRoPermit(ctx context.Context, db RoDB) (func(), error) {
+	if p, ok := db.(RoPermitDB); ok {
+		return p.AcquireRoPermit(ctx)
+	}
+	return func() {}, nil
+}
+
 // RwDB low-level database interface - main target is - to provide common abstraction over top of MDBX and RemoteKV.
 //
 // Common pattern for short-living transactions:
