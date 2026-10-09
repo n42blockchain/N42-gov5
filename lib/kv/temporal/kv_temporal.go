@@ -50,6 +50,15 @@ func (db *DB) BeginRo(ctx context.Context) (kv.Tx, error) {
 	return db.BeginTemporalRo(ctx)
 }
 
+// BeginRoNested implements kv.NestedRoDB over the wrapped database.
+func (db *DB) BeginRoNested(ctx context.Context) (kv.Tx, error) {
+	kvTx, err := kv.BeginRoNested(ctx, db.RwDB)
+	if err != nil {
+		return nil, err
+	}
+	return db.wrapTx(kvTx), nil
+}
+
 func (db *DB) View(ctx context.Context, f func(tx kv.Tx) error) error {
 	tx, err := db.BeginTemporalRo(ctx)
 	if err != nil {

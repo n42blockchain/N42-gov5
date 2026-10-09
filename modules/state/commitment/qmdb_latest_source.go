@@ -81,11 +81,13 @@ func (s *QMDBLatestAccountSource) LatestAccount(g kv.Getter, addr []byte) ([]byt
 		// The caller's transaction predates the flush that persisted this
 		// entry. A transaction begun now sees it: the owner holds the lock
 		// across commit and eviction, so under the read lock the index and
-		// the store agree.
+		// the store agree. The caller already holds a read transaction
+		// (and its limiter permit), so this one must not wait for a second
+		// permit: with every permit held by such a caller, none finishes.
 		if s.db == nil {
 			return nil, fmt.Errorf("qmdb latest account: live entry evicted and no database to fault it from")
 		}
-		tx, err := s.db.BeginRo(context.Background())
+		tx, err := kv.BeginRoNested(context.Background(), s.db)
 		if err != nil {
 			return nil, err
 		}

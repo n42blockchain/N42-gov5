@@ -79,6 +79,7 @@ type MdbxTx struct {
 	db               *MdbxKV
 	statelessCursors map[string]kv.RwCursor
 	readOnly         bool
+	noPermit         bool // read-only tx opened by BeginRoNested: holds no roTxsLimiter permit
 	ctx              context.Context
 
 	cursors  map[uint64]*mdbx.Cursor
@@ -311,6 +312,38 @@ func (db *MdbxKV) BeginRo(ctx context.Context) (txn kv.Tx, err error) {
 		db:       db,
 		tx:       tx,
 		readOnly: true,
+		id:       db.leakDetector.Add(),
+	}, nil
+}
+
+// BeginRoNested opens a read transaction without taking a roTxsLimiter
+// permit. It is only for a caller that already holds a read transaction on
+// db (see kv.NestedRoDB): that transaction's permit bounds the pair, and
+// waiting for a second permit while holding the first can deadlock the
+// limiter. MaxReaders (kv.ReadersLimit) leaves room for twice the limiter.
+func (db *MdbxKV) BeginRoNested(ctx context.Context) (txn kv.Tx, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	if !db.trackTxBegin() {
+		return nil, fmt.Errorf("db closed")
+	}
+
+	tx, err := db.env.BeginTxn(nil, mdbx.Readonly)
+	if err != nil {
+		db.trackTxEnd()
+		return nil, fmt.Errorf("%w, label: %s, trace: %s", err, db.opts.label.String(), stack2.Trace().String())
+	}
+
+	return &MdbxTx{
+		ctx:      ctx,
+		db:       db,
+		tx:       tx,
+		readOnly: true,
+		noPermit: true,
 		id:       db.leakDetector.Add(),
 	}, nil
 }

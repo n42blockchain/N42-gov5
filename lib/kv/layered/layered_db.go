@@ -117,12 +117,35 @@ func (db *LayeredDB) BeginRo(ctx context.Context) (kv.Tx, error) {
 		return nil, fmt.Errorf("layered: state BeginRo: %w", err)
 	}
 
-	historyTx, err := db.historyDB.BeginRo(ctx)
+	// The state transaction's permit covers the pair: when both databases
+	// share one limiter, waiting for a second permit while holding the first
+	// is the hold-and-wait that deadlocks it.
+	historyTx, err := kv.BeginRoNested(ctx, db.historyDB)
 	if err != nil {
 		stateTx.Rollback()
 		return nil, fmt.Errorf("layered: history BeginRo: %w", err)
 	}
 
+	return &layeredTx{
+		stateTx:   stateTx,
+		historyTx: historyTx,
+		cache:     db.cache,
+		ctx:       ctx,
+	}, nil
+}
+
+// BeginRoNested implements kv.NestedRoDB: neither transaction takes a
+// read-transaction limiter permit.
+func (db *LayeredDB) BeginRoNested(ctx context.Context) (kv.Tx, error) {
+	stateTx, err := kv.BeginRoNested(ctx, db.stateDB)
+	if err != nil {
+		return nil, fmt.Errorf("layered: state BeginRoNested: %w", err)
+	}
+	historyTx, err := kv.BeginRoNested(ctx, db.historyDB)
+	if err != nil {
+		stateTx.Rollback()
+		return nil, fmt.Errorf("layered: history BeginRoNested: %w", err)
+	}
 	return &layeredTx{
 		stateTx:   stateTx,
 		historyTx: historyTx,
