@@ -47,6 +47,11 @@ type Body struct {
 	// or in the body record) and the header's TxHash is FrameTxRoot of the
 	// hashes. Empty for every ordinary body.
 	FrameHashes []types.Hash
+	// FrameData holds the encoded frames named by FrameHashes, index for
+	// index, while the block is in memory (the builder's or the resolver's
+	// copy) so persisting the block can write them to the Frames table. It
+	// is never encoded; a body read back from storage leaves it nil.
+	FrameData [][]byte
 }
 
 // IsFrameBody reports whether the body references frames instead of
