@@ -263,7 +263,7 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 			return reply, nil
 		}
 	}
-	if !st.Put(hash, raw) {
+	if !st.PutEntry(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}) {
 		// Lost a race with the same frame on another connection, or the
 		// frame exceeds the whole budget; either way nothing is lost.
 		fi.duplicate.Add(1)
