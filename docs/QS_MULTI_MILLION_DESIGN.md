@@ -282,8 +282,9 @@ A1, B1, B2, A2; 2 windows of 60 s) with frame ingest and frame blocks on.
 - Binaries: node `n42-r116`, generator `txflood-r45`.
 - Fleet env (all 7 nodes): `N42_FRAME_GATEWAYS=<gateway address>` (one
   secp256k1 key for the round), `N42_FRAME_BLOCKS=1`,
-  `N42_FRAME_PULL_PEERS=<7 ingest host:port>`; store bytes, max frames per
-  block (1024) and pull timeout (2000 ms) at their defaults. The ceiling of
+  `N42_FRAME_PULL_PEERS=<7 ingest host:port>`, `N42_FRAME_STORE_BYTES=1073741824`
+  (1 GiB per node, to stay inside GOMEMLIMIT); max frames per block (1024)
+  and pull timeout (2000 ms) at their defaults. The ceiling of
   163k tx per block is 326 frames, well under 1024 x 500. Unchanged from S86:
   parallel EVM, `N42_MINER_PARALLEL_FILL=1`, `N42_WAVE_LPT=1`,
   `N42_MINER_SENDER_ROTATE=1`, `N42_BUILD_STALL_DIAG=1`.
@@ -294,6 +295,20 @@ A1, B1, B2, A2; 2 windows of 60 s) with frame ingest and frame blocks on.
   frames/s, and one connection round-trips a broadcast frame in a few
   milliseconds; 4 is well above need, the limit is lazy signing. Rate is 0
   (S86's 8 x 20000 cap would pin supply at 160k tx/s).
+- Supply: pertx stays 12000 (8000 senders x 12000 = 96M txs per leg). With
+  the 1 GiB store the prefill is about 9.7M txs, plus 135 s x 300k/s, about
+  50M per leg, so 96M is enough.
+- Faucet: the dev faucet earns `devBlockReward` = 1 ETH per block (chainspec),
+  so its balance at funding equals the empty blocks produced in the baseFee
+  decay: 1589 at 400 s in S86, about 3.97 blocks/s. Funding costs (pertx +
+  10) x 21000 x gas price per sender, 8 x 252.25 = 2018 ETH per leg, more than
+  1589, so S86's warm-up lost its eighth generator (204 ETH left, 252
+  needed). Gas price cannot be lowered: the base fee floor is 1 gwei
+  (`InitialBaseFee`; eth_gasPrice reads 1.000000007 gwei) and txflood has no
+  value flag. S87 therefore runs the warm-up decay for 900 s (about 3570
+  ETH, need 56%); later legs start at 3-5k ETH and keep earning 1 ETH per
+  block. After seven generators the eighth still sees about 1.8k ETH against
+  252 needed.
 - Baseline: S84 B legs 148.9k/134.0k, 145.5k/137.2k at 20-28% occupancy.
 - Gate: gas occupancy >= 95% AND B mean >= 300k tx/s.
 - Stop rule (section 5): B mean < 250k with full blocks means the executor
