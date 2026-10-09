@@ -95,19 +95,8 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	}
 
 	blockNum := blockNumber.Uint64()
-	var txHash types.Hash
-	if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
-		// Frame body (P1b): the root commits to the frame hashes. The frames
-		// themselves were checked against their hashes when resolved.
-		if body.Txs == nil {
-			return fmt.Errorf("%w: %d frames not resolved", ErrFramesUnavailable, len(body.FrameHashes))
-		}
-		txHash = block.FrameTxRoot(body.FrameHashes)
-	} else {
-		txHash = block.TxRootAt(b.Transactions(), b.Time())
-	}
-	if txHash != b.TxHash() {
-		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
+	if err := v.validateTxRoot(b); err != nil {
+		return err
 	}
 
 	if blockNum == 0 {
@@ -199,5 +188,25 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	// LtHash validation: LtHashRoot is now in Extra, not a header field.
 	// TODO: extract LtHashRoot from Extra and validate against statedb.LtHashRoot().
 
+	return nil
+}
+
+// validateTxRoot checks the block's transactions root: FrameTxRoot of
+// the frame hashes for a frame body (P1b), which must also be resolved,
+// TxRootAt of the transactions otherwise. A frame's bytes were checked
+// against its hash when it was admitted to the store or pulled.
+func (v *BlockValidator) validateTxRoot(b block.IBlock) error {
+	var txHash types.Hash
+	if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
+		if body.Txs == nil {
+			return fmt.Errorf("%w: %d frames not resolved", ErrFramesUnavailable, len(body.FrameHashes))
+		}
+		txHash = block.FrameTxRoot(body.FrameHashes)
+	} else {
+		txHash = block.TxRootAt(b.Transactions(), b.Time())
+	}
+	if txHash != b.TxHash() {
+		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
+	}
 	return nil
 }

@@ -99,6 +99,7 @@ import (
 	dtorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
+	framestore "github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/internal/ingest"
 	"github.com/n42blockchain/N42/internal/mcp"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
@@ -2360,14 +2361,47 @@ func (n *Node) enableFrameIngest(pool *ingestPoolAdapter) {
 	}
 	chainID := n.blockChain.Config().ChainID
 	signer := transaction.LatestSignerForChainID(chainID)
+	st := framestore.NewFromEnv()
+	realBC, _ := n.blockChain.(*internal.BlockChain)
+	var lookup func(types.Hash) ([]byte, bool)
+	if realBC != nil {
+		// FRQ1 pulls are served from the Frames table once a block has
+		// taken a frame out of the store.
+		lookup = func(h types.Hash) ([]byte, bool) {
+			var raw []byte
+			_ = realBC.ChainDB.View(context.Background(), func(tx kv.Tx) error {
+				v, err := rawdb.ReadFrame(tx, h)
+				if err == nil && len(v) > 0 {
+					raw = append([]byte(nil), v...)
+				}
+				return err
+			})
+			return raw, raw != nil
+		}
+	}
 	if err := n.ingestServer.EnableFrames(ingest.FrameConfig{
 		Gateways: gateways,
+		Store:    st,
 		Pool:     pool,
 		Signer:   func() transaction.Signer { return signer },
 		Workers:  workers,
 		Queue:    workers * 64,
+		Lookup:   lookup,
 	}); err != nil {
 		log.Error("Frame ingest disabled", "err", err)
+		return
+	}
+	if realBC != nil {
+		// Every node resolves frame-referenced bodies from this store;
+		// N42_FRAME_BLOCKS=1 additionally makes it the leader's block source.
+		realBC.SetFrameStore(st)
+		srv := n.ingestServer
+		if peers := ingest.PullPeersFromEnv(); len(peers) > 0 {
+			realBC.SetFramePuller(func(ctx context.Context, hashes []types.Hash) map[types.Hash][]byte {
+				return srv.PullFrames(ctx, peers, hashes)
+			})
+		}
+		log.Info("Frame blocks", "produce", internal.FrameBlocksEnabled(), "pullPeers", len(ingest.PullPeersFromEnv()))
 	}
 }
 

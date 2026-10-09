@@ -293,6 +293,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
+		if numTxs == frameReqMagic {
+			if err := s.serveFrameRequest(conn); err != nil {
+				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+					log.Warn("Ingest frame request error", "err", err)
+				}
+				return
+			}
+			continue
+		}
+
 		accepted, err := s.readBatch(conn, numTxs)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {

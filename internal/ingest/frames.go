@@ -76,6 +76,9 @@ type FrameConfig struct {
 	Signer   func() transaction.Signer // signer the pool validates with
 	Workers  int                       // bridge workers (default 4)
 	Queue    int                       // bridge queue depth in frames (default 256)
+	// Lookup serves FRQ1 pulls for frames no longer in the store (the
+	// Frames table); nil = store only.
+	Lookup func(types.Hash) ([]byte, bool)
 }
 
 // ParseGateways parses a comma-separated list of hex addresses.
@@ -105,6 +108,7 @@ type FrameStats struct {
 	TxsAccepted                                                  uint64 // txs in accepted frames
 	Bridged, BridgeRejected, BridgeBadTx                         uint64 // P1a bridge
 	BridgeFrames                                                 uint64 // frames the bridge finished
+	PullServed, Pulled                                           uint64 // FRQ1 frames served / pulled and admitted
 	Store                                                        store.Stats
 }
 
@@ -120,6 +124,7 @@ type frameIngest struct {
 
 	accepted, duplicate, busy, badSig, unknownGW, malformed, txsAccepted atomic.Uint64
 	bridged, bridgeRejected, bridgeBadTx, bridgeFrames                   atomic.Uint64
+	pullServed, pulled                                                   atomic.Uint64
 }
 
 // EnableFrames turns on the gateway-signed frame path. Must be called
@@ -175,6 +180,8 @@ func (s *Server) FrameStats() FrameStats {
 		BridgeRejected: fi.bridgeRejected.Load(),
 		BridgeBadTx:    fi.bridgeBadTx.Load(),
 		BridgeFrames:   fi.bridgeFrames.Load(),
+		PullServed:     fi.pullServed.Load(),
+		Pulled:         fi.pulled.Load(),
 		Store:          fi.cfg.Store.Stats(),
 	}
 }
