@@ -147,3 +147,19 @@ func TestFrameBlockRLPRoundTrip(t *testing.T) {
 		t.Fatal("frame body with tx data accepted")
 	}
 }
+
+// TestHeaderFrameTxRoot: a header marked with SetFrameTxRoot assembles with
+// that root and no per-transaction root; the mark is not part of the hash.
+func TestHeaderFrameTxRoot(t *testing.T) {
+	hdr := &Header{Number: uint256.NewInt(3), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(1)}
+	before := CopyHeader(hdr).Hash()
+	hashes := sampleFrameHashes(2)
+	hdr.SetFrameTxRoot(FrameTxRoot(hashes))
+	if CopyHeader(hdr).Hash() != before {
+		t.Fatal("frame root mark changed the header hash")
+	}
+	blk := NewBlockFromReceipt(hdr, sampleBody(t, 2).Txs, nil, nil, nil)
+	if blk.TxHash() != FrameTxRoot(hashes) {
+		t.Fatal("assembly ignored the frame root")
+	}
+}

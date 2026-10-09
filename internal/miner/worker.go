@@ -228,6 +228,11 @@ type environment struct {
 	header   *block.Header
 	txs      []*transaction.Transaction
 	receipts []*block.Receipt
+
+	// Frame-referenced build (N42_FRAME_BLOCKS=1): the frames whose
+	// transactions are txs, in order, and their encodings.
+	frameHashes []types.Hash
+	frameData   [][]byte
 }
 
 func (env *environment) copy() *environment {
@@ -246,6 +251,8 @@ func (env *environment) copy() *environment {
 
 	cpy.txs = make([]*transaction.Transaction, len(env.txs))
 	copy(cpy.txs, env.txs)
+	cpy.frameHashes = append([]types.Hash(nil), env.frameHashes...)
+	cpy.frameData = append([][]byte(nil), env.frameData...)
 	return cpy
 }
 
@@ -2146,6 +2153,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 
 	blockNumber := headerNumber.Uint64()
 
+	// Frame-referenced blocks take whole frames from the frame store instead
+	// of bundles and pool transactions (docs/QS_MULTI_MILLION_DESIGN.md P1b).
+	if internal.FrameBlocksEnabled() {
+		wd.Cancel()
+		return w.fillFrames(env, ibs, getHeader, commitTx, balCap == nil, tl)
+	}
+
 	// Phase 1: Execute MEV bundles at block top (highest-paying first).
 	if w.bundlePool != nil {
 		wd.SetStep("mevBundles")
@@ -2606,9 +2620,20 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		}
 		envCopy.header.Root, envCopy.header.ReceiptHash, envCopy.header.Bloom, envCopy.header.GasUsed = pr.Root, pr.ReceiptHash, pr.Bloom, pr.GasUsed
 	}
+	if len(envCopy.frameHashes) > 0 {
+		envCopy.header.SetFrameTxRoot(block.FrameTxRoot(envCopy.frameHashes))
+	}
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
+	}
+	if len(envCopy.frameHashes) > 0 {
+		body, ok := iblock.Body().(*block.Body)
+		if !ok || iblock.TxHash() != block.FrameTxRoot(envCopy.frameHashes) {
+			return errors.New("miner: frame block assembly lost the frame root")
+		}
+		body.FrameHashes = envCopy.frameHashes
+		body.FrameData = envCopy.frameData
 	}
 	var exec *rawdb.ExecutedResult
 	if deferredExec {

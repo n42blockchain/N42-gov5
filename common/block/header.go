@@ -107,7 +107,19 @@ type Header struct {
 	MobileRegistryRoot *types.Hash `json:"mobileRegistryRoot,omitempty" rlp:"optional,nil"` // 23 NEW
 
 	hash atomic.Value
+
+	// frameTxRoot, when set, is the TxHash a block assembled from this
+	// header must carry because its body references frames (FrameTxRoot).
+	// In-memory only: unexported, so no codec sees it and it never reaches
+	// the hash; it only saves the assembly from computing a per-transaction
+	// root it would then discard.
+	frameTxRoot *types.Hash
 }
+
+// SetFrameTxRoot marks the header as the header of a frame-referenced block
+// whose transactions root is r (see FrameTxRoot). Block assembly then uses
+// r instead of a root over the transactions.
+func (h *Header) SetFrameTxRoot(r types.Hash) { h.frameTxRoot = &r }
 
 func (h *Header) Number64() *uint256.Int {
 	return h.Number

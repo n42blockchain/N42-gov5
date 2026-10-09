@@ -21,6 +21,8 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // The skip rule (consensus, frame-referenced blocks only;
@@ -92,4 +94,26 @@ func SkippedTxReceipt(tx *transaction.Transaction, header *block.Header, index i
 	}
 	r.Bloom = block.CreateBloom(block.Receipts{r})
 	return r
+}
+
+// FrameBuildResult is the builder's view of a frame build run.
+type FrameBuildResult struct {
+	Included []*transaction.Transaction
+	Receipts block.Receipts
+	UsedGas  uint64
+	Skipped  int
+}
+
+// BuildParallelFrames runs the leader's Block-STM build over the
+// transactions of whole frames (StateProcessor.BuildParallelFrames).
+func (bc *BlockChain) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*FrameBuildResult, error) {
+	sp, ok := bc.process.(*StateProcessor)
+	if !ok || sp == nil {
+		return nil, ErrParallelNotApplicable
+	}
+	run, err := sp.BuildParallelFrames(header, txs, ibs, blockHashFunc)
+	if err != nil {
+		return nil, err
+	}
+	return &FrameBuildResult{Included: run.Included, Receipts: run.Receipts, UsedGas: run.UsedGas, Skipped: run.Skipped}, nil
 }
