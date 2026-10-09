@@ -265,6 +265,12 @@ func (a *ingestPoolAdapter) AddLocal(tx *transaction.Transaction) error {
 	return a.pool.AddLocal(tx)
 }
 
+// AddLocals admits one frame's transactions in a single pool batch (the
+// P1a frame bridge, internal/ingest/frames.go).
+func (a *ingestPoolAdapter) AddLocals(txs []*transaction.Transaction) []error {
+	return a.pool.AddLocals(txs)
+}
+
 func (a *ingestPoolAdapter) Stats() (pending, pendingAddrs, queued, queuedAddrs int) {
 	return a.pool.Stats()
 }
