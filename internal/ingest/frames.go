@@ -26,7 +26,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
@@ -48,9 +47,9 @@ const FrameMagic = frameMagic
 
 // Frame reply status codes.
 const (
-	FrameAccepted       byte = 0 // stored and queued for the pool
-	FrameDuplicate      byte = 1 // already stored; nothing done
-	FrameBusy           byte = 2 // bridge queue full or pool at hard cap; retry later
+	FrameAccepted       byte = 0 // stored in the frame store
+	FrameDuplicate      byte = 1 // already stored, or already in a block; nothing done
+	FrameBusy           byte = 2 // reserved: not produced since the P1a bridge was removed
 	FrameBadSignature   byte = 3 // gateway signature does not verify
 	FrameUnknownGateway byte = 4 // gateway not in the allowlist
 	FrameMalformed      byte = 5 // payload layout invalid; connection kept if framing held
@@ -63,19 +62,10 @@ const EnvFrameGateways = "N42_FRAME_GATEWAYS"
 
 var errFramesDisabled = errors.New("ingest: frame ingest disabled")
 
-// FramePool is the batch admission the P1a bridge feeds.
-type FramePool interface {
-	AddLocals(txs []*transaction.Transaction) []error
-}
-
 // FrameConfig configures the frame path. Gateways must be non-empty.
 type FrameConfig struct {
 	Gateways []types.Address
-	Store    *store.Store              // nil = store.NewFromEnv()
-	Pool     FramePool                 // bridge target; nil = store only
-	Signer   func() transaction.Signer // signer the pool validates with
-	Workers  int                       // bridge workers (default 4)
-	Queue    int                       // bridge queue depth in frames (default 256)
+	Store    *store.Store // nil = store.NewFromEnv()
 	// Lookup serves FRQ1 pulls for frames no longer in the store (the
 	// Frames table); nil = store only.
 	Lookup func(types.Hash) ([]byte, bool)
@@ -106,24 +96,15 @@ func GatewaysFromEnv() ([]types.Address, error) {
 type FrameStats struct {
 	Accepted, Duplicate, Busy, BadSig, UnknownGateway, Malformed uint64
 	TxsAccepted                                                  uint64 // txs in accepted frames
-	Bridged, BridgeRejected, BridgeBadTx                         uint64 // P1a bridge
-	BridgeFrames                                                 uint64 // frames the bridge finished
 	PullServed, Pulled                                           uint64 // FRQ1 frames served / pulled and admitted
 	Store                                                        store.Stats
-}
-
-type bridgeJob struct {
-	hash types.Hash
-	f    *frame.Frame
 }
 
 type frameIngest struct {
 	cfg   FrameConfig
 	allow map[types.Address]struct{}
-	queue chan bridgeJob
 
 	accepted, duplicate, busy, badSig, unknownGW, malformed, txsAccepted atomic.Uint64
-	bridged, bridgeRejected, bridgeBadTx, bridgeFrames                   atomic.Uint64
 	pullServed, pulled                                                   atomic.Uint64
 }
 
@@ -136,16 +117,9 @@ func (s *Server) EnableFrames(cfg FrameConfig) error {
 	if cfg.Store == nil {
 		cfg.Store = store.NewFromEnv()
 	}
-	if cfg.Workers < 1 {
-		cfg.Workers = 4
-	}
-	if cfg.Queue < 1 {
-		cfg.Queue = 256
-	}
 	fi := &frameIngest{
 		cfg:   cfg,
 		allow: make(map[types.Address]struct{}, len(cfg.Gateways)),
-		queue: make(chan bridgeJob, cfg.Queue),
 	}
 	for _, g := range cfg.Gateways {
 		fi.allow[g] = struct{}{}
@@ -176,10 +150,6 @@ func (s *Server) FrameStats() FrameStats {
 		UnknownGateway: fi.unknownGW.Load(),
 		Malformed:      fi.malformed.Load(),
 		TxsAccepted:    fi.txsAccepted.Load(),
-		Bridged:        fi.bridged.Load(),
-		BridgeRejected: fi.bridgeRejected.Load(),
-		BridgeBadTx:    fi.bridgeBadTx.Load(),
-		BridgeFrames:   fi.bridgeFrames.Load(),
 		PullServed:     fi.pullServed.Load(),
 		Pulled:         fi.pulled.Load(),
 		Store:          fi.cfg.Store.Stats(),
@@ -187,14 +157,8 @@ func (s *Server) FrameStats() FrameStats {
 }
 
 func (fi *frameIngest) start(ctx context.Context) {
-	if fi.cfg.Pool != nil {
-		for i := 0; i < fi.cfg.Workers; i++ {
-			go fi.bridgeWorker(ctx)
-		}
-	}
 	go fi.statsLoop(ctx)
-	log.Info("Ingest frame path enabled", "gateways", len(fi.allow), "storeBudget", fi.cfg.Store.Stats().Budget,
-		"bridgeWorkers", fi.cfg.Workers, "bridgeQueue", fi.cfg.Queue, "bridge", fi.cfg.Pool != nil)
+	log.Info("Ingest frame path enabled", "gateways", len(fi.allow), "storeBudget", fi.cfg.Store.Stats().Budget)
 }
 
 // readFrame reads one frame after its magic word and returns the reply. A
@@ -202,9 +166,9 @@ func (fi *frameIngest) start(ctx context.Context) {
 // must close after the reply is sent.
 //
 // The per-frame cost on this goroutine is the read (one allocation sized by
-// the header, one copy from the socket), one keccak and one ecrecover. The
-// P1a bridge runs elsewhere and is reached by a non-blocking send: a full
-// queue answers FrameBusy rather than stalling the connection.
+// the header, one copy from the socket), one keccak, one ecrecover and the
+// gas-estimate walk. The frame then waits in the store for a block builder
+// (frame-referenced blocks, P1b); nothing reaches the transaction pool.
 func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) {
 	fi := s.frames
 	var hdr [frame.HeaderSize]byte
@@ -253,23 +217,6 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 		reply[0] = FrameDuplicate
 		return reply, nil
 	}
-	if fi.cfg.Pool != nil {
-		if s.pool != nil && s.hardCap > 0 {
-			if pending, _, _, _ := s.pool.Stats(); pending > s.hardCap {
-				fi.busy.Add(1)
-				reply[0] = FrameBusy
-				return reply, nil
-			}
-		}
-		select {
-		case fi.queue <- bridgeJob{hash: hash, f: f}:
-		default:
-			// Not stored either, so the client's retry is not a duplicate.
-			fi.busy.Add(1)
-			reply[0] = FrameBusy
-			return reply, nil
-		}
-	}
 	if !st.PutEntry(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}) {
 		// Lost a race with the same frame on another connection, or the
 		// frame exceeds the whole budget; either way nothing is lost.
@@ -281,70 +228,6 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 	fi.txsAccepted.Add(uint64(f.TxCount))
 	reply[0] = FrameAccepted
 	return reply, nil
-}
-
-// bridgeWorker is the P1a-TEMPORARY bridge from the frame store into the
-// legacy transaction pool, so the existing miner can build blocks from
-// frame-ingested transactions until P1b puts frame hashes in block bodies
-// and execution reads frames directly. Each frame is decoded, its senders
-// are recovered in one pass on this worker (filling the process-wide sender
-// cache, so block import later hits it), and the whole frame enters the
-// pool in a single AddLocals batch. Delete this, the queue and FramePool
-// when P1b lands.
-func (fi *frameIngest) bridgeWorker(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case job := <-fi.queue:
-			fi.bridgeFrame(job)
-		}
-	}
-}
-
-func (fi *frameIngest) bridgeFrame(job bridgeJob) {
-	f := job.f
-	var signer transaction.Signer
-	if fi.cfg.Signer != nil {
-		signer = fi.cfg.Signer()
-	}
-	raws := f.Txs()
-	txs := make([]*transaction.Transaction, 0, len(raws))
-	for _, raw := range raws {
-		var tx *transaction.Transaction
-		var err error
-		switch f.TxType {
-		case frame.TxTypeNative:
-			tx = new(transaction.Transaction)
-			err = tx.Unmarshal(raw)
-		default:
-			tx, err = transaction.DecodeEthereumTransaction(raw)
-		}
-		if err != nil {
-			fi.bridgeBadTx.Add(1)
-			continue
-		}
-		if signer != nil {
-			from, err := transaction.Sender(signer, tx)
-			if err != nil {
-				fi.bridgeBadTx.Add(1)
-				continue
-			}
-			tx.SetFrom(from)
-		}
-		txs = append(txs, tx)
-	}
-	if len(txs) > 0 {
-		var ok uint64
-		for _, err := range fi.cfg.Pool.AddLocals(txs) {
-			if err == nil {
-				ok++
-			}
-		}
-		fi.bridged.Add(ok)
-		fi.bridgeRejected.Add(uint64(len(txs)) - ok)
-	}
-	fi.bridgeFrames.Add(1)
 }
 
 func (fi *frameIngest) statsLoop(ctx context.Context) {
@@ -362,9 +245,9 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 			}
 			st := fi.cfg.Store.Stats()
 			log.Info("ingest frames", "accepted", a, "acceptedDelta", a-last, "txs", fi.txsAccepted.Load(),
-				"dup", fi.duplicate.Load(), "busy", fi.busy.Load(), "badSig", fi.badSig.Load(),
-				"bridged", fi.bridged.Load(), "bridgeRejected", fi.bridgeRejected.Load(), "bridgeQueue", len(fi.queue),
-				"storeFrames", st.Frames, "storeBytes", st.Bytes, "evicted", st.Evicted)
+				"dup", fi.duplicate.Load(), "badSig", fi.badSig.Load(),
+				"pulled", fi.pulled.Load(), "pullServed", fi.pullServed.Load(),
+				"storeFrames", st.Frames, "storeBytes", st.Bytes, "evicted", st.Evicted, "removed", st.Removed)
 			last = a
 		}
 	}

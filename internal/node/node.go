@@ -2328,7 +2328,7 @@ func (n *Node) startIngestServer() {
 			return transaction.MakeSignerWithTimestamp(cfg, h.Number64().ToBig(), h.Time())
 		}, workers)
 	}
-	n.enableFrameIngest(ingestPool)
+	n.enableFrameIngest()
 	if err := n.ingestServer.Start(); err != nil {
 		log.Error("Ingest server failed to start", "err", err)
 	} else {
@@ -2338,12 +2338,11 @@ func (n *Node) startIngestServer() {
 
 // enableFrameIngest turns on the gateway-signed frame path of the ingest
 // listener when N42_FRAME_GATEWAYS lists at least one gateway address
-// (docs/QS_MULTI_MILLION_DESIGN.md, P1a). Frames land in the frame store;
-// the P1a-temporary bridge then decodes them into the txspool, recovering
-// senders with the signer the pool validates with, so the existing miner
-// builds blocks from them. N42_FRAME_BRIDGE_WORKERS sizes the bridge
-// (default a quarter of GOMAXPROCS, at least 2).
-func (n *Node) enableFrameIngest(pool *ingestPoolAdapter) {
+// (docs/QS_MULTI_MILLION_DESIGN.md, P1a/P1b). Frames land in the frame store,
+// which the chain resolves frame-referenced bodies from and, with
+// N42_FRAME_BLOCKS=1, the leader fills blocks from. Frames never enter the
+// transaction pool.
+func (n *Node) enableFrameIngest() {
 	gateways, err := ingest.GatewaysFromEnv()
 	if err != nil {
 		log.Error("Frame ingest disabled: bad gateway list", "env", ingest.EnvFrameGateways, "err", err)
@@ -2352,15 +2351,6 @@ func (n *Node) enableFrameIngest(pool *ingestPoolAdapter) {
 	if len(gateways) == 0 {
 		return
 	}
-	workers := runtime.GOMAXPROCS(0) / 4
-	if v, err := strconv.Atoi(os.Getenv("N42_FRAME_BRIDGE_WORKERS")); err == nil && v > 0 {
-		workers = v
-	}
-	if workers < 2 {
-		workers = 2
-	}
-	chainID := n.blockChain.Config().ChainID
-	signer := transaction.LatestSignerForChainID(chainID)
 	st := framestore.NewFromEnv()
 	realBC, _ := n.blockChain.(*internal.BlockChain)
 	var lookup func(types.Hash) ([]byte, bool)
@@ -2382,10 +2372,6 @@ func (n *Node) enableFrameIngest(pool *ingestPoolAdapter) {
 	if err := n.ingestServer.EnableFrames(ingest.FrameConfig{
 		Gateways: gateways,
 		Store:    st,
-		Pool:     pool,
-		Signer:   func() transaction.Signer { return signer },
-		Workers:  workers,
-		Queue:    workers * 64,
 		Lookup:   lookup,
 	}); err != nil {
 		log.Error("Frame ingest disabled", "err", err)
