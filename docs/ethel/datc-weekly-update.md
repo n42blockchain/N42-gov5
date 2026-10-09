@@ -151,6 +151,8 @@ $B/datc.bin verify-ns --out $A --from $E --contracts 400
 - 把任何输入软链到别的项目目录（`ethel-test/` 每周轮换删除；`witness/` 属于 witness-replay 项目）。区块头已于 2026-09-15 改为实体文件。
 - 用 `rsync --append/--inplace` 或 `cp` 覆盖变更集尾段。
 - 在 leaf 段收尾（`[leafseg] finalizing`）过程中打断进程：spill 被保留时，重跑收尾会把同一批行重复合并进已有段。
+  - 例外（2026-10-08 实测）：收尾因 ENOSPC 之类的写错误失败时，已完成的桶会删掉自己的 spill，未完成的桶只留下 `*.seg.tmp`（改名没发生，旧段完好）。
+    此时先清掉 `leafseg/*.seg.tmp`、腾出空间，再用 weekly 打印的 build 命令重跑，只会处理剩下的桶（该次 85/85，5 分钟）。依据：`finalizeLeafSegments` 只在桶成功后才删它的 spill，所以剩下的 spill 就是还没合并的桶。
 - 在 `supervise.sh` 或任何自动重启下跑收尾：OOM 强杀后自动重启会再次收尾，已合并的桶会重复（2026-09-15 事故，见 `datc-status-2026-09-15.md` 第 6 节）。收尾要用外排序版本（hi10 及以后）单独运行。
 
 ### 验收通过后可以删除
