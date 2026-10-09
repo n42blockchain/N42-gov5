@@ -188,6 +188,7 @@ type parallelRun struct {
 	Logs     []*block.Log
 	UsedGas  uint64
 	Failed   int
+	Skipped  int // frame skip rule (skipInvalid runs only)
 	Nopay    map[types.Address]*uint256.Int
 }
 
@@ -207,7 +208,8 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		// credit (see runParallel) and runs sequentially.
 		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
 	}
-	run, err := p.runParallel(concreteHeader, b.Hash(), txs, ibs, blockHashFunc, false)
+	body, _ := b.Body().(*block.Body)
+	run, err := p.runParallel(concreteHeader, b.Hash(), txs, ibs, blockHashFunc, false, body.IsFrameBody())
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
@@ -223,13 +225,34 @@ func (p *StateProcessor) BuildParallel(header *block.Header, txs []*transaction.
 	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
 		return nil, ErrParallelNotApplicable
 	}
-	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true)
+	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true, false)
+}
+
+// ErrFrameTxNotSkippable: a frame build met a transaction failure the skip
+// rule does not cover; nothing was applied and the builder falls back to
+// its serial frame fill, which drops the offending frame.
+var ErrFrameTxNotSkippable = errors.New("frame build: transaction failure outside the skip rule")
+
+// BuildParallelFrames is the builder's run over the transactions of whole
+// frames: like the import of a frame block, every transaction stays in the
+// block and skip-rule failures get skip receipts. Any other failure returns
+// ErrFrameTxNotSkippable before the state is touched.
+func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
+		return nil, ErrParallelNotApplicable
+	}
+	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true, true)
 }
 
 // runParallel is the shared core: sender gate, per-worker readers, the
 // executor, the fold into ibs, the deferred fee credit; strict mode then
 // validates gas against the header and finalizes.
-func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient bool) (*parallelRun, error) {
+//
+// skipInvalid applies the frame-block skip rule (frame_exec.go): a
+// skip-rule failure keeps its transaction with a skip receipt and fails
+// neither mode; in lenient mode any other failure returns
+// ErrFrameTxNotSkippable before the state is applied.
+func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid bool) (*parallelRun, error) {
 	numTxs := len(txs)
 	tStart := time.Now()
 	senderHintHits := 0
@@ -481,9 +504,25 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// reason. Counted by class so the log line answers that next time.
 	var failNonceLow, failNonceHigh, failFunds, failFeeCap, failOther int
 	var failSample error
+	var skipped []bool
+	nSkipped := 0
 	for i, r := range results {
 		if r.Err == nil {
 			continue
+		}
+		if skipInvalid {
+			if IsFrameSkippable(r.Err, txs[i], signer) {
+				if skipped == nil {
+					skipped = make([]bool, numTxs)
+				}
+				skipped[i] = true
+				nSkipped++
+				continue
+			}
+			if lenient {
+				executor.Release()
+				return nil, fmt.Errorf("%w: tx %d [%v]: %v", ErrFrameTxNotSkippable, i, txs[i].Hash().String(), r.Err)
+			}
 		}
 		if !lenient {
 			return nil, fmt.Errorf("could not apply tx %d from block %d [%v]: %w",
@@ -557,6 +596,11 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		included = make([]*transaction.Transaction, 0, numTxs-failed)
 	}
 	for i := 0; i < numTxs; i++ {
+		if skipped != nil && skipped[i] {
+			// failed == 0 here (skip mode drops nothing), so the index is i.
+			receipts = append(receipts, SkippedTxReceipt(txs[i], concreteHeader, i, usedGas))
+			continue
+		}
 		if results[i].Err != nil {
 			continue
 		}
@@ -665,6 +709,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			Exec:     tRunEnd.Sub(tRunStart),
 			Collect:  tApplyStart.Sub(tRunEnd),
 			Finalize: time.Since(tApplyStart),
+			Skipped:  nSkipped,
 		})
 	}
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
@@ -673,14 +718,14 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
-		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
+		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
 	}
 
-	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Nopay: nopay}, nil
+	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, Nopay: nopay}, nil
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.
