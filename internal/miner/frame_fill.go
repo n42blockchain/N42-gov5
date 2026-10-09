@@ -106,9 +106,10 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	dDecode := time.Since(tDecode)
 	tExec := time.Now()
 	finish := func(hashes []types.Hash, raws [][]byte, path string, skipped int) error {
+		// Marked in flight when the block is assembled (commit), not here: a
+		// build discarded by a new head must leave its frames fillable.
 		env.frameHashes = hashes
 		env.frameData = raws
-		bc.MarkFramesInFlight(hashes, number)
 		if tl != nil {
 			tl.FillLoopDoneAt = time.Now()
 			tl.FillExecDur = time.Since(tExec)

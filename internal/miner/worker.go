@@ -2634,6 +2634,11 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		}
 		body.FrameHashes = envCopy.frameHashes
 		body.FrameData = envCopy.frameData
+		// A chained build on this unwritten block must not take its frames
+		// again; writing the block clears the mark.
+		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			bc.MarkFramesInFlight(envCopy.frameHashes, envCopy.header.Number.Uint64())
+		}
 	}
 	var exec *rawdb.ExecutedResult
 	if deferredExec {
