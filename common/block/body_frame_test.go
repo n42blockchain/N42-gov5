@@ -163,3 +163,18 @@ func TestHeaderFrameTxRoot(t *testing.T) {
 		t.Fatal("assembly ignored the frame root")
 	}
 }
+
+// TestFrameBlockWireSize: the pushed form of a frame block grows by one
+// hash per frame and not with its transactions.
+func TestFrameBlockWireSize(t *testing.T) {
+	hdr := &Header{Number: uint256.NewInt(9), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(1)}
+	full := sampleBody(t, 40)
+	small, _ := rlp.EncodeToBytes(NewFrameBlockFromReceipt(hdr, sampleFrameHashes(400), nil, nil, nil))
+	withTxs, _ := rlp.EncodeToBytes(NewFrameBlockFromReceipt(hdr, sampleFrameHashes(400), full.Txs, nil, nil))
+	if len(small) != len(withTxs) {
+		t.Fatalf("frame block wire form depends on its transactions: %d vs %d", len(small), len(withTxs))
+	}
+	if len(small) > 400*33+1024 {
+		t.Fatalf("400-frame block is %d bytes", len(small))
+	}
+}
