@@ -269,3 +269,11 @@ Ruled out. Pool: r35zzzbk-vm.log shows queued=0-2 and pending 40k-200k on node0/
 What differs: A legs run the same -interleave and chain ~350 speculative builds per node without a wedge, but their blocks stay ~45k tx (gasceil 960M). Only the gasceil 6.8G / fillgas 3.4G legs, with 163k-tx blocks drawn from 8000 interleaved senders, wedge. Sender-major B legs (S84, 56 senders per block) never did. The blocked step is unnamed: N42_BUILD_STALL_DIAG was not set, so no goroutine dump exists.
 
 Next (S86): rerun B1 only with -interleave and N42_BUILD_STALL_DIAG=1 so the stall watchdog dumps all goroutines and names the blocking step; if the wedge sits in the fill or wave scheduler over thousands of senders, bound the distinct senders with a txflood window flag (interleave within K=1000 senders at a time, each sender's nonces still in order), predicted wkKeys about 1000 (not 7000-8000), wkTopChain 200-400 (not 20-40); risk: K keys is a 7x smaller spread than the plan, and if the wedge is in chained-speculative layering it will recur at any K, so the dump comes first.
+
+## S86 plan (35zzzbl, r115, txflood-r44 -interleave) -- 2026-10-09
+
+Fix 53106179 (nested QMDB fallback read no longer takes a second read-tx permit) addresses the limiter deadlock that wedged S85's leader. Config identical to S85 (35zzzbk) except the node binary: n42-r115 instead of n42-r114. txflood-r44 with -interleave on all legs, N42_WAVE_LPT=1, N42_MINER_SENDER_ROTATE=1, N42_BUILD_STALL_DIAG=1; node3 snapshot qs-replay-node3-bl.
+
+Baseline = S84 B legs: 148.9k/134.0k and 145.5k/137.2k; node3 runMs p50 215, wkWallMax p50 144, wkKeys 56, wkTopChain 3396.
+Prediction: B legs chain without a wedge, wkKeys 7000-8000, wkTopChain 20-40, wkWallMax p50 <= 90, runMs p50 <= 150.
+Pass = all B legs complete AND runMs p50 <= 150 AND B mean >= 150k. Partial = B legs complete but TPS < 150k: the fix is adopted and the TPS gap is the next step.
