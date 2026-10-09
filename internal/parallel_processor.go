@@ -364,8 +364,18 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// parallel.BaseCache). Sized for the distinct accounts a block touches:
 	// the bench's blocks are ~163k transfers over ~23k recipients.
 	baseCache := parallel.NewBaseCache(len(txs)/4 + 64)
+	// The QMDB run holds the tree's reader lock (span below): its workers
+	// open their transactions under the span's permit, taken before the
+	// lock, and never wait on the limiter while the lock is held.
+	var span *commitment.ReadSpan
 	setup := func(workerID int) (any, func(), error) {
-		tx, err := p.bc.ChainDB.BeginRo(context.Background())
+		var tx kv.Tx
+		var err error
+		if span != nil {
+			tx, err = span.BeginRo(context.Background())
+		} else {
+			tx, err = p.bc.ChainDB.BeginRo(context.Background())
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
 		}
@@ -474,13 +484,16 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		waveCold0, waveResident0 = qmdb.ReadCounters()
 		waveColdNs0 = qmdb.ReadColdNanos()
 	}
-	var unlockReaders func()
 	if useQMDB {
-		unlockReaders = p.bc.qmdbRootComputer.LockReaders()
+		var err error
+		if span, err = p.bc.qmdbRootComputer.BeginReadSpan(context.Background(), p.bc.ChainDB); err != nil {
+			return nil, fmt.Errorf("ProcessParallel: read span: %w", err)
+		}
 	}
 	results := executor.Run()
-	if unlockReaders != nil {
-		unlockReaders()
+	if span != nil {
+		span.End()
+		span = nil
 	}
 	tRunEnd := time.Now()
 	var waveReads, waveColdReads uint64
@@ -648,13 +661,16 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		// live tree is being written by the import of the previous block
 		// while the next build runs; a read racing an append, an eviction or
 		// a resize is a crash or a seeded "absent" account).
-		var unlock func()
+		var pspan *commitment.ReadSpan
 		if useQMDB {
-			unlock = p.bc.qmdbRootComputer.LockReaders()
+			var err error
+			if pspan, err = p.bc.qmdbRootComputer.BeginReadSpan(context.Background(), p.bc.ChainDB); err != nil {
+				return nil, fmt.Errorf("ProcessParallel: prefetch read span: %w", err)
+			}
 		}
-		n, err := p.prefetchPendingCredits(ibs, pf, useQMDB, mode, postLayers)
-		if unlock != nil {
-			unlock()
+		n, err := p.prefetchPendingCredits(ibs, pf, pspan, mode, postLayers)
+		if pspan != nil {
+			pspan.End()
 		}
 		if err != nil {
 			return nil, fmt.Errorf("ProcessParallel: prefetch pending credits: %w", err)
@@ -938,7 +954,10 @@ func ParallelWorkers() int { return parallelWorkers() }
 // same reader stack the workers used, and seeds the prefetch layer with the
 // result. Small sets are not worth the transactions and read through the
 // fold as before.
-func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, useQMDB bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
+// span is the caller's QMDB read span (nil: no QMDB reads); the workers'
+// transactions are opened under its permit.
+func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, span *commitment.ReadSpan, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
+	useQMDB := span != nil
 	addrs := ibs.PendingBalanceIncreases()
 	if len(addrs) < 256 {
 		return 0, nil
@@ -968,7 +987,13 @@ func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *
 		wg.Add(1)
 		go func(w, lo, hi int) {
 			defer wg.Done()
-			tx, err := p.bc.ChainDB.BeginRo(context.Background())
+			var tx kv.Tx
+			var err error
+			if span != nil {
+				tx, err = span.BeginRo(context.Background())
+			} else {
+				tx, err = p.bc.ChainDB.BeginRo(context.Background())
+			}
 			if err != nil {
 				errs[w] = fmt.Errorf("prefetch worker %d: open read transaction: %w", w, err)
 				return

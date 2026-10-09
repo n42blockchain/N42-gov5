@@ -15,6 +15,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -97,9 +98,16 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// The applied-head check and the state reads below must see one state:
 	// the tree's readers lock keeps the import from moving the applied head
 	// (and the tree) between them.
+	// The span's permit is taken before the lock and the sender workers open
+	// their transactions under it: waiting for a permit while holding the
+	// lock deadlocks against readers that hold permits and queue for it.
+	var span *commitment.ReadSpan
 	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
-		unlock := bc.qmdbRootComputer.LockReaders()
-		defer unlock()
+		var err error
+		if span, err = bc.qmdbRootComputer.BeginReadSpan(context.Background(), bc.ChainDB); err != nil {
+			return true, true, err
+		}
+		defer span.End()
 	}
 	if !bc.AppliedHeadIsExactly(parent.Hash(), number-1) {
 		return true, true, ErrDeferredParentNotApplied
@@ -115,7 +123,7 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 				ErrDeferredParentNotApplied, got[:6], hdr.Root[:6])
 		}
 	}
-	return true, false, bc.checkSenderStates(number, plan)
+	return true, false, bc.checkSenderStates(number, plan, span)
 }
 
 // deferredSender is one sender's transactions in block order.
@@ -268,7 +276,7 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 // against the applied head's post-state (the parent), reading the senders
 // across goroutines with their own read transactions. The caller holds the
 // tree's readers lock.
-func (bc *BlockChain) checkSenderStates(number uint64, plan []*deferredSender) error {
+func (bc *BlockChain) checkSenderStates(number uint64, plan []*deferredSender, span *commitment.ReadSpan) error {
 	if len(plan) == 0 {
 		return nil
 	}
@@ -292,7 +300,13 @@ func (bc *BlockChain) checkSenderStates(number uint64, plan []*deferredSender) e
 		wg.Add(1)
 		go func(w, lo, hi int) {
 			defer wg.Done()
-			rtx, err := bc.ChainDB.BeginRo(context.Background())
+			var rtx kv.Tx
+			var err error
+			if span != nil {
+				rtx, err = span.BeginRo(context.Background())
+			} else {
+				rtx, err = bc.ChainDB.BeginRo(context.Background())
+			}
 			if err != nil {
 				errs[w] = err
 				return
