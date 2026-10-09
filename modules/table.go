@@ -111,6 +111,12 @@ const (
 	BlockVerify  = "BlockVerify"
 	BlockRewards = "BlockRewards"
 
+	// Frames holds every gateway frame a stored frame-referenced block
+	// names (docs/QS_MULTI_MILLION_DESIGN.md P1b): FrameHash -> encoded frame
+	// (header || payload || signature). The block body record holds only the
+	// ordered hash list.
+	Frames = "Frames"
+
 	// Transaction senders - stored separately from the block bodies
 	Senders = "TxSender" // block_num_u64 + blockHash -> sendersList (no serialization format, every 20 bytes is new sender)
 
@@ -395,6 +401,7 @@ var n42Tables = []string{
 	Deposit,
 	BlockVerify,
 	BlockRewards,
+	Frames,
 	SnapSyncProgress,
 	SnapshotIndex,
 	BlobSidecars,

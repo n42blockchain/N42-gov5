@@ -514,10 +514,30 @@ func ReadCanonicalBodyWithTransactions(db kv.Getter, hash types.Hash, number uin
 		return ancientCanonicalBody(db, hash, number)
 	}
 	var err error
-	body.Txs, err = CanonicalTransactions(db, baseTxId, txAmount)
-	if err != nil {
-		log.Error("Failed to read transaction by hash", "hash", hash, "block", number, "err", err)
-		return nil
+	if txAmount == 0 {
+		// A frame-referenced body stores no BlockTx rows; its transactions
+		// are decoded from the Frames table. Ordinary empty bodies have no
+		// hash-list record and read exactly as before.
+		hashes, ferr := ReadFrameBodyHashes(db, hash, number)
+		if ferr != nil {
+			log.Error("Failed to read frame body", "hash", hash, "block", number, "err", ferr)
+			return nil
+		}
+		if len(hashes) > 0 {
+			body.FrameHashes = hashes
+			body.Txs, err = ReadFrameTxs(db, hashes)
+			if err != nil {
+				log.Error("Failed to decode frame body", "hash", hash, "block", number, "err", err)
+				return nil
+			}
+		}
+	}
+	if body.FrameHashes == nil {
+		body.Txs, err = CanonicalTransactions(db, baseTxId, txAmount)
+		if err != nil {
+			log.Error("Failed to read transaction by hash", "hash", hash, "block", number, "err", err)
+			return nil
+		}
 	}
 
 	verifies, err := ReadVerifies(db, hash, number)
@@ -692,6 +712,9 @@ func DeleteEngineWithdrawalsRLP(db kv.Deleter, hash types.Hash, number uint64) e
 }
 
 func WriteBody(db kv.RwTx, hash types.Hash, number uint64, body *block.Body) error {
+	if body.IsFrameBody() {
+		return writeFrameBody(db, hash, number, body)
+	}
 	// Pre-processing
 	body.SendersFromTxs()
 	baseTxId, err := db.IncrementSequence(modules.BlockTx, uint64(len(body.Txs))+2)
@@ -802,6 +825,9 @@ func deleteBody(db kv.Deleter, hash types.Hash, number uint64) {
 	}
 	if err := DeleteEngineWithdrawalsRLP(db, hash, number); err != nil {
 		log.Crit("Failed to delete engine withdrawals", "err", err)
+	}
+	if err := db.Delete(modules.BlockBody, frameBodyKey(number, hash)); err != nil {
+		log.Crit("Failed to delete frame body", "err", err)
 	}
 }
 
