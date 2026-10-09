@@ -2606,6 +2606,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
 				"tMs", time.Now().UnixMilli(),
 			}
+			if procPhases.Skipped > 0 {
+				fields = append(fields, "skipped", procPhases.Skipped)
+			}
 			// S32 (docs/QS_BLOCK_TIME_BUDGET.md 6di/6dj,
 			// N42_BLOCK_DECODE_REUSE_POOL): counters only, no per-block info
 			// log of their own -- how many of this block's transactions were

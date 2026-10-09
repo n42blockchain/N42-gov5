@@ -70,6 +70,9 @@ type ProcessPhases struct {
 	// validate waves) and Finalize covers applyMVSToIBS through Finalize.
 	Setup   time.Duration
 	Collect time.Duration
+	// Skipped counts the transactions a frame block skipped (skip rule,
+	// frame_exec.go); always zero for other blocks.
+	Skipped int
 }
 
 // StateProcessor implements Processor and handles state transitions.
@@ -247,12 +250,36 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		writer = balCap
 	}
 
+	// Frame blocks run under the skip rule (frame_exec.go): each transaction
+	// gets a snapshot so a skipped one leaves no trace.
+	frameBlock := false
+	var frameSigner transaction.Signer
+	if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
+		frameBlock = true
+		frameSigner = transaction.MakeSignerWithTimestamp(chainConfig, concreteHeader.Number.ToBig(), concreteHeader.Time)
+	}
 	for i, tx := range b.Transactions() {
 		ibs.Prepare(tx.Hash(), b.Hash(), i)
 		if balCap != nil {
 			balCap.BeginTx(tx.Hash())
 		}
+		snap := -1
+		if frameBlock {
+			snap = ibs.Snapshot()
+		}
 		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, writer, concreteHeader, tx, usedGas, cfg)
+		if err != nil && frameBlock && IsFrameSkippable(err, tx, frameSigner) {
+			ibs.RevertToSnapshot(snap)
+			if balCap != nil {
+				balCap.DiscardTx()
+			}
+			phases.Skipped++
+			includedTxs = append(includedTxs, tx)
+			if !cfg.NoReceipts {
+				receipts = append(receipts, SkippedTxReceipt(tx, concreteHeader, i, *usedGas))
+			}
+			continue
+		}
 		if err != nil {
 			if balCap != nil {
 				balCap.DiscardTx()
