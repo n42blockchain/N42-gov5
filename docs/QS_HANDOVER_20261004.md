@@ -240,3 +240,11 @@ Round 35zzzbj ran A1, B1, B2, A2 to ROUND DONE 23:05:17 ET (no abort); ENV lines
 TPS win1/win2: B1 148,890/133,959; B2 145,513/137,229 (B mean 141.4k, S83 B1 149.9k/133.7k). A1 92,190/91,428; A2 82,666/90,713.
 
 Ruling: FAIL (runMs p50 215 > 150 and B mean 141.4k < 150k). Rotation helped but only partly: senders per block rose 3.5x (16 -> 56) and the longest chain fell 3.5x, nowhere near 1000 / 200, so the builder still emits few senders per block (likely the pool hands the builder a small executable sender set, or per-sender runs are batched before the heap). Wave wall fell (178 -> 144) but per-worker busy time rose 33% (more senders = more cold reads/MVS conflicts per tx), so the gain did not reach TPS. Next: find why wkKeys stays ~56 (pool/builder sender supply) before adding other levers.
+
+## S85 plan (35zzzbk, r114, txflood-r44) -- 2026-10-09
+
+S84 showed the builder rotation has nothing to rotate over: txflood is sender-major (index i -> sender i/perTx), so the pool holds ~56 senders at a time. S85 changes only the load generator: `-interleave` (sender i % senders, nonce i / senders) on every leg, node binary n42-r114 and N42_WAVE_LPT=1 / N42_MINER_SENDER_ROTATE=1 unchanged.
+
+Baseline = S84 B legs: 148.9k/134.0k and 145.5k/137.2k; node3 runMs p50 215, wkWallMax p50 144, wkKeys 56, wkTopChain 3396.
+Prediction: wkKeys 7000-8000, wkTopChain 20-40, wkWallMax p50 <= 90, runMs p50 <= 150. Pass = runMs p50 <= 150 AND B mean >= 150k.
+Caveat: n42-rs's 280k was measured with sender-major txflood; any cross-chain comparison must rerun n42-rs with -interleave too.
