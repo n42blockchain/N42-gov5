@@ -73,6 +73,9 @@ type Server struct {
 	hintQueue   chan []*transaction.Transaction // batches of hinted transactions
 	hinted      atomic.Uint64
 
+	// Gateway-signed frame path; nil when disabled. See EnableFrames.
+	frames *frameIngest
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -164,6 +167,9 @@ func (s *Server) Start() error {
 	s.listener = ln
 	log.Info("Ingest server started", "addr", ln.Addr().String(), "hintOnly", s.hintOnly, "hintWorkers", s.hintWorkers)
 
+	if s.frames != nil {
+		s.frames.start(s.ctx)
+	}
 	if s.hintOnly {
 		for i := 0; i < s.hintWorkers; i++ {
 			go s.hintWorker()
@@ -263,7 +269,31 @@ func (s *Server) handleConn(conn net.Conn) {
 		default:
 		}
 
-		accepted, err := s.readBatch(conn)
+		// The first word of every message is either a batch's transaction
+		// count or frameMagic (well above maxBatchSize), which selects the
+		// gateway-signed frame path on the same listener.
+		var numBuf [4]byte
+		if _, err := io.ReadFull(conn, numBuf[:]); err != nil {
+			return
+		}
+		numTxs := binary.LittleEndian.Uint32(numBuf[:])
+		if numTxs == frameMagic {
+			reply, err := s.readFrame(conn)
+			if err != nil {
+				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+					log.Warn("Ingest frame error", "err", err)
+				}
+				// Framing is lost; tell the client why and drop it.
+				_, _ = conn.Write(reply[:])
+				return
+			}
+			if _, err := conn.Write(reply[:]); err != nil {
+				return
+			}
+			continue
+		}
+
+		accepted, err := s.readBatch(conn, numTxs)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
 				log.Warn("Ingest connection error", "err", err)
@@ -289,16 +319,9 @@ const maxBatchSize = 100_000
 // that still fit the 2-byte wire length field.
 const maxTxSize = 48 * 1024 // 48 KiB
 
-// readBatch reads and processes one batch of transactions from the
-// connection. It returns the number of successfully injected transactions.
-func (s *Server) readBatch(r io.Reader) (uint32, error) {
-	// Read num_txs (4 bytes LE).
-	var numBuf [4]byte
-	if _, err := io.ReadFull(r, numBuf[:]); err != nil {
-		return 0, err
-	}
-	numTxs := binary.LittleEndian.Uint32(numBuf[:])
-
+// readBatch reads and processes one batch of numTxs transactions (the count
+// word already consumed by handleConn) from the connection. It returns the number of successfully injected transactions.
+func (s *Server) readBatch(r io.Reader, numTxs uint32) (uint32, error) {
 	if numTxs == 0 {
 		s.batches.Add(1)
 		return 0, nil
