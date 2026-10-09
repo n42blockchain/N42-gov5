@@ -13,6 +13,7 @@
 package block
 
 import (
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -61,6 +62,16 @@ func (b *Block) DecodeRLPReusePool(s *rlp.Stream, lookup TxLookup) (reused, deco
 	var dec blockRLP
 	if err := s.Decode(&dec); err != nil {
 		return 0, 0, err
+	}
+	if len(dec.FrameHashes) > 0 {
+		if len(dec.TxData) > 0 {
+			return 0, 0, errors.New("block: frame body must not carry transactions")
+		}
+		b.header = dec.Header
+		b.body = &Body{Verifiers: dec.Verifiers, Rewards: dec.Rewards, ZkProof: dec.ZkProof, FrameHashes: dec.FrameHashes}
+		b.hash = atomic.Value{}
+		b.size = atomic.Value{}
+		return 0, 0, nil
 	}
 	txs, reused, decoded, err := decodeBlockTxsReuse(dec.TxData, lookup)
 	if err != nil {

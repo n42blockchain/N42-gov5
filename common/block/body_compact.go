@@ -24,6 +24,13 @@
 //	                              length, amount big-endian
 //	      uvarint ZK proof length, bytes
 //
+// Version 0x02 is the frame-referenced body (P1b): the transaction list is
+// replaced by the ordered frame hashes, the rest is unchanged.
+//
+//	[0] 0xFF  [1] 0x02
+//	      uvarint frame count,    per frame: FrameHash 32 B
+//	      verifiers, rewards, ZK proof exactly as in version 0x01
+//
 // Reward amounts are stored as a minimal big-endian run rather than a fixed 32
 // bytes: they are block rewards, so the top bytes are zero in every realistic
 // case.
@@ -43,10 +50,23 @@ import (
 const (
 	compactBodyMarker  = 0xFF
 	compactBodyVersion = 0x01
+	// compactFrameBodyVersion tags a frame-referenced body.
+	compactFrameBodyVersion = 0x02
 )
 
 // MarshalCompact encodes the body in the compact storage format.
+// A frame-referenced body is written as version 0x02 and carries only its
+// frame hashes; its decoded transactions are not part of the record.
 func (b *Body) MarshalCompact() ([]byte, error) {
+	if b.IsFrameBody() {
+		buf := make([]byte, 0, 2+3*binary.MaxVarintLen64+len(b.FrameHashes)*types.HashLength)
+		buf = append(buf, compactBodyMarker, compactFrameBodyVersion)
+		buf = rcAppendUvarint(buf, uint64(len(b.FrameHashes)))
+		for _, h := range b.FrameHashes {
+			buf = append(buf, h[:]...)
+		}
+		return b.appendCompactTail(buf)
+	}
 	buf := make([]byte, 0, 2+3*binary.MaxVarintLen64+len(b.Txs)*192)
 	buf = append(buf, compactBodyMarker, compactBodyVersion)
 
@@ -68,7 +88,12 @@ func (b *Body) MarshalCompact() ([]byte, error) {
 		buf = rcAppendUvarint(buf, uint64(len(enc)))
 		buf = append(buf, enc...)
 	}
+	return b.appendCompactTail(buf)
+}
 
+// appendCompactTail appends the verifier, reward and ZK proof sections,
+// shared by both body versions.
+func (b *Body) appendCompactTail(buf []byte) ([]byte, error) {
 	buf = rcAppendUvarint(buf, uint64(len(b.Verifiers)))
 	for _, v := range b.Verifiers {
 		buf = append(buf, v.Address[:]...)
@@ -98,7 +123,8 @@ func (b *Body) MarshalCompact() ([]byte, error) {
 
 // IsCompactBody reports whether data is in the compact body format.
 func IsCompactBody(data []byte) bool {
-	return len(data) >= 2 && data[0] == compactBodyMarker && data[1] == compactBodyVersion
+	return len(data) >= 2 && data[0] == compactBodyMarker &&
+		(data[1] == compactBodyVersion || data[1] == compactFrameBodyVersion)
 }
 
 // UnmarshalCompact decodes the compact body format.
@@ -140,30 +166,54 @@ func (b *Body) UnmarshalCompact(data []byte) error {
 		return nil
 	}
 
-	txCount, err := uvarint()
-	if err != nil {
-		return err
-	}
-	if err := checkCount(txCount, 1, "transaction"); err != nil {
-		return err
-	}
-	txs := make([]*transaction.Transaction, 0, txCount)
-	for i := uint64(0); i < txCount; i++ {
-		n, err := uvarint()
+	if data[1] == compactFrameBodyVersion {
+		frameCount, err := uvarint()
 		if err != nil {
 			return err
 		}
-		raw, err := take(int(n))
+		if frameCount == 0 {
+			return fmt.Errorf("compact body: frame body with no frames")
+		}
+		if err := checkCount(frameCount, types.HashLength, "frame"); err != nil {
+			return err
+		}
+		hashes := make([]types.Hash, frameCount)
+		for i := range hashes {
+			h, err := take(types.HashLength)
+			if err != nil {
+				return err
+			}
+			copy(hashes[i][:], h)
+		}
+		b.FrameHashes = hashes
+		b.Txs = nil
+	} else {
+		txCount, err := uvarint()
 		if err != nil {
 			return err
 		}
-		tx := new(transaction.Transaction)
-		if err := tx.Unmarshal(raw); err != nil {
-			return fmt.Errorf("compact body: transaction %d: %w", i, err)
+		if err := checkCount(txCount, 1, "transaction"); err != nil {
+			return err
 		}
-		txs = append(txs, tx)
+		txs := make([]*transaction.Transaction, 0, txCount)
+		for i := uint64(0); i < txCount; i++ {
+			n, err := uvarint()
+			if err != nil {
+				return err
+			}
+			raw, err := take(int(n))
+			if err != nil {
+				return err
+			}
+			tx := new(transaction.Transaction)
+			if err := tx.Unmarshal(raw); err != nil {
+				return fmt.Errorf("compact body: transaction %d: %w", i, err)
+			}
+			txs = append(txs, tx)
+		}
+		b.Txs = txs
+		b.FrameHashes = nil
 	}
-	b.Txs = txs
 
 	verifierCount, err := uvarint()
 	if err != nil {
