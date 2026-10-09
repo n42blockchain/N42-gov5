@@ -248,3 +248,24 @@ S84 showed the builder rotation has nothing to rotate over: txflood is sender-ma
 Baseline = S84 B legs: 148.9k/134.0k and 145.5k/137.2k; node3 runMs p50 215, wkWallMax p50 144, wkKeys 56, wkTopChain 3396.
 Prediction: wkKeys 7000-8000, wkTopChain 20-40, wkWallMax p50 <= 90, runMs p50 <= 150. Pass = runMs p50 <= 150 AND B mean >= 150k.
 Caveat: n42-rs's 280k was measured with sender-major txflood; any cross-chain comparison must rerun n42-rs with -interleave too.
+
+## S85 result (35zzzbk, r114, txflood-r44 -interleave) -- 2026-10-09
+
+Round 35zzzbk ran warm-up, A1, B1, B2, A2 to ROUND DONE 02:43:50 ET (no abort). Ruling: FAIL, the B legs produced no blocks to measure.
+
+| leg | win1 | win2 | note |
+|---|---|---|---|
+| A1 | 85,170 TPS (224 blocks) | 82,468 (234) | gasceil 960M |
+| B1 | 0 blocks | 0 blocks | chain halted 02:16:46 ET |
+| B2 | 1 block, 163,000 tx, blockTime 60 s | 0 blocks | chain halted ~02:28:26 ET |
+| A2 | 85,366 (232) | 80,316 (234) | gasceil 960M |
+
+S84 B legs for comparison: 148.9k/134.0k and 145.5k/137.2k.
+
+Mechanism. The first 163,000-tx block of each B leg commits normally (B1 view 9360, 02:16:45; 7/7 nodes imported it, proc ~270 ms). The leader (node1 in B1, node4 in B2) then starts the chained speculative build of the next block and logs "miner: speculative build chains on own unwritten block" (accounts 9083 and 8987), but never logs "miner: parallel fill" or "miner: build phases" again. No proposal follows: all 7 nodes log "view timed out" for views 9361, 9362, 9363, 9364, 9365 (02:16:51, 02:17:03, 02:17:27, 02:17:57, 02:18:27) and the leader's own "TC formed, I am the new leader" lines are never followed by "commitWork begin", i.e. the miner worker is wedged inside that build, not merely slow. node1's shutdown hit the 30 s forced-exit timeout. B2 is identical (views 11345-11348 from 02:28:32).
+
+Ruled out. Pool: r35zzzbk-vm.log shows queued=0-2 and pending 40k-200k on node0/node3 through B1, the one txpool reorg line has queueAccts 4, no rejections, so the nonce-gap/queued hypothesis is false; interleaved sends reach the pool in a usable order. Memory: HeapAlloc 4.8 GB, GCCPUFraction 0.0002, MemAvailable >= 35 GB, no GC thrash. Generators: the flood logs show 1009 "batch submit err ... Client.Timeout exceeded while awaiting headers" lines per flood in B1/B2 and none in A1/A2, but they start after the chain stops and are the effect, not the cause. perTx was 9000 in every leg (the 8 floods x 1000 senders x 12,000,000 txs setup is shared), so queued depth per sender does not differ between A and B. The "committed block not executed locally" error is benign (1169 on node1, present in earlier legs).
+
+What differs: A legs run the same -interleave and chain ~350 speculative builds per node without a wedge, but their blocks stay ~45k tx (gasceil 960M). Only the gasceil 6.8G / fillgas 3.4G legs, with 163k-tx blocks drawn from 8000 interleaved senders, wedge. Sender-major B legs (S84, 56 senders per block) never did. The blocked step is unnamed: N42_BUILD_STALL_DIAG was not set, so no goroutine dump exists.
+
+Next (S86): rerun B1 only with -interleave and N42_BUILD_STALL_DIAG=1 so the stall watchdog dumps all goroutines and names the blocking step; if the wedge sits in the fill or wave scheduler over thousands of senders, bound the distinct senders with a txflood window flag (interleave within K=1000 senders at a time, each sender's nonces still in order), predicted wkKeys about 1000 (not 7000-8000), wkTopChain 200-400 (not 20-40); risk: K keys is a 7x smaller spread than the plan, and if the wedge is in chained-speculative layering it will recur at any K, so the dump comes first.
