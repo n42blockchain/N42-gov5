@@ -273,6 +273,37 @@ Measured in-process (8 cores): frame pick 16.6M frames/s from a
 (decode + recover 181k tx/s, 50k transfers). Recovery is now the
 follower's dominant per-transaction cost before execution.
 
+### P1 gate (S87, 35zzzbm)
+
+Round 35zzzbm is the one gate round of phase P1 (section 5: one round per
+gate, no tuning inside a phase). It runs the S86 legs unchanged (warm-up,
+A1, B1, B2, A2; 2 windows of 60 s) with frame ingest and frame blocks on.
+
+- Binaries: node `n42-r116`, generator `txflood-r45`.
+- Fleet env (all 7 nodes): `N42_FRAME_GATEWAYS=<gateway address>` (one
+  secp256k1 key for the round), `N42_FRAME_BLOCKS=1`,
+  `N42_FRAME_PULL_PEERS=<7 ingest host:port>`; store bytes, max frames per
+  block (1024) and pull timeout (2000 ms) at their defaults. The ceiling of
+  163k tx per block is 326 frames, well under 1024 x 500. Unchanged from S86:
+  parallel EVM, `N42_MINER_PARALLEL_FILL=1`, `N42_WAVE_LPT=1`,
+  `N42_MINER_SENDER_ROTATE=1`, `N42_BUILD_STALL_DIAG=1`.
+- Generators: 8 x 1000 senders, pertx 12000, `-frames -gateway-key <hex>
+  -frame-peers <7 ingest addrs> -frame-broadcast -interleave`, funding and
+  nonces over `-rpc`. `-conc 4` per generator (32 sender connections, each
+  with one connection per peer): a frame is 500 txs, so 400k tx/s is 800
+  frames/s, and one connection round-trips a broadcast frame in a few
+  milliseconds; 4 is well above need, the limit is lazy signing. Rate is 0
+  (S86's 8 x 20000 cap would pin supply at 160k tx/s).
+- Baseline: S84 B legs 148.9k/134.0k, 145.5k/137.2k at 20-28% occupancy.
+- Gate: gas occupancy >= 95% AND B mean >= 300k tx/s.
+- Stop rule (section 5): B mean < 250k with full blocks means the executor
+  is the bound, re-plan; between 250k and 300k is a partial result and the
+  gap is read from the follower exec versus root phases before P2.
+- Reading the numbers: occupancy and TPS come from `measure-tps.sh`, which
+  reads `eth_getBlockByNumber` hash lists (frame blocks reconstruct their
+  transactions from the `Frames` table). Also read the `skipped` count on
+  the "parallel block" lines, FRQ1 pull counts and unresolved-block logs.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
