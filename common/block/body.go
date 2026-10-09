@@ -40,7 +40,18 @@ type Body struct {
 	// ZkProof holds the optional ZK proof for fast-path verification.
 	// Field is named ZkProof (not ZKProof) to avoid conflict with the ZKProof() getter method.
 	ZkProof []byte
+	// FrameHashes, when non-empty, makes this a frame-referenced body
+	// (docs/QS_MULTI_MILLION_DESIGN.md P1b): the block's transactions are
+	// the concatenation, in order, of the gateway frames these hashes name.
+	// Txs then holds the locally decoded transactions (never put on the wire
+	// or in the body record) and the header's TxHash is FrameTxRoot of the
+	// hashes. Empty for every ordinary body.
+	FrameHashes []types.Hash
 }
+
+// IsFrameBody reports whether the body references frames instead of
+// carrying its transactions.
+func (b *Body) IsFrameBody() bool { return b != nil && len(b.FrameHashes) > 0 }
 
 func (b *Body) ToProtoMessage() proto.Message {
 	pbTxs := make([]*types_pb.Transaction, 0, len(b.Txs))

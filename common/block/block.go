@@ -25,6 +25,7 @@ package block
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -42,6 +43,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
@@ -175,6 +177,10 @@ type blockRLP struct {
 	Verifiers []*Verify
 	Rewards   []*Reward
 	ZkProof   []byte `rlp:"optional"`
+	// FrameHashes is set only for a frame-referenced body (P1b); TxData is
+	// then empty. Being optional and last, it is absent from every ordinary
+	// block's encoding, which therefore stays byte-identical.
+	FrameHashes []types.Hash `rlp:"optional"`
 }
 
 // EncodeRLP implements rlp.Encoder, emitting the ETH-standard wire form.
@@ -182,6 +188,17 @@ func (b *Block) EncodeRLP(w io.Writer) error {
 	body := b.body
 	if body == nil {
 		body = &Body{}
+	}
+	if body.IsFrameBody() {
+		// The transactions travel as frames, resolved by hash on arrival.
+		return rlp.Encode(w, &blockRLP{
+			Header:      b.header,
+			TxData:      [][]byte{},
+			Verifiers:   body.Verifiers,
+			Rewards:     body.Rewards,
+			ZkProof:     body.ZkProof,
+			FrameHashes: body.FrameHashes,
+		})
 	}
 	txData := make([][]byte, len(body.Txs))
 	for i, tx := range body.Txs {
@@ -209,12 +226,19 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode(&dec); err != nil {
 		return err
 	}
+	if len(dec.FrameHashes) > 0 && len(dec.TxData) > 0 {
+		return errors.New("block: frame body must not carry transactions")
+	}
 	txs, err := decodeBlockTxs(dec.TxData)
 	if err != nil {
 		return err
 	}
+	if len(dec.FrameHashes) > 0 {
+		// Unresolved until the importer fills Txs from its frames.
+		txs = nil
+	}
 	b.header = dec.Header
-	b.body = &Body{Txs: txs, Verifiers: dec.Verifiers, Rewards: dec.Rewards, ZkProof: dec.ZkProof}
+	b.body = &Body{Txs: txs, Verifiers: dec.Verifiers, Rewards: dec.Rewards, ZkProof: dec.ZkProof, FrameHashes: dec.FrameHashes}
 	b.hash = atomic.Value{}
 	b.size = atomic.Value{}
 	return nil
@@ -245,6 +269,49 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 	block.header.TxHash = TxRootAt(txs, block.header.Time)
 
 	return block
+}
+
+// NewFrameBlockFromReceipt is NewBlockFromReceipt for a frame-referenced
+// body: txs are the transactions decoded from the frames named by
+// frameHashes, in order, and the header's TxHash is FrameTxRoot(frameHashes)
+// instead of a root over the transactions.
+func NewFrameBlockFromReceipt(h IHeader, frameHashes []types.Hash, txs []*transaction.Transaction, receipts []*Receipt, reward []*Reward) IBlock {
+	blk := &Block{
+		header: CopyHeader(h.(*Header)),
+		body: &Body{
+			Txs:         txs,
+			Rewards:     CopyReward(reward),
+			FrameHashes: append([]types.Hash(nil), frameHashes...),
+		},
+		ReceiveAt: time.Now(),
+	}
+	if !DeferredAt(blk.header.Time) {
+		blk.header.Bloom = CreateBloom(receipts)
+		blk.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
+	}
+	blk.header.TxHash = FrameTxRoot(frameHashes)
+	return blk
+}
+
+// FrameTxRoot is the transactions root of a frame-referenced body:
+// keccak256 over the concatenated 32-byte frame hashes, in body order. A
+// frame hash commits to every byte of its frame (header and payload), so
+// this binds the block to exactly the transactions the frames hold.
+func FrameTxRoot(frameHashes []types.Hash) types.Hash {
+	buf := make([]byte, 0, len(frameHashes)*types.HashLength)
+	for _, h := range frameHashes {
+		buf = append(buf, h[:]...)
+	}
+	return crypto.Keccak256Hash(buf)
+}
+
+// BodyTxRoot is the transactions root a header must carry for body at
+// blockTime: FrameTxRoot for a frame body, TxRootAt otherwise.
+func BodyTxRoot(body *Body, blockTime uint64) types.Hash {
+	if body.IsFrameBody() {
+		return FrameTxRoot(body.FrameHashes)
+	}
+	return TxRootAt(body.Txs, blockTime)
 }
 
 // UseEthereumTxRoot, when true, computes the block transactions root with the
