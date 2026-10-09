@@ -220,3 +220,23 @@ pass/fail are registered verbatim in docs/QS_QUEUE.md (S84).
 Note on the S83 abort: it coincided with a foreign Shmem of 28.4 GB (vs
 13.8 GB in 35zzzbh) already present at launch, so the abort was not caused by
 r113 growth. Dates America/New_York.
+
+## S84 result (35zzzbj, r114, B1+B2) -- 2026-10-08
+
+Round 35zzzbj ran A1, B1, B2, A2 to ROUND DONE 23:05:17 ET (no abort); ENV lines show N42_WAVE_LPT=1 and N42_MINER_SENDER_ROTATE=1. Node3 "parallel block" lines with txs >= 100k in the B windows (B1 22:23:38-22:37:40, B2 22:37:40-22:51:42): n=316 (268 at exactly 163,000 tx).
+
+| field | S83 B1 p50 | S84 p50 | S84 p90/max | prediction |
+|---|---|---|---|---|
+| runMs | 244 | 215 | 358 / - | <= 150 |
+| execMs | 219 | 193 | - | - |
+| finalizeMs | 119.5 | 81 | - | - |
+| wkWallMaxMs | 178 | 144 | - / 585 | <= 90 |
+| wkWallMeanMs | 73.5 | 108 | - | - |
+| wkQMax | 12000 | 6219 | - / 12000 | - |
+| wkKeys | 16 | 56 | - / 105 | >= 1000 |
+| wkTopChain | 12000 | 3396 | - / 12000 | <= 200 |
+| waveBusyMs | 1864 | 2471 | - | - |
+
+TPS win1/win2: B1 148,890/133,959; B2 145,513/137,229 (B mean 141.4k, S83 B1 149.9k/133.7k). A1 92,190/91,428; A2 82,666/90,713.
+
+Ruling: FAIL (runMs p50 215 > 150 and B mean 141.4k < 150k). Rotation helped but only partly: senders per block rose 3.5x (16 -> 56) and the longest chain fell 3.5x, nowhere near 1000 / 200, so the builder still emits few senders per block (likely the pool hands the builder a small executable sender set, or per-sender runs are batched before the heap). Wave wall fell (178 -> 144) but per-worker busy time rose 33% (more senders = more cold reads/MVS conflicts per tx), so the gain did not reach TPS. Next: find why wkKeys stays ~56 (pool/builder sender supply) before adding other levers.
