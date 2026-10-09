@@ -2,6 +2,9 @@ package txspool
 
 import (
 	"context"
+	"os"
+	"runtime"
+	"strconv"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/account"
@@ -9,6 +12,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	"golang.org/x/sync/semaphore"
 )
 
 // ReadState provides read access to account nonces and balances.
@@ -25,18 +29,56 @@ type ReadState interface {
 }
 
 // StateCli implements ReadState using a read-only database.
+//
+// Every read goes through budget, a small semaphore of its own, before it
+// asks the database for a read transaction. Ingest can put thousands of
+// goroutines on this path at once (S86: 9,600-19,000 per node). Without the
+// budget they all queue on the database's read-transaction limiter, which is
+// FIFO and shared with the miner and the import: a Block-STM worker's
+// transaction then waits behind every queued ingest read, and every permit
+// is held by an ingest read. The budget keeps ingest to a small share of the
+// limiter; the rest of the queue waits here, holding nothing.
 type StateCli struct {
-	db  kv.RoDB
-	ctx context.Context
+	db     kv.RoDB
+	ctx    context.Context
+	budget *semaphore.Weighted
+}
+
+// ingestReadBudget is the number of concurrent txpool reads: GOMAXPROCS,
+// clamped to [4, 64] (the node's limiter is max(32, 8*GOMAXPROCS)), or
+// N42_TXPOOL_READ_BUDGET when set to a positive integer.
+func ingestReadBudget() int64 {
+	if n, err := strconv.Atoi(os.Getenv("N42_TXPOOL_READ_BUDGET")); err == nil && n > 0 {
+		return int64(n)
+	}
+	n := runtime.GOMAXPROCS(0)
+	if n < 4 {
+		n = 4
+	}
+	if n > 64 {
+		n = 64
+	}
+	return int64(n)
 }
 
 func StateClient(ctx context.Context, db kv.RoDB) ReadState {
-	return &StateCli{db: db, ctx: ctx}
+	return &StateCli{db: db, ctx: ctx, budget: semaphore.NewWeighted(ingestReadBudget())}
+}
+
+// view runs f in a read transaction under the ingest read budget.
+func (c *StateCli) view(f func(tx kv.Tx) error) error {
+	if c.budget != nil {
+		if err := c.budget.Acquire(c.ctx, 1); err != nil {
+			return err
+		}
+		defer c.budget.Release(1)
+	}
+	return c.db.View(c.ctx, f)
 }
 
 func (c *StateCli) GetNonce(addr types.Address) uint64 {
 	var nonce uint64
-	err := c.db.View(c.ctx, func(tx kv.Tx) error {
+	err := c.view(func(tx kv.Tx) error {
 		v, err := modules.ReadLatestAccount(tx, addr.Bytes())
 		if err != nil {
 			return err
@@ -59,7 +101,7 @@ func (c *StateCli) GetNonce(addr types.Address) uint64 {
 
 func (c *StateCli) GetBalance(addr types.Address) *uint256.Int {
 	balance := uint256.NewInt(0)
-	err := c.db.View(c.ctx, func(tx kv.Tx) error {
+	err := c.view(func(tx kv.Tx) error {
 		v, err := modules.ReadLatestAccount(tx, addr.Bytes())
 		if err != nil {
 			return err
@@ -82,7 +124,7 @@ func (c *StateCli) GetBalance(addr types.Address) *uint256.Int {
 
 func (c *StateCli) State(addr types.Address) (*account.StateAccount, error) {
 	s := new(account.StateAccount)
-	err := c.db.View(c.ctx, func(tx kv.Tx) error {
+	err := c.view(func(tx kv.Tx) error {
 		v, err := modules.ReadLatestAccount(tx, addr.Bytes())
 		if err != nil {
 			return err
@@ -105,7 +147,7 @@ type AccountInfo struct {
 func (c *StateCli) GetAccountsInfo(addrs []types.Address) map[types.Address]*AccountInfo {
 	result := make(map[types.Address]*AccountInfo, len(addrs))
 
-	err := c.db.View(c.ctx, func(tx kv.Tx) error {
+	err := c.view(func(tx kv.Tx) error {
 		for _, addr := range addrs {
 			v, err := modules.ReadLatestAccount(tx, addr.Bytes())
 			if err != nil {
