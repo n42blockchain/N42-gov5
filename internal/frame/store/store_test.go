@@ -118,3 +118,30 @@ func TestConcurrent(t *testing.T) {
 		t.Fatalf("over budget: %+v", st)
 	}
 }
+
+func TestScanRemoveTombstone(t *testing.T) {
+	s := New(1 << 20)
+	for i := 0; i < 10; i++ {
+		s.PutEntry(hashOf(i), Entry{Raw: make([]byte, 10), Gas: uint64(i), Txs: 1})
+	}
+	var order []int
+	s.Scan(func(h types.Hash, e Entry) bool {
+		order = append(order, int(e.Gas))
+		return len(order) < 5
+	})
+	if len(order) != 5 || order[0] != 0 || order[4] != 4 {
+		t.Fatalf("scan order %v", order)
+	}
+	s.Remove([]types.Hash{hashOf(0), hashOf(3)})
+	if s.Has(hashOf(0)) || s.Len() != 8 || s.Stats().Bytes != 80 || s.Stats().Removed != 2 {
+		t.Fatalf("remove: %+v", s.Stats())
+	}
+	if s.Put(hashOf(3), make([]byte, 10)) {
+		t.Fatal("tombstoned frame re-admitted")
+	}
+	order = order[:0]
+	s.Scan(func(h types.Hash, e Entry) bool { order = append(order, int(e.Gas)); return true })
+	if len(order) != 8 || order[0] != 1 || order[2] != 4 {
+		t.Fatalf("scan after remove %v", order)
+	}
+}
