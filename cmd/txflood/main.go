@@ -647,6 +647,9 @@ func main() {
 	fundTimeout := flag.Int("fund-timeout", 300, "seconds to wait for the funding batch to mine before aborting (35zc warm-up: the eighth generator's batch took >80 s behind seven flooding generators)")
 	hintPeers := flag.String("hint-peers", "", "comma-separated host:port ingest endpoints (hint-only mode) that receive every submitted transaction as well, so followers recover senders ahead of the block")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
+	framesMode := flag.Bool("frames", false, "pack the pre-signed transactions 500 to a gateway-signed frame and send them over the binary ingest port (-frame-peers) instead of JSON-RPC; one frame in flight per -conc connection, paced by acks. The node must list -gateway-key's address in N42_FRAME_GATEWAYS. Funding and nonces still use -rpc")
+	framePeers := flag.String("frame-peers", "127.0.0.1:9100", "with -frames: comma-separated host:port ingest endpoints; connection w goes to peer w % len")
+	gatewayKey := flag.String("gateway-key", "", "with -frames: gateway private key (hex) that signs every frame")
 	flag.Parse()
 	if *senders < 0 || *perTx < 0 {
 		fmt.Fprintln(os.Stderr, "senders and pertx must be non-negative")
@@ -1158,6 +1161,24 @@ func main() {
 	// so a batch worker consumes depth credit at the same rate as a single-tx
 	// worker submitting the same number). Runs are split at URL boundaries so
 	// shard routing still holds a sender's nonces together on one node.
+	if *framesMode {
+		gk, err := crypto.HexToECDSA(strings.TrimPrefix(*gatewayKey, "0x"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: -frames needs a valid -gateway-key: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Printf("frames: gateway %s -> %s\n", crypto.PubkeyToAddress(gk.PublicKey), *framePeers)
+		fr := &frameRun{
+			peers:   strings.Split(*framePeers, ","),
+			key:     gk,
+			conc:    *conc,
+			total:   totalTxs,
+			rawAt:   func(i int64) []byte { return rawBytes(rawAt(i)) },
+			permits: permits,
+		}
+		fmt.Printf("DONE %s\n", fr.run(true))
+		return
+	}
 	if *rpcBatch > 1 {
 		bn := int64(*rpcBatch)
 		if bn > 200 {
