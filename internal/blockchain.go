@@ -2016,9 +2016,24 @@ func (bc *BlockChain) InsertChain(chain []block.IBlock) (int, error) {
 				prev.Hash().Bytes()[:4], i, blk.Number64().String(), blk.Hash().Bytes()[:4], blk.ParentHash().Bytes()[:4])
 		}
 	}
+	if err := bc.resolveChainFrames(chain); err != nil {
+		return 0, err
+	}
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
 	return bc.insertChain(chain, false)
+}
+
+// resolveChainFrames resolves every frame body in chain before the import
+// takes bc.lock (a pull can wait on peers). It stops at the first block that
+// cannot be resolved; the caller imports nothing.
+func (bc *BlockChain) resolveChainFrames(chain []block.IBlock) error {
+	for _, blk := range chain {
+		if err := bc.ResolveFrames(blk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // InsertChainAuthorized imports blocks WITH branch-switch authority: if a
@@ -2029,6 +2044,9 @@ func (bc *BlockChain) InsertChain(chain []block.IBlock) (int, error) {
 func (bc *BlockChain) InsertChainAuthorized(chain []block.IBlock) (int, error) {
 	if len(chain) == 0 {
 		return 0, nil
+	}
+	if err := bc.resolveChainFrames(chain); err != nil {
+		return 0, err
 	}
 	// S11: same bc.lock, same diagnostic as AlignAppliedBranch above. A build
 	// stall's InsertChainAuthorized call is the "import consensus parent"

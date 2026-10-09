@@ -66,9 +66,13 @@ func (bc *BlockChain) WriteBlockWithoutState(blk block.IBlock) error {
 	if _, err := requireBlockNumber(concreteBlock, "block number unavailable"); err != nil {
 		return err
 	}
-	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		return rawdb.WriteBlock(tx, concreteBlock)
-	})
+	}); err != nil {
+		return err
+	}
+	bc.framesPersisted(concreteBlock)
+	return nil
 }
 
 // writeBlockWithTd writes a block along with its total difficulty to the database.
@@ -93,6 +97,7 @@ func (bc *BlockChain) writeBlockWithTd(blk block.IBlock, td *uint256.Int) error 
 	}); err != nil {
 		return err
 	}
+	bc.framesPersisted(concreteBlock)
 	bc.tdCache.Add(blk.Hash(), td)
 	return nil
 }
@@ -271,6 +276,11 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
+		// Frames named by the block are in this batch's Frames rows. Dropping
+		// them from the store before the batch commits is safe: the block is
+		// already in memory, and a failed commit fails the import, whose
+		// retry resolves the frames from the block it still holds.
+		bc.framesPersisted(concreteBlock)
 		dBlock = time.Since(tPhase)
 
 		// Persist the per-block BLS committee evidence in the same atomic batch —

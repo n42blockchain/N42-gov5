@@ -177,6 +177,9 @@ type BlockChain struct {
 	// Pool-backed sender cache for block import; see SenderHintSource.
 	senderHints SenderHintSource
 
+	// Frame-referenced blocks (P1b); see frame_blocks.go.
+	frames frameBlockState
+
 	// executedHook, when set, fires the moment a block's execution and state
 	// validation succeed during import — BEFORE writeBlockWithState. Wired to
 	// the consensus early-vote path so the vote round overlaps persistence.
