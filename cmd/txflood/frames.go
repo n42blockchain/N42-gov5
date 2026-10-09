@@ -25,8 +25,13 @@ type frameRun struct {
 	total   int64
 	rawAt   func(i int64) []byte
 	permits chan struct{} // nil = flat out; else one permit per transaction
+	// broadcast sends every frame to every peer (each worker keeps one
+	// connection per peer) instead of worker w to peer w % len. Without
+	// frame dissemination between nodes (P1b) a rotating leader can only
+	// fill blocks from frames it received itself.
+	broadcast bool
 
-	frames, txs, busy, failed, conns atomic.Int64
+	frames, txs, busy, failed, conns, rejected atomic.Int64
 }
 
 // frameResult summarises a finished -frames run.
@@ -89,11 +94,19 @@ func (fr *frameRun) run(progress bool) frameResult {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			peer := fr.peers[w%len(fr.peers)]
-			var conn net.Conn
+			targets := []int{w % len(fr.peers)}
+			if fr.broadcast {
+				targets = make([]int, len(fr.peers))
+				for i := range targets {
+					targets[i] = i
+				}
+			}
+			conns := make([]net.Conn, len(fr.peers))
 			defer func() {
-				if conn != nil {
-					conn.Close()
+				for _, c := range conns {
+					if c != nil {
+						c.Close()
+					}
 				}
 			}()
 			buf := make([]byte, 0, frame.MaxFrameSize+4)
@@ -124,51 +137,17 @@ func (fr *frameRun) run(progress bool) frameResult {
 					fmt.Printf("  frame %d encode: %v\n", k, err)
 					continue
 				}
-				for attempt := 0; ; attempt++ {
-					if conn == nil {
-						c, err := net.DialTimeout("tcp", peer, 2*time.Second)
-						if err != nil {
-							if attempt > 50 {
-								fr.failed.Add(int64(len(txs)))
-								break
-							}
-							time.Sleep(200 * time.Millisecond)
-							continue
-						}
-						conn = c
-						fr.conns.Add(1)
-					}
-					var status byte
-					status, buf, err = sendOneFrame(conn, raw, buf)
-					if err != nil {
-						conn.Close()
-						conn = nil
-						if attempt > 50 {
-							fr.failed.Add(int64(len(txs)))
-							break
-						}
-						continue
-					}
-					if status == ingest.FrameBusy {
-						// The node's bridge or pool is full: back off and
-						// resend the same frame (it was not stored).
-						fr.busy.Add(1)
-						d := time.Duration(attempt+1) * 2 * time.Millisecond
-						if d > 100*time.Millisecond {
-							d = 100 * time.Millisecond
-						}
-						time.Sleep(d)
-						continue
-					}
-					if status == ingest.FrameAccepted || status == ingest.FrameDuplicate {
-						fr.frames.Add(1)
-						fr.txs.Add(int64(len(txs)))
-					} else {
-						if n := fr.failed.Add(int64(len(txs))); n <= 5*frame.MaxTxs {
-							fmt.Printf("  frame %d rejected by %s: status %d\n", k, peer, status)
-						}
-					}
-					break
+				delivered := false
+				for _, p := range targets {
+					var ok bool
+					ok, buf = fr.sendTo(&conns[p], fr.peers[p], k, raw, len(txs), buf)
+					delivered = delivered || ok
+				}
+				if delivered {
+					fr.frames.Add(1)
+					fr.txs.Add(int64(len(txs)))
+				} else {
+					fr.failed.Add(int64(len(txs)))
 				}
 			}
 		}(w)
@@ -176,4 +155,52 @@ func (fr *frameRun) run(progress bool) frameResult {
 	wg.Wait()
 	close(stop)
 	return frameResult{Frames: fr.frames.Load(), Txs: fr.txs.Load(), Busy: fr.busy.Load(), Failed: fr.failed.Load(), Elapsed: time.Since(start)}
+}
+
+// sendTo delivers one frame to one peer over *conn (dialled on demand),
+// resending on busy and on a dropped connection. It reports whether the
+// peer holds the frame (accepted or duplicate).
+func (fr *frameRun) sendTo(conn *net.Conn, peer string, k int64, raw []byte, ntx int, buf []byte) (bool, []byte) {
+	for attempt := 0; ; attempt++ {
+		if *conn == nil {
+			c, err := net.DialTimeout("tcp", peer, 2*time.Second)
+			if err != nil {
+				if attempt > 50 {
+					return false, buf
+				}
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			*conn = c
+			fr.conns.Add(1)
+		}
+		status, nb, err := sendOneFrame(*conn, raw, buf)
+		buf = nb
+		if err != nil {
+			(*conn).Close()
+			*conn = nil
+			if attempt > 50 {
+				return false, buf
+			}
+			continue
+		}
+		switch status {
+		case ingest.FrameBusy:
+			// Not stored: back off and resend the same frame.
+			fr.busy.Add(1)
+			d := time.Duration(attempt+1) * 2 * time.Millisecond
+			if d > 100*time.Millisecond {
+				d = 100 * time.Millisecond
+			}
+			time.Sleep(d)
+			continue
+		case ingest.FrameAccepted, ingest.FrameDuplicate:
+			return true, buf
+		default:
+			if n := fr.rejected.Add(1); n <= 5 {
+				fmt.Printf("  frame %d (%d txs) rejected by %s: status %d\n", k, ntx, peer, status)
+			}
+			return false, buf
+		}
+	}
 }

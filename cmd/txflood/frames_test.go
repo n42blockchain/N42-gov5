@@ -58,3 +58,34 @@ func TestFrameRunDeliversEveryTx(t *testing.T) {
 		t.Fatalf("unknown gateway: %s", res)
 	}
 }
+
+// TestFrameRunBroadcast: with broadcast every frame reaches every peer and
+// is counted once.
+func TestFrameRunBroadcast(t *testing.T) {
+	gw, _ := crypto.GenerateKey()
+	var peers []string
+	var stores []*store.Store
+	for i := 0; i < 3; i++ {
+		st := store.New(16 << 20)
+		srv := ingest.NewServer("127.0.0.1:0", nopPool{}, 1<<30, 1<<30)
+		if err := srv.EnableFrames(ingest.FrameConfig{Gateways: []types.Address{crypto.PubkeyToAddress(gw.PublicKey)}, Store: st}); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Stop()
+		peers = append(peers, srv.Addr())
+		stores = append(stores, st)
+	}
+	fr := &frameRun{peers: peers, key: gw, conc: 2, total: 1600, broadcast: true,
+		rawAt: func(i int64) []byte { return []byte{0xCD, byte(i), byte(i >> 8)} }}
+	if res := fr.run(false); res.Frames != 4 || res.Txs != 1600 || res.Failed != 0 {
+		t.Fatalf("result %s", res)
+	}
+	for i, st := range stores {
+		if st.Len() != 4 {
+			t.Fatalf("peer %d holds %d frames", i, st.Len())
+		}
+	}
+}
