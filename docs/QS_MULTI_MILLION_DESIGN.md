@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: design, not started.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P1 gate round pending.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -172,17 +172,14 @@ block bodies are unchanged.
   the frame lands in `internal/frame/store` (FIFO ring keyed by FrameHash,
   byte budget, oldest evicted). Legacy batch messages share the listener.
 - Env: `N42_FRAME_GATEWAYS` (comma-separated hex addresses; empty = frame
-  ingest off), `N42_FRAME_STORE_BYTES` (default 4 GiB),
-  `N42_FRAME_BRIDGE_WORKERS` (default GOMAXPROCS/4, min 2). Needs the
-  ingest server on (`--ingest.addr`).
+  ingest off), `N42_FRAME_STORE_BYTES` (default 4 GiB). Needs the ingest
+  server on (`--ingest.addr`). (`N42_FRAME_BRIDGE_WORKERS` went with the
+  bridge in P1b.)
 - Generator: `txflood -frames -gateway-key <hex> -frame-peers host:port,...`
   (one frame in flight per `-conc` connection, busy = back off and resend).
-- Temporary bridge (P1a only, `internal/ingest/frames.go` bridgeWorker): a
-  bounded worker pool decodes each frame, recovers senders with the pool's
-  signer and calls `AddLocals` once per frame, so the existing miner builds
-  from `txsPool.Pending`. A full bridge queue answers busy (nothing stored),
-  never blocks the read loop. Per-tx ecrecover and pool insert still happen,
-  just off the network path; P1b deletes the bridge.
+- Temporary bridge (P1a only, deleted in P1b): a worker pool decoded each
+  frame, recovered senders and called `AddLocals` once per frame so the
+  existing miner could build from `txsPool.Pending`.
 - Measured in-process (8 cores): door alone 36.8k frames/s = 18.4M tx/s
   (`BenchmarkFrameIngest`); verify 128 us per 500-tx frame on one core. The
   bridge is ecrecover-bound (~143k tx/s on the 5k-tx e2e test).
@@ -192,6 +189,89 @@ block bodies are unchanged.
   proposal carries the full block (`internal/consensus/hotstuff`). P1b puts
   ordered frame hashes in the body, has followers resolve them from the
   frame store, and moves sender recovery to execution.
+
+### 5.2 P1b status (blocks by frame reference, 2026-10-09)
+
+Done: blocks reference frames by hash; the leader fills from the frame
+store, followers resolve from theirs, sender recovery is part of
+execution, the P1a bridge is gone. Production is behind
+`N42_FRAME_BLOCKS=1`; with it unset nothing produces a frame body and every
+path is today's (ordinary bodies encode byte-identically).
+
+Formats.
+- Body: `Body.FrameHashes` (ordered FrameHash list). The header is
+  unchanged; for a frame body **TxHash = keccak256(FrameHash_0 || ... ||
+  FrameHash_n-1)** (`block.FrameTxRoot`). ReceiptHash, Root, Bloom, GasUsed
+  keep their meaning (deferred execution included).
+- Wire (push, fetch, gossip, sync are all block RLP): `blockRLP` gains a
+  trailing optional `FrameHashes []Hash`; a frame block carries empty
+  TxData plus the hashes (~33 B per frame). The HotStuff proposal was
+  already hash-only (block hash + TxHash) and is unchanged; the sealed-block
+  push of a frame block is header + hash list, the full body is never sent.
+  The proto `types_pb.Body` is not changed: blocks no longer travel as
+  proto (it is only a legacy decode fallback), so a frame block has no
+  proto form.
+- Storage: compact body codec version `0x02` = marker 0xFF, 0x02, uvarint
+  frame count, 32 B per hash, then verifiers/rewards/ZK proof as in 0x01
+  (0x01 bodies decode unchanged). In MDBX the BlockBody row stays the
+  12-byte BodyForStorage with no transaction rows; the hash list sits under
+  the body key + tag byte `0x46`; new table `Frames` (FrameHash -> encoded
+  frame) is written with the block. `ReadBlock` (RPC block/tx lookups)
+  decodes the transactions from `Frames`. Writing a frame block drops its
+  frames from the frame store and remembers their hashes (resends answer
+  duplicate).
+- FRQ1 pull (ingest port): `"FRQ1"` u32 | count u16 (<= 4096) | hashes;
+  reply per hash: status u8 (0 found, 7 not found) | FrameHash | (found)
+  len u32 | frame. Served from the store, then `Frames`. Pulled frames are
+  admitted like FRM1 (allowlist + signature + hash match).
+
+Consensus rule change (frame blocks only): **skip rule.** A transaction
+whose pre-execution check fails -- stale or future nonce, cannot pay
+gas x price + value or the intrinsic gas, fee cap under the base fee,
+non-EOA sender, unrecoverable signature -- is skipped: it stays in the
+block with a receipt of status 0, gas used 0 and the previous cumulative
+gas, writes no state, pays no fee, and is counted (`skipped` on the
+"blockimport phases" and "parallel block" lines). Any other failure still
+fails the block; ordinary blocks keep "any failure fails the block". Frame
+entries that do not decode are dropped from the transaction list on every
+node alike. Under deferred execution a frame block is includable by
+construction; the check only resolves its frames and checks the gas sum.
+
+Leader. `fillTransactions` takes whole frames, oldest first, skipping
+frames held by unwritten ancestors (in-flight set), until the next frame's
+admission gas estimate (sum of gas limits, RLP walk to the gas field)
+does not fit or `N42_FRAME_BLOCK_MAX_FRAMES` (default 1024). Bundles and
+the pool are not read. Execution is `BuildParallelFrames` (Block-STM, same
+code as the import) with a serial fallback that drops a frame on a failure
+outside the skip rule; assembly stamps FrameTxRoot without a
+per-transaction root.
+
+Follower. `InsertChain` (before bc.lock) and the deferred check resolve
+the hashes: frame store, then `Frames`, then FRQ1 to
+`N42_FRAME_PULL_PEERS` (timeout `N42_FRAME_PULL_TIMEOUT_MS`, default 2000).
+Unresolved -> not imported -> no vote (logged once per block). With
+two-phase voting the header-known round-1 vote is still cast before
+resolution; round 2 waits for import/check as before. Senders are
+recovered by the existing batched step of the import (sender_recovery.go)
+on the decoded transactions.
+
+Env summary: `N42_FRAME_GATEWAYS`, `N42_FRAME_STORE_BYTES`,
+`N42_FRAME_BLOCKS=1` (leader production), `N42_FRAME_BLOCK_MAX_FRAMES`,
+`N42_FRAME_PULL_PEERS`, `N42_FRAME_PULL_TIMEOUT_MS`; txflood `-frames
+-gateway-key <hex> -frame-peers a,b,... -frame-broadcast`.
+
+Known limits. No frame dissemination or DA acks yet (P2): the generator
+must broadcast every frame to every node (`-frame-broadcast`) or a leader
+only proposes what it received, and followers pull the rest. Frames of an
+abandoned block become fillable again only after 16 blocks. The era
+freezer keeps no transactions for frame blocks (their `Frames` rows must
+be kept). Native-codec frames carrying a declared sender go through the
+sender gate, which rejects the block on a mismatch rather than skipping.
+
+Measured in-process (8 cores): frame pick 16.6M frames/s from a
+4,000-frame store; decode 4.5M tx/s, batch sender recovery 189k tx/s
+(decode + recover 181k tx/s, 50k transfers). Recovery is now the
+follower's dominant per-transaction cost before execution.
 
 ## 6. What this does not claim
 
