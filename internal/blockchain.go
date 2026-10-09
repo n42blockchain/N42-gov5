@@ -1771,6 +1771,17 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 			"txs", len(b.Transactions()), "size", len(data), "limit", limit)
 		return fmt.Errorf("sealed block %d is %d bytes, above the %d byte p2p wire limit", b.Number64().Uint64(), len(data), limit)
 	}
+	// A frame-referenced block (P1b) encodes as its header plus the ordered
+	// frame-hash list (block.blockRLP.FrameHashes, no transaction data):
+	// tens of bytes per frame instead of the transactions, which every
+	// validator already holds as frames or pulls over FRQ1. The HotStuff
+	// proposal itself carries only the block hash and TxHash, so this small
+	// push is how the hash list reaches the followers; the full body is never
+	// sent. Ordinary blocks push their full body as before.
+	if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
+		log.Debug("sealed frame block push", "number", b.Number64().Uint64(), "frames", len(body.FrameHashes),
+			"txs", len(body.Txs), "bytes", len(data))
+	}
 	peerCount := bc.directPushBlock(b, data)
 	// Gossip as a best-effort fallback, off the seal path: the direct pushes
 	// are already in flight, and compressing and publishing an ~18 MB block
