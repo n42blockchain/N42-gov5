@@ -366,6 +366,21 @@ mainnet cadence) with no state-root mismatch in the log.
 
 ## 8. Run log
 
+### 2026-10-08 (DATC extension on n42dev)
+
+- Inputs shipped with `scripts/datc/ship-inputs.py`: 9.5 GB (acctcs, storcs, headerc
+  new segments, tail segments and cidx), all sha256-verified.
+- DATC weekly 25,943,311 -> **26,130,712** (block 26,130,711): build 187,401 blocks in
+  2h03m, no ROOT MISMATCH.
+- **The leaf finalize failed with ENOSPC at bucket 1200/1332** (562 GB free; it
+  rewrote 591 GB next to segments still pinned by the serving hard links). Stale
+  `*.seg.tmp` removed, the printed build command re-run: the remaining 85 spills
+  merged in 4m56s, no corrupt frames. Then `weekly --skip-build --from 25943311`:
+  derive-ns 28m (112,475 roots ok), verify-ns 1400 roots 0 mismatches, verify 50/50,
+  bench 500/500 (account proof p50 49 ms, account+slots p50 53 ms, max 177 ms).
+- Lesson: keep >= 800 GB free on n42dev `/data` before a two-week extension
+  (see `datc-weekly-update.md` section 5).
+
 ### 2026-10-06/07 (full cycle + three-mode test)
 
 Source: geth ancient frozen **26,130,712** -> target **26,130,711** (hash
