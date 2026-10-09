@@ -32,7 +32,9 @@ func (tx *MdbxTx) cleanup() {
 	tx.tx = nil
 	tx.db.trackTxEnd()
 	if tx.readOnly {
-		tx.db.roTxsLimiter.Release(1)
+		if !tx.noPermit {
+			tx.db.roTxsLimiter.Release(1)
+		}
 	} else {
 		runtime.UnlockOSThread()
 	}

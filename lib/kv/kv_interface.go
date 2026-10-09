@@ -234,6 +234,27 @@ type RoDB interface {
 	CHandle() unsafe.Pointer
 }
 
+// NestedRoDB is implemented by databases that can open a read transaction
+// without taking a read-transaction limiter permit. It is for a read the
+// caller opens while it already holds a permit through an enclosing read
+// transaction on the same database: taking a second permit there is a
+// hold-and-wait, and with every permit held by such a caller no reader ever
+// finishes. The enclosing transaction's permit accounts for the pair, so the
+// number of open readers stays bounded by twice the limiter size.
+type NestedRoDB interface {
+	BeginRoNested(ctx context.Context) (Tx, error)
+}
+
+// BeginRoNested opens a read transaction for a caller that already holds a
+// read transaction on db. It never blocks on the read-transaction limiter when
+// db supports it, and falls back to BeginRo otherwise.
+func BeginRoNested(ctx context.Context, db RoDB) (Tx, error) {
+	if n, ok := db.(NestedRoDB); ok {
+		return n.BeginRoNested(ctx)
+	}
+	return db.BeginRo(ctx)
+}
+
 // RwDB low-level database interface - main target is - to provide common abstraction over top of MDBX and RemoteKV.
 //
 // Common pattern for short-living transactions:

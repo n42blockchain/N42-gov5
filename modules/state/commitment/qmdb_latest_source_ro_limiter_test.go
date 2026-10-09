@@ -5,7 +5,6 @@ package commitment
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -30,11 +29,9 @@ import (
 // (the node sizes it max(32, 8*GOMAXPROCS); the wedged leaders had 9,580 ingest
 // goroutines parked in BeginRo), every permit is held by a reader waiting for one
 // more: no reader ever finishes, and the miner's Block-STM workers, which also
-// need permits, never start.
+// need permits, never start. The fallback now opens its transaction with
+// kv.BeginRoNested, which takes no permit.
 func TestLatestAccountEvictedNestedBeginRoDeadlock(t *testing.T) {
-	if os.Getenv("N42_RUN_RO_LIMITER_REPRO") != "1" {
-		t.Skip("known deadlock (nested roTxsLimiter acquire in QMDBLatestAccountSource.LatestAccount); set N42_RUN_RO_LIMITER_REPRO=1 to run")
-	}
 	const permits = 8
 	prevCfg := kv.ChaindataTablesCfg
 	modules.N42Init()
