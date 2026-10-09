@@ -266,7 +266,11 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 		block.header.Bloom = CreateBloom(receipts)
 		block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
 	}
-	block.header.TxHash = TxRootAt(txs, block.header.Time)
+	if r := block.header.frameTxRoot; r != nil {
+		block.header.TxHash = *r
+	} else {
+		block.header.TxHash = TxRootAt(txs, block.header.Time)
+	}
 
 	return block
 }

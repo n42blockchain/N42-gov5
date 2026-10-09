@@ -84,6 +84,23 @@ func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
 // plus the number of undecodable entries dropped. The error is that of the
 // lowest-index frame whose layout is invalid.
 func DecodeFrames(frames [][]byte, workers int) ([]*transaction.Transaction, int, error) {
+	per, dropped, err := DecodeFramesEach(frames, workers)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := 0
+	for _, p := range per {
+		total += len(p)
+	}
+	out := make([]*transaction.Transaction, 0, total)
+	for _, p := range per {
+		out = append(out, p...)
+	}
+	return out, dropped, nil
+}
+
+// DecodeFramesEach is DecodeFrames keeping each frame's transactions apart.
+func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transaction, int, error) {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
@@ -115,19 +132,14 @@ func DecodeFrames(frames [][]byte, workers int) ([]*transaction.Transaction, int
 		}
 		wg.Wait()
 	}
-	total, dropped := 0, 0
+	dropped := 0
 	for i := range frames {
 		if errs[i] != nil {
 			return nil, 0, errs[i]
 		}
-		total += len(per[i])
 		dropped += drops[i]
 	}
-	out := make([]*transaction.Transaction, 0, total)
-	for _, p := range per {
-		out = append(out, p...)
-	}
-	return out, dropped, nil
+	return per, dropped, nil
 }
 
 // GasEstimate is the sum of the gas limits of a frame's transactions,
