@@ -72,9 +72,27 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// per-object memo and the process-wide sender cache (which the import
 	// then hits), and never writes or reads the From field the import
 	// writes: the check can run beside the import of a child without a race.
-	plan, err := deferredTxPlan(bc.chainConfig, hdr, blk.Transactions())
-	if err != nil {
-		return true, false, err
+	// A frame body is includable by construction: its transactions run
+	// under the skip rule (frame_exec.go), so a stale nonce or an unfunded
+	// sender is a skip receipt, not an invalid block. What remains to check
+	// is that the frames resolve and that their gas limits fit the block.
+	var plan []*deferredSender
+	if body, ok := blk.Body().(*block.Body); ok && body.IsFrameBody() {
+		if err := bc.ResolveFrames(blk); err != nil {
+			return true, true, err
+		}
+		var gas uint64
+		for _, t := range body.Txs {
+			gas += t.Gas()
+			if gas > hdr.GasLimit {
+				return true, false, fmt.Errorf("deferred execution: frame block %d exceeds its gas limit", number)
+			}
+		}
+	} else {
+		plan, err = deferredTxPlan(bc.chainConfig, hdr, blk.Transactions())
+		if err != nil {
+			return true, false, err
+		}
 	}
 	// The applied-head check and the state reads below must see one state:
 	// the tree's readers lock keeps the import from moving the applied head

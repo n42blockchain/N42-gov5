@@ -99,8 +99,8 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
 		// Frame body (P1b): the root commits to the frame hashes. The frames
 		// themselves were checked against their hashes when resolved.
-		if len(body.Txs) == 0 {
-			return fmt.Errorf("frame body unresolved: %d frames, no transactions", len(body.FrameHashes))
+		if body.Txs == nil {
+			return fmt.Errorf("%w: %d frames not resolved", ErrFramesUnavailable, len(body.FrameHashes))
 		}
 		txHash = block.FrameTxRoot(body.FrameHashes)
 	} else {
