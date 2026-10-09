@@ -573,6 +573,42 @@ func rawBytes(hexStr string) []byte {
 	return b
 }
 
+// senderNonceAt maps run index i to (sender, nonce offset). Sender-major
+// (default): sender i/perTx, offset i%perTx. Interleaved: sender i%senders,
+// offset i/senders.
+func senderNonceAt(i int64, senders, perTx int, interleave bool) (int, int) {
+	if interleave && senders > 0 {
+		return int(i % int64(senders)), int(i / int64(senders))
+	}
+	return int(i / int64(perTx)), int(i % int64(perTx))
+}
+
+func senderIndexAt(i int64, senders, perTx int, interleave bool) int {
+	s, _ := senderNonceAt(i, senders, perTx, interleave)
+	return s
+}
+
+// claimedOfSender returns how many of sender s's transactions are among the
+// first `claimed` indexes, capped to [0, perTx].
+func claimedOfSender(claimed int64, s, senders, perTx int, interleave bool) int64 {
+	var n int64
+	if interleave && senders > 0 {
+		n = claimed / int64(senders)
+		if int64(s) < claimed%int64(senders) {
+			n++
+		}
+	} else {
+		n = claimed - int64(s)*int64(perTx)
+	}
+	if n < 0 {
+		return 0
+	}
+	if n > int64(perTx) {
+		return int64(perTx)
+	}
+	return n
+}
+
 func main() {
 	debug.SetMaxThreads(200000)
 	key := flag.String("key", "922c1ad85fb8691315b1ae54b39f7111ae3cfb2c36b038740af36844e9673eee", "faucet privkey hex")
@@ -597,6 +633,7 @@ func main() {
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
 	broadcast := flag.Bool("broadcast", false, "submit each tx to ALL rpcs")
 	offset := flag.Uint64("sender-offset", 0, "shift the derived sender set; use a fresh offset to get accounts with no nonce history")
+	interleave := flag.Bool("interleave", false, "multi-sender mode: spread consecutive transaction indexes across senders (sender = i % senders, nonce offset = i / senders) instead of feeding senders one after another. Sender-major order keeps only a few dozen senders in the pool at a time, which starves a builder that rotates over senders")
 	shardSenders := flag.Bool("shard-senders", false, "route each sender's txs to one node (sender%rpcs) so every proposer owns full nonce sequences")
 	// The flood used to pay ONE hard-coded address, so a full 22,857-tx block
 	// wrote ~1,201 distinct accounts (the senders, plus the sink) where a block
@@ -861,11 +898,13 @@ func main() {
 	// used, so a lazily signed run submits byte-identical transactions in the
 	// same order.
 	rawAt := func(i int64) string {
+		s, j := senderNonceAt(i, *senders, *perTx, *interleave)
 		if !*lazySign {
+			if *senders > 0 {
+				return raws[s*(*perTx)+j]
+			}
 			return raws[i]
 		}
-		s := int(i / int64(*perTx))
-		j := int(i % int64(*perTx))
 		to := dead
 		if *recipients > 0 {
 			to = deriveRecipient((s**perTx + j) % *recipients)
@@ -952,17 +991,14 @@ func main() {
 					// Claimed (not acknowledged) indexes count as in flight:
 					// a batch inside its HTTP call is about to be.
 					claimed := atomic.LoadInt64(&idx) + 1
-					per := int64(*perTx)
+					nS := len(senderAddrs)
 					refreshed := 0
 					inflight := int64(0)
 					for k := 0; k < len(senderAddrs); k++ {
 						s := (nonceCursor + k) % len(senderAddrs)
-						sub := claimed - int64(s)*per
+						sub := claimedOfSender(claimed, s, nS, *perTx, *interleave)
 						if sub <= 0 {
-							continue // not reached yet (senders are claimed in order)
-						}
-						if sub > per {
-							sub = per
+							continue // not reached yet
 						}
 						mined := int64(chainNonce[s]) - int64(senderBase[s])
 						if mined >= sub {
@@ -990,12 +1026,7 @@ func main() {
 							fmt.Printf("  !! exact depth sample failed, keeping the rotating estimate: %v\n", e)
 						} else {
 							nextNonceToSend := func(s int) int64 {
-								c := claimed - int64(s)*per
-								if c < 0 {
-									c = 0
-								} else if c > per {
-									c = per
-								}
+								c := claimedOfSender(claimed, s, len(senderAddrs), *perTx, *interleave)
 								return int64(senderBase[s]) + c
 							}
 							chainNonceOf := func(s int) (uint64, error) {
@@ -1134,7 +1165,7 @@ func main() {
 		}
 		urlFor := func(i int64) string {
 			if *shardSenders && *senders > 0 {
-				return urls[int(i/int64(*perTx))%len(urls)]
+				return urls[senderIndexAt(i, *senders, *perTx, *interleave)%len(urls)]
 			}
 			return urls[int(i)%len(urls)]
 		}
@@ -1232,7 +1263,7 @@ func main() {
 				}
 				var url string
 				if *shardSenders && *senders > 0 {
-					url = urls[int(i/int64(*perTx))%len(urls)] // all of a sender's txs → one node
+					url = urls[senderIndexAt(i, *senders, *perTx, *interleave)%len(urls)] // all of a sender's txs → one node
 				} else {
 					url = urls[int(i)%len(urls)]
 				}
