@@ -650,6 +650,7 @@ func main() {
 	framesMode := flag.Bool("frames", false, "pack the pre-signed transactions 500 to a gateway-signed frame and send them over the binary ingest port (-frame-peers) instead of JSON-RPC; one frame in flight per -conc connection, paced by acks. The node must list -gateway-key's address in N42_FRAME_GATEWAYS. Funding and nonces still use -rpc")
 	framePeers := flag.String("frame-peers", "127.0.0.1:9100", "with -frames: comma-separated host:port ingest endpoints; connection w goes to peer w % len")
 	gatewayKey := flag.String("gateway-key", "", "with -frames: gateway private key (hex) that signs every frame")
+	frameBroadcast := flag.Bool("frame-broadcast", false, "with -frames: send every frame to every -frame-peers endpoint (each connection worker holds one connection per peer); needed with N42_FRAME_BLOCKS=1 so every rotating leader holds every frame")
 	flag.Parse()
 	if *senders < 0 || *perTx < 0 {
 		fmt.Fprintln(os.Stderr, "senders and pertx must be non-negative")
@@ -1169,12 +1170,13 @@ func main() {
 		}
 		fmt.Printf("frames: gateway %s -> %s\n", crypto.PubkeyToAddress(gk.PublicKey), *framePeers)
 		fr := &frameRun{
-			peers:   strings.Split(*framePeers, ","),
-			key:     gk,
-			conc:    *conc,
-			total:   totalTxs,
-			rawAt:   func(i int64) []byte { return rawBytes(rawAt(i)) },
-			permits: permits,
+			peers:     strings.Split(*framePeers, ","),
+			key:       gk,
+			conc:      *conc,
+			total:     totalTxs,
+			rawAt:     func(i int64) []byte { return rawBytes(rawAt(i)) },
+			permits:   permits,
+			broadcast: *frameBroadcast,
 		}
 		fmt.Printf("DONE %s\n", fr.run(true))
 		return
