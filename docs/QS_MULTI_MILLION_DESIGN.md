@@ -156,6 +156,43 @@ no tuning rounds inside a phase. Expected cost: P1 and P2 are the large
 ones (new wire format, new vote semantics); P3 and P4 reuse existing
 parallel and QMDB code.
 
+### 5.1 P1a status (frame ingest, 2026-10-09)
+
+Done: transactions can enter a node as gateway-signed frames; consensus and
+block bodies are unchanged.
+
+- Wire (all little endian): `"FRM1"` magic u32 on the ingest listener, then
+  header 36 B = version u8 (1) | tx type u8 (0 Ethereum RLP/2718, 1 native) |
+  gateway address 20 B | seq u64 | tx count u16 (<= 500) | payload len u32
+  (<= 1 MiB); payload = tx count x (u16 len | tx bytes); 65 B secp256k1
+  signature over FrameHash = keccak256(header || payload). Reply 33 B:
+  status u8 (0 accepted, 1 duplicate, 2 busy, 3 bad sig, 4 unknown gateway,
+  5 malformed, 6 disabled) | FrameHash. Code: `internal/frame`.
+- Admission: allowlist check + one ecrecover + one copy from the socket;
+  the frame lands in `internal/frame/store` (FIFO ring keyed by FrameHash,
+  byte budget, oldest evicted). Legacy batch messages share the listener.
+- Env: `N42_FRAME_GATEWAYS` (comma-separated hex addresses; empty = frame
+  ingest off), `N42_FRAME_STORE_BYTES` (default 4 GiB),
+  `N42_FRAME_BRIDGE_WORKERS` (default GOMAXPROCS/4, min 2). Needs the
+  ingest server on (`--ingest.addr`).
+- Generator: `txflood -frames -gateway-key <hex> -frame-peers host:port,...`
+  (one frame in flight per `-conc` connection, busy = back off and resend).
+- Temporary bridge (P1a only, `internal/ingest/frames.go` bridgeWorker): a
+  bounded worker pool decodes each frame, recovers senders with the pool's
+  signer and calls `AddLocals` once per frame, so the existing miner builds
+  from `txsPool.Pending`. A full bridge queue answers busy (nothing stored),
+  never blocks the read loop. Per-tx ecrecover and pool insert still happen,
+  just off the network path; P1b deletes the bridge.
+- Measured in-process (8 cores): door alone 36.8k frames/s = 18.4M tx/s
+  (`BenchmarkFrameIngest`); verify 128 us per 500-tx frame on one core. The
+  bridge is ecrecover-bound (~143k tx/s on the 5k-tx e2e test).
+- P1b next: the miner reads `w.txsPool.Pending` in `fillTransactions`
+  (`internal/miner/worker.go`) and bodies are assembled by
+  `FinalizeAndAssemble` / `block.NewBlock` with `Body.Transactions`; the
+  proposal carries the full block (`internal/consensus/hotstuff`). P1b puts
+  ordered frame hashes in the body, has followers resolve them from the
+  frame store, and moves sender recovery to execution.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
