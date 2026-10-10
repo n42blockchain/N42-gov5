@@ -426,6 +426,8 @@ func (bc *BlockChain) EnqueueLagImport(b *block.Block) {
 	case kick <- struct{}{}:
 	default:
 	}
+	// A child queued while its parent is being rooted starts ahead.
+	bc.lagPipeLaunch()
 }
 
 func (bc *BlockChain) lagLoop() {
@@ -506,12 +508,15 @@ func (bc *BlockChain) lagStep() bool {
 			q.lastAuth = time.Now()
 		}
 		var err error
+		bc.lagPipeArm(b.Hash())
 		if authorized {
 			_, err = bc.InsertChainAuthorized([]block.IBlock{b})
 		} else {
 			_, err = bc.InsertChain([]block.IBlock{b})
 		}
-		if err == nil && bc.blockStored(b.Hash(), n) {
+		written := err == nil && bc.blockStored(b.Hash(), n)
+		bc.lagPipeAfterImport(b, written)
+		if written {
 			bc.lagDone(b, true)
 			return true
 		}
@@ -555,6 +560,12 @@ func (bc *BlockChain) blockStored(hash types.Hash, number uint64) bool {
 }
 
 func (bc *BlockChain) lagForget(hash types.Hash) {
+	bc.lagUnqueue(hash)
+	bc.lagPipeForget(hash)
+}
+
+// lagUnqueue drops hash from the executor's queue and the available blocks.
+func (bc *BlockChain) lagUnqueue(hash types.Hash) {
 	le := &bc.lagExec
 	le.mu.Lock()
 	delete(le.queued, hash)
@@ -563,10 +574,13 @@ func (bc *BlockChain) lagForget(hash types.Hash) {
 }
 
 func (bc *BlockChain) lagDone(b *block.Block, imported bool) {
-	bc.lagForget(b.Hash())
 	if !imported {
+		bc.lagForget(b.Hash())
 		return
 	}
+	// Written by this executor: its child's ahead execution stays usable
+	// (lagPipeAfterImport marked it).
+	bc.lagUnqueue(b.Hash())
 	le := &bc.lagExec
 	le.imported.Add(1)
 	le.lastNum.Store(b.Number64().Uint64())

@@ -183,6 +183,7 @@ type BlockChain struct {
 	// Execution off the consensus path (P2a); see lag_pipeline.go.
 	avail   availableState
 	lagExec lagExecutor
+	lagPipe lagPipeline
 
 	// executedHook, when set, fires the moment a block's execution and state
 	// validation succeed during import — BEFORE writeBlockWithState. Wired to

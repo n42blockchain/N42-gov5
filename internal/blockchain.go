@@ -2224,38 +2224,57 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 	}
 
 	// Process blocks
-	evmRecord := func(ctx context.Context, db kv.RwDB, blockNr uint64, f func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error)) (*state.IntraBlockState, map[types.Address]*uint256.Int, error) {
+	// Ahead executions (lag pipeline) taken by this call: their read
+	// transactions stay open until the blocks are written.
+	var aheadTaken []*aheadExec
+	defer func() {
+		for _, a := range aheadTaken {
+			a.release()
+		}
+	}()
+
+	evmRecord := func(ctx context.Context, db kv.RwDB, blk block.IBlock, ahead *aheadExec, f func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error)) (*state.IntraBlockState, map[types.Address]*uint256.Int, error) {
 		tx, err := db.BeginRo(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
 		defer tx.Rollback()
 
-		var stateReader state.StateReader = state.NewPlainStateReader(tx)
-		if cache := layered.ExtractCache(db); cache != nil {
-			stateReader = state.NewCachedStateReader(stateReader, cache)
-		}
-		// N42_STATE_READ_QMDB (default off) reads accounts and storage slots
-		// from the QMDB tree instead of the address-keyed `Account` table.
-		// Round 19's write probe put `Account` at 16,096 random-keyed rows a
-		// block -- ~64.4 MB of the 71.0 MB MDBX dirties, 90% of the bytes from
-		// 10% of the payload -- and the tree already holds the same values in
-		// the same encoding. `verify` reads both and reports divergence while
-		// still ANSWERING from the plain reader, so an equivalence round cannot
-		// change a block's outcome; nothing here stops the plain write.
-		if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff &&
-			bc.qmdbEnabled && bc.qmdbRootComputer != nil {
-			if src := bc.qmdbRootComputer.ValueSource(); src != nil {
-				stateReader = commitment.NewQMDBStateReader(src, stateReader, mode)
+		var ibs *state.IntraBlockState
+		var stateReader state.StateReader
+		if ahead != nil {
+			// Executed ahead on the parent's snapshot (lag_pipeline_exec.go):
+			// its state and readers carry over; the root and the write run
+			// here, on the live tree, as for any block.
+			ibs, stateReader = ahead.ibs, ahead.reader
+		} else {
+			stateReader = state.NewPlainStateReader(tx)
+			if cache := layered.ExtractCache(db); cache != nil {
+				stateReader = state.NewCachedStateReader(stateReader, cache)
 			}
+			// N42_STATE_READ_QMDB (default off) reads accounts and storage slots
+			// from the QMDB tree instead of the address-keyed `Account` table.
+			// Round 19's write probe put `Account` at 16,096 random-keyed rows a
+			// block -- ~64.4 MB of the 71.0 MB MDBX dirties, 90% of the bytes from
+			// 10% of the payload -- and the tree already holds the same values in
+			// the same encoding. `verify` reads both and reports divergence while
+			// still ANSWERING from the plain reader, so an equivalence round cannot
+			// change a block's outcome; nothing here stops the plain write.
+			if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff &&
+				bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+				if src := bc.qmdbRootComputer.ValueSource(); src != nil {
+					stateReader = commitment.NewQMDBStateReader(src, stateReader, mode)
+				}
+			}
+			// The parallel processor seeds this layer with the block's
+			// delta-credited recipients, read across its workers, so the
+			// block-end fold does not read them from the store one by one.
+			prefetch := state.NewAccountPrefetch(stateReader)
+			stateReader = prefetch
+			ibs = state.New(stateReader)
+			ibs.SetAccountPrefetch(prefetch)
 		}
-		// The parallel processor seeds this layer with the block's
-		// delta-credited recipients, read across its workers, so the
-		// block-end fold does not read them from the store one by one.
-		prefetch := state.NewAccountPrefetch(stateReader)
-		stateReader = prefetch
-		ibs := state.New(stateReader)
-		ibs.SetAccountPrefetch(prefetch)
+		bc.lagPipeHook(blk, ibs)
 		// Inject root computer for tree-based state root computation.
 		// JMT: only for fresh chains where all blocks use JMT from genesis.
 		// MPT: always inject when enabled (branches persisted in MDBX).
@@ -2446,14 +2465,22 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			continue
 		}
 		dAlign = time.Since(tAlign)
-		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
+		// Lag pipeline: this block may have executed ahead, on its parent's
+		// snapshot, while the parent was rooted and written.
+		tAhead := time.Now()
+		ahead := bc.lagPipeTake(blk, blockNumber.Uint64())
+		dAheadWait := time.Since(tAhead)
+		if ahead != nil {
+			aheadTaken = append(aheadTaken, ahead)
+		}
+		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk, ahead, func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
 			}
 			blockHashFunc := GetHashFn(concreteHeader, getHeader)
 
 			// Start state prefetching in background if cache is available.
-			if bc.prefetchEnabled {
+			if bc.prefetchEnabled && ahead == nil {
 				prefetcher := NewStatePrefetcher(bc.chainConfig)
 				if bc.prefetchPredictor != nil {
 					prefetcher.SetPredictor(bc.prefetchPredictor)
@@ -2480,7 +2507,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			}
 			pstart := time.Now()
 			var nopay map[types.Address]*uint256.Int
-			if bc.parallelEVM {
+			if ahead != nil {
+				receipts, nopay, logs, usedGas, err = bc.process.(*StateProcessor).FinishParallel(concreteBlock, ibs, ahead.run)
+			} else if bc.parallelEVM {
 				if sp, ok := bc.process.(*StateProcessor); ok {
 					receipts, nopay, logs, usedGas, err = sp.ProcessParallel(concreteBlock, ibs, reader, writer, blockHashFunc)
 				} else {
@@ -2565,7 +2594,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		}
 
 		wstart := time.Now()
-		status, err := bc.writeBlockWithState(blk, receipts, ibs, nopay)
+		var status WriteStatus
+		if err = lagPipeInjectedFailure(blk.Hash()); err == nil {
+			status, err = bc.writeBlockWithState(blk, receipts, ibs, nopay)
+		}
 		if err != nil {
 			// writeBlockWithState rolled its tx back, but execution above already
 			// put this block's appends on the non-transactional live QMDB tree
@@ -2617,6 +2649,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"setup", procPhases.Setup, "collect", procPhases.Collect,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
 				"tMs", time.Now().UnixMilli(),
+			}
+			if ahead != nil {
+				// Executed ahead: exec/collect above ran while the parent was
+				// rooted and written; aheadWait is what this import waited
+				// for it, aheadRun its whole run.
+				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took)
 			}
 			if procPhases.Skipped > 0 {
 				fields = append(fields, "skipped", procPhases.Skipped)
