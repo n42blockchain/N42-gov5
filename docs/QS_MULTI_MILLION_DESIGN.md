@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); S90 valid: P1 closed, executor is the bound at the S84 baseline (144k); P2a (recover at ingest, vote on availability, lag-2 execution) next.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P2a (vote on availability, lag-2 execution) runs since S93 but throughput is the serial import (~179k warm); heap growth past GOMEMLIMIT at 310k-tx blocks; S94 profiles it at 163k blocks, then stage pipelining.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -505,6 +505,27 @@ blocks, execution lag <= 2 blocks, B mean executed TPS >= 300k (the
 pipeline bound is the slowest stage, exec 415 ms per 163k = ~390k). Stop
 if the cycle stays > 150 ms with execution idle: the consensus engine, not
 execution, is the bound.
+
+**S91-S93 results (35zzzbq/br/bs, 2026-10-10 ET): P2a runs; throughput is
+the serial import.** Two reseed defects first (the lag gate waited on a
+zero HotStuff parent, 81931b48; a lag-built empty block carried the
+zero-frame root, cc1bc626). S93 then produced blocks under P2a: header
+votes precede import, commit votes wait for import, every lag build
+reports N-2, no unavailable frame, no equivocation, no skip. Blocks of
+309,500 transactions (95% of the ceiling) imported in 1,731 ms warm (exec
+744 + root 170 + write 346 + residual sender recovery 383), so the leader
+gate opened every ~1.7 s and the chain ran at ~179k TPS, then the seven
+Go heaps grew past GOMEMLIMIT (Sys ~12.1 GB each, ~0.34 GB per block,
+frame store only 1.2 GB of it), the page cache was evicted, MDBX faulted
+and imports went to 5.9 s; the harness aborted at 17 GB free. Execution is
+off the vote path, but the chain cannot run further than two blocks ahead
+of it, so throughput is still one block's full import time. The next
+levers are, in order: stage pipelining across blocks (execute N+1 while
+N's root and write run; bound becomes exec alone, ~415k at 310k blocks),
+recovery fully at admission (16+ workers), the transfer fast path (P3,
+exec 744 ms -> ~100 ms), then root and write (P4). The heap growth needs
+a profile before any of that is measured: S94 reruns P2a at 163k-tx
+blocks with node3 heap profiles captured during the flood.
 
 ## 6. What this does not claim
 
