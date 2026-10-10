@@ -6,6 +6,8 @@ package internal
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -52,6 +54,7 @@ type execOut struct {
 	receipts block.Receipts
 	gas      uint64
 	skipped  int
+	reasons  FrameSkipCounts
 }
 
 func (f *frameExecFixture) run(t *testing.T, blk *block.Block, parallel bool) execOut {
@@ -71,6 +74,7 @@ func (f *frameExecFixture) run(t *testing.T, blk *block.Block, parallel bool) ex
 			return err
 		}
 		out.skipped = f.sp.LastPhases().Skipped
+		out.reasons = f.sp.LastPhases().SkipReasons
 		out.root = ibs.IntermediateRoot()
 		return nil
 	})
@@ -154,6 +158,11 @@ func TestFrameBlockSkipRule(t *testing.T) {
 	if run.Skipped != len(want) || len(run.Included) != len(txs) {
 		t.Fatalf("builder: skipped %d included %d", run.Skipped, len(run.Included))
 	}
+	var wantReasons FrameSkipCounts
+	wantReasons[SkipStaleNonce], wantReasons[SkipFutureNonce], wantReasons[SkipCannotPay] = 3, 3, 1
+	if run.SkipReasons != wantReasons {
+		t.Fatalf("builder skip reasons %v, want %v", run.SkipReasons, wantReasons)
+	}
 	f.header.GasUsed = run.UsedGas
 	blk := block.NewFrameBlockFromReceipt(f.header, []types.Hash{h1, h2}, txs, run.Receipts, nil).(*block.Block)
 
@@ -168,6 +177,9 @@ func TestFrameBlockSkipRule(t *testing.T) {
 		}
 		if a.skipped != len(want) || a.gas != run.UsedGas {
 			t.Fatalf("parallel=%v: skipped %d gas %d (builder %d)", parallel, a.skipped, a.gas, run.UsedGas)
+		}
+		if a.reasons != wantReasons || a.reasons.Total() != a.skipped {
+			t.Fatalf("parallel=%v: skip reasons %v, want %v", parallel, a.reasons, wantReasons)
 		}
 		sameReceipts(t, "builder vs import", run.Receipts, a.receipts)
 		var cum uint64
@@ -226,4 +238,42 @@ func TestFrameBlockMatchesTxBlock(t *testing.T) {
 		}
 		sameReceipts(t, "frame vs tx block", fr.receipts, tx.receipts)
 	}
+}
+
+// TestClassifyFrameSkip maps each skippable error, wrapped as the state
+// transition wraps it, to its reason.
+func TestClassifyFrameSkip(t *testing.T) {
+	cases := []struct {
+		err  error
+		want FrameSkipReason
+	}{
+		{ErrNonceTooLow, SkipStaleNonce},
+		{ErrNonceTooHigh, SkipFutureNonce},
+		{ErrInsufficientFunds, SkipCannotPay},
+		{ErrInsufficientFundsForTransfer, SkipCannotPay},
+		{ErrIntrinsicGas, SkipIntrinsicGas},
+		{ErrFeeCapTooLow, SkipFeeCap},
+		{ErrTipAboveFeeCap, SkipFeeCap},
+		{ErrTipVeryHigh, SkipFeeCap},
+		{ErrFeeCapVeryHigh, SkipFeeCap},
+		{ErrSenderNoEOA, SkipNonEOA},
+		{transaction.ErrInvalidSig, SkipBadSig},
+		{transaction.ErrInvalidChainId, SkipBadSig},
+		{errors.New("recover: invalid point"), SkipBadSig},
+		{ErrNonceMax, SkipOther},
+		{ErrGasUintOverflow, SkipOther},
+		{ErrTxTypeNotSupported, SkipOther},
+	}
+	var c FrameSkipCounts
+	for _, tc := range cases {
+		err := fmt.Errorf("tx 0x01: %w", tc.err)
+		if got := ClassifyFrameSkip(err); got != tc.want {
+			t.Errorf("%v: reason %d, want %d", tc.err, got, tc.want)
+		}
+		c.Add(err)
+	}
+	if c.Total() != len(cases) || c[SkipFeeCap] != 4 || c[SkipBadSig] != 3 || c[SkipOther] != 3 {
+		t.Fatalf("counts %v", c)
+	}
+	LogFrameSkips("import", 1, 10, c.Total(), &c)
 }

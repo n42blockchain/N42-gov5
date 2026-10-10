@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -80,6 +81,84 @@ func IsFrameSkippable(err error, tx *transaction.Transaction, signer transaction
 	return false
 }
 
+// FrameSkipReason classifies a skipped frame transaction for the per-block
+// skip receipts log (S89).
+type FrameSkipReason uint8
+
+const (
+	SkipStaleNonce   FrameSkipReason = iota // nonce below the account's
+	SkipFutureNonce                         // nonce above the account's (a gap)
+	SkipCannotPay                           // balance short of gas * price + value
+	SkipIntrinsicGas                        // gas limit under the intrinsic gas
+	SkipFeeCap                              // fee cap under the base fee, or tip/cap out of range
+	SkipNonEOA                              // sender has code
+	SkipBadSig                              // signature or chain id does not recover a sender
+	SkipOther                               // nonce max, gas overflow, unsupported type
+	numFrameSkipReasons
+)
+
+var frameSkipReasonNames = [numFrameSkipReasons]string{
+	"staleNonce", "futureNonce", "cannotPay", "intrinsicGas", "feeCap", "nonEOA", "badSig", "other",
+}
+
+// ClassifyFrameSkip returns the reason of a skip IsFrameSkippable accepted.
+// A skippable error matching none of the listed classes is the sender
+// recovery failure, i.e. a bad signature.
+func ClassifyFrameSkip(err error) FrameSkipReason {
+	switch {
+	case errors.Is(err, ErrNonceTooLow):
+		return SkipStaleNonce
+	case errors.Is(err, ErrNonceTooHigh):
+		return SkipFutureNonce
+	case errors.Is(err, ErrInsufficientFunds), errors.Is(err, ErrInsufficientFundsForTransfer):
+		return SkipCannotPay
+	case errors.Is(err, ErrIntrinsicGas):
+		return SkipIntrinsicGas
+	case errors.Is(err, ErrFeeCapTooLow), errors.Is(err, ErrTipAboveFeeCap),
+		errors.Is(err, ErrTipVeryHigh), errors.Is(err, ErrFeeCapVeryHigh):
+		return SkipFeeCap
+	case errors.Is(err, ErrSenderNoEOA):
+		return SkipNonEOA
+	case errors.Is(err, transaction.ErrInvalidSig), errors.Is(err, transaction.ErrInvalidChainId):
+		return SkipBadSig
+	case errors.Is(err, ErrNonceMax), errors.Is(err, ErrGasUintOverflow),
+		errors.Is(err, ErrTxTypeNotSupported), errors.Is(err, transaction.ErrTxTypeNotSupported):
+		return SkipOther
+	}
+	return SkipBadSig
+}
+
+// FrameSkipCounts counts a block's skipped transactions by reason.
+type FrameSkipCounts [numFrameSkipReasons]int
+
+// Add counts one skip with error err.
+func (c *FrameSkipCounts) Add(err error) { c[ClassifyFrameSkip(err)]++ }
+
+// Total returns the number of skips counted.
+func (c *FrameSkipCounts) Total() int {
+	n := 0
+	for _, v := range c {
+		n += v
+	}
+	return n
+}
+
+// LogFrameSkips writes the per-block skip receipts line of a frame block:
+// Info when anything was skipped, Debug otherwise. role is "import" or
+// "build".
+func LogFrameSkips(role string, number uint64, txs, skipped int, c *FrameSkipCounts) {
+	fields := make([]interface{}, 0, 8+2*int(numFrameSkipReasons))
+	fields = append(fields, "role", role, "n", number, "txs", txs, "skipped", skipped)
+	for i, name := range frameSkipReasonNames {
+		fields = append(fields, name, c[i])
+	}
+	if skipped > 0 {
+		log.Info("frame block skips", fields...)
+	} else {
+		log.Debug("frame block skips", fields...)
+	}
+}
+
 // SkippedTxReceipt is the receipt of a skipped transaction at index in a
 // block whose cumulative gas before it is cumGas.
 func SkippedTxReceipt(tx *transaction.Transaction, header *block.Header, index int, cumGas uint64) *block.Receipt {
@@ -102,6 +181,7 @@ type FrameBuildResult struct {
 	Receipts block.Receipts
 	UsedGas  uint64
 	Skipped  int
+	Reasons  FrameSkipCounts
 }
 
 // BuildParallelFrames runs the leader's Block-STM build over the
@@ -115,5 +195,5 @@ func (bc *BlockChain) BuildParallelFrames(header *block.Header, txs []*transacti
 	if err != nil {
 		return nil, err
 	}
-	return &FrameBuildResult{Included: run.Included, Receipts: run.Receipts, UsedGas: run.UsedGas, Skipped: run.Skipped}, nil
+	return &FrameBuildResult{Included: run.Included, Receipts: run.Receipts, UsedGas: run.UsedGas, Skipped: run.Skipped, Reasons: run.SkipReasons}, nil
 }
