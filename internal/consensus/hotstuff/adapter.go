@@ -246,6 +246,10 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		h.engine.SetTwoPhaseVote(true)
 		log.Info("HotStuff two-phase vote gate ENABLED (order-then-execute: R1 static, R2 import-gated)")
 	}
+	if block.VoteOnAvailability() {
+		h.engine.SetVoteOnAvailability(true)
+		log.Info("HotStuff vote on availability ENABLED (N42_VOTE_ON_AVAILABILITY=1): frame blocks are voted on once every frame is held, without execution")
+	}
 
 	log.Info("HotStuff consensus engine initialized",
 		"signer", h.signer, "index", myIndex,

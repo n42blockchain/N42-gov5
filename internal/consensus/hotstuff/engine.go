@@ -171,6 +171,11 @@ type ConsensusEngine struct {
 	// import, so a CommitQC still proves 2f+1 validators executed the block
 	// before it can commit. Off (default) = classic import-gated Round 1.
 	twoPhaseVote    bool
+	// voteOnAvailability (P2a, N42_VOTE_ON_AVAILABILITY=1): a block checked
+	// for availability (static header fields, frame list, every frame held)
+	// is attested without its parent's import; votes attest ordering and
+	// availability, execution runs behind.
+	voteOnAvailability bool
 	pendingCommitQC *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
 
 	// Batch BLS verification buffers (votes await batch pairing before
@@ -838,6 +843,15 @@ func (e *ConsensusEngine) SetTwoPhaseVote(on bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.twoPhaseVote = on
+}
+
+// SetVoteOnAvailability makes a checked block attested on its own (P2a): the
+// deferred vote and the held commit vote no longer wait for the parent's
+// import. Call before Start; thread-safe.
+func (e *ConsensusEngine) SetVoteOnAvailability(on bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.voteOnAvailability = on
 }
 
 // CurrentValidatorSet returns the active validator set (thread-safe).

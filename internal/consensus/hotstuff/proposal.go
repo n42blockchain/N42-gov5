@@ -378,7 +378,7 @@ func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
 	// blocking forever on "genesis imports". Any non-zero justify still must
 	// be imported before this attestation is trusted.
 	justify, ok := e.pendingJustifyBlocks[view]
-	if !ok || (justify != (types.Hash{}) && !e.importedBlocks[justify]) {
+	if !ok || (justify != (types.Hash{}) && !e.importedBlocks[justify] && !e.voteOnAvailability) {
 		return false, nil
 	}
 	if !e.extendsJustify(view, pending) {
@@ -404,6 +404,11 @@ func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
 		return false
 	}
 	parent, ok := e.importedParents[blockHash]
+	if e.voteOnAvailability {
+		// P2a: the check attested availability; execution of the parent
+		// runs behind and is not part of the vote.
+		return ok && parent != (types.Hash{})
+	}
 	return ok && parent != (types.Hash{}) && e.importedBlocks[parent]
 }
 

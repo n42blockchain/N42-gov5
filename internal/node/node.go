@@ -1902,6 +1902,11 @@ func (n *Node) Start() error {
 		// above).
 		if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
 			realBC.SetExecutedHook(svc.NotifyBlockExecuted)
+			// P2a: blocks held but not executed yet are not refetched or
+			// reported as unexecuted commits; the lag executor's imports
+			// retry deferred commits and resume a waiting leader view.
+			svc.SetAvailabilityProbe(realBC.HasAvailableBlock)
+			realBC.SetLagImportedHook(svc.NotifyBlockImported)
 		}
 	}
 

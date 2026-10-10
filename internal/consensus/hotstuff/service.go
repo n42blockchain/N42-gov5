@@ -466,6 +466,9 @@ type Service struct {
 	unexecutedCommitHash     types.Hash
 	unexecutedCommitFailures uint8
 
+	// availableProbe (P2a) reports blocks held here but not executed yet.
+	availableProbe func(types.Hash) bool
+
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
 	epochSchedule *EpochSchedule
 
@@ -475,6 +478,17 @@ type Service struct {
 	// Rate-limit state persistence (persist every N views or on commit).
 	lastPersistedView ViewNumber
 	persistInterval   uint64
+}
+
+// SetAvailabilityProbe attaches the chain's available-block lookup (P2a): a
+// block this node holds but has not executed yet is neither fetched again
+// on a proposal nor reported as committed-but-unexecuted.
+func (s *Service) SetAvailabilityProbe(fn func(types.Hash) bool) {
+	s.availableProbe = fn
+}
+
+func (s *Service) availableHere(hash types.Hash) bool {
+	return s.availableProbe != nil && hash != (types.Hash{}) && s.availableProbe(hash)
 }
 
 // NewService creates a new HotStuff service.
@@ -637,7 +651,7 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// push was dropped), fetch it by hash so we can import and vote. Without
 		// this, a single dropped push stalls the view to the full timeout and the
 		// chain head never advances. FetchBlockByHash is a no-op if we have it.
-		if s.blockFetcher != nil {
+		if s.blockFetcher != nil && !s.availableHere(output.Hash) {
 			s.blockFetcher.FetchBlockByHash(output.Hash)
 		}
 	case OutputSpeculativeBuild:
@@ -654,7 +668,10 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// second and third fsync for the block), so they belong in the
 		// block-write cost picture alongside "blockwrite phases".
 		tObserve := time.Now()
-		if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
+		if s.availableHere(output.Hash) {
+			// P2a: committed on availability; its execution runs behind in
+			// the lag executor, which retries the canonical commit on import.
+		} else if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
 			s.requestCommittedCatchUp(output.Hash, number)
 		}
 		dObserve := time.Since(tObserve)

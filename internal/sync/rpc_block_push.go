@@ -110,6 +110,13 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 		go s.deferredCheck(blk)
 	} else {
 		s.deferredCheck(blk)
+		// P2a: an availability-checked block was handed to the chain's lag
+		// executor, which imports it in parent order off this path and
+		// notifies consensus itself.
+		if lq, ok := s.cfg.chain.(interface{ LagImportQueued(types.Hash) bool }); ok && lq.LagImportQueued(blk.Hash()) {
+			log.Info("block push: queued for the lag executor", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "tMs", time.Now().UnixMilli())
+			return
+		}
 	}
 	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the instant this block is
 	// handed to InsertChain -- the near side of whatever lock/queue wait
