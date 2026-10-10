@@ -43,7 +43,8 @@ import (
 //
 // Status is FrameAccepted (0, found) or FrameNotFound. A peer serves from
 // its frame store and then its Frames table. The puller admits every frame
-// it receives exactly as FRM1 does (allowlisted gateway, signature) and
+// it receives exactly as FRM1 does (allowlisted gateway or current
+// validator, signature) and
 // checks it hashes to what it asked for.
 const (
 	frameReqMagic uint32 = 0x31515246 // "FRQ1"
@@ -132,7 +133,7 @@ func (fi *frameIngest) admitPulled(want types.Hash, raw []byte) bool {
 	if err != nil {
 		return false
 	}
-	if _, ok := fi.allow[f.Gateway]; !ok {
+	if !fi.signerAllowed(f.Gateway) {
 		return false
 	}
 	h, err := f.Verify()

@@ -62,10 +62,17 @@ const EnvFrameGateways = "N42_FRAME_GATEWAYS"
 
 var errFramesDisabled = errors.New("ingest: frame ingest disabled")
 
-// FrameConfig configures the frame path. Gateways must be non-empty.
+// FrameConfig configures the frame path. A frame is admitted when its
+// signature verifies and its signer is in Gateways or, with IsValidator
+// set, is a current validator (a leader's local frames of pool
+// transactions). At least one of the two must be given.
 type FrameConfig struct {
 	Gateways []types.Address
-	Store    *store.Store // nil = store.NewFromEnv()
+	// IsValidator reports whether addr is in the current validator set
+	// (nil = gateways only). Called per frame; must be cheap and safe for
+	// concurrent use.
+	IsValidator func(addr types.Address) bool
+	Store       *store.Store // nil = store.NewFromEnv()
 	// Lookup serves FRQ1 pulls for frames no longer in the store (the
 	// Frames table); nil = store only.
 	Lookup func(types.Hash) ([]byte, bool)
@@ -111,8 +118,8 @@ type frameIngest struct {
 // EnableFrames turns on the gateway-signed frame path. Must be called
 // before Start.
 func (s *Server) EnableFrames(cfg FrameConfig) error {
-	if len(cfg.Gateways) == 0 {
-		return errors.New("ingest: frame ingest needs at least one gateway")
+	if len(cfg.Gateways) == 0 && cfg.IsValidator == nil {
+		return errors.New("ingest: frame ingest needs at least one gateway or the validator set")
 	}
 	if cfg.Store == nil {
 		cfg.Store = store.NewFromEnv()
@@ -156,9 +163,18 @@ func (s *Server) FrameStats() FrameStats {
 	}
 }
 
+// signerAllowed reports whether frames signed by addr are admitted: an
+// allowlisted gateway or a current validator.
+func (fi *frameIngest) signerAllowed(addr types.Address) bool {
+	if _, ok := fi.allow[addr]; ok {
+		return true
+	}
+	return fi.cfg.IsValidator != nil && fi.cfg.IsValidator(addr)
+}
+
 func (fi *frameIngest) start(ctx context.Context) {
 	go fi.statsLoop(ctx)
-	log.Info("Ingest frame path enabled", "gateways", len(fi.allow), "storeBudget", fi.cfg.Store.Stats().Budget)
+	log.Info("Ingest frame path enabled", "gateways", len(fi.allow), "validators", fi.cfg.IsValidator != nil, "storeBudget", fi.cfg.Store.Stats().Budget)
 }
 
 // readFrame reads one frame after its magic word and returns the reply. A
@@ -199,7 +215,7 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 		reply[0] = FrameMalformed
 		return reply, nil
 	}
-	if _, ok := fi.allow[f.Gateway]; !ok {
+	if !fi.signerAllowed(f.Gateway) {
 		fi.unknownGW.Add(1)
 		reply[0] = FrameUnknownGateway
 		return reply, nil
