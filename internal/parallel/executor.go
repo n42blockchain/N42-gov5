@@ -360,6 +360,18 @@ func arenaFor(numTxs int) *txArena {
 			incarnation: make([]uint32, numTxs),
 			results:     make([]TxResult, numTxs),
 		}
+		// The sets and their first descriptors come from one slab of
+		// txSlots, not three objects per transaction: the arena outlives the block, so
+		// the collector marks it on every cycle, and at 163k transactions
+		// the per-transaction arrays (6 reads, 3 writes) were 190 MB, over
+		// half the bench's live heap. A transfer reads and writes two
+		// accounts; a transaction that needs more grows its own arrays.
+		slots := make([]txSlot, numTxs)
+		for i := range slots {
+			sl := &slots[i]
+			sl.set = ReadWriteSet{TxIndex: i, Reads: sl.reads[:0:arenaReads], Writes: sl.writes[:0:arenaWrites]}
+			a.rwSets[i] = &sl.set
+		}
 	} else {
 		a.rwSets = a.rwSets[:numTxs]
 		a.status = a.status[:numTxs]
@@ -379,6 +391,24 @@ func arenaFor(numTxs int) *txArena {
 		}
 	}
 	return a
+}
+
+// arenaReads and arenaWrites are the descriptor slots an arena gives each
+// transaction's read and write set.
+const (
+	arenaReads  = 2
+	arenaWrites = 2
+)
+
+// txSlot is one transaction's read/write set with its first descriptors,
+// 512 bytes: transactions next to each other run on different workers at
+// about the same time, and a slot that shared a cache line with its
+// neighbour's was written from two cores at once.
+type txSlot struct {
+	set    ReadWriteSet
+	_      [8]byte
+	reads  [arenaReads]ReadDescriptor
+	writes [arenaWrites]WriteDescriptor
 }
 
 func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
