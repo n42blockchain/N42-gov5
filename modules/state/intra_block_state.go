@@ -18,10 +18,8 @@
 package state
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"unsafe"
 
@@ -58,9 +56,7 @@ func sortedAddressesInto[V any](buf []types.Address, m map[types.Address]V) []ty
 	for addr := range m {
 		addrs = append(addrs, addr)
 	}
-	slices.SortFunc(addrs, func(a, b types.Address) int {
-		return bytes.Compare(a[:], b[:])
-	})
+	sortAddresses(addrs)
 	return addrs
 }
 
@@ -93,9 +89,7 @@ func (sdb *IntraBlockState) pendingIncreaseAddrs() []types.Address {
 			addrs = append(addrs, addr)
 		}
 	}
-	slices.SortFunc(addrs, func(a, b types.Address) int {
-		return bytes.Compare(a[:], b[:])
-	})
+	sortAddresses(addrs)
 	return addrs
 }
 
