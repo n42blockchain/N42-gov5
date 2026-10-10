@@ -133,7 +133,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	}
 	dDecode := time.Since(tDecode)
 	tExec := time.Now()
-	finish := func(hashes []types.Hash, raws [][]byte, path string, skipped int) error {
+	finish := func(hashes []types.Hash, raws [][]byte, path string, skipped int, reasons *internal.FrameSkipCounts) error {
 		// Marked in flight when the block is assembled (commit), not here: a
 		// build discarded by a new head must leave its frames fillable.
 		env.frameHashes = hashes
@@ -147,6 +147,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 			"localFrames", len(local.hashes), "localTxs", local.txs,
 			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "gasEst", pick.gas, "gasUsed", header.GasUsed,
 			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec))
+		internal.LogFrameSkips("build", number, len(env.txs), skipped, reasons)
 		return nil
 	}
 
@@ -160,7 +161,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 			env.receipts = append(env.receipts, run.Receipts...)
 			env.tcount += len(run.Included)
 			header.GasUsed += run.UsedGas
-			return finish(pick.hashes, pick.raws, "parallel", run.Skipped)
+			return finish(pick.hashes, pick.raws, "parallel", run.Skipped, &run.Reasons)
 		}
 		if !errors.Is(perr, internal.ErrParallelNotApplicable) && !errors.Is(perr, internal.ErrFrameTxNotSkippable) {
 			return perr
@@ -173,11 +174,12 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 		hashes  []types.Hash
 		raws    [][]byte
 		skipped int
+		reasons internal.FrameSkipCounts
 	)
 	for fi, txs := range per {
 		snap := ibs.Snapshot()
 		gasSnap, usedSnap := env.gasPool.Gas(), header.GasUsed
-		nTxs, nRcpt, tcount, skipSnap := len(env.txs), len(env.receipts), env.tcount, skipped
+		nTxs, nRcpt, tcount, skipSnap, reasonSnap := len(env.txs), len(env.receipts), env.tcount, skipped, reasons
 		ok := true
 		for _, tx := range txs {
 			err := commitTx(tx)
@@ -190,6 +192,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 				env.receipts = append(env.receipts, internal.SkippedTxReceipt(tx, header, env.tcount, header.GasUsed))
 				env.tcount++
 				skipped++
+				reasons.Add(err)
 				continue
 			}
 			log.Warn("miner: frame dropped from block", "n", number, "frame", pick.hashes[fi], "tx", tx.Hash(), "err", err)
@@ -200,7 +203,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 			ibs.RevertToSnapshot(snap)
 			env.gasPool = new(common.GasPool).AddGas(gasSnap)
 			header.GasUsed = usedSnap
-			env.txs, env.receipts, env.tcount, skipped = env.txs[:nTxs], env.receipts[:nRcpt], tcount, skipSnap
+			env.txs, env.receipts, env.tcount, skipped, reasons = env.txs[:nTxs], env.receipts[:nRcpt], tcount, skipSnap, reasonSnap
 			continue
 		}
 		hashes = append(hashes, pick.hashes[fi])
@@ -209,7 +212,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	if len(hashes) == 0 {
 		return nil
 	}
-	return finish(hashes, raws, "serial", skipped)
+	return finish(hashes, raws, "serial", skipped, &reasons)
 }
 
 // EnvFrameBlockPoolGas is the gas a frame block gives the transaction pool,

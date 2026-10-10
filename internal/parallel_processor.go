@@ -189,7 +189,9 @@ type parallelRun struct {
 	UsedGas  uint64
 	Failed   int
 	Skipped  int // frame skip rule (skipInvalid runs only)
-	Nopay    map[types.Address]*uint256.Int
+	// SkipReasons splits Skipped by reason.
+	SkipReasons FrameSkipCounts
+	Nopay       map[types.Address]*uint256.Int
 }
 
 // ProcessParallel executes a block's transactions with Block-STM (strict:
@@ -519,6 +521,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	var failSample error
 	var skipped []bool
 	nSkipped := 0
+	var skipReasons FrameSkipCounts
 	for i, r := range results {
 		if r.Err == nil {
 			continue
@@ -530,6 +533,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 				}
 				skipped[i] = true
 				nSkipped++
+				skipReasons.Add(r.Err)
 				continue
 			}
 			if lenient {
@@ -720,12 +724,13 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		// Publish this block's breakdown for the "blockimport phases" line,
 		// which otherwise has nothing to print for a parallel block.
 		p.lastPhases.Store(&ProcessPhases{
-			Recover:  tRecovered.Sub(tStart),
-			Setup:    tRunStart.Sub(tRecovered),
-			Exec:     tRunEnd.Sub(tRunStart),
-			Collect:  tApplyStart.Sub(tRunEnd),
-			Finalize: time.Since(tApplyStart),
-			Skipped:  nSkipped,
+			Recover:     tRecovered.Sub(tStart),
+			Setup:       tRunStart.Sub(tRecovered),
+			Exec:        tRunEnd.Sub(tRunStart),
+			Collect:     tApplyStart.Sub(tRunEnd),
+			Finalize:    time.Since(tApplyStart),
+			Skipped:     nSkipped,
+			SkipReasons: skipReasons,
 		})
 	}
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
@@ -741,7 +746,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
 	}
 
-	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, Nopay: nopay}, nil
+	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay}, nil
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.

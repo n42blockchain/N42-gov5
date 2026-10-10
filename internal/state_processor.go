@@ -73,6 +73,8 @@ type ProcessPhases struct {
 	// Skipped counts the transactions a frame block skipped (skip rule,
 	// frame_exec.go); always zero for other blocks.
 	Skipped int
+	// SkipReasons splits Skipped by reason (frame blocks only).
+	SkipReasons FrameSkipCounts
 }
 
 // StateProcessor implements Processor and handles state transitions.
@@ -274,6 +276,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 				balCap.DiscardTx()
 			}
 			phases.Skipped++
+			phases.SkipReasons.Add(err)
 			includedTxs = append(includedTxs, tx)
 			if !cfg.NoReceipts {
 				receipts = append(receipts, SkippedTxReceipt(tx, concreteHeader, i, *usedGas))

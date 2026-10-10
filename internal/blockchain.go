@@ -2661,6 +2661,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				log.Debug("blockimport phases", fields...)
 			}
 		}
+		if body, ok := blk.Body().(*block.Body); ok && body.IsFrameBody() {
+			LogFrameSkips("import", blockNumber.Uint64(), len(blk.Transactions()), procPhases.Skipped, &procPhases.SkipReasons)
+		}
 
 		stats.processed++
 		stats.usedGas += usedGas
