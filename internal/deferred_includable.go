@@ -127,9 +127,19 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// deferred execution the header carries that post-state (header N holds
 	// N-1's root), so the tree's root is the exact test.
 	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
-		if got := bc.qmdbRootComputer.RootLocked(); got != hdr.Root {
+		// At depth k > 1 the header carries an older root; the parent's own
+		// is this node's stored result of it.
+		want := hdr.Root
+		if block.DeferredDepthAt(number) > 1 {
+			pr, perr := ExecutedResultOfHeader(bc.chainConfig, tx, parent)
+			if perr != nil {
+				return true, true, perr
+			}
+			want = pr.Root
+		}
+		if got := bc.qmdbRootComputer.RootLocked(); got != want {
 			return true, true, fmt.Errorf("%w: the tree is at %x, the parent's post-state is %x",
-				ErrDeferredParentNotApplied, got[:6], hdr.Root[:6])
+				ErrDeferredParentNotApplied, got[:6], want[:6])
 		}
 	}
 	return true, false, bc.checkSenderStates(number, plan, span)

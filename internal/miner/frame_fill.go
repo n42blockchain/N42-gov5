@@ -244,6 +244,10 @@ type localFrameState struct {
 
 	mu    sync.Mutex
 	built map[types.Hash]uint64 // FrameHash -> number of the block built
+	// Lag mode (P2a): the pool transactions of each built local frame, and
+	// those a block not yet executed holds (tx hash -> block number).
+	txsOf       map[types.Hash][]types.Hash
+	inFlightTxs map[types.Hash]uint64
 }
 
 // SetLocalFrameSigner sets the key the leader frames pool transactions
@@ -359,6 +363,15 @@ func (w *worker) fillLocalFrames(env *environment, ibs *state.IntraBlockState, s
 	if len(pending) == 0 {
 		return p, s.Address
 	}
+	if block.LagMode() {
+		// Execution runs behind: the pool still holds what unexecuted
+		// blocks' local frames took.
+		var committed uint64
+		if cur := w.chain.CurrentBlock(); cur != nil && cur.Number64() != nil {
+			committed = cur.Number64().Uint64()
+		}
+		w.dropInFlightPending(pending, committed)
+	}
 	trimStalePending(ibs.GetStateReader(), pending)
 	frames, err := packLocalFrames(s, func() uint64 { return w.localFrames.seq.Add(1) }, pending, env.header.BaseFee, poolGas)
 	if err != nil {
@@ -385,6 +398,16 @@ func (w *worker) fillLocalFrames(env *environment, ibs *state.IntraBlockState, s
 			w.localFrames.built = make(map[types.Hash]uint64)
 		}
 		w.localFrames.built[f.hash] = number
+		if block.LagMode() {
+			if w.localFrames.txsOf == nil {
+				w.localFrames.txsOf = make(map[types.Hash][]types.Hash)
+			}
+			hs := make([]types.Hash, len(f.txs))
+			for i, tx := range f.txs {
+				hs[i] = tx.Hash()
+			}
+			w.localFrames.txsOf[f.hash] = hs
+		}
 		w.localFrames.mu.Unlock()
 		p.hashes = append(p.hashes, f.hash)
 		p.raws = append(p.raws, f.raw)
@@ -406,6 +429,7 @@ func (w *worker) pruneLocalFrames(st *store.Store, inFlight func(types.Hash) boo
 			continue
 		}
 		delete(lf.built, h)
+		delete(lf.txsOf, h)
 		if inFlight == nil || !inFlight(h) {
 			drop = append(drop, h)
 		}

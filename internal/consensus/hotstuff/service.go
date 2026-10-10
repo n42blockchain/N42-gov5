@@ -255,6 +255,62 @@ func (s *Service) deferProduction(view ViewNumber, parentHash types.Hash) {
 	}
 }
 
+// SetLagGate attaches the leader gate of deferred depth k > 1 (P2a):
+// ready once this node executed the block a child of parent must report;
+// waitFor names that block. It replaces the committed-parent and
+// applied-parent gates, which a leader building without execution does not
+// need.
+func (s *Service) SetLagGate(fn func(parent types.Hash) (ready bool, waitFor types.Hash, err error)) {
+	s.lagGate = fn
+}
+
+// deferProductionUntil parks a leader view until waitFor is imported (or,
+// for a parent this node does not hold yet, checked); the view then re-runs
+// the gate. As deferProduction, a second probe after registering closes the
+// window where the import landed in between.
+func (s *Service) deferProductionUntil(view ViewNumber, parentHash, waitFor types.Hash) {
+	s.pendingMu.Lock()
+	s.deferredProduce.view, s.deferredProduce.parent, s.deferredProduce.waitFor = view, parentHash, waitFor
+	s.pendingMu.Unlock()
+	if s.lagGate == nil {
+		return
+	}
+	if ready, _, err := s.lagGate(parentHash); err == nil && ready {
+		s.pendingMu.Lock()
+		raced := s.deferredProduce.parent == parentHash && s.deferredProduce.view == view
+		if raced {
+			s.deferredProduce.parent, s.deferredProduce.waitFor = types.Hash{}, types.Hash{}
+		}
+		s.pendingMu.Unlock()
+		if raced {
+			go s.triggerBlockProduction(view, parentHash)
+		}
+	}
+}
+
+// resumeDeferredProduction re-runs a parked leader view when hash is what
+// it waits for (its parent, or under the lag gate the block it must have
+// executed).
+func (s *Service) resumeDeferredProduction(hash types.Hash, why string) {
+	if hash == (types.Hash{}) {
+		return
+	}
+	s.pendingMu.Lock()
+	match := s.deferredProduce.parent == hash || (s.deferredProduce.waitFor == hash && s.deferredProduce.parent != (types.Hash{}))
+	view, parent := s.deferredProduce.view, s.deferredProduce.parent
+	if match {
+		s.deferredProduce.parent, s.deferredProduce.waitFor = types.Hash{}, types.Hash{}
+	}
+	s.pendingMu.Unlock()
+	if !match || s.engine == nil {
+		return
+	}
+	if eng := s.engine.Engine(); eng != nil && eng.IsCurrentLeader() && eng.CurrentView() == view {
+		log.Info("hotstuff: deferred production resumed", "view", uint64(view), "parent", parent.Hex()[:12], "after", why, "hash", hash.Hex()[:12])
+		go s.triggerBlockProduction(view, parent)
+	}
+}
+
 // committedParentBlocked rechecks the proposed consensus parent and fails
 // closed after repeated local execution failures. The failure streak is
 // chain-wide rather than keyed by hash because commits keep advancing while a
@@ -371,6 +427,28 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 		return
 	}
 	dBehind = time.Since(tGate)
+	if s.lagGate != nil {
+		// P2a, deferred depth k > 1: the leader builds without executing,
+		// so the parent need not be applied; it needs this node's result of
+		// the block k-1 above the parent (N-k for height N), which its
+		// header carries. Wait for that block's execution instead.
+		tA := time.Now()
+		ready, waitFor, err := s.lagGate(parentHash)
+		dApplied = time.Since(tA)
+		if err == nil && !ready {
+			logGates("lag-wait")
+			log.Info("hotstuff: leader waits for its lagged execution", "view", uint64(view),
+				"parent", parentHash.Hex()[:12], "waitFor", waitFor.Hex()[:12])
+			if waitFor == parentHash && s.blockFetcher != nil && !s.availableHere(parentHash) {
+				s.blockFetcher.FetchBlockByHash(parentHash)
+			}
+			s.deferProductionUntil(view, parentHash, waitFor)
+			return
+		}
+		logGates("trigger")
+		s.blockProducer.TriggerBlockProduction(parentHash)
+		return
+	}
 	tC := time.Now()
 	if s.committedParentBlocked(parentHash) {
 		dCommitted = time.Since(tC)
@@ -458,7 +536,13 @@ type Service struct {
 	deferredProduce struct {
 		view   ViewNumber
 		parent types.Hash
+		// waitFor (P2a lag gate): the block whose execution the view waits
+		// for, N-k for height N; zero outside lag mode.
+		waitFor types.Hash
 	}
+	// lagGate (P2a): the leader gate under deferred depth k > 1; nil keeps
+	// the committed-parent and applied-parent gates.
+	lagGate func(parent types.Hash) (bool, types.Hash, error)
 
 	// A CommitQC may arrive before this node executes the committed block. Keep
 	// the consecutive failed execution observations so a leader does not extend
@@ -1711,6 +1795,11 @@ func (s *Service) NotifyBlockRejected(hash types.Hash) {
 // are includable), so the engine may vote for it as soon as the parent is
 // imported.
 func (s *Service) NotifyBlockChecked(hash types.Hash, parent types.Hash) {
+	if s.lagGate != nil {
+		// A lag-gated view waiting for its parent's header (not held yet)
+		// can go on once the parent is checked available.
+		s.resumeDeferredProduction(hash, "availability")
+	}
 	if ce := s.engine.Engine(); ce != nil {
 		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: hash, ParentHash: parent}); err != nil {
 			log.Debug("hotstuff: EventBlockChecked processing failed", "hash", hash, "err", err)
@@ -1753,22 +1842,13 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	if retryCommit {
 		delete(s.pendingCommits, hash)
 	}
-	retryProduce := s.deferredProduce.parent == hash && hash != (types.Hash{})
-	deferredView := s.deferredProduce.view
-	if retryProduce {
-		s.deferredProduce.parent = types.Hash{}
-	}
 	s.pendingMu.Unlock()
 
-	// The block a deferred leader view was waiting to extend has just been
-	// applied locally: re-run the gate, if this node still leads that view.
-	if retryProduce && s.engine != nil {
-		eng := s.engine.Engine()
-		if eng != nil && eng.IsCurrentLeader() && eng.CurrentView() == deferredView {
-			log.Info("hotstuff: deferred production resumed after the parent applied", "view", uint64(deferredView), "parent", hash.Hex()[:12])
-			go s.triggerBlockProduction(deferredView, hash)
-		}
-	}
+	// The block a deferred leader view was waiting for (the parent to
+	// extend, or under the lag gate the block it must have executed) has
+	// just been applied locally: re-run the gate, if this node still leads
+	// that view.
+	s.resumeDeferredProduction(hash, "import")
 
 	// A commit that was deferred because this block hadn't arrived: finish it
 	// now, so the canonical marker and head advance on every node, not just the

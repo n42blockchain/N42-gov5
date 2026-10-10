@@ -128,6 +128,10 @@ type task struct {
 	// recorded with the sealed block so a chained build stamps it into the
 	// next header before this block's write lands.
 	exec *rawdb.ExecutedResult
+	// lagged marks a block built without execution (deferred depth k > 1,
+	// lag_build.go): no state, no receipts; it is pushed, proposed and
+	// handed to the chain's lag executor instead of written.
+	lagged bool
 
 	// Seal-path phase timings — OBSERVABILITY ONLY. The leader's
 	// ViewStart→ProposalSent window spans three goroutines (commit → taskLoop →
@@ -607,7 +611,14 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	}
 
 	// Short circuit when receiving duplicate result caused by resubmitting.
-	if w.chain.HasBlock(blk.Hash(), blockNumber.Uint64()) {
+	// Under lag mode an identical rebuild may be held but not yet written.
+	known := w.chain.HasBlock(blk.Hash(), blockNumber.Uint64())
+	if !known && w.lagBuildEnabled() {
+		if bc, ok := w.chain.(*internal.BlockChain); ok && bc.AvailableBlock(blk.Hash()) != nil {
+			known = true
+		}
+	}
+	if known {
 		if usesTimerDrivenSealing(w.engine) {
 			return
 		}
@@ -743,6 +754,12 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	w.mu.RUnlock()
 	if !exist {
 		log.Error("Block found but no relative pending task", "number", blockNumber.Uint64(), "sealhash", sealhash, "hash", hash)
+		return
+	}
+	if task.lagged {
+		// P2a: built without execution; nothing to check against applied
+		// state and nothing to write here.
+		w.finishLaggedSeal(blk, sealhash, task)
 		return
 	}
 
@@ -1425,6 +1442,14 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// the previous block's "miner: block timeline" (matched by parentHash ==
 	// that timeline's sealed block hash).
 	log.Info("miner: commitWork begin", "speculative", speculative, "parentHash", parentHash.Hex(), "tUs", time.Now().UnixMicro()) // diagnostic: pairs with "build triggered"
+	if w.lagBuildEnabled() {
+		// P2a: the build does not execute, so there is nothing to start
+		// early; a speculative request is dropped.
+		if speculative {
+			return nil
+		}
+		return w.commitWorkLagged(parentHash, timestamp, triggerAt)
+	}
 	start := time.Now()
 
 	// S11 diagnostics (N42_BUILD_STALL_DIAG=1; docs/QS_BLOCK_TIME_BUDGET.md
@@ -2666,7 +2691,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		if terr != nil {
 			return terr
 		}
-		pr, perr := w.parentExecutedResult(rtx, envCopy.header)
+		pr, perr := w.laggedExecutedResult(rtx, envCopy.header)
 		rtx.Rollback()
 		if perr != nil {
 			return fmt.Errorf("miner: deferred execution: %w", perr)
