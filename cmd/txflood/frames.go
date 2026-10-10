@@ -17,8 +17,8 @@ import (
 
 // frameRun is the -frames mode: the run's pre-signed transactions are packed
 // frame.MaxTxs at a time into gateway-signed frames and sent over the binary
-// ingest port (internal/ingest) instead of JSON-RPC. Each worker owns one
-// connection and is paced by the acks: one frame in flight per connection.
+// ingest port (internal/ingest) instead of JSON-RPC. Each peer has one
+// connection and is paced by the acks: one frame in flight per peer, in order.
 type frameRun struct {
 	peers   []string
 	key     *ecdsa.PrivateKey
@@ -68,6 +68,16 @@ func (fr *frameRun) busyByPeer() string {
 		parts[i] = fmt.Sprintf("%s=%d", p, n)
 	}
 	return strings.Join(parts, ",")
+}
+
+// frameJob is one encoded frame queued for one or more peers; the last peer
+// to finish it books the frame as delivered or failed.
+type frameJob struct {
+	k       int64
+	raw     []byte
+	ntx     int
+	pending atomic.Int32
+	failed  atomic.Bool
 }
 
 // frameResult summarises a finished -frames run.
@@ -128,69 +138,103 @@ func (fr *frameRun) run(progress bool) frameResult {
 			}
 		}()
 	}
+	// Per-peer sequential delivery: one goroutine and one connection per
+	// peer consume that peer's frames in order, and frame k+1 is sent only
+	// after the peer answered accepted or duplicate for frame k (a Busy
+	// frame is retried in place). A sliding window over frames would let a
+	// later frame enter a full store ahead of a Busy predecessor and leave
+	// a nonce gap. fr.conc bounds how many peers send at the same time.
+	nPeers := len(fr.peers)
+	conc := fr.conc
+	if conc < 1 {
+		conc = 1
+	}
+	sem := make(chan struct{}, conc)
+	bufN := conc
+	if bufN < 4 {
+		bufN = 4
+	}
+	chans := make([]chan *frameJob, nPeers)
 	var wg sync.WaitGroup
-	for w := 0; w < fr.conc; w++ {
+	for p := range chans {
+		chans[p] = make(chan *frameJob, bufN)
 		wg.Add(1)
-		go func(w int) {
+		go func(p int) {
 			defer wg.Done()
-			targets := []int{w % len(fr.peers)}
-			if fr.broadcast {
-				targets = make([]int, len(fr.peers))
-				for i := range targets {
-					targets[i] = i
-				}
-			}
-			conns := make([]net.Conn, len(fr.peers))
+			var conn net.Conn
 			defer func() {
-				for _, c := range conns {
-					if c != nil {
-						c.Close()
-					}
+				if conn != nil {
+					conn.Close()
 				}
 			}()
 			buf := make([]byte, 0, frame.MaxFrameSize+4)
-			txs := make([][]byte, 0, frame.MaxTxs)
-			for {
-				k := next.Add(1)
-				if k >= nFrames {
-					return
+			for j := range chans[p] {
+				sem <- struct{}{}
+				var ok bool
+				ok, buf = fr.sendTo(&conn, p, j.k, j.raw, j.ntx, buf)
+				<-sem
+				if !ok {
+					j.failed.Store(true)
 				}
-				lo, hi := k*frame.MaxTxs, (k+1)*frame.MaxTxs
-				if hi > fr.total {
-					hi = fr.total
-				}
-				if fr.permits != nil {
-					for i := lo; i < hi; i++ {
-						<-fr.permits
+				if j.pending.Add(-1) == 0 {
+					if j.failed.Load() {
+						fr.failed.Add(int64(j.ntx))
+					} else {
+						fr.frames.Add(1)
+						fr.txs.Add(int64(j.ntx))
 					}
-				}
-				txs = txs[:0]
-				for i := lo; i < hi; i++ {
-					if b := fr.rawAt(i); b != nil {
-						txs = append(txs, b)
-					}
-				}
-				raw, _, err := frame.Encode(fr.key, uint64(k), frame.TxTypeEthereum, txs)
-				if err != nil {
-					fr.failed.Add(hi - lo)
-					fmt.Printf("  frame %d encode: %v\n", k, err)
-					continue
-				}
-				// Sent only when every target holds the frame.
-				delivered := true
-				for _, p := range targets {
-					var ok bool
-					ok, buf = fr.sendTo(&conns[p], p, k, raw, len(txs), buf)
-					delivered = delivered && ok
-				}
-				if delivered {
-					fr.frames.Add(1)
-					fr.txs.Add(int64(len(txs)))
-				} else {
-					fr.failed.Add(int64(len(txs)))
 				}
 			}
-		}(w)
+		}(p)
+	}
+	txs := make([][]byte, 0, frame.MaxTxs)
+	var peerSeq = make([]uint64, nPeers)
+	for k := int64(0); k < nFrames; k++ {
+		lo, hi := k*frame.MaxTxs, (k+1)*frame.MaxTxs
+		if hi > fr.total {
+			hi = fr.total
+		}
+		if fr.permits != nil {
+			for i := lo; i < hi; i++ {
+				<-fr.permits
+			}
+		}
+		txs = txs[:0]
+		for i := lo; i < hi; i++ {
+			if b := fr.rawAt(i); b != nil {
+				txs = append(txs, b)
+			}
+		}
+		// Broadcast: every peer gets every frame with seq k. Otherwise
+		// frame k goes to peer k % len with that peer's own contiguous seq.
+		if fr.broadcast {
+			raw, _, err := frame.Encode(fr.key, uint64(k), frame.TxTypeEthereum, txs)
+			if err != nil {
+				fr.failed.Add(hi - lo)
+				fmt.Printf("  frame %d encode: %v\n", k, err)
+				continue
+			}
+			j := &frameJob{k: k, raw: raw, ntx: len(txs)}
+			j.pending.Store(int32(nPeers))
+			for p := range chans {
+				chans[p] <- j
+			}
+			continue
+		}
+		p := int(k % int64(nPeers))
+		raw, _, err := frame.Encode(fr.key, peerSeq[p], frame.TxTypeEthereum, txs)
+		if err != nil {
+			fr.failed.Add(hi - lo)
+			fmt.Printf("  frame %d encode: %v\n", k, err)
+			continue
+		}
+		peerSeq[p]++
+		j := &frameJob{k: k, raw: raw, ntx: len(txs)}
+		j.pending.Store(1)
+		chans[p] <- j
+	}
+	for _, c := range chans {
+		close(c)
 	}
 	wg.Wait()
 	close(stop)

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/ingest"
 )
 
@@ -58,5 +62,61 @@ func TestSendToStatusFatal(t *testing.T) {
 	conn := c1
 	if ok, _ := fr.sendTo(&conn, 0, 1, []byte("x"), 1, nil); ok || calls != 1 {
 		t.Fatalf("ok=%v calls=%d", ok, calls)
+	}
+}
+
+// TestRunSequentialPerPeer: a peer answering Busy for frame 1 must not see
+// frame 2 (or later) before frame 1 is accepted, even with a wide -conc.
+func TestRunSequentialPerPeer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	gw, _ := crypto.GenerateKey()
+	var mu sync.Mutex
+	var log []uint64 // seq of every attempt, in arrival order
+	busyLeft := 5
+	accepted := map[uint64]bool{}
+	var violation string
+	fr := &frameRun{peers: []string{ln.Addr().String()}, key: gw, conc: 8, total: 6 * frame.MaxTxs,
+		rawAt: func(i int64) []byte { return []byte{0xEE, byte(i), byte(i >> 8)} }}
+	fr.sleep = func(time.Duration) {}
+	fr.sendFn = func(_ net.Conn, raw, buf []byte) (byte, []byte, error) {
+		h, err := frame.ParseHeader(raw[:frame.HeaderSize])
+		if err != nil {
+			return 0, buf, err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		log = append(log, h.Seq)
+		if h.Seq > 0 && !accepted[h.Seq-1] {
+			violation = fmt.Sprintf("seq %d sent before %d accepted", h.Seq, h.Seq-1)
+		}
+		if h.Seq == 1 && busyLeft > 0 {
+			busyLeft--
+			return ingest.FrameBusy, buf, nil
+		}
+		accepted[h.Seq] = true
+		return ingest.FrameAccepted, buf, nil
+	}
+	res := fr.run(false)
+	if violation != "" {
+		t.Fatal(violation, log)
+	}
+	if res.Frames != 6 || res.Failed != 0 || res.Busy != 5 || fr.busyRetries() != 5 {
+		t.Fatalf("result %s log %v", res, log)
+	}
+	if len(log) != 11 {
+		t.Fatalf("attempts %v", log)
 	}
 }
