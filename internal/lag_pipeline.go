@@ -66,6 +66,10 @@ const lagAuthorizedGrace = time.Second
 // lagRetryInterval is the executor's poll while blocks are queued.
 const lagRetryInterval = 50 * time.Millisecond
 
+// lagStepPausedForTest keeps the lag executor from importing (tests: every
+// queued block is imported by another path).
+var lagStepPausedForTest atomic.Bool
+
 type availableState struct {
 	mu   sync.Mutex
 	m    map[types.Hash]*block.Block
@@ -468,6 +472,9 @@ func (bc *BlockChain) lagLoop() {
 // lagStep imports the lowest ready queued block and reports whether it did
 // anything (the loop runs again at once).
 func (bc *BlockChain) lagStep() bool {
+	if lagStepPausedForTest.Load() {
+		return false
+	}
 	le := &bc.lagExec
 	le.mu.Lock()
 	if len(le.queued) == 0 {
@@ -508,14 +515,13 @@ func (bc *BlockChain) lagStep() bool {
 			q.lastAuth = time.Now()
 		}
 		var err error
-		bc.lagPipeArm(b.Hash())
 		if authorized {
 			_, err = bc.InsertChainAuthorized([]block.IBlock{b})
 		} else {
 			_, err = bc.InsertChain([]block.IBlock{b})
 		}
+		// The pipeline was settled inside the import (lagPipeSettle).
 		written := err == nil && bc.blockStored(b.Hash(), n)
-		bc.lagPipeAfterImport(b, written)
 		if written {
 			bc.lagDone(b, true)
 			return true
@@ -575,11 +581,14 @@ func (bc *BlockChain) lagUnqueue(hash types.Hash) {
 
 func (bc *BlockChain) lagDone(b *block.Block, imported bool) {
 	if !imported {
-		bc.lagForget(b.Hash())
+		// Written by another path (the block-push handler's InsertChain,
+		// the future queue): that import settled the pipeline itself, and
+		// its child's ahead execution stays usable.
+		bc.lagUnqueue(b.Hash())
 		return
 	}
 	// Written by this executor: its child's ahead execution stays usable
-	// (lagPipeAfterImport marked it).
+	// (lagPipeSettle marked it).
 	bc.lagUnqueue(b.Hash())
 	le := &bc.lagExec
 	le.imported.Add(1)

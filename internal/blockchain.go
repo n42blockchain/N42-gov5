@@ -2563,6 +2563,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			// silently shifted (observed live as disk/tree/cluster
 			// divergence). Peel them off with the in-memory undo record.
 			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
+			bc.lagPipeSettle(blk.Hash(), false)
 			if strings.Contains(err.Error(), "nonce too high") {
 				// Execution ran ahead of the applied state (see evmRecord):
 				// queue the block for replay once its prefix lands — the same
@@ -2613,8 +2614,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			// restart reloads the tree from disk. No-op for non-QMDB / nothing
 			// appended.
 			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
+			bc.lagPipeSettle(blk.Hash(), false)
 			return it.index, err
 		}
+		bc.lagPipeSettle(blk.Hash(), true)
 		dWrite = time.Since(wstart)
 		blockWriteTimer.Observe(float64(dWrite))
 		blockInsertTimer.Observe(float64(time.Since(start)))
@@ -2656,6 +2659,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				// for it, aheadRun its whole run.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took)
 			}
+			fields = append(fields, bc.lagPipeLogFields()...)
 			if procPhases.Skipped > 0 {
 				fields = append(fields, "skipped", procPhases.Skipped)
 			}
