@@ -608,6 +608,19 @@ Remaining for <= 100 ms: run the MDBX write (changesets, CommitBlock, flush, com
 
 Expected steady-state heap per node at 290k tx/s is about 3-3.5 GiB (estimate; S97 was 8.5). Binary n42-r131 (HEAD 5e594590, includes P3c + P4) sha f4709990....
 
+### P4b result (2026-10-10, commits 7b938407, dbf218da)
+
+7b938407: the root takes the block's prefetched recipient credits as base+credit, computed in parallel, instead of building about 23k state objects; CommitBlock builds them later, in the write. The pipeline's post-state snapshot now comes from the root's own maps, so publishing it is essentially free. Root 65 -> ~37 ms (collection 33 -> 14, publish 10 -> 0); the write's `state` phase grows 14 -> ~30, so the work moved off the root rather than vanishing.
+
+dbf218da: ordered writer, env N42_LAG_WRITE_ASYNC (default on). The critical path (root + hand-off) is 39-45 ms, down from ~105. Hand-off is 2.4 ms; its wait for the previous write is ~0.1 ms in the bench, but the bench paces blocks, so back-pressure is not loaded there. The writer's own write runs off the critical path at 86-107 ms wall; root+write summed is 123-143 ms. One write is in flight and the next hand-off waits for it. QMDB rows and the undo record are captured from the tree at hand-off; the flushed window is evicted only after the write is durable. "Imported" means durable: the hook, LagStats and the applied marker move only after commit, so the leader gate, votes and commits never see an undurable block; only HasBlock/GetBlock/GetHeader see the pending block. Only the lag import of the pending block's child at depth >= 2 runs during the write (it checks the tree root and skips the marker alignment); every other import, leader write, unwind or peel waits for the write first. A failed write reloads the tree from the store and queues the block again. A discarded ahead run of a block now finishes before that block executes again (a sender-cache data race caught by -race).
+
+Tests: TestLagWriterRestartBeforeLastWrite (kill before block 4's write: header, marker, executed result, undo row and changesets all at 3, reloaded tree at 3's root; re-importing 4 gives the same in-memory root, 5-6 follow), TestLagWriterFailedWriteRequeues, TestLagPipelineAheadOrderedWriter (11/12 imports overlap the parent's write; results equal the serial chain). The txlookup tail and history backfill work only from committed or changeset data, so a head one block behind needs nothing new. internal, lib/qmdb, modules/state/..., rawdb and changeset are green; -race -run 'Lag|Commit' on internal ok. State roots in the bench match the old build block for block.
+
+Not kept (step 3): writing the credits directly in CommitBlock saved ~1 ms. Writer CPU is ~68 ms/block; the biggest bucket is changesets at ~21 ms, almost all MDBX dupsort AppendDup (31k cgo puts) with no re-encoding to cut; the writer's wall time is inflated by competing with the ahead execution on 4 cores.
+
+Binary n42-r132, HEAD dbf218da, sha256 1709457e05417ba19e962696db4637904d6c5c922ac9900632a2d42b6221f706. The cycle model is now max(execution ~160 ms at 163k on the fleet, write ~90, critical path ~40): execution is the limit, so the next step is P3d (exec). S98 (running on r131) does not carry P4b; S99 will carry r132 or its successor.
+
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
