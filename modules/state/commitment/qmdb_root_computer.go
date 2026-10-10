@@ -15,11 +15,9 @@
 package commitment
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -827,15 +825,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 	tOps := time.Now()
 	// An op with a nil Value is a delete (ApplyOps' convention); every
 	// live value here is non-empty (an encoded account or a 32-byte word).
-	ops := make([]qmdb.Op, 0, len(accounts)+len(storage))
-	for addr, acct := range accounts {
-		kh := qmdb.Hash(AccountKeyHash(addr))
-		if acct == nil || isAccountEmpty(acct) {
-			ops = append(ops, qmdb.Op{KeyHash: kh})
-		} else {
-			ops = append(ops, qmdb.Op{KeyHash: kh, Value: EncodeAccountValue(acct)})
-		}
-	}
+	ops := buildAccountOps(accounts, len(storage))
 	for addr, slots := range storage {
 		for slot, val := range slots {
 			kh := qmdb.Hash(StorageKeyHash(addr, slot))
@@ -850,9 +840,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 			}
 		}
 	}
-	sort.Slice(ops, func(i, j int) bool {
-		return bytes.Compare(ops[i].KeyHash[:], ops[j].KeyHash[:]) < 0
-	})
+	sortOpsByKey(ops)
 	dOps := time.Since(tOps)
 	if r.undoRecording {
 		r.t.StartUndoRecording()
