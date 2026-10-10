@@ -319,6 +319,27 @@ A1, B1, B2, A2; 2 windows of 60 s) with frame ingest and frame blocks on.
   transactions from the `Frames` table). Also read the `skipped` count on
   the "parallel block" lines, FRQ1 pull counts and unresolved-block logs.
 
+**S87 result (35zzzbm, 2026-10-09 ET): INCONCLUSIVE, no measurement.** The
+round ran on n42-r117 (lock-order fix 8cacba80 and pool read budget
+12c0aa98) and ended at 21:43:21. Every flood died at funding ("funding was
+not confirmed within 300s", latest nonce 0, pending nonce 1000..8000) in all
+five legs, because with `N42_FRAME_BLOCKS=1` the leader fills blocks only
+from the frame store (`fillFrames`, internal/miner/worker.go) and never
+takes pool transactions, so the RPC funding transactions were never mined.
+All blocks on all 7 nodes are empty (txs=0), produced at a steady 4 blocks
+per second (240 per minute) through blocks 13,652,363 to 13,711,047 with no
+wedge and no view-timeout run, so the r117 lock-order and pool-budget fixes
+were not exercised by load. No frame was sent, so frame fill, resolve, pull,
+missing and store-eviction paths are unexercised. The missing win lines are a
+consequence, not a measure-tps.sh bug: the S25 capture logged "flood-
+announcement signal not seen within 900s" and "neither signal fired;
+skipping win1/win2 captures" in B1 and B2. Each leg took about 47 minutes
+because decay, the funding barrier and the 900 s capture wait ran without a
+flood. Occupancy 0%, TPS 0. The P1 gate and the stop rule are not decided.
+Fix before the rerun: get funding mined under frame blocks (genesis
+allocation for the 8000 senders, or an unframed warm-up block phase for
+funding), then run the one P1 gate round again.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
