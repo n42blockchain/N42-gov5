@@ -40,7 +40,13 @@ type ParallelStateReader struct {
 	// next call (see ReuseAccountBuffer).
 	reuseAccount bool
 	accBuf       account.StateAccount
+	// slab, when set, holds the encodings the reader records (SetSlab).
+	slab *ValueSlab
 }
+
+// SetSlab makes the reader record its composed account encodings from s,
+// the worker's slab, instead of allocating each.
+func (r *ParallelStateReader) SetSlab(s *ValueSlab) { r.slab = s }
 
 // ReuseAccountBuffer makes ReadAccountData return the reader's own buffer,
 // valid until its next call, instead of a new account per read. Only for a
@@ -141,7 +147,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 			acc.Reset()
 		}
 		acc.Balance.Add(&acc.Balance, delta)
-		r.recordAccountRead(e, key, fullTx, fullInc, false, acc.MarshalV2(), nil, true)
+		r.recordAccountRead(e, key, fullTx, fullInc, false, r.slab.encodeAccount(acc), nil, true)
 		return acc, nil
 	}
 
@@ -175,7 +181,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		acc.Reset()
 	}
 	acc.Balance.Add(&acc.Balance, delta)
-	r.recordAccountRead(e, key, -1, 0, true, acc.MarshalV2(), enc, true)
+	r.recordAccountRead(e, key, -1, 0, true, r.slab.encodeAccount(acc), enc, true)
 	return acc, nil
 }
 
