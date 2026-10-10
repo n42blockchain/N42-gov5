@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P1 gate round pending.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); S88 gate round invalid (unbounded frame store admission); S89 bounded admission next.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -386,6 +386,51 @@ gas occupancy >= 95% AND B mean >= 300k TPS; the flood flags are echoed into
 the round log at each leg start so the run can be checked for `-frames` and
 `-interleave`. Anything short of that, or another round with no flood, is
 read as in S87: the gate is not decided.
+
+**S88 result (35zzzbn, ROUND DONE 23:43:45 ET 2026-10-09): INVALID for the
+gate.** Funding now works (local frames mined the RPC funding transactions),
+the eight generators delivered 0.93-0.96M tx/s with busy=0, node3 accepted
+192,000 frames (96M tx) per leg, and the leader built 163,000-tx frame
+blocks. But 97-100% of the transactions in those blocks were skipped (B1
+2,445,000 of 2,445,000; A1 10.13M of 10.29M), so occupancy was 0-5% and the
+B mean was 1,358 TPS. Execution of a full block took 0.17-0.44 s; the
+executor was never reached as a bound.
+
+The defect is admission, not supply and not execution. The frame store is a
+1 GiB ring: it held ~20,000 frames and evicted 166,000-170,000 per leg, and
+since the P1a bridge was removed it never answers status 2 (Busy), so the
+generators ran 6x ahead of consumption with no backpressure. Interleaved
+senders put consecutive nonces of one sender in consecutive frames; once the
+older frame is evicted unincluded, every later frame of that sender is a
+future-nonce skip. Followers lost the same frames ("frames unavailable, not
+importing (no vote)" 8/34/9/11 per leg), which explains the view changes
+(~1 per commit), the 542 "committed block not executed locally" and the
+1,648 "propose-before-write: write failed AFTER Proposal left" lines. The
+skip reason is not logged, so the mechanism is inferred from the eviction
+and skip counts; S89 adds the counter.
+
+Gate: not met. Stop rule: not triggered (blocks were not full). P1 stays
+undecided until one round runs with bounded admission.
+
+**S89 plan (35zzzbo): bounded admission.** Rule: a frame is evicted only
+after a block that references it is committed (plus a reorg margin of
+`N42_FRAME_KEEP_BLOCKS`, default 64); when the store is at its byte cap with
+nothing evictable, ingest answers status 2 (Busy) and stores nothing.
+Frames arriving by FRQ1 pull for a proposal the node must vote on bypass the
+cap (they are needed to make progress and are bounded by one block). The
+leader fills blocks in store arrival order (oldest first), so the frames of
+one gateway are consumed as a prefix and sender nonces stay contiguous.
+txflood treats Busy as backpressure: it retries the same frame to that peer
+with 5 ms doubling to 200 ms backoff until accepted, counts the retries,
+and declares a frame sent only when every `-frame-peers` target accepted it;
+supply then equals consumption and the generators run for the whole leg
+instead of 100 s. Each imported frame block logs skipped-transaction counts
+by reason (stale nonce, future nonce, cannot pay, intrinsic gas, fee cap,
+non-EOA, bad signature) beside the existing `skipped` total. Faucet: A2 died
+at funding (need 252 ETH, had 165-184), so the harness must size the warm-up
+decay to the summed per-leg funding, not to one leg. Predicted: skipped
+< 1% of frame-block txs, occupancy >= 95%, busy retries > 0 on every
+generator, no "frames unavailable" line in B legs. Gate unchanged.
 
 ## 6. What this does not claim
 
