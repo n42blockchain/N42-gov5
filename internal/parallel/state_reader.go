@@ -109,7 +109,8 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	key := LocationKey{Address: address, Field: FieldBalance}
 
 	var deltaBuf uint256.Int
-	full, fullTx, fullInc, found, hasDelta := r.mvs.readAccountInto(&key, r.txIndex, &deltaBuf)
+	e := r.mvs.lookup(&key)
+	full, fullTx, fullInc, found, hasDelta := e.readAccount(r.txIndex, &deltaBuf)
 	var delta *uint256.Int
 	if hasDelta {
 		delta = &deltaBuf
@@ -117,12 +118,12 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	if found {
 		if full == nil && delta == nil {
 			// Account was deleted by a preceding tx.
-			r.rw.RecordAccountRead(key, fullTx, fullInc, false, nil, nil, false)
+			r.recordAccountRead(e, key, fullTx, fullInc, false, nil, nil, false)
 			return nil, nil
 		}
 		acc := r.newAccount()
 		if delta == nil {
-			r.rw.RecordAccountRead(key, fullTx, fullInc, false, full, nil, false)
+			r.recordAccountRead(e, key, fullTx, fullInc, false, full, nil, false)
 			if err := acc.DecodeForStorageV2(full); err != nil {
 				return nil, err
 			}
@@ -133,14 +134,14 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		if full != nil {
 			if err := acc.DecodeForStorageV2(full); err != nil {
 				val := composeAccount(full, delta)
-				r.rw.RecordAccountRead(key, fullTx, fullInc, false, val, nil, true)
+				r.recordAccountRead(e, key, fullTx, fullInc, false, val, nil, true)
 				return DecodeAccount(val)
 			}
 		} else {
 			acc.Reset()
 		}
 		acc.Balance.Add(&acc.Balance, delta)
-		r.rw.RecordAccountRead(key, fullTx, fullInc, false, acc.MarshalV2(), nil, true)
+		r.recordAccountRead(e, key, fullTx, fullInc, false, acc.MarshalV2(), nil, true)
 		return acc, nil
 	}
 
@@ -155,7 +156,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		return nil, err
 	}
 	if delta == nil {
-		r.rw.RecordAccountRead(key, -1, 0, true, enc, enc, false)
+		r.recordAccountRead(e, key, -1, 0, true, enc, enc, false)
 		if base == nil {
 			return nil, nil
 		}
@@ -174,8 +175,16 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		acc.Reset()
 	}
 	acc.Balance.Add(&acc.Balance, delta)
-	r.rw.RecordAccountRead(key, -1, 0, true, acc.MarshalV2(), enc, true)
+	r.recordAccountRead(e, key, -1, 0, true, acc.MarshalV2(), enc, true)
 	return acc, nil
+}
+
+// recordAccountRead records an account read with the store entry it was
+// served from (nil when the location had none yet): validation and the
+// transaction's own write to the account then skip the lookup.
+func (r *ParallelStateReader) recordAccountRead(e *mvEntry, key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value, base []byte, hadDelta bool) {
+	r.rw.RecordAccountRead(key, writerTx, writerIncarnation, fromBase, value, base, hadDelta)
+	r.rw.Reads[len(r.rw.Reads)-1].entry = e
 }
 
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {

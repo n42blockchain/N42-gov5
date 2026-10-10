@@ -257,7 +257,11 @@ func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []by
 // a slice nobody mutates afterwards (the executor's write descriptors,
 // which the state writer encodes fresh per write).
 func (m *MVS) writeOwned(key LocationKey, txIndex int, incarnation uint32, value []byte) {
-	e := m.getOrCreateEntry(key)
+	m.getOrCreateEntry(key).writeOwned(txIndex, incarnation, value)
+}
+
+// writeOwned is MVS.writeOwned on the location's entry.
+func (e *mvEntry) writeOwned(txIndex int, incarnation uint32, value []byte) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -292,7 +296,11 @@ func (e *mvEntry) slot(txIndex int) int {
 // WriteDelta records that transaction txIndex added delta to the account at
 // key. It replaces any earlier write of txIndex at the key.
 func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta *uint256.Int) {
-	e := m.getOrCreateEntry(key)
+	m.getOrCreateEntry(key).writeDelta(txIndex, incarnation, delta)
+}
+
+// writeDelta is WriteDelta on the location's entry.
+func (e *mvEntry) writeDelta(txIndex int, incarnation uint32, delta *uint256.Int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -326,7 +334,12 @@ func (m *MVS) ReadAccount(key LocationKey, txIndex int) (full []byte, fullTx int
 // delta (overwritten; meaningful only when hasDelta), so the hot readers
 // allocate nothing.
 func (m *MVS) readAccountInto(key *LocationKey, txIndex int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool) {
-	e := m.lookup(key)
+	return m.lookup(key).readAccount(txIndex, delta)
+}
+
+// readAccount is readAccountInto on a looked-up entry; a nil entry has no
+// versions.
+func (e *mvEntry) readAccount(txIndex int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool) {
 	if e == nil {
 		return nil, 0, 0, false, false
 	}
