@@ -249,7 +249,27 @@ func (evm *EVM) Interpreter() Interpreter {
 	return evm.interpreter
 }
 
+// hasCode reports whether addr carries code, from its code hash alone: an
+// absent account and one with the empty code hash have none, and their code
+// bytes need not be loaded.
+func (evm *EVM) hasCode(addr types.Address) bool {
+	ch := evm.intraBlockState.GetCodeHash(addr)
+	return ch != emptyCodeHash && ch != (types.Hash{})
+}
+
+// Delegation returns the EIP-7702 delegation target of addr. The code bytes
+// are loaded only when the account's code hash says it has code.
+func (evm *EVM) Delegation(addr types.Address) (types.Address, bool) {
+	if !evm.hasCode(addr) {
+		return types.Address{}, false
+	}
+	return ParseDelegation(evm.intraBlockState.GetCode(addr))
+}
+
 func (evm *EVM) resolveCode(addr types.Address) []byte {
+	if !evm.hasCode(addr) {
+		return nil
+	}
 	code := evm.intraBlockState.GetCode(addr)
 	if !evm.chainRules.IsPrague {
 		return code
@@ -262,7 +282,7 @@ func (evm *EVM) resolveCode(addr types.Address) []byte {
 
 func (evm *EVM) resolveCodeHash(addr types.Address) types.Hash {
 	if evm.chainRules.IsPrague {
-		if delegatedAddr, ok := ParseDelegation(evm.intraBlockState.GetCode(addr)); ok {
+		if delegatedAddr, ok := evm.Delegation(addr); ok {
 			return evm.intraBlockState.GetCodeHash(delegatedAddr)
 		}
 	}

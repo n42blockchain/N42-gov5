@@ -45,6 +45,16 @@ import (
 
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
+// delegation returns the EIP-7702 delegation target of addr. The decision
+// that addr has no code comes from its code hash (absent account or the empty
+// hash); the code bytes are loaded only when the hash says there is code.
+func (st *StateTransition) delegation(addr types.Address) (types.Address, bool) {
+	if ch := st.state.GetCodeHash(addr); ch == emptyCodeHash || ch == (types.Hash{}) {
+		return types.Address{}, false
+	}
+	return vm2.ParseDelegation(st.state.GetCode(addr))
+}
+
 /*
 The State Transitioning Model
 
@@ -580,7 +590,7 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 			}
 		}
 		if rules.IsPrague {
-			if delegatedAddr, ok := vm2.ParseDelegation(st.state.GetCode(st.to())); ok {
+			if delegatedAddr, ok := st.delegation(st.to()); ok {
 				st.state.AddAddressToAccessList(delegatedAddr)
 			}
 		}
