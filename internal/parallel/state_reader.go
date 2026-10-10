@@ -36,6 +36,27 @@ type ParallelStateReader struct {
 	// baseCache memoises base reads for the whole block (see BaseCache); nil
 	// disables it, which is what the tests and the serial path use.
 	baseCache *BaseCache
+	// reuseAccount makes ReadAccountData return accBuf, overwritten by the
+	// next call (see ReuseAccountBuffer).
+	reuseAccount bool
+	accBuf       account.StateAccount
+}
+
+// ReuseAccountBuffer makes ReadAccountData return the reader's own buffer,
+// valid until its next call, instead of a new account per read. Only for a
+// reader whose sole consumer copies the account before reading again: an
+// IntraBlockState does (newObject copies it; Exist only tests it for nil).
+// The executor's workers read two accounts per transfer, and the
+// allocation was a quarter of the wave's.
+func (r *ParallelStateReader) ReuseAccountBuffer() { r.reuseAccount = true }
+
+// newAccount returns the account a read decodes into.
+func (r *ParallelStateReader) newAccount() *account.StateAccount {
+	if r.reuseAccount {
+		r.accBuf = account.StateAccount{}
+		return &r.accBuf
+	}
+	return new(account.StateAccount)
 }
 
 // SetBaseCache shares one block's base-read cache with this reader. Every
@@ -99,7 +120,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 			r.rw.RecordAccountRead(key, fullTx, fullInc, false, nil, nil, false)
 			return nil, nil
 		}
-		acc := new(account.StateAccount)
+		acc := r.newAccount()
 		if delta == nil {
 			r.rw.RecordAccountRead(key, fullTx, fullInc, false, full, nil, false)
 			if err := acc.DecodeForStorageV2(full); err != nil {
@@ -138,13 +159,13 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		if base == nil {
 			return nil, nil
 		}
-		acc := new(account.StateAccount)
+		acc := r.newAccount()
 		*acc = *base
 		return acc, nil
 	}
 	// The base account in its encoded form (what composeAccount decodes)
 	// plus the deltas.
-	acc := new(account.StateAccount)
+	acc := r.newAccount()
 	if enc != nil {
 		if err := acc.DecodeForStorageV2(enc); err != nil {
 			return nil, err
