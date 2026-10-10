@@ -99,6 +99,7 @@ import (
 	dtorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
+	"github.com/n42blockchain/N42/internal/frame"
 	framestore "github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/internal/ingest"
 	"github.com/n42blockchain/N42/internal/mcp"
@@ -1842,6 +1843,9 @@ func (n *Node) Start() error {
 		}
 
 		n.miner.SetCoinbase(eb)
+		if s := n.localFrameSigner(eb); s != nil {
+			n.miner.SetLocalFrameSigner(s)
+		}
 		n.miner.Start()
 	}
 
@@ -2348,7 +2352,10 @@ func (n *Node) enableFrameIngest() {
 		log.Error("Frame ingest disabled: bad gateway list", "env", ingest.EnvFrameGateways, "err", err)
 		return
 	}
-	if len(gateways) == 0 {
+	// Frames signed by a current validator (leaders' local frames of pool
+	// transactions) are admitted beside the gateways'.
+	isValidator := n.frameValidatorCheck()
+	if len(gateways) == 0 && (!internal.FrameBlocksEnabled() || isValidator == nil) {
 		return
 	}
 	st := framestore.NewFromEnv()
@@ -2370,9 +2377,10 @@ func (n *Node) enableFrameIngest() {
 		}
 	}
 	if err := n.ingestServer.EnableFrames(ingest.FrameConfig{
-		Gateways: gateways,
-		Store:    st,
-		Lookup:   lookup,
+		Gateways:    gateways,
+		IsValidator: isValidator,
+		Store:       st,
+		Lookup:      lookup,
 	}); err != nil {
 		log.Error("Frame ingest disabled", "err", err)
 		return
@@ -2389,6 +2397,70 @@ func (n *Node) enableFrameIngest() {
 		}
 		log.Info("Frame blocks", "produce", internal.FrameBlocksEnabled(), "pullPeers", len(ingest.PullPeersFromEnv()))
 	}
+}
+
+// frameValidatorCheck returns the frame admission check for the current
+// HotStuff validator set, read at call time so epoch changes apply, or nil
+// when the engine is not HotStuff.
+func (n *Node) frameValidatorCheck() func(types.Address) bool {
+	hs, ok := resolveHotStuffEngine(n.engine)
+	if !ok {
+		return nil
+	}
+	return func(a types.Address) bool {
+		eng := hs.Engine()
+		if eng == nil {
+			return false
+		}
+		vs := eng.CurrentValidatorSet()
+		return vs != nil && vs.FindByAddress(a) >= 0
+	}
+}
+
+// localFrameSigner returns the key this node frames its pool transactions
+// under when it leads a frame block (N42_FRAME_BLOCKS=1), or nil.
+//
+// The etherbase account's own secp256k1 key is used when the keystore has
+// it unlocked: its address is the validator address, which every follower
+// admits. A HotStuff validator signs consensus messages with BLS only and
+// has no secp256k1 key for its address; it uses a key derived from its BLS
+// secret (frame.DeriveLocalKey). That address is not the validator address,
+// so followers admit those frames only when N42_FRAME_GATEWAYS lists it;
+// the address is logged here.
+func (n *Node) localFrameSigner(etherbase types.Address) *frame.Signer {
+	if !internal.FrameBlocksEnabled() {
+		return nil
+	}
+	acct := accounts.Account{Address: etherbase}
+	for _, backend := range n.accman.Backends(keystore.KeyStoreType) {
+		ks, ok := backend.(*keystore.KeyStore)
+		if !ok {
+			continue
+		}
+		if _, err := ks.SignHash(acct, make([]byte, 32)); err != nil {
+			continue
+		}
+		log.Info("Local frame signer", "address", etherbase, "source", "etherbase keystore")
+		return &frame.Signer{Address: etherbase, SignHash: func(h []byte) ([]byte, error) { return ks.SignHash(acct, h) }}
+	}
+	if _, ok := resolveHotStuffEngine(n.engine); ok {
+		blsKey, err := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase)
+		if err != nil {
+			log.Warn("Local frames off: no validator key", "err", err)
+			return nil
+		}
+		key, err := frame.DeriveLocalKey(blsKey.Marshal())
+		if err != nil {
+			log.Warn("Local frames off", "err", err)
+			return nil
+		}
+		s := frame.KeySigner(key)
+		log.Info("Local frame signer", "address", s.Address, "source", "derived from the BLS key", "validator", etherbase,
+			"note", "followers admit it only if "+ingest.EnvFrameGateways+" lists it")
+		return s
+	}
+	log.Warn("Local frames off: etherbase key locked and no HotStuff BLS key; pool transactions are not mined in frame blocks")
+	return nil
 }
 
 func (n *Node) startAIRuntime() {
