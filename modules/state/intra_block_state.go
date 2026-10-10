@@ -211,6 +211,11 @@ type IntraBlockState struct {
 	// carried explicitly for readers that bypass it (SetPostStateLayers).
 	postLayers []*PostState
 
+	// beforeRoot runs once, inside the next root computation, after the
+	// dirty set is final (rewards, pending credits and journal merged) and
+	// before the root computer is called (SetBeforeRootHook).
+	beforeRoot func()
+
 	// lastIntermediateRoot is what IntermediateRoot last returned
 	// (LastIntermediateRoot); the deferred-execution write reads it.
 	lastIntermediateRoot    types.Hash
@@ -1712,6 +1717,13 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		}
 	}
 
+	// The dirty set is final here: everything the root walk is about to
+	// commit is in the state objects, and nothing below changes them.
+	if hook := s.beforeRoot; hook != nil {
+		s.beforeRoot = nil
+		hook()
+	}
+
 	// Use LtHash-aware path if available.
 	if ltEnabled {
 		jmtRoot, ltRoot, err := ltRC.ComputeRootWithOriginals(accounts, originals, storage, originalStorage)
@@ -1741,6 +1753,17 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// still consumes an append slot and shifts the root.
 	s.lastRootAccounts, s.lastRootStorage = accounts, storage
 	return root
+}
+
+// SetBeforeRootHook installs fn to run once inside the next root
+// computation through a RootComputer, after the block's dirty set is final
+// (rewards applied, pending balance credits materialised, journal dirties
+// merged) and before the computer runs. The lag executor's pipeline captures
+// the block's post-state there (CapturePostState) so the next block can
+// execute on it while this one's root and write proceed. fn runs on the
+// calling goroutine and may read the state; it must not modify it.
+func (s *IntraBlockState) SetBeforeRootHook(fn func()) {
+	s.beforeRoot = fn
 }
 
 // LastRootDirtySet returns the account/storage dirty set the most recent
