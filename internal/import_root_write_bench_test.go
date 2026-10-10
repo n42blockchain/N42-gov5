@@ -73,7 +73,7 @@ type importBenchRow struct {
 // signImportBenchFrames signs one block's transfers (sender i%senders at its
 // next nonce, a hash-derived hot recipient) and packs them into frames.
 func signImportBenchFrames(t *testing.T, gw *ecdsa.PrivateKey, cfg *params.ChainConfig, senders []*ecdsa.PrivateKey,
-	recipients []types.Address, nonces []uint64, blockIdx, nTxs, perFrame int, seq *uint64) (raws [][]byte, hashes []types.Hash) {
+	recipients []types.Address, nonces []uint64, blockIdx, nTxs, perFrame int, seq *uint64) (raws [][]byte, hashes []types.Hash, from [][]types.Address) {
 	signer := transaction.LatestSignerForChainID(cfg.ChainID)
 	chainID := uint256.MustFromBig(cfg.ChainID)
 	enc := make([][]byte, nTxs)
@@ -113,8 +113,13 @@ func signImportBenchFrames(t *testing.T, gw *ecdsa.PrivateKey, cfg *params.Chain
 		require.NoError(t, err)
 		raws = append(raws, raw)
 		hashes = append(hashes, h)
+		addrs := make([]types.Address, 0, hi-lo)
+		for i := lo; i < hi; i++ {
+			addrs = append(addrs, crypto.PubkeyToAddress(senders[i%len(senders)].PublicKey))
+		}
+		from = append(from, addrs)
 	}
-	return raws, hashes
+	return raws, hashes, from
 }
 
 func TestQMDBImportRootWriteBench(t *testing.T) {
@@ -215,12 +220,13 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	type signed struct {
 		raws   [][]byte
 		hashes []types.Hash
+		from   [][]types.Address
 	}
 	var seq uint64
 	nonces := make([]uint64, len(senders))
 	blocks := make([]signed, nBlocks)
 	for i := range blocks {
-		blocks[i].raws, blocks[i].hashes = signImportBenchFrames(t, gw, cfg, senders, recipients, nonces, i, nTxs, perFrame, &seq)
+		blocks[i].raws, blocks[i].hashes, blocks[i].from = signImportBenchFrames(t, gw, cfg, senders, recipients, nonces, i, nTxs, perFrame, &seq)
 	}
 	t.Logf("signed %d blocks of %d txs in %v", nBlocks, nTxs, time.Since(tSign))
 
@@ -264,13 +270,17 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		}
 	}
 
+	importSigner := transaction.MakeSignerWithTimestamp(cfg, big.NewInt(1), gb.Header().(*block.Header).Time+10)
 	parent := gb.Header().(*block.Header)
 	var wireHashes []types.Hash
 	tStart := time.Now()
 	for i := range blocks {
 		n := uint64(i + 1)
+		// Senders recovered at admission, as the fleet's frame recoverer
+		// does (N42_FRAME_RECOVER_WORKERS): the import only attaches them.
 		for j := range blocks[i].raws {
 			require.True(t, fstore.Put(blocks[i].hashes[j], blocks[i].raws[j]))
+			require.True(t, fstore.SetSenders(blocks[i].hashes[j], &store.Senders{Signer: importSigner, Addrs: blocks[i].from[j]}))
 		}
 		// The leader gate: block n carries the result of n-2.
 		if n >= 3 {
