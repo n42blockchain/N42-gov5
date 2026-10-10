@@ -44,6 +44,11 @@ import (
 // N42_SLOW_BLOCK_MS overrides it; 0 restores logging every block at Info.
 var slowBlockThreshold = slowBlockThresholdFromEnv()
 
+// importPhasesHook, when set (benchmarks), receives every imported block's
+// process phases (Finalize is the state root), process, validate and write
+// wall times, and whether it executed ahead, on the importing goroutine.
+var importPhasesHook func(number uint64, ph ProcessPhases, process, validate, write time.Duration, ahead bool)
+
 func slowBlockThresholdFromEnv() time.Duration {
 	if v := os.Getenv("N42_SLOW_BLOCK_MS"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {

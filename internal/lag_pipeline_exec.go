@@ -248,8 +248,16 @@ func (bc *BlockChain) lagPipeHook(blk block.IBlock, ibs *state.IntraBlockState) 
 	if !ok {
 		return
 	}
-	ibs.SetBeforeRootHook(func() { bc.lagPipePublish(hdr, state.CapturePostState(ibs)) })
+	ibs.SetBeforeRootHook(func() {
+		t0 := time.Now()
+		bc.lagPipePublish(hdr, state.CapturePostState(ibs))
+		lagPublishNanos.Store(int64(time.Since(t0)))
+	})
 }
+
+// lagPublishNanos is the duration of the most recent snapshot publication
+// (CapturePostState plus the child's launch), spent inside the state root.
+var lagPublishNanos atomic.Int64
 
 // lagPipePublish records the post-state of the block being rooted now and
 // starts its queued child ahead. Runs on the importing goroutine, inside
