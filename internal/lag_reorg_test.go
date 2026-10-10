@@ -54,6 +54,13 @@ type lagChain struct {
 
 func newLagChain(t *testing.T) *lagChain {
 	t.Helper()
+	return newLagChainKeys(t, nil)
+}
+
+// newLagChainKeys funds keys (three fresh ones when nil) at genesis; two
+// chains built from the same keys share their genesis.
+func newLagChainKeys(t *testing.T, keys []*ecdsa.PrivateKey) *lagChain {
+	t.Helper()
 	ctx := context.Background()
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -68,9 +75,14 @@ func newLagChain(t *testing.T) *lagChain {
 	}
 	lc := &lagChain{t: t, db: db, cfg: cfg, signer: transaction.NewLondonSigner(cfg.ChainID)}
 	alloc := conf.GenesisAlloc{}
-	for i := 0; i < 3; i++ {
-		k, err := crypto.GenerateKey()
-		require.NoError(t, err)
+	if keys == nil {
+		for i := 0; i < 3; i++ {
+			k, err := crypto.GenerateKey()
+			require.NoError(t, err)
+			keys = append(keys, k)
+		}
+	}
+	for i, k := range keys {
 		lc.keys = append(lc.keys, k)
 		lc.addrs = append(lc.addrs, crypto.PubkeyToAddress(k.PublicKey))
 		alloc[lc.addrs[i]] = conf.GenesisAccount{Balance: "0x56bc75e2d63100000"}

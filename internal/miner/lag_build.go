@@ -188,7 +188,10 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 	gw := pickFrames(st, inFlight, own, budget-local.gas, maxFrames-len(local.hashes))
 	hashes := append(local.hashes, gw.hashes...)
 	raws := append(local.raws, gw.raws...)
-	header.SetFrameTxRoot(block.FrameTxRoot(hashes))
+	if len(hashes) > 0 {
+		// An empty build is an ordinary empty block (block.NewLaggedBlock).
+		header.SetFrameTxRoot(block.FrameTxRoot(hashes))
+	}
 	dFill := time.Since(tFill)
 
 	asm := w.engine.(frameAssembler)

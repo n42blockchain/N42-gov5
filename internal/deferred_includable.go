@@ -59,7 +59,9 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// is voted on once its static header fields, its frame list and every
 	// frame check out; nothing waits for the parent's execution.
 	if block.VoteOnAvailability() {
-		if body, ok := blk.Body().(*block.Body); ok && body.IsFrameBody() {
+		// A frame block, or an empty block (nothing to execute-check: the
+		// lag build of a block with no frames, S92).
+		if body, ok := blk.Body().(*block.Body); ok && (body.IsFrameBody() || len(body.Txs) == 0) {
 			retry, err := bc.checkAvailability(blk, hdr, body)
 			return true, retry, err
 		}
