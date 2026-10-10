@@ -101,14 +101,23 @@ const (
 	// (round 35zzo); the newest million transactions stay in the tail either way.
 	txIndexKeepTx = 1_000_000
 
-	// txIndexSealMaxPerTick is how many segments one tick may build back to back.
-	// One segment per 15 s tick seals ~1M transactions, ~67k a second, while a
-	// full-block flood commits ~116k a second: the tail grew through every flood
-	// and was sealed only after it. The loop stops as soon as nothing is sealable.
+	// txIndexSealMaxPerTick is how many seal batches one tick may run back to
+	// back. One segment per 15 s tick sealed ~67k transactions a second while a
+	// full-block flood commits ~116k; the loop stops as soon as nothing is
+	// sealable.
 	txIndexSealMaxPerTick = 8
 
-	// txIndexSealInterval is how often the sealer looks for work.
-	txIndexSealInterval = 15 * time.Second
+	// txIndexSealWorkers is how many segments one batch builds concurrently.
+	// One builder seals a 1M-transaction segment in ~4 s, ~250k transactions a
+	// second, and the qs fleet commits 290k: the tail grew without bound, to
+	// 2 GB of a node's heap at +150 s (S97). Builds of different ranges are
+	// independent; only appending them to the store is ordered.
+	txIndexSealWorkers = 3
+
+	// txIndexSealInterval is how often the sealer looks for work. Short, so
+	// the tail holds about one segment's worth beyond the keep-behind: a
+	// 15 s tick let 4M transactions pile up between looks at 290k a second.
+	txIndexSealInterval = 2 * time.Second
 
 	// txIndexMaxRebuildBlocks bounds what a restart will re-read into the tail
 	// before it starts sealing instead. Without a bound a node that was down
@@ -142,6 +151,11 @@ func txIndexEnabled() bool {
 // invalid).
 func txIndexKeepBlocksVar() int {
 	return txIndexEnvInt("N42_TXINDEX_KEEP_BLOCKS", txIndexKeepBlocks)
+}
+
+// txIndexSealWorkersVar overrides txIndexSealWorkers (N42_TXINDEX_SEAL_WORKERS).
+func txIndexSealWorkersVar() int {
+	return txIndexEnvInt("N42_TXINDEX_SEAL_WORKERS", txIndexSealWorkers)
 }
 
 func txIndexSealMinTxVar() int {
@@ -402,10 +416,11 @@ func (x *Indexer) blockTxSource(n uint64) ([]types.Hash, error) {
 // noteTxIndex records a committed block's transactions. Called after the
 // commit transaction, so it is never on the critical path.
 // Add records a committed block. Called after the commit transaction, so it is
-// never on the critical path.
+// never on the critical path. The tail takes ownership of hashes: the caller
+// builds a fresh slice per block and does not touch it again.
 func (x *Indexer) Add(number uint64, hashes []types.Hash) {
 	if x != nil && x.txTail != nil {
-		x.txTail.Add(number, hashes)
+		x.txTail.AddOwned(number, hashes)
 	}
 }
 
@@ -433,29 +448,57 @@ func (x *Indexer) txIndexSealLoop() {
 	}
 }
 
-// sealTxIndexOnce builds at most one segment and reports whether it did.
+// sealTxIndexOnce builds up to txIndexSealWorkers segments concurrently,
+// appends them in block order and reports whether it appended any.
 // Sealing then dropping, in that order and never the reverse: a block dropped
 // from the tail before it is in a segment is findable nowhere.
 func (x *Indexer) sealTxIndexOnce() bool {
-	start, end, ok := x.txTail.SealRangeKeepTx(txIndexSealMinTxVar(), txIndexSealMaxBlocks, txIndexKeepBlocksVar(), txIndexKeepTx)
-	if !ok {
+	ranges := x.txTail.SealRanges(txIndexSealMinTxVar(), txIndexSealMaxBlocks, txIndexKeepBlocksVar(), txIndexKeepTx, txIndexSealWorkersVar())
+	if len(ranges) == 0 {
 		return false
 	}
 	t0 := time.Now()
-	if err := txlookup.BuildSegmentFromSource(x.ctx, x.txIndexDir, start, end, x.txTail.Source()); err != nil {
-		// Keep the blocks in the tail and retry next tick; they stay
-		// answerable in the meantime.
-		log.Error("txindex seal failed", "from", start, "to", end, "err", err)
+	built := make([]*txlookup.BuiltSegment, len(ranges))
+	errs := make([]error, len(ranges))
+	src := x.txTail.Source()
+	var wg sync.WaitGroup
+	for i, r := range ranges {
+		wg.Add(1)
+		go func(i int, r txlookup.BlockRange) {
+			defer wg.Done()
+			built[i], errs[i] = txlookup.BuildSegmentFile(x.ctx, x.txIndexDir, r.Start, r.End, src)
+		}(i, r)
+	}
+	wg.Wait()
+	// Append the contiguous prefix that built; anything after a failed build
+	// is discarded and stays in the tail, answerable, for the next tick.
+	ok := len(ranges)
+	for i, err := range errs {
+		if err != nil {
+			log.Error("txindex seal failed", "from", ranges[i].Start, "to", ranges[i].End, "err", err)
+			ok = i
+			break
+		}
+	}
+	for _, b := range built[ok:] {
+		b.Discard()
+	}
+	n, err := txlookup.CommitBuiltSegments(x.txIndexDir, built[:ok])
+	if err != nil {
+		log.Error("txindex seal: append failed", "appended", n, "of", ok, "err", err)
+	}
+	if n == 0 {
 		return false
 	}
+	end := ranges[n-1].End
 	x.txTail.DropBelow(end)
 	if err := x.reopenTxSegments(); err != nil {
 		log.Error("txindex: sealed but could not reopen segments", "err", err)
 		return false
 	}
-	log.Info("txindex sealed", "from", start, "to", end-1,
-		"tailBlocks", x.txTail.Len(), "took", time.Since(t0).Truncate(time.Millisecond))
-	return true
+	log.Info("txindex sealed", "from", ranges[0].Start, "to", end-1, "segments", n,
+		"tailBlocks", x.txTail.Len(), "tailTxs", x.txTail.TxCount(), "took", time.Since(t0).Truncate(time.Millisecond))
+	return n == len(ranges)
 }
 
 // reopenTxSegments swaps in a reader that includes the segment just written.

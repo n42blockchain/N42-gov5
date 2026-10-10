@@ -55,25 +55,80 @@ type SegmentRange struct {
 // BuildSegmentFromSource builds one segment covering [startBlock, endBlock)
 // from src and appends it to outputDir's segment store.
 func BuildSegmentFromSource(ctx context.Context, outputDir string, startBlock, endBlock uint64, src BlockTxSource) error {
-	if endBlock <= startBlock {
-		return fmt.Errorf("empty range %d-%d", startBlock, endBlock)
-	}
-	store, err := cscompact.NewSegmentStoreWriter(outputDir, "txindex")
+	seg, err := BuildSegmentFile(ctx, outputDir, startBlock, endBlock, src)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	_, err = CommitBuiltSegments(outputDir, []*BuiltSegment{seg})
+	return err
+}
 
+// BuiltSegment is a segment built but not yet appended to the store. Builds
+// of different ranges are independent and may run concurrently; appending
+// is not, and must happen in block order (CommitBuiltSegments).
+type BuiltSegment struct {
+	StartBlock, EndBlock uint64
+	dat                  []byte
+	idxPath              string
+}
+
+// Discard removes a built segment's temporary files.
+func (b *BuiltSegment) Discard() {
+	if b == nil || b.idxPath == "" {
+		return
+	}
+	os.Remove(b.idxPath)
+	os.Remove(b.idxPath + ".tmp")
+	b.idxPath = ""
+}
+
+// BuildSegmentFile builds the segment for [startBlock, endBlock) into a
+// temporary index file in outputDir without touching the segment store.
+func BuildSegmentFile(ctx context.Context, outputDir string, startBlock, endBlock uint64, src BlockTxSource) (*BuiltSegment, error) {
+	if endBlock <= startBlock {
+		return nil, fmt.Errorf("empty range %d-%d", startBlock, endBlock)
+	}
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return nil, err
+	}
 	tmpIdx := filepath.Join(outputDir, fmt.Sprintf("tmp_txindex_%d.ri", startBlock))
 	datBytes, err := buildFromSource(ctx, startBlock, endBlock, src, tmpIdx)
 	if err != nil {
 		os.Remove(tmpIdx)
-		return fmt.Errorf("build segment %d-%d: %w", startBlock, endBlock, err)
+		os.Remove(tmpIdx + ".tmp")
+		return nil, fmt.Errorf("build segment %d-%d: %w", startBlock, endBlock, err)
 	}
-	if _, err := store.WriteSegment(datBytes, tmpIdx); err != nil {
-		return err
+	return &BuiltSegment{StartBlock: startBlock, EndBlock: endBlock, dat: datBytes, idxPath: tmpIdx}, nil
+}
+
+// CommitBuiltSegments appends built segments to outputDir's store, in the
+// order given, which must be ascending and contiguous with what the store
+// already holds. It stops at the first failure; segments not appended are
+// discarded either way. It returns how many were appended.
+func CommitBuiltSegments(outputDir string, segs []*BuiltSegment) (int, error) {
+	defer func() {
+		for _, s := range segs {
+			s.Discard()
+		}
+	}()
+	if len(segs) == 0 {
+		return 0, nil
 	}
-	return appendSegmentRange(outputDir, SegmentRange{StartBlock: startBlock, BlockCount: endBlock - startBlock})
+	store, err := cscompact.NewSegmentStoreWriter(outputDir, "txindex")
+	if err != nil {
+		return 0, err
+	}
+	defer store.Close()
+	for i, s := range segs {
+		if _, err := store.WriteSegment(s.dat, s.idxPath); err != nil {
+			return i, err
+		}
+		s.idxPath = "" // WriteSegment consumed and removed it
+		if err := appendSegmentRange(outputDir, SegmentRange{StartBlock: s.StartBlock, BlockCount: s.EndBlock - s.StartBlock}); err != nil {
+			return i, err
+		}
+	}
+	return len(segs), nil
 }
 
 // buildFromSource is buildOne over a BlockTxSource, in one pass.
