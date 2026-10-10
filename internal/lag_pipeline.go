@@ -50,8 +50,13 @@ import (
 // tells consensus (the imported hook), which retries deferred commits and
 // resumes a leader view waiting on the lag gate.
 
-// maxAvailableBlocks bounds the available-block cache.
-const maxAvailableBlocks = 256
+// maxAvailableBlocks bounds the available-block cache. Each entry holds a
+// decoded body (~0.3 GB at 310k transactions), and what legitimately waits
+// here is small: at depth k the leader gate keeps the canonical chain at
+// most k+1 blocks ahead of execution, plus the losing siblings of a few
+// views; imported and forgotten blocks leave at once (forgetAvailable).
+// The bound only caps a stalled executor.
+const maxAvailableBlocks = 32
 
 // lagAuthorizedGrace is how long a queued block whose parent is stored on a
 // branch that is not applied waits before it is imported with switch
