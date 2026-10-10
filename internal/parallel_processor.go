@@ -192,6 +192,8 @@ type parallelRun struct {
 	// SkipReasons splits Skipped by reason.
 	SkipReasons FrameSkipCounts
 	Nopay       map[types.Address]*uint256.Int
+	// phases: an ahead run's breakdown (FinishParallel adds Finalize).
+	phases ProcessPhases
 }
 
 // ProcessParallel executes a block's transactions with Block-STM (strict:
@@ -216,6 +218,70 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return nil, nil, nil, 0, err
 	}
 	return run.Receipts, run.Nopay, run.Logs, run.UsedGas, nil
+}
+
+// ParallelApplicable reports whether ProcessParallel runs b on Block-STM
+// (rather than falling back to the serial Process).
+func (p *StateProcessor) ParallelApplicable(b *block.Block) bool {
+	txs := b.Transactions()
+	if len(txs) <= 4 {
+		return false
+	}
+	hdr, ok := b.Header().(*block.Header)
+	return ok && !touchesAny(txs, deferredFeeRecipients(p.config, hdr))
+}
+
+// ExecuteParallelAhead is the first half of ProcessParallel for the lag
+// executor's pipeline: the strict Block-STM run of b and the fold of its
+// writes into ibs, with no block end, no Finalize and no state root. Its
+// reads take the QMDB tree's reader lock per lookup (never for the whole
+// run) and retry an entry evicted under them through a fresh transaction,
+// so the parent's root and write proceed on the tree meanwhile. ibs reads
+// the parent's unwritten post-state through its post-state layers.
+// FinishParallel completes the block once its parent is written.
+func (p *StateProcessor) ExecuteParallelAhead(b *block.Block, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if !p.ParallelApplicable(b) {
+		return nil, ErrParallelNotApplicable
+	}
+	hdr := b.Header().(*block.Header)
+	body, _ := b.Body().(*block.Body)
+	return p.runParallelMode(hdr, b.Hash(), b.Transactions(), ibs, blockHashFunc, false, body.IsFrameBody(), true)
+}
+
+// FinishParallel is the second half: the gas check, block end and Finalize
+// (rewards, the state root) of a run ExecuteParallelAhead left in ibs. The
+// caller owns the live tree (it holds the chain lock, the parent is the
+// applied head).
+func (p *StateProcessor) FinishParallel(b *block.Block, ibs *state.IntraBlockState, run *parallelRun) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
+	hdr, ok := b.Header().(*block.Header)
+	if !ok {
+		return nil, nil, nil, 0, fmt.Errorf("FinishParallel: invalid header type assertion for block %v", b.Number64())
+	}
+	t0 := time.Now()
+	nopay, err := p.finishStrict(hdr, ibs, b.Transactions(), run.UsedGas)
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	ph := run.phases
+	ph.Finalize = time.Since(t0)
+	p.lastPhases.Store(&ph)
+	return run.Receipts, nopay, run.Logs, run.UsedGas, nil
+}
+
+// finishStrict is the strict tail of a parallel run: gas against the
+// header, block end, Finalize.
+func (p *StateProcessor) finishStrict(concreteHeader *block.Header, ibs *state.IntraBlockState, txs []*transaction.Transaction, usedGas uint64) (map[types.Address]*uint256.Int, error) {
+	if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
+		return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
+	}
+	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
+		return nil, err
+	}
+	_, nopay, err := p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
+	if err != nil {
+		return nil, err
+	}
+	return nopay, nil
 }
 
 // BuildParallel is the builder's lenient run over a candidate list: the
@@ -255,6 +321,13 @@ func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transa
 // neither mode; in lenient mode any other failure returns
 // ErrFrameTxNotSkippable before the state is applied.
 func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid bool) (*parallelRun, error) {
+	return p.runParallelMode(concreteHeader, blockHash, txs, ibs, blockHashFunc, lenient, skipInvalid, false)
+}
+
+// runParallelMode is runParallel; ahead (strict runs only) stops after the
+// fold, before block end and Finalize, and reads the QMDB tree without
+// holding its reader lock across the run (ExecuteParallelAhead).
+func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid, ahead bool) (*parallelRun, error) {
 	numTxs := len(txs)
 	tStart := time.Now()
 	senderHintHits := 0
@@ -381,11 +454,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		if err != nil {
 			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
 		}
-		var base state.StateReader = state.NewPlainStateReader(tx)
-		if useQMDB {
-			base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
-		}
-		base = state.LayerPostStates(postLayers, base)
+		base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers)
 		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
 		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
 		// One base-read cache for the whole block, shared by every worker: the
@@ -486,7 +555,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		waveCold0, waveResident0 = qmdb.ReadCounters()
 		waveColdNs0 = qmdb.ReadColdNanos()
 	}
-	if useQMDB {
+	if useQMDB && !ahead {
 		var err error
 		if span, err = p.bc.qmdbRootComputer.BeginReadSpan(context.Background(), p.bc.ChainDB); err != nil {
 			return nil, fmt.Errorf("ProcessParallel: read span: %w", err)
@@ -666,13 +735,13 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		// while the next build runs; a read racing an append, an eviction or
 		// a resize is a crash or a seeded "absent" account).
 		var pspan *commitment.ReadSpan
-		if useQMDB {
+		if useQMDB && !ahead {
 			var err error
 			if pspan, err = p.bc.qmdbRootComputer.BeginReadSpan(context.Background(), p.bc.ChainDB); err != nil {
 				return nil, fmt.Errorf("ProcessParallel: prefetch read span: %w", err)
 			}
 		}
-		n, err := p.prefetchPendingCredits(ibs, pf, pspan, mode, postLayers)
+		n, err := p.prefetchPendingCredits(ibs, pf, pspan, useQMDB, ahead, mode, postLayers)
 		if pspan != nil {
 			pspan.End()
 		}
@@ -707,20 +776,23 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// Strict: validate gas against the header, then block end and Finalize
 	// (rewards, the state root). Lenient: the builder's assemble does those.
 	var nopay map[types.Address]*uint256.Int
-	if !lenient {
-		if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
-			return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
-		}
-		if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
-			return nil, err
-		}
+	if !lenient && !ahead {
 		var err error
-		_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
-		if err != nil {
+		if nopay, err = p.finishStrict(concreteHeader, ibs, txs, usedGas); err != nil {
 			return nil, err
 		}
 	}
-	if !lenient {
+	var aheadPhases ProcessPhases
+	if ahead {
+		aheadPhases = ProcessPhases{
+			Recover:     tRecovered.Sub(tStart),
+			Setup:       tRunStart.Sub(tRecovered),
+			Exec:        tRunEnd.Sub(tRunStart),
+			Collect:     time.Since(tRunEnd),
+			Skipped:     nSkipped,
+			SkipReasons: skipReasons,
+		}
+	} else if !lenient {
 		// Publish this block's breakdown for the "blockimport phases" line,
 		// which otherwise has nothing to print for a parallel block.
 		p.lastPhases.Store(&ProcessPhases{
@@ -746,7 +818,26 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
 	}
 
-	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay}, nil
+	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay, phases: aheadPhases}, nil
+}
+
+// parallelBaseReader is the base state reader of one goroutine of a
+// parallel run over its own transaction tx: the plain tables, the QMDB tree
+// when reads come from it, the run's post-state layers on top. A locked run
+// holds the tree's reader lock for its span; an ahead run takes it per
+// lookup and retries an evicted entry through a fresh transaction.
+func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) state.StateReader {
+	var base state.StateReader = state.NewPlainStateReader(tx)
+	if useQMDB {
+		var src *commitment.LookupSource
+		if ahead {
+			src = commitment.NewLookupSourceRefreshing(p.bc.qmdbRootComputer, tx, p.bc.ChainDB)
+		} else {
+			src = commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx)
+		}
+		base = commitment.NewQMDBStateReader(src, base, mode)
+	}
+	return state.LayerPostStates(postLayers, base)
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.
@@ -961,8 +1052,7 @@ func ParallelWorkers() int { return parallelWorkers() }
 // fold as before.
 // span is the caller's QMDB read span (nil: no QMDB reads); the workers'
 // transactions are opened under its permit.
-func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, span *commitment.ReadSpan, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
-	useQMDB := span != nil
+func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, span *commitment.ReadSpan, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
 	addrs := ibs.PendingBalanceIncreases()
 	if len(addrs) < 256 {
 		return 0, nil
@@ -1004,11 +1094,7 @@ func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *
 				return
 			}
 			defer tx.Rollback()
-			var base state.StateReader = state.NewPlainStateReader(tx)
-			if useQMDB {
-				base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
-			}
-			base = state.LayerPostStates(postLayers, base)
+			base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers)
 			for i := lo; i < hi; i++ {
 				a, err := base.ReadAccountData(addrs[i])
 				if err != nil {
