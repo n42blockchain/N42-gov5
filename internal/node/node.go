@@ -1907,6 +1907,14 @@ func (n *Node) Start() error {
 			// retry deferred commits and resume a waiting leader view.
 			svc.SetAvailabilityProbe(realBC.HasAvailableBlock)
 			realBC.SetLagImportedHook(svc.NotifyBlockImported)
+			if block.LagMode() && internal.FrameBlocksEnabled() {
+				// Deferred depth k > 1 with frame blocks: the leader builds
+				// without executing and may propose height N once it has
+				// executed N-k.
+				svc.SetLagGate(realBC.LagReady)
+				log.Warn("Deferred execution depth above 1 (bench rule; every node must run the same N42_DEFERRED_DEPTH and N42_DEFERRED_DEPTH_FROM)",
+					"depth", block.DeferredDepth(), "from", block.DeferredDepthFrom(), "voteOnAvailability", block.VoteOnAvailability())
+			}
 		}
 	}
 

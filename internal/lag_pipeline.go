@@ -160,12 +160,11 @@ func deferredTarget(header, parent *block.Header, lookup func(hash types.Hash, n
 	return t, nil
 }
 
-// LaggedExecutedResult returns this node's executed result that a header
-// built on parent must carry (the parent's at depth 1, the block
-// DeferredDepth-1 levels above the parent at depth k), and the header it
-// belongs to. own resolves headers this node sealed and has not written
-// (nil = none).
-func (bc *BlockChain) LaggedExecutedResult(tx kv.Getter, header *block.Header, own func(types.Hash) *block.Header) (rawdb.ExecutedResult, *block.Header, error) {
+// LaggedTarget returns the header of the block whose executed result a
+// header built on header.ParentHash must carry: the parent at depth 1, the
+// block DeferredDepthAt-1 levels above the parent at depth k. own resolves
+// headers this node sealed and has not written (nil = none).
+func (bc *BlockChain) LaggedTarget(tx kv.Getter, header *block.Header, own func(types.Hash) *block.Header) (*block.Header, error) {
 	lookup := func(hash types.Hash, number uint64) *block.Header {
 		if own != nil {
 			if h := own(hash); h != nil {
@@ -175,13 +174,19 @@ func (bc *BlockChain) LaggedExecutedResult(tx kv.Getter, header *block.Header, o
 		return bc.headerAnywhere(tx, hash, number)
 	}
 	if header.Number.Uint64() == 0 {
-		return rawdb.ExecutedResult{}, nil, errors.New("deferred execution: genesis has no parent")
+		return nil, errors.New("deferred execution: genesis has no parent")
 	}
 	parent := lookup(header.ParentHash, header.Number.Uint64()-1)
 	if parent == nil {
-		return rawdb.ExecutedResult{}, nil, fmt.Errorf("%w: parent %x of block %d not known", ErrDeferredResultUnknown, header.ParentHash[:8], header.Number.Uint64())
+		return nil, fmt.Errorf("%w: parent %x of block %d not known", ErrDeferredResultUnknown, header.ParentHash[:8], header.Number.Uint64())
 	}
-	target, err := deferredTarget(header, parent, lookup)
+	return deferredTarget(header, parent, lookup)
+}
+
+// LaggedExecutedResult returns this node's executed result that header must
+// carry (see LaggedTarget) and the header it belongs to.
+func (bc *BlockChain) LaggedExecutedResult(tx kv.Getter, header *block.Header, own func(types.Hash) *block.Header) (rawdb.ExecutedResult, *block.Header, error) {
+	target, err := bc.LaggedTarget(tx, header, own)
 	if err != nil {
 		return rawdb.ExecutedResult{}, nil, err
 	}

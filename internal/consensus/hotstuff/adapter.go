@@ -451,16 +451,30 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// unchecked header lets a bad leader mint arbitrarily large blocks.
 	// This invariant holds for every honestly-produced AND replayed block.
 	usedLimit := header.GasLimit
+	checkUsed := true
 	if h.chainConfig != nil && chain != nil && h.chainConfig.IsDeferredExecution(header.Time) {
-		// The header's GasUsed is the PARENT's execution, bounded by the
-		// parent's limit (the limit may step between the two).
-		if p, _ := chain.GetHeaderByHash(header.ParentHash); p != nil {
-			if ph, ok := p.(*block.Header); ok && ph != nil {
-				usedLimit = ph.GasLimit
+		// The header's GasUsed is the execution of the block it reports --
+		// the parent at depth 1, the block DeferredDepthAt-1 levels above
+		// the parent at depth k (P2a) -- bounded by that block's limit (the
+		// limit may step between them). When that block cannot be resolved
+		// here the bound is left to the import, which compares GasUsed with
+		// this node's own execution of it exactly.
+		hash := header.ParentHash
+		for step := 0; step < block.DeferredDepthAt(header.Number.Uint64()); step++ {
+			p, _ := chain.GetHeaderByHash(hash)
+			ph, ok := p.(*block.Header)
+			if p == nil || !ok || ph == nil {
+				checkUsed = step == 0 // depth 1 with an unknown parent keeps today's own-limit bound
+				break
 			}
+			usedLimit = ph.GasLimit
+			if ph.Number == nil || ph.Number.IsZero() {
+				break
+			}
+			hash = ph.ParentHash
 		}
 	}
-	if header.GasUsed > usedLimit {
+	if checkUsed && header.GasUsed > usedLimit {
 		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, usedLimit)
 	}
 	// EIP-1559 BaseFee re-derivation is deliberately NOT enforced here.
@@ -847,6 +861,58 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 	// Assemble the block with computed TxHash and ReceiptHash.
 	b := block.NewBlockFromReceipt(header, txs, nil, receipts, rewards)
 	return b, rewards, balanceChanges, nil
+}
+
+// AssembleWithoutExecution assembles a frame block a leader proposes
+// without executing it (P2a, deferred depth k > 1): the header already
+// carries its parent link, the lagged execution fields and the frame
+// transactions root; this sets the fork-mandated fields FinalizeAndAssemble
+// sets and builds the frame body. The rewards commitment is the empty one:
+// rewards are applied when the block executes, behind consensus, and the
+// slot is not checked on import.
+func (h *HotStuff) AssembleWithoutExecution(chain consensus.ChainHeaderReader, header *block.Header, frameHashes []types.Hash, frameData [][]byte) (block.IBlock, error) {
+	if header == nil || header.Number == nil {
+		return nil, errors.New("assemble: header without a number")
+	}
+	if cfg := chain.Config(); cfg != nil {
+		num := header.Number.Uint64()
+		if cfg.IsShanghaiAt(num, header.Time) && header.WithdrawalsHash == nil {
+			rh := hash.DeriveSha(block.Rewards(nil))
+			header.WithdrawalsHash = &rh
+		}
+		if cfg.IsCancunAt(num, header.Time) {
+			if header.BlobGasUsed == nil {
+				z := uint64(0)
+				header.BlobGasUsed = &z
+			}
+			if header.ExcessBlobGas == nil {
+				z := uint64(0)
+				header.ExcessBlobGas = &z
+			}
+		}
+		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
+			rq := hash.EmptyRootHash
+			header.RequestsHash = &rq
+		}
+	}
+	b := block.NewFrameBlockFromReceipt(header, frameHashes, nil, nil, nil)
+	body, ok := b.Body().(*block.Body)
+	if !ok || b.TxHash() != block.FrameTxRoot(frameHashes) {
+		return nil, errors.New("assemble: frame block lost its frame root")
+	}
+	body.FrameData = frameData
+	return b, nil
+}
+
+// NotifyBlockAvailable tells the engine this node holds every frame of a
+// block it sealed without executing (P2a): with vote on availability the
+// leader's own Round-2 gate is then met, as a follower's is by its check.
+func (h *HotStuff) NotifyBlockAvailable(hash, parent types.Hash) {
+	if ce := h.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: hash, ParentHash: parent}); err != nil {
+			log.Debug("hotstuff: own block availability ignored", "err", err)
+		}
+	}
 }
 
 // Seal generates a new sealing request for the given block.
