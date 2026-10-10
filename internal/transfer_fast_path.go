@@ -294,8 +294,10 @@ func tryDirectTransfer(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *paral
 	if s.from.Balance.Lt(&sc.balanceCheck) {
 		return fail()
 	}
-	// The recipient (evm.Call's Exist).
-	acc, err = rd.ReadAccountData(sh.to)
+	// The recipient (evm.Call's Exist). Its balance only receives a delta
+	// and is never observed, so its read ignores the balance: neither the
+	// existence and code checks nor the delta write depend on it.
+	acc, err = rd.ReadAccountIgnoringBalance(sh.to)
 	if err != nil || acc == nil {
 		return fail()
 	}
