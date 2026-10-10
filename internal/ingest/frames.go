@@ -309,10 +309,10 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			a, b := fi.accepted.Load(), fi.busy.Load()
-			if a == last && b == lastBusy {
+			st := fi.cfg.Store.Stats()
+			if a == last && b == lastBusy && st.RecoverPending == 0 {
 				continue
 			}
-			st := fi.cfg.Store.Stats()
 			log.Info("ingest frames", "accepted", a, "acceptedDelta", a-last, "txs", fi.txsAccepted.Load(),
 				"busy", b, "busyDelta", b-lastBusy,
 				"dup", fi.duplicate.Load(), "badSig", fi.badSig.Load(),
@@ -320,6 +320,7 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 				"storeFrames", st.Frames, "storeBytes", st.Bytes, "pending", st.Pending, "committed", st.Committed,
 				"committedHead", st.CommittedHead, "bypassed", st.Bypassed, "released", st.Released,
 				"evicted", st.Evicted, "removed", st.Removed,
+				"recovered", st.Recovered, "recoverPending", st.RecoverPending, "withSenders", st.WithSenders,
 				"outOfOrder", fi.outOfOrder.Load(), "outOfOrderByGateway", fi.oooString())
 			last, lastBusy = a, b
 		}

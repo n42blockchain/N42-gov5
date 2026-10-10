@@ -260,6 +260,20 @@ func (tx *Transaction) CacheSender(signer Signer, from types.Address) {
 	senderCachePut(tx.Hash(), signer, from)
 }
 
+// SetSenderMemo records an already-recovered sender in this transaction
+// object's memo only (not the process-wide cache), keyed by signer: a later
+// Sender call under an Equal signer returns it, any other signer
+// re-derives. The caller vouches that from was recovered from this
+// transaction's signature under signer (frame admission recovers the
+// senders of a frame in the background and attaches them when the frame is
+// decoded into a block).
+func (tx *Transaction) SetSenderMemo(signer Signer, from types.Address) {
+	if signer == nil {
+		return
+	}
+	tx.from.Store(sigCache{signer: signer, from: from})
+}
+
 // Signer encapsulates transaction signature handling. The name of this type is slightly
 // misleading because Signers don't actually sign, they're just for validating and
 // processing of signatures.

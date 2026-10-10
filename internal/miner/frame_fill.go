@@ -128,7 +128,10 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 		return nil
 	}
 	flat := make([]*transaction.Transaction, 0, pick.txs)
-	for _, p := range per {
+	cachedSenders := 0
+	for i, p := range per {
+		// Senders recovered at admission (P2a); the build recovers the rest.
+		cachedSenders += frame.ApplySenders(p, st.Senders(pick.hashes[i]))
 		flat = append(flat, p...)
 	}
 	dDecode := time.Since(tDecode)
@@ -145,7 +148,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 		}
 		log.Info("miner: frame fill", "n", number, "path", path, "frames", len(hashes), "picked", len(pick.hashes),
 			"localFrames", len(local.hashes), "localTxs", local.txs,
-			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "gasEst", pick.gas, "gasUsed", header.GasUsed,
+			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "cachedSenders", cachedSenders, "gasEst", pick.gas, "gasUsed", header.GasUsed,
 			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec))
 		internal.LogFrameSkips("build", number, len(env.txs), skipped, reasons)
 		return nil

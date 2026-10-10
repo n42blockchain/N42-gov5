@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"math/big"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -2396,6 +2397,24 @@ func (n *Node) enableFrameIngest() {
 			})
 		}
 		log.Info("Frame blocks", "produce", internal.FrameBlocksEnabled(), "pullPeers", len(ingest.PullPeersFromEnv()))
+		// Sender recovery at admission (P2a): every admitted frame's senders
+		// are recovered in the background under the signer of the block
+		// after the current head and cached with the frame.
+		cfg := realBC.Config()
+		rec := frame.NewSenderRecoverer(st, func() transaction.Signer {
+			cur := realBC.CurrentBlock()
+			if cur == nil || cur.Header() == nil {
+				return nil
+			}
+			h, ok := cur.Header().(*block.Header)
+			if !ok || h == nil || h.Number == nil {
+				return nil
+			}
+			next := new(big.Int).Add(h.Number.ToBig(), big.NewInt(1))
+			return transaction.MakeSignerWithTimestamp(cfg, next, h.Time+1)
+		}, frame.RecoverWorkersFromEnv())
+		rec.Start(n.ctx)
+		log.Info("Frame sender recovery at admission", "workers", frame.RecoverWorkersFromEnv())
 	}
 }
 

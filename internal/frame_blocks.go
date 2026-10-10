@@ -301,17 +301,28 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		}
 		return fmt.Errorf("%w: block %d misses %d of %d frames", ErrFramesUnavailable, b.Number64().Uint64(), len(missing), len(hashes))
 	}
-	txs, dropped, err := frame.DecodeFrames(raws, 0)
+	per, dropped, err := frame.DecodeFramesEach(raws, 0)
 	if err != nil {
 		return fmt.Errorf("frame body: block %d: %w", b.Number64().Uint64(), err)
 	}
-	if txs == nil {
-		txs = []*transaction.Transaction{}
+	// Senders recovered at admission (P2a): attach what the store cached;
+	// the import's recovery step recovers only the rest.
+	cached := 0
+	total := 0
+	for i, p := range per {
+		total += len(p)
+		if fs.store != nil {
+			cached += frame.ApplySenders(p, fs.store.Senders(hashes[i]))
+		}
+	}
+	txs := make([]*transaction.Transaction, 0, total)
+	for _, p := range per {
+		txs = append(txs, p...)
 	}
 	body.Txs = txs
 	body.FrameData = raws
 	bc.MarkFramesInFlight(hashes, b.Number64().Uint64())
 	log.Debug("frame body resolved", "number", b.Number64().Uint64(), "frames", len(hashes), "txs", len(txs),
-		"dropped", dropped, "fromDB", fromDB, "pulled", pulled, "ms", time.Since(t0).Milliseconds())
+		"dropped", dropped, "cachedSenders", cached, "fromDB", fromDB, "pulled", pulled, "ms", time.Since(t0).Milliseconds())
 	return nil
 }
