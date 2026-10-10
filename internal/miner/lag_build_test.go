@@ -17,6 +17,7 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/frame/frametest"
+	"github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -74,9 +75,7 @@ func TestDropInFlightPending(t *testing.T) {
 type lagTestEngine struct{ mnTFakerEngine }
 
 func (lagTestEngine) AssembleWithoutExecution(_ consensus.ChainHeaderReader, header *block.Header, hashes []types.Hash, data [][]byte) (block.IBlock, error) {
-	b := block.NewFrameBlockFromReceipt(header, hashes, nil, nil, nil)
-	b.Body().(*block.Body).FrameData = data
-	return b, nil
+	return block.NewLaggedBlock(header, hashes, data), nil
 }
 
 // TestCommitWorkLaggedProposesWithoutExecuting (P2a item c): at depth 2 the
@@ -148,5 +147,34 @@ func TestCommitWorkLaggedProposesWithoutExecuting(t *testing.T) {
 	}
 	if mnTBalance(t, f, f.Senders[1]).Cmp(balBefore) != 0 {
 		t.Fatal("the lag build executed something")
+	}
+}
+
+// TestCommitWorkLaggedEmptyBlockIsOrdinary (S92): with nothing to fill the
+// lag build proposes an ordinary empty block, TxHash = TxRootAt of no
+// transactions as the executing build and every verifier have it, not the
+// frame root of zero frames.
+func TestCommitWorkLaggedEmptyBlockIsOrdinary(t *testing.T) {
+	defer internal.SetFrameBlocksForTest(true)()
+	defer block.SetDeferredDepthForTest(2, 0)()
+	f := mnTNewChainFixture(t)
+	f.Chain.SetFrameStore(store.New(1 << 20))
+	prevDeferred := block.DeferredExecutionTime
+	block.DeferredExecutionTime = 1
+	defer func() { block.DeferredExecutionTime = prevDeferred }()
+	w := mnTBareWorker(t, f, &mnTStubTxsPool{})
+	w.engine = lagTestEngine{}
+	w.coinbase = f.Coinbase
+	head := f.Chain.CurrentBlock().Hash()
+	if err := w.commitWork(nil, false, time.Now().Unix(), head, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tk := <-w.taskCh
+	body := tk.block.Body().(*block.Body)
+	if body.IsFrameBody() || tk.block.TxHash() != block.TxRootAt(nil, tk.block.Time()) {
+		t.Fatalf("empty lag block: frame body %v, tx root %x", body.IsFrameBody(), tk.block.TxHash())
+	}
+	if tk.block.TxHash() != block.BodyTxRoot(body, tk.block.Time()) {
+		t.Fatal("tx root does not follow the body rule the verifier applies")
 	}
 }

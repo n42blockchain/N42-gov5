@@ -272,8 +272,8 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	if err := checkStaticHeader(bc, hdr, parent); err != nil {
 		return false, err
 	}
-	if got, want := hdr.TxHash, block.FrameTxRoot(body.FrameHashes); got != want {
-		return false, fmt.Errorf("availability: block %d transactions root %x is not its frame list's %x", number, got[:8], want[:8])
+	if got, want := hdr.TxHash, block.BodyTxRoot(body, hdr.Time); got != want {
+		return false, fmt.Errorf("availability: block %d transactions root %x is not its body's %x", number, got[:8], want[:8])
 	}
 	if err := bc.ResolveFrames(blk); err != nil {
 		return true, err

@@ -895,12 +895,10 @@ func (h *HotStuff) AssembleWithoutExecution(chain consensus.ChainHeaderReader, h
 			header.RequestsHash = &rq
 		}
 	}
-	b := block.NewFrameBlockFromReceipt(header, frameHashes, nil, nil, nil)
-	body, ok := b.Body().(*block.Body)
-	if !ok || b.TxHash() != block.FrameTxRoot(frameHashes) {
-		return nil, errors.New("assemble: frame block lost its frame root")
+	b := block.NewLaggedBlock(header, frameHashes, frameData)
+	if b.TxHash() != block.BodyTxRoot(b.Body().(*block.Body), b.Time()) {
+		return nil, errors.New("assemble: block transactions root does not follow its body")
 	}
-	body.FrameData = frameData
 	return b, nil
 }
 

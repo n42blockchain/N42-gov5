@@ -297,6 +297,26 @@ func NewFrameBlockFromReceipt(h IHeader, frameHashes []types.Hash, txs []*transa
 	return blk
 }
 
+// NewLaggedBlock assembles a block a leader proposes without executing it
+// (deferred depth k > 1): the header already carries its lagged execution
+// fields. With frames it is a frame block (TxHash = FrameTxRoot, the
+// transactions resolved from the frames when it executes); with none it is
+// an ordinary empty block (TxHash = TxRootAt of no transactions), exactly as
+// the executing build assembles an empty block and as every verifier reads
+// it: a body without frame hashes is not a frame body (Body.IsFrameBody,
+// BodyTxRoot). S92: the lag build stamped FrameTxRoot of zero frames
+// (keccak of nothing) and every follower rejected the empty block.
+func NewLaggedBlock(h *Header, frameHashes []types.Hash, frameData [][]byte) *Block {
+	if len(frameHashes) == 0 {
+		hc := CopyHeader(h)
+		hc.frameTxRoot = nil
+		return NewBlockFromReceipt(hc, nil, nil, nil, nil).(*Block)
+	}
+	b := NewFrameBlockFromReceipt(h, frameHashes, nil, nil, nil).(*Block)
+	b.body.FrameData = frameData
+	return b
+}
+
 // FrameTxRoot is the transactions root of a frame-referenced body:
 // keccak256 over the concatenated 32-byte frame hashes, in body order. A
 // frame hash commits to every byte of its frame (header and payload), so
