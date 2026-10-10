@@ -40,7 +40,9 @@ import (
 var transferFastPath = os.Getenv("N42_TRANSFER_FAST_PATH") != "0"
 
 // fastTransfers counts the transactions the fast path applied (process
-// lifetime; tests and diagnostics).
+// lifetime; tests and diagnostics). A worker counts into its scratch and
+// adds the total here when it is done (flush): one shared atomic add per
+// transaction was a cache line every worker bounced.
 var fastTransfers atomic.Uint64
 
 // fastTransferScratch holds a worker's per-transaction values for the fast
@@ -49,6 +51,15 @@ var fastTransfers atomic.Uint64
 type fastTransferScratch struct {
 	mgval, balanceCheck, zero, tip, amount, burn uint256.Int
 	result                                       ExecutionResult
+	applied                                      uint64 // not yet added to fastTransfers
+}
+
+// flush adds the scratch's applied count to fastTransfers.
+func (sc *fastTransferScratch) flush() {
+	if sc.applied != 0 {
+		fastTransfers.Add(sc.applied)
+		sc.applied = 0
+	}
 }
 
 // tryFastTransfer applies msg as a plain transfer when it is one. It returns
@@ -98,6 +109,7 @@ func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.
 	}
 	if sc == nil {
 		sc = new(fastTransferScratch)
+		defer sc.flush()
 	}
 	mgval, balanceCheck := &sc.mgval, &sc.balanceCheck
 	mgval.SetUint64(gas)
@@ -163,7 +175,7 @@ func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.
 		burnAmount.Mul(burnAmount, blockCtx.BaseFee)
 		creditFeeTo(ibs, sink, *chainCfg.Eip1559FeeCollector, burnAmount)
 	}
-	fastTransfers.Add(1)
+	sc.applied++
 	sc.result = ExecutionResult{UsedGas: gas, BlockGasUsed: gas}
 	return &sc.result, true
 }

@@ -23,8 +23,10 @@
 package parallel
 
 import (
+	"encoding/binary"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
@@ -71,9 +73,13 @@ type versionedValue struct {
 }
 
 // mvEntry holds all versions for one location, sorted by txIndex ascending.
+// key and hash are set before the entry is published in its shard's table
+// and never change.
 type mvEntry struct {
 	mu       sync.RWMutex
 	versions []versionedValue
+	key      LocationKey
+	hash     uint64
 }
 
 // MVS (Multi-Version Store) is the central data structure for Block-STM.
@@ -84,54 +90,135 @@ type MVS struct {
 	shards [mvsShards]mvsShard
 }
 
-// mvsShards splits the location map so 32 workers do not serialise on one
-// reader count: a single RWMutex's RLock/RUnlock is an atomic add on a
-// shared cache line, and it was the executor's hottest instruction in
-// round 35f's profile.
+// mvsShards splits the location index so inserts of new locations rarely
+// meet. Lookups take no lock at all: each shard is an insert-only
+// open-addressing table read with atomic loads. The shard RWMutex it
+// replaces cost every lookup an atomic add on the reader count's cache line
+// (two shards shared a line), 13% of the 163k-transfer exec wave in the P3b
+// profile, and its writers blocked the readers queued behind them.
 const mvsShards = 256
 
+// mvsShardSlots is a shard table's initial size (a power of two).
+const mvsShardSlots = 64
+
 type mvsShard struct {
-	mu      sync.RWMutex
-	entries map[LocationKey]*mvEntry
+	mu  sync.Mutex // serialises inserts and table growth; lookups skip it
+	tab atomic.Pointer[mvTable]
+	n   int // entries in tab, under mu
+	_   [40]byte
+}
+
+// mvTable is an insert-only linear-probing table. A slot, once set, never
+// changes; growth builds a new table under the shard's mutex and publishes
+// it whole. A lookup that loaded the old table may miss a location inserted
+// after the swap, which orders the read before that write -- as a read that
+// took the lock first would have been; Block-STM validation catches it like
+// any read that raced a lower transaction's write.
+type mvTable struct {
+	mask  uint64
+	slots []atomic.Pointer[mvEntry]
+}
+
+func newMVTable(size int) *mvTable {
+	return &mvTable{mask: uint64(size - 1), slots: make([]atomic.Pointer[mvEntry], size)}
+}
+
+// find returns the entry for key, or nil.
+func (t *mvTable) find(key *LocationKey, h uint64) *mvEntry {
+	for i := h & t.mask; ; i = (i + 1) & t.mask {
+		e := t.slots[i].Load()
+		if e == nil {
+			return nil
+		}
+		if e.hash == h && e.key == *key {
+			return e
+		}
+	}
+}
+
+// place stores e in its first free slot (the caller holds the shard mutex
+// and has checked e's key is absent).
+func (t *mvTable) place(e *mvEntry) {
+	for i := e.hash & t.mask; ; i = (i + 1) & t.mask {
+		if t.slots[i].Load() == nil {
+			t.slots[i].Store(e)
+			return
+		}
+	}
+}
+
+// each calls fn for every entry in the table.
+func (t *mvTable) each(fn func(e *mvEntry)) {
+	for i := range t.slots {
+		if e := t.slots[i].Load(); e != nil {
+			fn(e)
+		}
+	}
 }
 
 // NewMVS creates a new empty multi-version store.
 func NewMVS() *MVS {
 	m := &MVS{}
 	for i := range m.shards {
-		m.shards[i].entries = make(map[LocationKey]*mvEntry)
+		m.shards[i].tab.Store(newMVTable(mvsShardSlots))
 	}
 	return m
 }
 
-// shard picks the shard for a key from address, field and slot bytes.
-func (m *MVS) shard(key LocationKey) *mvsShard {
-	h := uint64(key.Address[0])<<8 | uint64(key.Address[19])
-	h ^= uint64(key.Address[7])<<16 | uint64(key.Address[13])<<24
-	h ^= uint64(key.Field) << 5
-	h ^= uint64(key.Slot[0]) | uint64(key.Slot[31])<<8 | uint64(key.Slot[15])<<16
+// locationHash hashes every byte of a location key. The top byte picks the
+// shard, the low bits the table slot.
+func locationHash(key *LocationKey) uint64 {
+	a := &key.Address
+	h := binary.LittleEndian.Uint64(a[0:8])*0x9E3779B97F4A7C15 ^
+		binary.LittleEndian.Uint64(a[8:16])*0xC2B2AE3D27D4EB4F ^
+		uint64(binary.LittleEndian.Uint32(a[16:20]))*0x165667B19E3779F9 ^
+		uint64(key.Field)*0xD6E8FEB86659FD93
+	s := &key.Slot
+	h ^= binary.LittleEndian.Uint64(s[0:8])*0xFF51AFD7ED558CCD ^
+		binary.LittleEndian.Uint64(s[8:16])*0xC4CEB9FE1A85EC53 ^
+		binary.LittleEndian.Uint64(s[16:24])*0x94D049BB133111EB ^
+		binary.LittleEndian.Uint64(s[24:32])*0xBF58476D1CE4E5B9
+	h ^= h >> 31
 	h *= 0x9E3779B97F4A7C15
-	return &m.shards[(h>>56)%mvsShards]
+	h ^= h >> 29
+	return h
+}
+
+// shard picks the shard for a key hash.
+func (m *MVS) shard(h uint64) *mvsShard {
+	return &m.shards[h>>56]
+}
+
+// lookup returns the entry for key, or nil, without taking a lock.
+func (m *MVS) lookup(key *LocationKey) *mvEntry {
+	h := locationHash(key)
+	return m.shard(h).tab.Load().find(key, h)
 }
 
 // getOrCreateEntry returns the mvEntry for a key, creating it if needed.
 func (m *MVS) getOrCreateEntry(key LocationKey) *mvEntry {
-	sh := m.shard(key)
-	sh.mu.RLock()
-	e, ok := sh.entries[key]
-	sh.mu.RUnlock()
-	if ok {
+	h := locationHash(&key)
+	sh := m.shard(h)
+	if e := sh.tab.Load().find(&key, h); e != nil {
 		return e
 	}
 
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-	// Double-check after acquiring write lock.
-	if e, ok := sh.entries[key]; ok {
+	// Double-check after acquiring the mutex: the table may have grown.
+	t := sh.tab.Load()
+	if e := t.find(&key, h); e != nil {
 		return e
 	}
-	e = &mvEntry{}
-	sh.entries[key] = e
+	if (sh.n+1)*4 > len(t.slots)*3 {
+		g := newMVTable(len(t.slots) * 2)
+		t.each(g.place)
+		sh.tab.Store(g)
+		t = g
+	}
+	e := &mvEntry{key: key, hash: h}
+	t.place(e)
+	sh.n++
 	return e
 }
 
@@ -193,11 +280,8 @@ func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta
 // incarnation, found) and the sum of the balance deltas written between
 // that full write (or the start) and txIndex, nil when there are none.
 func (m *MVS) ReadAccount(key LocationKey, txIndex int) (full []byte, fullTx int, fullInc uint32, found bool, delta *uint256.Int) {
-	sh := m.shard(key)
-	sh.mu.RLock()
-	e, ok := sh.entries[key]
-	sh.mu.RUnlock()
-	if !ok {
+	e := m.lookup(&key)
+	if e == nil {
 		return nil, 0, 0, false, nil
 	}
 
@@ -227,11 +311,8 @@ func (m *MVS) ReadAccount(key LocationKey, txIndex int) (full []byte, fullTx int
 // Returns (value, writerTxIndex, writerIncarnation, true) if found,
 // or (nil, 0, 0, false) if no preceding transaction has written to this location.
 func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
-	sh := m.shard(key)
-	sh.mu.RLock()
-	e, ok := sh.entries[key]
-	sh.mu.RUnlock()
-	if !ok {
+	e := m.lookup(&key)
+	if e == nil {
 		return nil, 0, 0, false
 	}
 
@@ -265,11 +346,8 @@ func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
 
 // Delete removes all writes by txIndex from the store (used before re-execution).
 func (m *MVS) Delete(key LocationKey, txIndex int) {
-	sh := m.shard(key)
-	sh.mu.RLock()
-	e, ok := sh.entries[key]
-	sh.mu.RUnlock()
-	if !ok {
+	e := m.lookup(&key)
+	if e == nil {
 		return
 	}
 
@@ -293,76 +371,66 @@ func (m *MVS) Delete(key LocationKey, txIndex int) {
 // sum as delta.
 func (m *MVS) ApplyAll(numTxs int, fn func(key LocationKey, value []byte, delta *uint256.Int) error) error {
 	for i := range m.shards {
-		sh := &m.shards[i]
-		sh.mu.RLock()
-		for key, e := range sh.entries {
+		t := m.shards[i].tab.Load()
+		for j := range t.slots {
+			e := t.slots[j].Load()
+			if e == nil {
+				continue
+			}
 			e.mu.RLock()
 			// Find the latest version with txIndex < numTxs.
 			idx := sort.Search(len(e.versions), func(i int) bool {
 				return e.versions[i].txIndex >= numTxs
 			})
-			if idx > 0 {
-				var delta *uint256.Int
-				var val []byte
-				fullFound := false
-				for i := idx - 1; i >= 0; i-- {
-					v := e.versions[i]
-					if v.delta != nil {
-						if delta == nil {
-							delta = new(uint256.Int)
-						}
-						delta.Add(delta, v.delta)
-						continue
-					}
-					// Copy value while holding the lock to avoid data race.
-					if v.value != nil {
-						val = make([]byte, len(v.value))
-						copy(val, v.value)
-					}
-					fullFound = true
-					break
-				}
+			if idx == 0 {
 				e.mu.RUnlock()
-				if fullFound {
-					if err := fn(key, composeAccount(val, delta), nil); err != nil {
-						sh.mu.RUnlock()
-						return err
+				continue
+			}
+			var delta *uint256.Int
+			var val []byte
+			fullFound := false
+			for i := idx - 1; i >= 0; i-- {
+				v := e.versions[i]
+				if v.delta != nil {
+					if delta == nil {
+						delta = new(uint256.Int)
 					}
-				} else if err := fn(key, nil, delta); err != nil {
-					sh.mu.RUnlock()
+					delta.Add(delta, v.delta)
+					continue
+				}
+				// Copy value while holding the lock to avoid data race.
+				if v.value != nil {
+					val = make([]byte, len(v.value))
+					copy(val, v.value)
+				}
+				fullFound = true
+				break
+			}
+			e.mu.RUnlock()
+			if fullFound {
+				if err := fn(e.key, composeAccount(val, delta), nil); err != nil {
 					return err
 				}
-			} else {
-				e.mu.RUnlock()
+			} else if err := fn(e.key, nil, delta); err != nil {
+				return err
 			}
 		}
-		sh.mu.RUnlock()
 	}
 	return nil
 }
 
 // DeleteAll removes all writes by txIndex across all locations.
-// We collect entries under RLock first, then release it before locking
-// individual entries to prevent deadlock with getOrCreateEntry's Lock.
 func (m *MVS) DeleteAll(txIndex int) {
-	var snapshot []*mvEntry
 	for i := range m.shards {
-		sh := &m.shards[i]
-		sh.mu.RLock()
-		for _, e := range sh.entries {
-			snapshot = append(snapshot, e)
-		}
-		sh.mu.RUnlock()
-	}
-
-	for _, e := range snapshot {
-		e.mu.Lock()
-		idx := sort.Search(len(e.versions), func(i int) bool {
-			return e.versions[i].txIndex >= txIndex
+		m.shards[i].tab.Load().each(func(e *mvEntry) {
+			e.mu.Lock()
+			idx := sort.Search(len(e.versions), func(i int) bool {
+				return e.versions[i].txIndex >= txIndex
+			})
+			if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
+				e.versions = append(e.versions[:idx], e.versions[idx+1:]...)
+			}
+			e.mu.Unlock()
 		})
-		if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
-			e.versions = append(e.versions[:idx], e.versions[idx+1:]...)
-		}
-		e.mu.Unlock()
 	}
 }
