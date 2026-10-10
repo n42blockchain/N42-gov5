@@ -122,6 +122,15 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 				log.Info("fetch-on-miss: hash mismatch", "want", hash.Hex()[:12], "got", blk.Hash().Hex()[:12])
 				return // peer returned the wrong block
 			}
+			// Every connected peer answers the same request with its own copy;
+			// importing them all decodes the block once per copy, and each
+			// copy waits on the chain lock holding its decoded transactions
+			// (S97: 108 such goroutines on a thrashing node). One import per
+			// hash at a time; a later retry comes through the rate limit.
+			if _, busy := s.fetchAligning.LoadOrStore(hash, struct{}{}); busy {
+				return
+			}
+			defer s.fetchAligning.Delete(hash)
 			s.observeCatchUpBlock(hash, blk.Number64().Uint64())
 			// A one-shot insert is not enough: the proposal block's parent may
 			// be a QC branch this node never applied. Chain-align exactly like
