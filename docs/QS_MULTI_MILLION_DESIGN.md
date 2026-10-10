@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P2a (vote on availability, lag-2 execution) runs since S93 but throughput is the serial import (~179k warm); heap growth past GOMEMLIMIT at 310k-tx blocks; S94 profiles it at 163k blocks, then stage pipelining.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P2a (vote on availability, lag-2 execution) measured at S95: 206k execTPS at 163k-tx blocks, serial import 670 ms, lag 2, no retention; P2a2 (stage pipelining across blocks) next.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -526,6 +526,10 @@ recovery fully at admission (16+ workers), the transfer fast path (P3,
 exec 744 ms -> ~100 ms), then root and write (P4). The heap growth needs
 a profile before any of that is measured: S94 reruns P2a at 163k-tx
 blocks with node3 heap profiles captured during the flood.
+
+### S95 result and P2a2 plan
+
+S95 (35zzzbu, n42-r124) gave a valid warm-up win1 at 163k-tx blocks: execTPS 206,467, blockTime 0.789 s, lag flat at 2, 0 skips, with node3's import at 669-710 ms (exec 358-395 + root 101-113 + write 138-163 ms); the available-block cache no longer shows in the heap and MemAvailable stayed above 25 GB. The P2a gate reads lag <= 2 PASS, cycle <= 150 ms FAIL (670 ms, the serial per-block import) and execTPS >= 300k FAIL (206k), so the P2a mechanism (votes before execution, lag 2, no retention) is closed and the bound is the serial import. win2 (84k) is invalid because the generators ran dry (6M txs each) and the node heaps reached the 10 GiB GOMEMLIMIT (largest heap 8.6 GB: ingest readFrame 2.1 GB, decoded transactions 3.6 GB, qmdb map index 0.75 GB), and the round was aborted at the end of A1 by a checker race on a shutdown BAD BLOCK (`db closed`), not an import failure. P2a2 overlaps the execution of block N+1 with the state root and write of block N inside the lag executor: exec N+1 reads the in-memory post-state of N before N is rooted and persisted, N's write lands before N+1's, and a failure of N discards N+1's speculative execution. The expected cycle is max(exec, root+write), about 400 ms at 163k-tx blocks, i.e. about 400k execTPS. In the same step the per-node decoded-transaction memory is cut (the 16-block block cache is about 2.3 GB at 163k txs and the frame store holds 2 GiB of raw bytes) so heaps sit well under GOMEMLIMIT; the harness fixes the checker race and the generator supply before S96.
 
 ## 6. What this does not claim
 
