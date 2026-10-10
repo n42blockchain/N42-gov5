@@ -139,3 +139,27 @@ func TestAvailableCommitIsNotReportedUnexecuted(t *testing.T) {
 		t.Fatal("probe")
 	}
 }
+
+// TestLagGateZeroParentResumes: the first views after a reseed have no
+// LockedQC block (zero parent: build on the canonical head). A view parked
+// on the lag gate with that zero parent resumes when the awaited block
+// imports, and the zero parent is never fetched.
+func TestLagGateZeroParentResumes(t *testing.T) {
+	s, producer, fetcher := newLeaderService(t)
+	target := hsTWriteHeader(t, s, &block.Header{Number: uint256.NewInt(7), Difficulty: uint256.NewInt(0)})
+	var executed atomic.Bool
+	s.SetLagGate(func(types.Hash) (bool, types.Hash, error) { return executed.Load(), target, nil })
+	s.triggerBlockProduction(s.engine.Engine().CurrentView(), types.Hash{})
+	if producer.count() != 0 || len(fetcher.fetched) != 0 {
+		t.Fatal("produced or fetched before the lagged block executed")
+	}
+	executed.Store(true)
+	s.NotifyBlockImported(target, types.Hash{})
+	deadline := time.Now().Add(2 * time.Second)
+	for producer.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if producer.count() != 1 || producer.parents[0] != (types.Hash{}) {
+		t.Fatalf("zero-parent view did not resume: %v", producer.parents)
+	}
+}

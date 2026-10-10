@@ -271,15 +271,16 @@ func (s *Service) SetLagGate(fn func(parent types.Hash) (ready bool, waitFor typ
 func (s *Service) deferProductionUntil(view ViewNumber, parentHash, waitFor types.Hash) {
 	s.pendingMu.Lock()
 	s.deferredProduce.view, s.deferredProduce.parent, s.deferredProduce.waitFor = view, parentHash, waitFor
+	s.deferredProduce.lagParked = true
 	s.pendingMu.Unlock()
 	if s.lagGate == nil {
 		return
 	}
 	if ready, _, err := s.lagGate(parentHash); err == nil && ready {
 		s.pendingMu.Lock()
-		raced := s.deferredProduce.parent == parentHash && s.deferredProduce.view == view
+		raced := s.deferredProduce.lagParked && s.deferredProduce.parent == parentHash && s.deferredProduce.view == view
 		if raced {
-			s.deferredProduce.parent, s.deferredProduce.waitFor = types.Hash{}, types.Hash{}
+			s.deferredProduce.parent, s.deferredProduce.waitFor, s.deferredProduce.lagParked = types.Hash{}, types.Hash{}, false
 		}
 		s.pendingMu.Unlock()
 		if raced {
@@ -296,10 +297,12 @@ func (s *Service) resumeDeferredProduction(hash types.Hash, why string) {
 		return
 	}
 	s.pendingMu.Lock()
-	match := s.deferredProduce.parent == hash || (s.deferredProduce.waitFor == hash && s.deferredProduce.parent != (types.Hash{}))
+	// A lag-parked view may extend the zero parent (no LockedQC block yet:
+	// the canonical head), so it is matched on its own flag.
+	match := s.deferredProduce.parent == hash || (s.deferredProduce.lagParked && s.deferredProduce.waitFor == hash)
 	view, parent := s.deferredProduce.view, s.deferredProduce.parent
 	if match {
-		s.deferredProduce.parent, s.deferredProduce.waitFor = types.Hash{}, types.Hash{}
+		s.deferredProduce.parent, s.deferredProduce.waitFor, s.deferredProduce.lagParked = types.Hash{}, types.Hash{}, false
 	}
 	s.pendingMu.Unlock()
 	if !match || s.engine == nil {
@@ -439,7 +442,7 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 			logGates("lag-wait")
 			log.Info("hotstuff: leader waits for its lagged execution", "view", uint64(view),
 				"parent", parentHash.Hex()[:12], "waitFor", waitFor.Hex()[:12])
-			if waitFor == parentHash && s.blockFetcher != nil && !s.availableHere(parentHash) {
+			if waitFor == parentHash && parentHash != (types.Hash{}) && s.blockFetcher != nil && !s.availableHere(parentHash) {
 				s.blockFetcher.FetchBlockByHash(parentHash)
 			}
 			s.deferProductionUntil(view, parentHash, waitFor)
@@ -538,7 +541,8 @@ type Service struct {
 		parent types.Hash
 		// waitFor (P2a lag gate): the block whose execution the view waits
 		// for, N-k for height N; zero outside lag mode.
-		waitFor types.Hash
+		waitFor   types.Hash
+		lagParked bool
 	}
 	// lagGate (P2a): the leader gate under deferred depth k > 1; nil keeps
 	// the committed-parent and applied-parent gates.

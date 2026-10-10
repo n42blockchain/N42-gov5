@@ -191,17 +191,28 @@ func (bc *BlockChain) LaggedExecutedResult(tx kv.Getter, header *block.Header, o
 	if err != nil {
 		return rawdb.ExecutedResult{}, nil, err
 	}
-	r, err := ExecutedResultOfHeader(bc.chainConfig, tx, target)
+	r, err := executedOrSeededResult(bc.chainConfig, tx, target)
 	return r, target, err
 }
 
 // LagReady is the leader gate under deferred execution depth k > 1: a node
 // may propose the child of parent (height N) once it has executed N-k.
 // waitFor names the block whose execution it waits for (the parent itself
-// when even its header is unknown).
+// when even its header is unknown). A zero parent is the consensus
+// service's "no LockedQC block yet" (the genesis QC: the first views after
+// a reseed or a consensus-state reset), which the builder resolves to the
+// canonical head; so does the gate (S91: it waited on the zero hash for
+// ever and the fleet built nothing).
 func (bc *BlockChain) LagReady(parent types.Hash) (ready bool, waitFor types.Hash, err error) {
 	if bc.ChainDB == nil {
 		return true, types.Hash{}, nil
+	}
+	if parent == (types.Hash{}) {
+		cur := bc.currentBlock.Load()
+		if cur == nil {
+			return true, types.Hash{}, nil
+		}
+		parent = cur.Hash()
 	}
 	err = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
 		var ph *block.Header
@@ -228,7 +239,7 @@ func (bc *BlockChain) LagReady(parent types.Hash) (ready bool, waitFor types.Has
 			waitFor = parent
 			return nil
 		}
-		if _, rerr := ExecutedResultOfHeader(bc.chainConfig, tx, target); rerr != nil {
+		if _, rerr := executedOrSeededResult(bc.chainConfig, tx, target); rerr != nil {
 			waitFor = target.Hash()
 			return nil
 		}
@@ -278,7 +289,7 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	// follower one block behind usually has), otherwise at import, where a
 	// mismatch is the equivocation the import reports.
 	if target, terr := deferredTarget(hdr, parent, lookup); terr == nil {
-		if want, rerr := ExecutedResultOfHeader(bc.chainConfig, tx, target); rerr == nil {
+		if want, rerr := executedOrSeededResult(bc.chainConfig, tx, target); rerr == nil {
 			if err := compareDeferredResult(hdr, want); err != nil {
 				reportLaggedEquivocation(hdr, target, err)
 				return false, err
