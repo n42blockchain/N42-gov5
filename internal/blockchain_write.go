@@ -147,6 +147,19 @@ func checkQMDBLeaderSealParent(tx kv.Tx, blockNumber uint64, parentHash types.Ha
 	return nil
 }
 
+// blockWritePhases is one writeBlockWithState's breakdown, the fields of the
+// "blockwrite phases" line (benchmarks read it through blockWritePhasesHook).
+type blockWritePhases struct {
+	Begin, Receipts, Block, Evidence, State time.Duration
+	ChgTruncate, ChgSets, ChgHistory, Root2 time.Duration
+	QMDBFlush, QMDBMeta, Snapshot, Commit   time.Duration
+	Post, Total                             time.Duration
+}
+
+// blockWritePhasesHook, when set (benchmarks), receives every write's
+// breakdown on the writing goroutine.
+var blockWritePhasesHook func(number uint64, ph blockWritePhases)
+
 // writeBlockWithState persists block, receipts, state, and reward data, then
 // decides whether a reorg is needed. Returns the resulting WriteStatus.
 func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, retErr error) {
@@ -651,6 +664,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		// by this is the amplification per changed account.
 		if nAccts > 0 || nSlots > 0 {
 			fields = append(fields, "accts", nAccts, "slots", nSlots)
+		}
+		if fn := blockWritePhasesHook; fn != nil {
+			fn(blockNumber.Uint64(), blockWritePhases{
+				Begin: dBegin, Receipts: dReceipts, Block: dBlock, Evidence: dEvidence,
+				State: dState, ChgTruncate: dChgTruncate, ChgSets: dChgSets, ChgHistory: dChgHistory,
+				Root2: dRoot2, QMDBFlush: dQMDBFlush, QMDBMeta: dQMDBMeta, Snapshot: dSnapshot,
+				Commit: dCommit, Post: dPost, Total: dTotal,
+			})
 		}
 		if dTotal >= slowBlockThreshold {
 			log.Info("blockwrite phases", fields...)

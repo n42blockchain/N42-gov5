@@ -150,6 +150,21 @@ func (r *QMDBRootComputer) LookupLocked(keyHash qmdb.Hash, cold qmdb.Getter) (va
 	return r.t.GetVia(keyHash, cr)
 }
 
+// ComputeRootPhases is the breakdown of the most recent ComputeRoot: the wait
+// for the tree's exclusive lock, building and sorting the op list, ApplyOps
+// (index probes, appends, leaf hashing and the twig fold) and the final
+// upper-tree fold in Root.
+type ComputeRootPhases struct {
+	Ops                            int
+	LockWait, Collect, Apply, Fold time.Duration
+}
+
+var lastComputeRoot atomic.Pointer[ComputeRootPhases]
+
+// LastComputeRootPhases returns the breakdown of the most recent ComputeRoot
+// in this process (nil before the first).
+func LastComputeRootPhases() *ComputeRootPhases { return lastComputeRoot.Load() }
+
 // qmdbLookupWaitNanos accumulates time Lookup spent waiting for the tree's
 // owner (round 28 diagnostic: the leader's build against the import's
 // ComputeRoot/FlushTo at 163k-transaction blocks).
@@ -805,8 +820,11 @@ func (r *QMDBRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
+	tLock := time.Now()
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	dLock := time.Since(tLock)
+	tOps := time.Now()
 	// An op with a nil Value is a delete (ApplyOps' convention); every
 	// live value here is non-empty (an encoded account or a 32-byte word).
 	ops := make([]qmdb.Op, 0, len(accounts)+len(storage))
@@ -835,6 +853,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 	sort.Slice(ops, func(i, j int) bool {
 		return bytes.Compare(ops[i].KeyHash[:], ops[j].KeyHash[:]) < 0
 	})
+	dOps := time.Since(tOps)
 	if r.undoRecording {
 		r.t.StartUndoRecording()
 	}
@@ -853,6 +872,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 	dApply := time.Since(tApply)
 	tFold := time.Now()
 	root := types.Hash(r.t.Root())
+	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: time.Since(tFold)})
 	// Split the two halves of a root computation.
 	//
 	// QMDB is a BINARY tree, not a Patricia trie: an entry is appended to the

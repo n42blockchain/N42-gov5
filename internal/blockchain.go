@@ -2642,6 +2642,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		//	      NOT of fillTx. proc is recov+prep+exec+root, i.e. all of Process.
 		//	valid ValidateState: receipt bloom + receipt root.
 		//	write writeBlockWithState in full; "blockwrite phases" breaks it down.
+		if fn := importPhasesHook; fn != nil {
+			fn(blockNumber.Uint64(), procPhases, dProcess, dValidate, dWrite, ahead != nil)
+		}
 		{
 			dTotal := dHdr + dBody + time.Since(tIter)
 			fields := []interface{}{
