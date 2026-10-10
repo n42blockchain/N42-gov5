@@ -2473,6 +2473,14 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		if ahead != nil {
 			aheadTaken = append(aheadTaken, ahead)
 		}
+		// Under deferred execution the write stores the block's executed
+		// result; its receipts part needs only the receipts, final once the
+		// ahead run collected them, so it is hashed while the state root runs.
+		deferredExec := bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(concreteHeader.Time)
+		bc.receiptsFuture = nil
+		if ahead != nil && deferredExec && ahead.run != nil {
+			bc.receiptsFuture = startReceiptsResult(bc.chainConfig, blockNumber.Uint64(), blk.Hash(), ahead.run.Receipts)
+		}
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk, ahead, func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
@@ -2562,6 +2570,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			// they could never be unwound and every later root would be
 			// silently shifted (observed live as disk/tree/cluster
 			// divergence). Peel them off with the in-memory undo record.
+			bc.receiptsFuture = nil
 			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
 			bc.lagPipeSettle(blk.Hash(), false)
 			if strings.Contains(err.Error(), "nonce too high") {
@@ -2594,11 +2603,16 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			}
 		}
 
+		if bc.receiptsFuture == nil && deferredExec {
+			// Serial path: hashed while the write's earlier tables land.
+			bc.receiptsFuture = startReceiptsResult(bc.chainConfig, blockNumber.Uint64(), blk.Hash(), receipts)
+		}
 		wstart := time.Now()
 		var status WriteStatus
 		if err = lagPipeInjectedFailure(blk.Hash()); err == nil {
 			status, err = bc.writeBlockWithState(blk, receipts, ibs, nopay)
 		}
+		bc.receiptsFuture = nil
 		if err != nil {
 			// writeBlockWithState rolled its tx back, but execution above already
 			// put this block's appends on the non-transactional live QMDB tree

@@ -541,7 +541,10 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				// derive it here as a follower does.
 				result, hinted := bc.takeExecutedResultHint(blk.Hash())
 				if !hinted || result.Root != root {
-					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
+					var ok bool
+					if result, ok = bc.receiptsFuture.resultFor(blk.Hash(), root, receipts); !ok {
+						result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
+					}
 				}
 				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
 					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)
