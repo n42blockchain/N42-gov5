@@ -23,9 +23,9 @@ import (
 // an empty block credited the coinbase on the balance from before the
 // parent's reward and every follower rejected it on the state root.
 type PostState struct {
-	accounts map[types.Address]*account.StateAccount // nil: removed by the block
-	storage  map[types.Address]map[types.Hash][]byte // nil value: slot is zero
-	wiped    map[types.Address]struct{}              // slots not listed read zero
+	accounts map[types.Address]*account.StateAccount       // nil or empty: absent after the block
+	storage  map[types.Address]map[types.Hash]*uint256.Int // nil or zero value: slot is zero
+	wiped    map[types.Address]struct{}                    // slots not listed read zero
 	code     map[types.Hash][]byte
 }
 
@@ -36,7 +36,7 @@ type PostState struct {
 func CapturePostState(sdb *IntraBlockState) *PostState {
 	ps := &PostState{
 		accounts: make(map[types.Address]*account.StateAccount, len(sdb.stateObjectsDirty)),
-		storage:  make(map[types.Address]map[types.Hash][]byte),
+		storage:  make(map[types.Address]map[types.Hash]*uint256.Int),
 		wiped:    make(map[types.Address]struct{}),
 		code:     make(map[types.Hash][]byte),
 	}
@@ -76,13 +76,13 @@ func CapturePostState(sdb *IntraBlockState) *PostState {
 		if len(wiped) == 0 && len(obj.dirtyKeys) == 0 {
 			continue
 		}
-		slots := make(map[types.Hash][]byte, len(wiped)+len(obj.dirtyKeys))
+		slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(obj.dirtyKeys))
 		for key := range wiped {
 			slots[key] = nil
 		}
 		for _, key := range obj.dirtyKeys {
 			v := obj.dirtyValue(key)
-			slots[key] = storageBytes(&v)
+			slots[key] = new(uint256.Int).Set(&v)
 		}
 		ps.storage[addr] = slots
 	}
@@ -90,8 +90,11 @@ func CapturePostState(sdb *IntraBlockState) *PostState {
 }
 
 // storageBytes encodes a slot the way the plain Storage table stores it: the
-// minimal big-endian bytes, nil for zero.
+// minimal big-endian bytes, nil for zero (or nil).
 func storageBytes(v *uint256.Int) []byte {
+	if v == nil {
+		return nil
+	}
 	bl := v.ByteLen()
 	if bl == 0 {
 		return nil
@@ -99,6 +102,13 @@ func storageBytes(v *uint256.Int) []byte {
 	b := make([]byte, bl)
 	v.WriteToSlice(b)
 	return b
+}
+
+// removed reports whether the block left addr absent (removed or empty):
+// all of its storage reads zero.
+func (ps *PostState) removed(addr types.Address) bool {
+	a, ok := ps.accounts[addr]
+	return ok && (a == nil || accountIsEmpty(a))
 }
 
 // Accounts reports how many accounts the snapshot holds (diagnostics).
@@ -124,7 +134,9 @@ func NewPostStateReader(post *PostState, base StateReader) *PostStateReader {
 
 func (r *PostStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	if a, ok := r.post.accounts[address]; ok {
-		if a == nil {
+		// An empty account is absent, as the store readers answer
+		// (emptyByPlainPolicy) and the root walk deletes its key.
+		if a == nil || accountIsEmpty(a) {
 			return nil, nil
 		}
 		c := new(account.StateAccount)
@@ -135,9 +147,12 @@ func (r *PostStateReader) ReadAccountData(address types.Address) (*account.State
 }
 
 func (r *PostStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	if r.post.removed(address) {
+		return nil, nil
+	}
 	if slots, ok := r.post.storage[address]; ok {
 		if v, hit := slots[*key]; hit {
-			return v, nil
+			return storageBytes(v), nil
 		}
 	}
 	if _, wiped := r.post.wiped[address]; wiped {
@@ -163,14 +178,18 @@ func (r *PostStateReader) ReadAccountCodeSize(address types.Address, codeHash ty
 // ForEachStorage merges the snapshot over the base enumeration: overlay slots
 // win, a wiped account contributes only its overlay slots.
 func (r *PostStateReader) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
+	if r.post.removed(addr) {
+		return nil
+	}
 	slots := r.post.storage[addr]
 	seen := make(map[types.Hash]struct{}, len(slots))
 	for key, v := range slots {
 		seen[key] = struct{}{}
-		if len(v) == 0 {
+		b := storageBytes(v)
+		if len(b) == 0 {
 			continue
 		}
-		if !f(key, v) {
+		if !f(key, b) {
 			return nil
 		}
 	}

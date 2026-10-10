@@ -39,8 +39,8 @@ import (
 // import is exec, then root, then write. When an available block N is
 // imported (by the executor or by another path under the chain lock), the
 // moment N's dirty set is final -- rewards applied, just before the root
-// computer runs (IntraBlockState.SetBeforeRootHook) -- N's post-state is
-// captured (state.CapturePostState, an immutable snapshot) and, if N's
+// computer runs (IntraBlockState.SetRootPostStateHook) -- N's post-state is
+// published (the root's own dirty set, an immutable snapshot) and, if N's
 // child is queued (available), the child's Block-STM execution starts on
 // its own goroutine; a child that becomes available later, while N is
 // still rooted or written, starts the moment it is queued
@@ -248,15 +248,16 @@ func (bc *BlockChain) lagPipeHook(blk block.IBlock, ibs *state.IntraBlockState) 
 	if !ok {
 		return
 	}
-	ibs.SetBeforeRootHook(func() {
+	ibs.SetRootPostStateHook(func(post *state.PostState) {
 		t0 := time.Now()
-		bc.lagPipePublish(hdr, state.CapturePostState(ibs))
+		bc.lagPipePublish(hdr, post)
 		lagPublishNanos.Store(int64(time.Since(t0)))
 	})
 }
 
 // lagPublishNanos is the duration of the most recent snapshot publication
-// (CapturePostState plus the child's launch), spent inside the state root.
+// (the child's launch; the snapshot itself is the root's dirty set), spent
+// inside the state root.
 var lagPublishNanos atomic.Int64
 
 // lagPipePublish records the post-state of the block being rooted now and
@@ -407,6 +408,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	prefetch := state.NewAccountPrefetch(state.LayerPostStates(layers, base))
 	ibs := state.New(prefetch)
 	ibs.SetAccountPrefetch(prefetch)
+	ibs.SetDetachedPendingCredits(true)
 	ibs.SetPostStateLayers(layers)
 	hdr := a.blk.Header().(*block.Header)
 	getHeader := func(hash types.Hash, number uint64) *block.Header {
