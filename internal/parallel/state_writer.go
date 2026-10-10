@@ -36,7 +36,14 @@ type ParallelStateWriter struct {
 	// address's balance. Set by the executor from the state's balance-read
 	// hook.
 	deltaEligible func(types.Address) bool
+	// slab, when set, holds the account encodings and deltas the writer
+	// records (SetSlab).
+	slab *ValueSlab
 }
+
+// SetSlab makes the writer record account encodings and balance deltas
+// from s, the worker's slab, instead of allocating each.
+func (w *ParallelStateWriter) SetSlab(s *ValueSlab) { w.slab = s }
 
 // SetDeltaEligible installs the predicate that lets UpdateAccountData record
 // a pure balance increase as a delta.
@@ -79,14 +86,10 @@ func (w *ParallelStateWriter) updateAccountData(address types.Address, original,
 		original.Initialised == acc.Initialised && acc.Balance.Gt(&original.Balance) && (pred == nil || pred(address)) {
 		var d uint256.Int
 		d.Sub(&acc.Balance, &original.Balance)
-		w.rw.RecordDeltaWrite(key, &d) // copies d
+		w.rw.Writes = append(w.rw.Writes, WriteDescriptor{Key: key, Delta: w.slab.cloneInt(&d)})
 		return nil
 	}
-	data, err := encodeAccount(acc)
-	if err != nil {
-		return err
-	}
-	w.rw.RecordWrite(key, data)
+	w.rw.RecordWrite(key, w.slab.encodeAccount(acc))
 	return nil
 }
 

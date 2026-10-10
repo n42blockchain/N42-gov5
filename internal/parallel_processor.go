@@ -503,6 +503,10 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		wc.reader.ReuseAccountBuffer()
 		wc.ibs = state.New(wc.reader)
 		wc.writer = parallel.NewParallelStateWriter(nil)
+		// The worker's recorded values come from one slab.
+		slab := parallel.NewValueSlab()
+		wc.reader.SetSlab(slab)
+		wc.writer.SetSlab(slab)
 		// Every explicit balance read (GetBalance, Empty) of a transaction
 		// is recorded: an account it credits without ever observing gets a
 		// delta write, and its read of that account (for code, nonce) is
