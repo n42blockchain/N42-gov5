@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); S88 gate round invalid (unbounded frame store admission); S89 bounded admission next.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); S88/S89 gate rounds invalid (unbounded, then unordered admission); S90 in-order admission next.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -431,6 +431,36 @@ at funding (need 252 ETH, had 165-184), so the harness must size the warm-up
 decay to the summed per-leg funding, not to one leg. Predicted: skipped
 < 1% of frame-block txs, occupancy >= 95%, busy retries > 0 on every
 generator, no "frames unavailable" line in B legs. Gate unchanged.
+
+**S89 result (35zzzbo, ROUND ABORTED 01:56 ET 2026-10-10): INVALID for the
+gate; bounded admission works, ordering does not.** The store held at
+4 GiB / 80,891 frames, answered Busy, never evicted an un-included frame,
+and consensus was clean (no "frames unavailable", no view timeout, all 7
+nodes at the same committedQC). But 95-100% of frame-block transactions
+were still skipped, every one of them futureNonce (staleNonce, cannotPay,
+badSig: 0). Mechanism: a full store makes admission a lottery among the
+Busy-retrying frames of eight generators with four frames in flight each.
+txflood's `-conc` window slides past a frame that is still Busy, so a
+generator's frames enter the store with gaps; arrival-order fill then packs
+frames whose predecessor (same senders, nonce-1) is missing. The first
+~18 frames of each block execute (gasUsed 122-184M of a 3,423M target),
+the rest skip. The round aborted on the harness memory line (MemAvailable
+19 GB): seven nodes at 12.5-13.9 GB RSS, the 4 GiB store inside each
+GOMEMLIMIT heap, not a leak. measure-tps.sh prints 0.0% occupancy on
+frame blocks, so the gate's occupancy term is not measurable yet.
+
+**S90 plan (35zzzbp): in-order admission.** Ordering is the gateway's
+responsibility and the node checks it. txflood sends frame k+1 to a peer
+only after that peer accepted frame k (per-peer sequential stream; `-conc`
+bounds concurrency across peers, not frames of one peer); a Busy frame is
+retried in place. If the FRM1 header carries a per-gateway sequence, the
+node admits only seq == last accepted + 1 per gateway and answers Busy
+otherwise (duplicates still 1); if it does not, the wire format is left
+alone and the generator rule is the whole fix. Store 2 GiB (40k frames,
+~120 B blocks of buffer; saves 14 GB over the fleet). measure-tps.sh
+computes occupancy from header gasUsed/gasLimit over RPC for every block.
+Predicted: futureNonce skips < 1%, occupancy >= 95% on B legs, B mean the
+first real P1 number. Gate unchanged.
 
 ## 6. What this does not claim
 
