@@ -185,6 +185,40 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	return acc, nil
 }
 
+// ReadAccountIgnoringBalance is ReadAccountData for a caller whose outputs
+// cannot depend on the account's balance (it never observes the balance
+// and writes the account at most as a delta). While no transaction has
+// stored a full value at the account, it returns the base account without
+// the preceding transactions' deltas -- the balance is stale, every other
+// field exact -- and records the read as a balance-insensitive base read,
+// skipping the version scan, the delta sum and the composed encoding.
+// Otherwise it is ReadAccountData. The read is recorded with
+// IgnoreBalance set; the caller must honour it.
+func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) (*account.StateAccount, error) {
+	key := LocationKey{Address: address, Field: FieldBalance}
+	if e := r.mvs.lookup(&key); e.noFullWrites() {
+		base, enc, err := r.baseAccount(address)
+		if err != nil {
+			r.rw.RecordRead(key, -1, 0, true)
+			return nil, err
+		}
+		// An account absent from the base exists once a delta credits it:
+		// that takes the composing read below.
+		if base != nil {
+			r.recordAccountRead(e, key, -1, 0, true, enc, enc, false)
+			r.rw.Reads[len(r.rw.Reads)-1].IgnoreBalance = true
+			acc := r.newAccount()
+			*acc = *base
+			return acc, nil
+		}
+	}
+	acc, err := r.ReadAccountData(address)
+	if err == nil {
+		r.rw.Reads[len(r.rw.Reads)-1].IgnoreBalance = true
+	}
+	return acc, err
+}
+
 // recordAccountRead records an account read with the store entry it was
 // served from (nil when the location had none yet): validation and the
 // transaction's own write to the account then skip the lookup.

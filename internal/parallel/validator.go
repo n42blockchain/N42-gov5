@@ -79,6 +79,14 @@ func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 	if e == nil {
 		e = mvs.lookup(&rd.Key)
 	}
+	// A balance-insensitive read of an account present in the base stays
+	// valid while no transaction stored a full value there: deltas move
+	// only the balance (they can create an absent account, hence the
+	// base). The store is quiescent during validation, so the count is
+	// exact.
+	if rd.IgnoreBalance && rd.FromBase && rd.Base != nil && e.noFullWrites() {
+		return true
+	}
 	full, fullTx, fullInc, found, hasDelta := e.readAccount(txIndex, &deltaBuf)
 	var delta *uint256.Int
 	if hasDelta {

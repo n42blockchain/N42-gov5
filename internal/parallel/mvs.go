@@ -82,6 +82,19 @@ type mvEntry struct {
 	versions []versionedValue
 	key      LocationKey
 	hash     uint64
+	// fulls counts the versions that are full writes (not deltas). It
+	// changes under mu and is read without it: a reader that sees zero
+	// knows no transaction has stored a full value here -- only deltas,
+	// or nothing -- without the lock or a scan of the versions.
+	fulls atomic.Int32
+}
+
+// noFullWrites reports whether no transaction has stored a full value at
+// the entry (it has only balance deltas, or no versions); a nil entry has
+// none. Read without the entry's lock, so it may miss a concurrent write,
+// which validation catches like any read that raced a write.
+func (e *mvEntry) noFullWrites() bool {
+	return e == nil || e.fulls.Load() == 0
 }
 
 // MVS (Multi-Version Store) is the central data structure for Block-STM.
@@ -269,6 +282,9 @@ func (e *mvEntry) writeOwned(txIndex int, incarnation uint32, value []byte) {
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
 		// Overwrite existing.
 		v := &e.versions[idx]
+		if v.isDelta {
+			e.fulls.Add(1)
+		}
 		v.value = value
 		v.incarnation = incarnation
 		v.isDelta = false
@@ -278,6 +294,7 @@ func (e *mvEntry) writeOwned(txIndex int, incarnation uint32, value []byte) {
 		e.versions = append(e.versions, versionedValue{})
 		copy(e.versions[idx+1:], e.versions[idx:])
 		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, value: value}
+		e.fulls.Add(1)
 	}
 }
 
@@ -307,6 +324,9 @@ func (e *mvEntry) writeDelta(txIndex int, incarnation uint32, delta *uint256.Int
 	idx := e.slot(txIndex)
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
 		v := &e.versions[idx]
+		if !v.isDelta {
+			e.fulls.Add(-1)
+		}
 		v.value = nil
 		v.incarnation = incarnation
 		v.isDelta = true
@@ -410,10 +430,18 @@ func (m *MVS) Delete(key LocationKey, txIndex int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	e.removeLocked(txIndex)
+}
+
+// removeLocked removes txIndex's version, if any (e.mu held).
+func (e *mvEntry) removeLocked(txIndex int) {
 	idx := sort.Search(len(e.versions), func(i int) bool {
 		return e.versions[i].txIndex >= txIndex
 	})
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
+		if !e.versions[idx].isDelta {
+			e.fulls.Add(-1)
+		}
 		e.versions = append(e.versions[:idx], e.versions[idx+1:]...)
 	}
 }
@@ -480,12 +508,7 @@ func (m *MVS) DeleteAll(txIndex int) {
 	for i := range m.shards {
 		m.shards[i].tab.Load().each(func(e *mvEntry) {
 			e.mu.Lock()
-			idx := sort.Search(len(e.versions), func(i int) bool {
-				return e.versions[i].txIndex >= txIndex
-			})
-			if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
-				e.versions = append(e.versions[:idx], e.versions[idx+1:]...)
-			}
+			e.removeLocked(txIndex)
 			e.mu.Unlock()
 		})
 	}
