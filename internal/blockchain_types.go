@@ -265,6 +265,10 @@ type BlockChain struct {
 	// computed for a block it sealed, taken by that block's write
 	// (RememberExecutedResult / takeExecutedResultHint).
 	executedHints sync.Map
+	// receiptsFuture: the receipts root and bloom of the block insertChain
+	// is importing, computed on its own goroutine while the state root and
+	// the write's other tables run (under bc.lock; nil outside an import).
+	receiptsFuture *receiptsResultFuture
 
 	headerCache *lru.Cache[types.Hash, *block.Header]
 	numberCache *lru.Cache[types.Hash, uint64]

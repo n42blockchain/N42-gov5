@@ -157,6 +157,43 @@ func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Has
 	}
 }
 
+// receiptsResultFuture is ExecutedResultFor's receipts part (receipts root,
+// bloom, gas used) of one block, computed on its own goroutine as soon as
+// the receipts are final. At 163k transactions it is ~45 ms of hashing that
+// otherwise ran serially inside the write.
+type receiptsResultFuture struct {
+	hash     types.Hash
+	receipts []*block.Receipt
+	done     chan struct{}
+	result   rawdb.ExecutedResult // Root unset
+}
+
+// startReceiptsResult starts computing the receipts part of hash's result.
+// receipts must not change afterwards (they are final once execution and
+// collection are done; the write only reads them).
+func startReceiptsResult(config *params.ChainConfig, number uint64, hash types.Hash, receipts []*block.Receipt) *receiptsResultFuture {
+	f := &receiptsResultFuture{hash: hash, receipts: receipts, done: make(chan struct{})}
+	go func() {
+		defer close(f.done)
+		f.result = ExecutedResultFor(config, number, types.Hash{}, receipts)
+	}()
+	return f
+}
+
+// resultFor returns the block's executed result with root, waiting for the
+// receipts part, when the future is for hash and exactly these receipts;
+// ok=false otherwise (the caller derives it inline).
+func (f *receiptsResultFuture) resultFor(hash types.Hash, root types.Hash, receipts []*block.Receipt) (rawdb.ExecutedResult, bool) {
+	if f == nil || f.hash != hash || len(f.receipts) != len(receipts) ||
+		(len(receipts) > 0 && f.receipts[0] != receipts[0]) {
+		return rawdb.ExecutedResult{}, false
+	}
+	<-f.done
+	r := f.result
+	r.Root = root
+	return r, true
+}
+
 // RememberExecutedResult hands a sealed block's write the execution result
 // the leader's build already computed for it, so the write does not derive
 // the receipts root and bloom a second time.
