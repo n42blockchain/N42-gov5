@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); S88/S89 gate rounds invalid (unbounded, then unordered admission); S90 in-order admission next.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); S90 valid: P1 closed, executor is the bound at the S84 baseline (144k); P2a (recover at ingest, vote on availability, lag-2 execution) next.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -461,6 +461,50 @@ alone and the generator rule is the whole fix. Store 2 GiB (40k frames,
 computes occupancy from header gasUsed/gasLimit over RPC for every block.
 Predicted: futureNonce skips < 1%, occupancy >= 95% on B legs, B mean the
 first real P1 number. Gate unchanged.
+
+**S90 result (35zzzbp, ROUND DONE 03:56 ET 2026-10-10): valid; P1 gate not
+met; P1 closed, executor is the bound.** In-order delivery removed the
+skips: every B block under a stable leader executed 163,000 of 163,000
+transactions (gasUsed exactly 21,000 x 163,000), ingest outOfOrder 0, the
+store flat at 2 GiB with generators paced by Busy to the chain's own
+consumption (~150k tx/s). Executed TPS: B1 144.0k / 70.6k, B2 133.1k /
+100.5k (win1 / win2), A2 65.6k. That is the S84 pre-frame baseline
+(148.9k): removing the supply bound bought nothing by itself, exactly as
+section 2 said it would not. Block anatomy (node3, 163k txs, p50):
+follower import 1,082 ms = sender recovery 344 + execution 415 + root 100
++ write 152; leader build 833 ms (fillExec 762). Consensus waits for
+execution on both sides, so the block cycle is ~1.1-1.9 s and throughput
+is 163k / cycle.
+
+Two defects to carry into P2. (1) The harness fill target is half the
+ceiling (fillgas 3,423M of 6,846M), so measured occupancy was 50.0% and
+the gate's 95% term was never reachable by configuration; the P2 round
+sets the target to 95% of the ceiling. measure-tps.sh also counted every
+block as unparsed (a bare `echo` after the RPC reply); occupancy itself was
+correct. (2) In B1 a view timeout moved the lead and the new leader sealed
+one height twice; from the next block on, every block on all seven nodes
+was 100% future-nonce (gasUsed 0) for ~44 blocks: the orphaned block's
+frames stayed pinned (released 0 all round) and the fill skipped past them,
+so every later frame of those senders had a nonce gap. Pinned frames of a
+block that lost must become fillable again at once.
+
+**P2a plan (35zzzbq): execution off the consensus path, independent mode.**
+Scope, one Opus agent: (a) sender recovery at frame admission, in
+background workers, cached with the frame in the store and reused by build
+and import (344 ms of the 1,082 ms import leaves the block path; frames
+arrive seconds before inclusion); (b) vote on availability: a follower
+votes as soon as the body's frame list is checked and every frame is held
+locally (pulled if missing), without executing; (c) deferred execution lag
+2: header N carries root(N-2) and receipts root(N-2), the existing depth-1
+deferred path generalised to depth k, a node cannot propose until it has
+executed N-2, execution runs behind in a pipeline (recover-at-ingest, exec,
+root, write on different blocks); (d) orphan-pin release. E=1 mode (one
+execution layer serving seven validators) is P2b, measured after P2a.
+Gate P2a (7 nodes, each executing): block cycle <= 150 ms at 163k-tx
+blocks, execution lag <= 2 blocks, B mean executed TPS >= 300k (the
+pipeline bound is the slowest stage, exec 415 ms per 163k = ~390k). Stop
+if the cycle stays > 150 ms with execution idle: the consensus engine, not
+execution, is the bound.
 
 ## 6. What this does not claim
 
