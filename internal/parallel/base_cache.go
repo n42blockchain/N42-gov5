@@ -46,12 +46,15 @@ type baseCacheShard struct {
 	_   [40]byte
 }
 
-// baseEntry is one cached base read; acc nil records "absent". Set before
-// publication, never changed.
+// baseEntry is one cached base read; acc nil records "absent". enc is acc's
+// V2 encoding, made once per address per block for the readers' read
+// records (they used to encode the account on every read). Set before
+// publication, never changed; both are shared and must not be mutated.
 type baseEntry struct {
 	addr types.Address
 	hash uint64
 	acc  *account.StateAccount
+	enc  []byte
 }
 
 // baseTable is an insert-only linear-probing table (see mvTable).
@@ -117,11 +120,7 @@ func addressHash(addr *types.Address) uint64 {
 // get reports a cached account (which may be nil for "absent") and whether the
 // address was cached at all.
 func (c *BaseCache) get(addr types.Address) (*account.StateAccount, bool) {
-	if c == nil {
-		return nil, false
-	}
-	h := addressHash(&addr)
-	e := c.shards[h>>56].tab.Load().find(&addr, h)
+	e := c.lookup(addr)
 	if e == nil {
 		return nil, false
 	}
@@ -132,6 +131,16 @@ func (c *BaseCache) get(addr types.Address) (*account.StateAccount, bool) {
 	return &cp, true
 }
 
+// lookup returns addr's entry, or nil when it is not cached. The entry is
+// shared: its account and encoding are read-only.
+func (c *BaseCache) lookup(addr types.Address) *baseEntry {
+	if c == nil {
+		return nil
+	}
+	h := addressHash(&addr)
+	return c.shards[h>>56].tab.Load().find(&addr, h)
+}
+
 // put records a base read. A nil account records "absent", which is as useful
 // to cache as a present one: a block's transfers create accounts that every
 // later transaction would otherwise look for in the tree. The first put of an
@@ -140,21 +149,28 @@ func (c *BaseCache) put(addr types.Address, acc *account.StateAccount) {
 	if c == nil {
 		return
 	}
+	c.insert(addr, acc)
+}
+
+// insert is put returning the entry that holds addr: the new one, or the
+// one a racing reader inserted first.
+func (c *BaseCache) insert(addr types.Address, acc *account.StateAccount) *baseEntry {
 	h := addressHash(&addr)
 	sh := &c.shards[h>>56]
-	if sh.tab.Load().find(&addr, h) != nil {
-		return
+	if old := sh.tab.Load().find(&addr, h); old != nil {
+		return old
 	}
 	e := &baseEntry{addr: addr, hash: h}
 	if acc != nil {
 		cp := *acc
 		e.acc = &cp
+		e.enc = cp.MarshalV2()
 	}
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	t := sh.tab.Load()
-	if t.find(&addr, h) != nil {
-		return
+	if old := t.find(&addr, h); old != nil {
+		return old
 	}
 	if (sh.n+1)*4 > len(t.slots)*3 {
 		g := newBaseTable(len(t.slots) * 2)
@@ -168,6 +184,7 @@ func (c *BaseCache) put(addr types.Address, acc *account.StateAccount) {
 	}
 	t.place(e)
 	sh.n++
+	return e
 }
 
 // Len reports how many addresses are cached (tests and diagnostics).

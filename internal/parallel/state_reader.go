@@ -17,6 +17,8 @@
 package parallel
 
 import (
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
@@ -42,17 +44,25 @@ type ParallelStateReader struct {
 func (r *ParallelStateReader) SetBaseCache(c *BaseCache) { r.baseCache = c }
 
 // baseAccount reads an account from the base state, through the block's cache
-// when there is one.
-func (r *ParallelStateReader) baseAccount(address types.Address) (*account.StateAccount, error) {
-	if acc, ok := r.baseCache.get(address); ok {
-		return acc, nil
+// when there is one. It returns the account (nil when absent) and its V2
+// encoding; both are shared with the cache and must not be mutated.
+func (r *ParallelStateReader) baseAccount(address types.Address) (*account.StateAccount, []byte, error) {
+	if e := r.baseCache.lookup(address); e != nil {
+		return e.acc, e.enc, nil
 	}
 	acc, err := r.base.ReadAccountData(address)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	r.baseCache.put(address, acc)
-	return acc, nil
+	if r.baseCache == nil {
+		if acc == nil {
+			return nil, nil, nil
+		}
+		enc, _ := encodeAccount(acc)
+		return acc, enc, nil
+	}
+	e := r.baseCache.insert(address, acc)
+	return e.acc, e.enc, nil
 }
 
 // NewParallelStateReader creates a state reader that reads from MVS first,
@@ -77,40 +87,74 @@ func (r *ParallelStateReader) Rebind(rw *ReadWriteSet, txIndex int) {
 func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
 
-	full, fullTx, fullInc, found, delta := r.mvs.ReadAccount(key, r.txIndex)
+	var deltaBuf uint256.Int
+	full, fullTx, fullInc, found, hasDelta := r.mvs.readAccountInto(&key, r.txIndex, &deltaBuf)
+	var delta *uint256.Int
+	if hasDelta {
+		delta = &deltaBuf
+	}
 	if found {
-		val := composeAccount(full, delta)
-		r.rw.RecordAccountRead(key, fullTx, fullInc, false, val, nil, delta != nil)
-		if val == nil {
+		if full == nil && delta == nil {
 			// Account was deleted by a preceding tx.
+			r.rw.RecordAccountRead(key, fullTx, fullInc, false, nil, nil, false)
 			return nil, nil
 		}
-		acc, err := DecodeAccount(val)
-		if err != nil {
-			return nil, err
+		acc := new(account.StateAccount)
+		if delta == nil {
+			r.rw.RecordAccountRead(key, fullTx, fullInc, false, full, nil, false)
+			if err := acc.DecodeForStorageV2(full); err != nil {
+				return nil, err
+			}
+			return acc, nil
 		}
+		// composeAccount and a decode of its output, in one decode: the
+		// composed account is the decoded full write plus the deltas.
+		if full != nil {
+			if err := acc.DecodeForStorageV2(full); err != nil {
+				val := composeAccount(full, delta)
+				r.rw.RecordAccountRead(key, fullTx, fullInc, false, val, nil, true)
+				return DecodeAccount(val)
+			}
+		} else {
+			acc.Reset()
+		}
+		acc.Balance.Add(&acc.Balance, delta)
+		r.rw.RecordAccountRead(key, fullTx, fullInc, false, acc.MarshalV2(), nil, true)
 		return acc, nil
 	}
 
 	// No full write in the store — read from base, record the base bytes in
 	// the writer's encoding so a later write of the same account by a
-	// preceding transaction validates by value, and add the deltas.
-	acc, err := r.baseAccount(address)
+	// preceding transaction validates by value, and add the deltas. The base
+	// account and its encoding come from the block's cache (shared, so the
+	// caller gets a copy).
+	base, enc, err := r.baseAccount(address)
 	if err != nil {
 		r.rw.RecordRead(key, -1, 0, true)
 		return nil, err
 	}
-	var enc []byte
-	if acc != nil {
-		enc, _ = encodeAccount(acc)
-	}
 	if delta == nil {
 		r.rw.RecordAccountRead(key, -1, 0, true, enc, enc, false)
+		if base == nil {
+			return nil, nil
+		}
+		acc := new(account.StateAccount)
+		*acc = *base
 		return acc, nil
 	}
-	val := composeAccount(enc, delta)
-	r.rw.RecordAccountRead(key, -1, 0, true, val, enc, true)
-	return DecodeAccount(val)
+	// The base account in its encoded form (what composeAccount decodes)
+	// plus the deltas.
+	acc := new(account.StateAccount)
+	if enc != nil {
+		if err := acc.DecodeForStorageV2(enc); err != nil {
+			return nil, err
+		}
+	} else {
+		acc.Reset()
+	}
+	acc.Balance.Add(&acc.Balance, delta)
+	r.rw.RecordAccountRead(key, -1, 0, true, acc.MarshalV2(), enc, true)
+	return acc, nil
 }
 
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
