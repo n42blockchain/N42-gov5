@@ -580,6 +580,24 @@ The warm-up window reached 328,967 execTPS at a block time of 0.296 s, a new sta
 
 Arithmetic: at 75k txs the import is 240-264 ms, i.e. 3.3 us per tx all-in, so a 163k block would take about 530 ms serial and about 300 ms pipelined, giving about 540k tx/s. To reach 1M at 163k blocks the pipelined cycle must be 163 ms, i.e. root+write <= 160 ms (P4) and exec <= 160 ms (P3c gives about 1 us/tx already), with memory flat.
 
+### P4 result (2026-10-10, commits e233022c, 58ee4b90, b1b4bdc0, f2242151, eb3c65ad, 607c21e3)
+
+Bench TestQMDBImportRootWriteBench (internal/import_root_write_bench_test.go, N42_BENCH_IMPORT=1) imports 163,200 transfers as frame blocks through the lag executor with the ahead run on, READ_QMDB / WRITE_QMDB_ONLY, the HotStuff canonical rule and durable MDBX. It runs on 4 nice'd cores, medians of 3, so numbers are relative.
+
+Baseline: root 94 ms = dirty-set collection 50, apply 16, op build/sort 15, snapshot publish 12, lock wait 0, fold 0. Write 209 ms = executed result (receipts root + bloom) 100, changesets 28, CommitBlock 24, QMDB flush 19, receipts 15, commit/fsync 13, block/frames 6, undo 1.5, history/tx lookup 0 (deferred).
+
+Cuts:
+- Receipts root + bloom on their own goroutine during the state root (write 204 -> 110).
+- Radix-sorted address sets (collection 56 -> 40, CommitBlock 37 -> 17).
+- QMDB ops built in parallel and radix-sorted (op build 14.5 -> 5.6, root 77 -> 68).
+- Receipts row encoded before the write (15 -> 4.7).
+
+Final: root 70 (collection 35, apply 16, publish 12, ops 6) + write 84 (changesets 21, CommitBlock 15, commit 12-20, QMDB flush 12, block 5, receipts 5) = 155 ms, from 297. Nothing is persisted asynchronously (the receipts goroutine is joined before commit). Tests are green, including the lag pipeline under -race. Binary n42-r130 (HEAD 5d5cbbfa) sha ff853a3d....
+
+Remaining for <= 100 ms: run the MDBX write (changesets, CommitBlock, flush, commit, ~65 ms) on an ordered writer goroutine overlapped with the next block's root (needs a restart rule), and move collection + publish (~47 ms) out of IntraBlockState into an executor-built dirty set.
+
+1M arithmetic: at 163k blocks the pipelined cycle is max(exec ~160, root+write 155) in the bench, so S98 tests whether the fleet gets near 163k/0.3 s = 540k, and the next step toward 1M is the ordered writer.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
