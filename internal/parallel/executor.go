@@ -190,9 +190,14 @@ type workerStat struct {
 	mvsWriteNs  int64
 	mvsDeleteNs int64
 	execs       int64 // executions, folded into totalExecutions after the wave
+	// clock is when the worker's previous transaction finished its store
+	// writes (or the worker started): the next transaction's start, so a
+	// transaction reads the clock twice instead of five times (the reads
+	// were ~2.5% of the exec wave's CPU at 163k transfers).
+	clock time.Time
 	// Pad to two cache lines: neighbouring workers write their slots on
 	// every transaction.
-	_ [72]byte
+	_ [48]byte
 }
 
 // WorkerStatsSummary aggregates the per-worker S82 timings from the most
@@ -530,6 +535,7 @@ func (e *Executor) executeParallel(txIndices []int) {
 					defer teardown()
 				}
 			}
+			ws.clock = time.Now()
 			run := func(txIndex int) {
 				if setupErr != nil {
 					// A kept set would carry the previous block's reads into
@@ -596,7 +602,6 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	//
 	// Withdraw only that incarnation's keys: DeleteAll walks every entry in
 	// the store and was 95% of a follower's CPU at 54k transactions (35e).
-	tDelete := time.Now()
 	rw := e.rwSets[txIndex]
 	if rw != nil {
 		// Incarnation 0 is the transaction's first execution against this
@@ -604,22 +609,31 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		// and were never stored here, so there is nothing to withdraw (the
 		// deletes were ~9% of the exec wave at 163k transfers).
 		if e.incarnation[txIndex] > 0 {
+			tDelete := time.Now()
 			for _, wd := range rw.Writes {
 				e.mvs.Delete(wd.Key, txIndex)
+			}
+			if ws != nil {
+				ws.mvsDeleteNs += int64(time.Since(tDelete))
+				ws.clock = time.Now()
 			}
 		}
 		rw.Clear()
 	} else {
 		rw = NewReadWriteSet(txIndex)
 	}
-	if ws != nil {
-		ws.mvsDeleteNs += int64(time.Since(tDelete))
-	}
 
-	// Execute the transaction.
-	tCall := time.Now()
+	// Execute the transaction. A worker's call starts when its previous
+	// transaction ended (ws.clock).
+	var tCall time.Time
+	if ws != nil {
+		tCall = ws.clock
+	} else {
+		tCall = time.Now()
+	}
 	err := e.exec(ctx, txIndex, rw)
-	busy := int64(time.Since(tCall))
+	tWrite := time.Now()
+	busy := int64(tWrite.Sub(tCall))
 	if ws != nil {
 		ws.busyNs += busy
 	} else {
@@ -630,7 +644,6 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	e.rwSets[txIndex] = rw
 
 	// Apply writes to MVS with incarnation tag.
-	tWrite := time.Now()
 	inc := e.incarnation[txIndex]
 	for i := range rw.Writes {
 		wd := &rw.Writes[i]
@@ -647,7 +660,8 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		}
 	}
 	if ws != nil {
-		ws.mvsWriteNs += int64(time.Since(tWrite))
+		ws.clock = time.Now()
+		ws.mvsWriteNs += int64(ws.clock.Sub(tWrite))
 	}
 
 	e.status[txIndex] = StatusExecuted
