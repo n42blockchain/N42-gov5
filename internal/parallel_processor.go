@@ -461,6 +461,15 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		postLayers, _ = state.PostStateLayers(ibs.GetStateReader())
 	}
 	var executor *parallel.Executor
+	// Each transaction's message and hash, built on the executor's parallel
+	// affinity-key pass: walking the transactions in index order there
+	// costs less than the same reads in the wave, where a worker visits
+	// them in sender order (AsMessageInto and tx.Hash were ~15% of the
+	// wave's CPU at 163k transfers, almost all cache misses on the
+	// transaction's objects). Fresh per block: a kept slice (cleared on
+	// release, like the results') measured slower, the collector marking
+	// it on every cycle.
+	prepared := make([]preparedTx, numTxs)
 	// One base-read cache for this block, shared by every worker (see
 	// parallel.BaseCache). Sized for the distinct accounts a block touches:
 	// the bench's blocks are ~163k transfers over ~23k recipients.
@@ -521,24 +530,23 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		wc.fees = wc.fees[:0]
 		r := &txResults[txIndex]
 		wc.scratch.msgReady = false
-		if transferFastPath && transferDirectPath && signer != nil {
-			// A plain transfer straight on the reader and writer, without
-			// the IntraBlockState (tryDirectTransfer).
-			msg := &wc.scratch.msg
-			if tx.AsMessageInto(msg, signer, concreteHeader.BaseFee) == nil {
-				NormalizeExecutionMessage(msg, cfg.StatelessExec, p.engine != nil)
-				wc.scratch.msgReady = true
-				if res, ok := tryDirectTransfer(wc.evm, wc.reader, wc.writer, rw, msg, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
-					wc.scratch.msgReady = false
+		if pm := &prepared[txIndex]; pm.ok {
+			if transferFastPath && transferDirectPath {
+				// A plain transfer straight on the reader and writer,
+				// without the IntraBlockState (tryDirectTransfer).
+				if res, ok := tryDirectTransfer(wc.evm, wc.reader, wc.writer, rw, &pm.msg, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
 					var receipt *block.Receipt
 					if !cfg.NoReceipts {
-						receipt = wc.scratch.fillReceipt(false, tx, tx.Hash(), res, msg, nil, concreteHeader, uint(txIndex), wc.evm)
+						receipt = wc.scratch.fillReceipt(false, tx, pm.hash, res, &pm.msg, nil, concreteHeader, uint(txIndex), wc.evm)
 					}
 					r.receipt, r.gasUsed, r.err, r.logs = receipt, res.BlockGasUsed, nil, nil
 					r.setFees(wc.fees)
 					return nil
 				}
 			}
+			// The EVM path may adjust its message: it gets a copy.
+			wc.scratch.msg = pm.msg
+			wc.scratch.msgReady = true
 		}
 		// The IntraBlockState is reset only once a transaction has used it
 		// since its last reset: direct transfers leave it untouched.
@@ -572,8 +580,19 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// nonce chain of a sender is then executed by the worker that already
 	// applied its predecessor, and only cross-sender conflicts (a recipient
 	// credited by several senders in one wave) reach the validator.
+	//
+	// The executor computes the keys in parallel, in index order, before
+	// the wave starts; the key function also prepares each transaction's
+	// message and hash there (prepared, above).
 	executor.SetAffinity(func(txIndex int) uint64 {
 		tx := txs[txIndex]
+		if pm := &prepared[txIndex]; !pm.ok && signer != nil {
+			if tx.AsMessageInto(&pm.msg, signer, concreteHeader.BaseFee) == nil {
+				NormalizeExecutionMessage(&pm.msg, cfg.StatelessExec, p.engine != nil)
+				pm.hash = tx.Hash()
+				pm.ok = true
+			}
+		}
 		if from := tx.From(); from != nil {
 			return binary.LittleEndian.Uint64(from[:8])
 		}
@@ -890,6 +909,13 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 		base = commitment.NewQMDBStateReader(src, base, mode)
 	}
 	return state.LayerPostStates(postLayers, base)
+}
+
+// preparedTx is a transaction's message and hash, built before the wave.
+type preparedTx struct {
+	msg  transaction.Message
+	hash types.Hash
+	ok   bool
 }
 
 // parallelTxScratch is a Block-STM worker's reusable per-transaction state
