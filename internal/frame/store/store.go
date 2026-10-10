@@ -14,11 +14,25 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-// Package store holds received frames keyed by FrameHash in a byte-budgeted
-// ring: frames are kept in arrival order and the oldest are evicted when the
-// budget is exceeded. Each frame is one pointer-free []byte, so the garbage
-// collector marks it without scanning its contents; the per-frame overhead
-// on the scanned heap is one map entry and one ring slot.
+// Package store holds received frames keyed by FrameHash, in arrival
+// order, under a byte budget with bounded admission
+// (docs/QS_MULTI_MILLION_DESIGN.md, S89):
+//
+//   - A frame no committed block holds is never evicted. A written but
+//     uncommitted block (any fork) pins its frames too; they become fillable
+//     again when the committed head passes that height without them.
+//   - A frame is evicted only once a block holding it has been committed and
+//     the committed head has moved KeepBlocks (N42_FRAME_KEEP_BLOCKS, default
+//     64) past it. Eviction is eager, at commit time, and leaves a tombstone
+//     so a resend is answered as a duplicate.
+//   - When a new frame does not fit the budget, admission answers Busy and
+//     stores nothing. Frames a node needs to vote on or import a proposal
+//     (FRQ1 pulls) and the leader's own local frames bypass the budget; both
+//     are bounded by one block.
+//
+// Each frame is one pointer-free []byte, so the garbage collector marks it
+// without scanning its contents; the per-frame overhead on the scanned heap
+// is one map entry and one ring slot.
 package store
 
 import (
@@ -36,19 +50,33 @@ const DefaultBudget int64 = 4 << 30
 // EnvBudget names the environment variable that overrides the budget.
 const EnvBudget = "N42_FRAME_STORE_BYTES"
 
+// DefaultKeepBlocks is the default number of committed blocks a frame is
+// kept for after the block holding it was committed.
+const DefaultKeepBlocks uint64 = 64
+
+// EnvKeepBlocks names the environment variable that overrides KeepBlocks.
+const EnvKeepBlocks = "N42_FRAME_KEEP_BLOCKS"
+
 // Stats is a snapshot of the store's counters.
 type Stats struct {
-	Frames       int
-	Bytes        int64
-	Budget       int64
-	Puts         uint64
-	Duplicates   uint64
-	Rejected     uint64 // larger than the whole budget
-	Evicted      uint64
-	EvictedBytes uint64
-	Hits         uint64
-	Misses       uint64
-	Removed      uint64 // removed because a block holds them
+	Frames        int
+	Bytes         int64
+	Budget        int64
+	KeepBlocks    uint64
+	CommittedHead uint64
+	Pending       int // frames held by written, uncommitted blocks
+	Committed     int // frames held by committed blocks, inside the keep margin
+	Puts          uint64
+	Duplicates    uint64
+	Rejected      uint64 // larger than the whole budget
+	Busy          uint64 // refused: budget full and nothing evictable
+	Bypassed      uint64 // admitted over the budget (pulls, local frames)
+	Evicted       uint64 // committed frames dropped after the keep margin
+	EvictedBytes  uint64
+	Released      uint64 // pinned by an abandoned fork, fillable again
+	Hits          uint64
+	Misses        uint64
+	Removed       uint64 // unincluded frames dropped by Remove
 }
 
 // Entry is one stored frame with the metadata computed at admission.
@@ -58,7 +86,31 @@ type Entry struct {
 	Txs int    // transaction count from the header
 }
 
-// tombstoneCap bounds the set of removed frame hashes remembered so a
+// Result is the outcome of Admit.
+type Result uint8
+
+const (
+	Stored    Result = iota // admitted
+	Duplicate               // already stored, or tombstoned (a block took it)
+	Busy                    // the budget is full and nothing is evictable
+	TooLarge                // the frame alone exceeds the budget
+)
+
+// slot is a stored frame and its inclusion state.
+type slot struct {
+	Entry
+	pendAt   uint64 // highest height of a written, uncommitted block holding it (0 = none)
+	commitAt uint64 // height of the committed block holding it (0 = none)
+}
+
+func (sl *slot) included() bool { return sl.pendAt != 0 || sl.commitAt != 0 }
+
+type committedFrame struct {
+	h types.Hash
+	n uint64
+}
+
+// tombstoneCap bounds the set of dropped frame hashes remembered so a
 // resent frame that is already in a block is not admitted again.
 const tombstoneCap = 1 << 18
 
@@ -66,29 +118,56 @@ const tombstoneCap = 1 << 18
 type Store struct {
 	mu     sync.RWMutex
 	budget int64
+	keep   uint64
 	used   int64
-	m      map[types.Hash]Entry
-	ring   []types.Hash // arrival order; ring[head:] are live or removed
+	m      map[types.Hash]slot
+	ring   []types.Hash // arrival order; ring[head:] are live or dropped
 	head   int
 
-	// Frames removed because a block holds them (Remove): a Put of one of
+	// pend indexes pinned frames by the height of the block that pinned
+	// them, so a commit can release the ones an abandoned fork held.
+	pend map[uint64][]types.Hash
+	// cq lists committed frames in commit order (heights ascending); its
+	// head is the next frame to evict once the keep margin has passed.
+	cq        []committedFrame
+	cqHead    int
+	committed uint64 // committed head height (valid when haveHead)
+	haveHead  bool
+	nPend     int // stored frames with pendAt != 0 and commitAt == 0
+	nCommit   int // stored frames with commitAt != 0
+
+	// Frames dropped after a block took them, or by Remove: a Put of one of
 	// these is answered as a duplicate. FIFO-bounded by tombstoneCap.
 	tomb     map[types.Hash]struct{}
 	tombRing []types.Hash
 	tombHead int
 
-	puts, dups, rejected, evicted, evictedBytes, hits, misses, removed atomic.Uint64
+	puts, dups, rejected, busy, bypassed, evicted, evictedBytes, released, hits, misses, removed atomic.Uint64
 }
 
-// New returns a store with the given byte budget (<= 0 selects the default).
+// New returns a store with the given byte budget (<= 0 selects the default)
+// and the default keep margin.
 func New(budget int64) *Store {
+	return NewWithKeep(budget, DefaultKeepBlocks)
+}
+
+// NewWithKeep returns a store with the given byte budget and keep margin
+// in committed blocks (budget <= 0 selects the default budget).
+func NewWithKeep(budget int64, keep uint64) *Store {
 	if budget <= 0 {
 		budget = DefaultBudget
 	}
-	return &Store{budget: budget, m: make(map[types.Hash]Entry), tomb: make(map[types.Hash]struct{})}
+	return &Store{
+		budget: budget,
+		keep:   keep,
+		m:      make(map[types.Hash]slot),
+		pend:   make(map[uint64][]types.Hash),
+		tomb:   make(map[types.Hash]struct{}),
+	}
 }
 
-// NewFromEnv returns a store sized by N42_FRAME_STORE_BYTES, or the default.
+// NewFromEnv returns a store sized by N42_FRAME_STORE_BYTES and
+// N42_FRAME_KEEP_BLOCKS, or the defaults.
 func NewFromEnv() *Store {
 	var b int64
 	if v := os.Getenv(EnvBudget); v != "" {
@@ -96,56 +175,219 @@ func NewFromEnv() *Store {
 			b = n
 		}
 	}
-	return New(b)
+	keep := DefaultKeepBlocks
+	if v := os.Getenv(EnvKeepBlocks); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			keep = n
+		}
+	}
+	return NewWithKeep(b, keep)
 }
 
-// Put stores frame under h. It returns false when h is already present or
-// the frame alone exceeds the budget. The store keeps frame as given; the
-// caller must not modify it afterwards.
+// Put stores frame under h. It returns false when h is already present,
+// the budget is full, or the frame alone exceeds the budget. The store
+// keeps frame as given; the caller must not modify it afterwards.
 func (s *Store) Put(h types.Hash, frame []byte) bool {
 	return s.PutEntry(h, Entry{Raw: frame})
 }
 
 // PutEntry is Put with the admission metadata the block builder reads.
 func (s *Store) PutEntry(h types.Hash, e Entry) bool {
-	frame := e.Raw
-	size := int64(len(frame))
-	if size > s.budget {
+	return s.Admit(h, e, false) == Stored
+}
+
+// Admit stores e under h. With bypass the byte budget is not applied:
+// frames needed to vote on or import a proposal (FRQ1 pulls) and the
+// leader's own local frames, each bounded by one block. Without it a frame
+// that does not fit is refused as Busy: frames are only ever evicted by
+// commits (Commit), never to make room.
+func (s *Store) Admit(h types.Hash, e Entry, bypass bool) Result {
+	size := int64(len(e.Raw))
+	if size > s.budget && !bypass {
 		s.rejected.Add(1)
-		return false
+		return TooLarge
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.m[h]; ok {
 		s.dups.Add(1)
-		return false
+		return Duplicate
 	}
 	if _, ok := s.tomb[h]; ok {
 		s.dups.Add(1)
-		return false
+		return Duplicate
 	}
-	for s.used+size > s.budget && s.head < len(s.ring) {
-		s.evictOldestLocked()
+	if s.used+size > s.budget {
+		if !bypass {
+			s.busy.Add(1)
+			return Busy
+		}
+		s.bypassed.Add(1)
 	}
-	s.m[h] = e
+	s.m[h] = slot{Entry: e}
 	s.ring = append(s.ring, h)
 	s.used += size
 	s.puts.Add(1)
-	return true
+	return Stored
 }
 
-func (s *Store) evictOldestLocked() {
-	h := s.ring[s.head]
-	s.ring[s.head] = types.Hash{}
-	s.head++
-	if e, ok := s.m[h]; ok {
-		s.used -= int64(len(e.Raw))
-		delete(s.m, h)
-		s.evicted.Add(1)
-		s.evictedBytes.Add(uint64(len(e.Raw)))
+// Include pins the stored frames among hs to a written block at number:
+// they are no longer fillable and are not evicted. A block at or below the
+// committed head that was not committed is a late fork and pins nothing.
+func (s *Store) Include(hs []types.Hash, number uint64) {
+	if number == 0 {
+		return
 	}
-	// Compact once the dead prefix dominates, so the ring does not grow
-	// without bound under steady eviction.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.haveHead && number <= s.committed {
+		return
+	}
+	var pinned []types.Hash
+	for _, h := range hs {
+		sl, ok := s.m[h]
+		if !ok || sl.commitAt != 0 || sl.pendAt >= number {
+			continue
+		}
+		if sl.pendAt == 0 {
+			s.nPend++
+		}
+		sl.pendAt = number
+		s.m[h] = sl
+		pinned = append(pinned, h)
+	}
+	if len(pinned) > 0 {
+		s.pend[number] = append(s.pend[number], pinned...)
+	}
+}
+
+// Commit records that the block at number holding hs was committed and
+// moves the committed head to number: frames pinned only by blocks at or
+// below it that were not committed (abandoned forks) become fillable again,
+// and committed frames KeepBlocks below it are evicted. Commits must come
+// in ascending height; a commit at or below the current head only marks
+// frames. Frames named but not stored are tombstoned so a resend is
+// refused.
+func (s *Store) Commit(number uint64, hs []types.Hash) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, h := range hs {
+		sl, ok := s.m[h]
+		if !ok {
+			s.tombstoneLocked(h)
+			continue
+		}
+		if sl.commitAt != 0 {
+			continue
+		}
+		if sl.pendAt != 0 {
+			s.nPend--
+		}
+		s.nCommit++
+		sl.commitAt, sl.pendAt = number, 0
+		s.m[h] = sl
+		s.cq = append(s.cq, committedFrame{h: h, n: number})
+	}
+	if s.haveHead && number <= s.committed {
+		return
+	}
+	s.committed, s.haveHead = number, true
+	for n, list := range s.pend {
+		if n > number {
+			continue
+		}
+		for _, h := range list {
+			sl, ok := s.m[h]
+			if !ok || sl.commitAt != 0 || sl.pendAt == 0 || sl.pendAt > number {
+				continue
+			}
+			sl.pendAt = 0
+			s.m[h] = sl
+			s.nPend--
+			s.released.Add(1)
+		}
+		delete(s.pend, n)
+	}
+	s.evictCommittedLocked()
+}
+
+// evictCommittedLocked drops committed frames whose block is KeepBlocks or
+// more below the committed head.
+func (s *Store) evictCommittedLocked() {
+	dropped := false
+	for s.cqHead < len(s.cq) {
+		c := s.cq[s.cqHead]
+		if c.n+s.keep > s.committed {
+			break
+		}
+		s.cq[s.cqHead] = committedFrame{}
+		s.cqHead++
+		sl, ok := s.m[c.h]
+		if !ok || sl.commitAt != c.n {
+			continue
+		}
+		s.used -= int64(len(sl.Raw))
+		delete(s.m, c.h)
+		s.nCommit--
+		s.evicted.Add(1)
+		s.evictedBytes.Add(uint64(len(sl.Raw)))
+		s.tombstoneLocked(c.h)
+		dropped = true
+	}
+	if s.cqHead > 1024 && s.cqHead*2 > len(s.cq) {
+		n := copy(s.cq, s.cq[s.cqHead:])
+		s.cq = s.cq[:n]
+		s.cqHead = 0
+	}
+	if dropped {
+		s.reclaimRingLocked()
+	}
+}
+
+// tombstoneLocked remembers h as taken by a block or dropped.
+func (s *Store) tombstoneLocked(h types.Hash) {
+	if _, ok := s.tomb[h]; ok {
+		return
+	}
+	s.tomb[h] = struct{}{}
+	s.tombRing = append(s.tombRing, h)
+	if len(s.tombRing)-s.tombHead > tombstoneCap {
+		delete(s.tomb, s.tombRing[s.tombHead])
+		s.tombRing[s.tombHead] = types.Hash{}
+		s.tombHead++
+		if s.tombHead > 1024 && s.tombHead*2 > len(s.tombRing) {
+			n := copy(s.tombRing, s.tombRing[s.tombHead:])
+			s.tombRing = s.tombRing[:n]
+			s.tombHead = 0
+		}
+	}
+}
+
+// reclaimRingLocked drops the ring's dead prefix and, once dead slots
+// dominate the live part, rebuilds the ring from the live frames in order.
+func (s *Store) reclaimRingLocked() {
+	for s.head < len(s.ring) {
+		if _, ok := s.m[s.ring[s.head]]; ok {
+			break
+		}
+		s.ring[s.head] = types.Hash{}
+		s.head++
+	}
+	live := len(s.m)
+	if span := len(s.ring) - s.head; span > 1024 && span > 2*live {
+		out := s.ring[:0]
+		for _, h := range s.ring[s.head:] {
+			if _, ok := s.m[h]; ok {
+				out = append(out, h)
+			}
+		}
+		for i := len(out); i < len(s.ring); i++ {
+			s.ring[i] = types.Hash{}
+		}
+		s.ring = out
+		s.head = 0
+		return
+	}
 	if s.head > 1024 && s.head*2 > len(s.ring) {
 		n := copy(s.ring, s.ring[s.head:])
 		s.ring = s.ring[:n]
@@ -171,68 +413,65 @@ func (s *Store) GetEntry(h types.Hash) (Entry, bool) {
 	s.mu.RLock()
 	e, ok := s.m[h]
 	s.mu.RUnlock()
-	return e, ok
+	return e.Entry, ok
+}
+
+// Included reports whether h is stored and held by a written block.
+func (s *Store) Included(h types.Hash) bool {
+	s.mu.RLock()
+	sl, ok := s.m[h]
+	s.mu.RUnlock()
+	return ok && sl.included()
 }
 
 // Scan calls fn for each stored frame in arrival order, oldest first,
 // until fn returns false. It holds the read lock for the walk, so fn must
 // be cheap and must not call back into the store.
 func (s *Store) Scan(fn func(h types.Hash, e Entry) bool) {
+	s.scan(false, fn)
+}
+
+// ScanFillable is Scan over the frames no written block holds: the
+// frames a block builder may take, oldest first.
+func (s *Store) ScanFillable(fn func(h types.Hash, e Entry) bool) {
+	s.scan(true, fn)
+}
+
+func (s *Store) scan(fillable bool, fn func(h types.Hash, e Entry) bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, h := range s.ring[s.head:] {
-		e, ok := s.m[h]
+		sl, ok := s.m[h]
 		if !ok {
-			continue // removed; its ring slot is reclaimed by eviction
+			continue // dropped; its ring slot is reclaimed later
 		}
-		if !fn(h, e) {
+		if fillable && sl.included() {
+			continue
+		}
+		if !fn(h, sl.Entry) {
 			return
 		}
 	}
 }
 
-// Remove drops frames a block has made durable elsewhere (the Frames
-// table) and remembers their hashes so a resend is not admitted again.
-// Their ring slots are skipped by Scan and reclaimed as eviction passes.
+// Remove drops frames no written block holds (the leader's unused local
+// frames) and remembers their hashes so a resend is not admitted again.
+// Frames a block holds are left to Commit's eviction.
 func (s *Store) Remove(hs []types.Hash) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, h := range hs {
-		if e, ok := s.m[h]; ok {
-			s.used -= int64(len(e.Raw))
+		if sl, ok := s.m[h]; ok {
+			if sl.included() {
+				continue
+			}
+			s.used -= int64(len(sl.Raw))
 			delete(s.m, h)
 			s.removed.Add(1)
 		}
-		if _, ok := s.tomb[h]; ok {
-			continue
-		}
-		s.tomb[h] = struct{}{}
-		s.tombRing = append(s.tombRing, h)
-		if len(s.tombRing)-s.tombHead > tombstoneCap {
-			delete(s.tomb, s.tombRing[s.tombHead])
-			s.tombRing[s.tombHead] = types.Hash{}
-			s.tombHead++
-			if s.tombHead > 1024 && s.tombHead*2 > len(s.tombRing) {
-				n := copy(s.tombRing, s.tombRing[s.tombHead:])
-				s.tombRing = s.tombRing[:n]
-				s.tombHead = 0
-			}
-		}
+		s.tombstoneLocked(h)
 	}
-	// A dead ring prefix is reclaimed here too, so a store that is drained
-	// by blocks rather than by eviction does not grow its ring forever.
-	for s.head < len(s.ring) {
-		if _, ok := s.m[s.ring[s.head]]; ok {
-			break
-		}
-		s.ring[s.head] = types.Hash{}
-		s.head++
-	}
-	if s.head > 1024 && s.head*2 > len(s.ring) {
-		n := copy(s.ring, s.ring[s.head:])
-		s.ring = s.ring[:n]
-		s.head = 0
-	}
+	s.reclaimRingLocked()
 }
 
 // Has reports whether h is stored.
@@ -250,16 +489,27 @@ func (s *Store) Len() int {
 	return len(s.m)
 }
 
+// CommittedHead returns the committed head height and whether one was seen.
+func (s *Store) CommittedHead() (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.committed, s.haveHead
+}
+
 // Stats returns a snapshot of the counters.
 func (s *Store) Stats() Stats {
 	s.mu.RLock()
-	st := Stats{Frames: len(s.m), Bytes: s.used, Budget: s.budget}
+	st := Stats{Frames: len(s.m), Bytes: s.used, Budget: s.budget, KeepBlocks: s.keep, CommittedHead: s.committed,
+		Pending: s.nPend, Committed: s.nCommit}
 	s.mu.RUnlock()
 	st.Puts = s.puts.Load()
 	st.Duplicates = s.dups.Load()
 	st.Rejected = s.rejected.Load()
+	st.Busy = s.busy.Load()
+	st.Bypassed = s.bypassed.Load()
 	st.Evicted = s.evicted.Load()
 	st.EvictedBytes = s.evictedBytes.Load()
+	st.Released = s.released.Load()
 	st.Hits = s.hits.Load()
 	st.Misses = s.misses.Load()
 	st.Removed = s.removed.Load()
