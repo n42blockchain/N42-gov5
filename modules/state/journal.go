@@ -123,9 +123,10 @@ func (j *journal) reset() {
 	// array sized to the historical high-water mark — pprof showed
 	// matchFull at 27% of CPU because a single heavy block had
 	// inflated buckets that every subsequent FinalizeTx scanned in
-	// full. The map alloc is one tiny header per tx; the win on
-	// iteration cost is far larger.
-	j.dirties = make(map[types.Address]int)
+	// full. A map that stayed small is cleared and kept: transactions
+	// touch a handful of accounts, and this ran twice per transaction
+	// (FinalizeTx and the Block-STM worker's Reset).
+	j.dirties = reuseMap(j.dirties)
 }
 
 type (
