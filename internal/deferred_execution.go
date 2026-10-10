@@ -4,6 +4,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -43,6 +44,49 @@ func ExecutedResultOfHeader(config *params.ChainConfig, tx kv.Getter, h *block.H
 	return r, nil
 }
 
+// executedOrSeededResult is ExecutedResultOfHeader with the reseeded-node
+// fallback: a node started from a state snapshot has no applied marker and
+// may lack the stored result of the blocks below its head, whose state it
+// never executed but holds (the snapshot's state is the head's post-state).
+// For a canonical block below the head, the result is then what its
+// canonical child carries: the snapshot's history was written at depth 1.
+// Only while no block has been applied here; any import writes the marker
+// and the rule is off from then on.
+func executedOrSeededResult(config *params.ChainConfig, tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, error) {
+	r, err := ExecutedResultOfHeader(config, tx, h)
+	if err == nil || !errors.Is(err, ErrDeferredResultUnknown) {
+		return r, err
+	}
+	if sr, ok := seededResult(tx, h); ok {
+		return sr, nil
+	}
+	return r, err
+}
+
+func seededResult(tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, bool) {
+	if _, _, ok, err := rawdb.ReadQMDBApplied(tx); err != nil || ok {
+		return rawdb.ExecutedResult{}, false
+	}
+	n := h.Number.Uint64()
+	if c, err := rawdb.ReadCanonicalHash(tx, n); err != nil || c != h.Hash() {
+		return rawdb.ExecutedResult{}, false
+	}
+	ch, err := rawdb.ReadCanonicalHash(tx, n+1)
+	if err != nil || ch == (types.Hash{}) {
+		return rawdb.ExecutedResult{}, false
+	}
+	child := rawdb.ReadHeader(tx, ch, n+1)
+	if child == nil || child.ParentHash != h.Hash() {
+		return rawdb.ExecutedResult{}, false
+	}
+	return rawdb.ExecutedResult{Root: child.Root, ReceiptHash: child.ReceiptHash, Bloom: child.Bloom, GasUsed: child.GasUsed}, true
+}
+
+// ExecutedOrSeededResult is executedOrSeededResult for the block builder.
+func (bc *BlockChain) ExecutedOrSeededResult(tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, error) {
+	return executedOrSeededResult(bc.chainConfig, tx, h)
+}
+
 // ErrDeferredResultUnknown: the parent's execution result is not on this
 // node (the parent was not applied here yet).
 var ErrDeferredResultUnknown = fmt.Errorf("deferred execution: parent result unknown")
@@ -58,7 +102,7 @@ func checkDeferredHeader(config *params.ChainConfig, tx kv.Getter, header, paren
 	if err != nil {
 		return err
 	}
-	want, err := ExecutedResultOfHeader(config, tx, target)
+	want, err := executedOrSeededResult(config, tx, target)
 	if err != nil {
 		return err
 	}

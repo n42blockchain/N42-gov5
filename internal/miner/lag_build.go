@@ -107,7 +107,7 @@ func (w *worker) laggedExecutedResult(tx kv.Getter, header *block.Header) (rawdb
 	if ok {
 		return r, nil
 	}
-	return internal.ExecutedResultOfHeader(w.chainConfig, tx, target)
+	return bc.ExecutedOrSeededResult(tx, target)
 }
 
 // commitWorkLagged builds, seals and proposes a frame block on parentHash
