@@ -180,6 +180,10 @@ type BlockChain struct {
 	// Frame-referenced blocks (P1b); see frame_blocks.go.
 	frames frameBlockState
 
+	// Execution off the consensus path (P2a); see lag_pipeline.go.
+	avail   availableState
+	lagExec lagExecutor
+
 	// executedHook, when set, fires the moment a block's execution and state
 	// validation succeed during import — BEFORE writeBlockWithState. Wired to
 	// the consensus early-vote path so the vote round overlaps persistence.

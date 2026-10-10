@@ -48,23 +48,42 @@ func ExecutedResultOfHeader(config *params.ChainConfig, tx kv.Getter, h *block.H
 var ErrDeferredResultUnknown = fmt.Errorf("deferred execution: parent result unknown")
 
 // checkDeferredHeader verifies that header's execution fields are this
-// node's result of the parent. parent is the parent's header.
+// node's result of the block they report: the parent at depth 1, the
+// ancestor DeferredDepthAt(header)-1 levels above the parent at depth k
+// (block.DeferredDepthAt; N42_DEFERRED_DEPTH). parent is the parent's
+// header; the ancestors above it are read from tx. A mismatch at depth k is
+// the lagged equivocation P2a detects when header N+k arrives.
 func checkDeferredHeader(config *params.ChainConfig, tx kv.Getter, header, parent *block.Header) error {
-	want, err := ExecutedResultOfHeader(config, tx, parent)
+	target, err := deferredTarget(header, parent, func(h types.Hash, n uint64) *block.Header { return rawdb.ReadHeader(tx, h, n) })
 	if err != nil {
 		return err
 	}
+	want, err := ExecutedResultOfHeader(config, tx, target)
+	if err != nil {
+		return err
+	}
+	if err := compareDeferredResult(header, want); err != nil {
+		if target != parent {
+			reportLaggedEquivocation(header, target, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// compareDeferredResult compares header's execution fields with want.
+func compareDeferredResult(header *block.Header, want rawdb.ExecutedResult) error {
 	if header.Root != want.Root {
-		return fmt.Errorf("deferred execution: header %d carries parent state root %x, this node executed %x", header.Number.Uint64(), header.Root[:8], want.Root[:8])
+		return fmt.Errorf("deferred execution: header %d carries state root %x, this node executed %x", header.Number.Uint64(), header.Root[:8], want.Root[:8])
 	}
 	if header.ReceiptHash != want.ReceiptHash {
-		return fmt.Errorf("deferred execution: header %d carries parent receipts root %x, this node executed %x", header.Number.Uint64(), header.ReceiptHash[:8], want.ReceiptHash[:8])
+		return fmt.Errorf("deferred execution: header %d carries receipts root %x, this node executed %x", header.Number.Uint64(), header.ReceiptHash[:8], want.ReceiptHash[:8])
 	}
 	if header.Bloom != want.Bloom {
-		return fmt.Errorf("deferred execution: header %d carries a parent bloom that differs from this node's", header.Number.Uint64())
+		return fmt.Errorf("deferred execution: header %d carries a bloom that differs from this node's", header.Number.Uint64())
 	}
 	if header.GasUsed != want.GasUsed {
-		return fmt.Errorf("deferred execution: header %d carries parent gas used %d, this node executed %d", header.Number.Uint64(), header.GasUsed, want.GasUsed)
+		return fmt.Errorf("deferred execution: header %d carries gas used %d, this node executed %d", header.Number.Uint64(), header.GasUsed, want.GasUsed)
 	}
 	return nil
 }

@@ -55,6 +55,15 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	if bc.HasAppliedBlock(blk.Hash(), number) {
 		return true, false, nil
 	}
+	// Vote on availability (P2a, N42_VOTE_ON_AVAILABILITY=1): a frame block
+	// is voted on once its static header fields, its frame list and every
+	// frame check out; nothing waits for the parent's execution.
+	if block.VoteOnAvailability() {
+		if body, ok := blk.Body().(*block.Body); ok && body.IsFrameBody() {
+			retry, err := bc.checkAvailability(blk, hdr, body)
+			return true, retry, err
+		}
+	}
 	tx, err := bc.ChainDB.BeginRo(context.Background())
 	if err != nil {
 		return true, true, err
