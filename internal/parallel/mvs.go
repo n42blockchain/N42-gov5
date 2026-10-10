@@ -222,6 +222,23 @@ func (m *MVS) getOrCreateEntry(key LocationKey) *mvEntry {
 	return e
 }
 
+// before returns how many versions precede txIndex (e.mu held). Short lists,
+// the usual case, are scanned from the end: a transaction mostly reads a
+// location whose writers all precede it, so the scan stops at once, and it
+// skips sort.Search's closure calls.
+func (e *mvEntry) before(txIndex int) int {
+	n := len(e.versions)
+	if n <= 16 {
+		for n > 0 && e.versions[n-1].txIndex >= txIndex {
+			n--
+		}
+		return n
+	}
+	return sort.Search(n, func(i int) bool {
+		return e.versions[i].txIndex >= txIndex
+	})
+}
+
 // Write records that transaction txIndex (at given incarnation) wrote value to the given location.
 // If txIndex already has a write here, it is overwritten (for re-execution).
 func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []byte) {
@@ -280,29 +297,40 @@ func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta
 // incarnation, found) and the sum of the balance deltas written between
 // that full write (or the start) and txIndex, nil when there are none.
 func (m *MVS) ReadAccount(key LocationKey, txIndex int) (full []byte, fullTx int, fullInc uint32, found bool, delta *uint256.Int) {
-	e := m.lookup(&key)
+	var d uint256.Int
+	full, fullTx, fullInc, found, hasDelta := m.readAccountInto(&key, txIndex, &d)
+	if hasDelta {
+		delta = &d
+	}
+	return full, fullTx, fullInc, found, delta
+}
+
+// readAccountInto is ReadAccount summing the deltas into the caller's
+// delta (overwritten; meaningful only when hasDelta), so the hot readers
+// allocate nothing.
+func (m *MVS) readAccountInto(key *LocationKey, txIndex int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool) {
+	e := m.lookup(key)
 	if e == nil {
-		return nil, 0, 0, false, nil
+		return nil, 0, 0, false, false
 	}
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	idx := sort.Search(len(e.versions), func(i int) bool {
-		return e.versions[i].txIndex >= txIndex
-	})
-	for i := idx - 1; i >= 0; i-- {
-		v := e.versions[i]
+	for i := e.before(txIndex) - 1; i >= 0; i-- {
+		v := &e.versions[i]
 		if v.delta != nil {
-			if delta == nil {
-				delta = new(uint256.Int)
+			if !hasDelta {
+				delta.Set(v.delta)
+				hasDelta = true
+			} else {
+				delta.Add(delta, v.delta)
 			}
-			delta.Add(delta, v.delta)
 			continue
 		}
-		return v.value, v.txIndex, v.incarnation, true, delta
+		return v.value, v.txIndex, v.incarnation, true, hasDelta
 	}
-	return nil, 0, 0, false, delta
+	return nil, 0, 0, false, hasDelta
 }
 
 // Read returns the value written by the latest transaction before txIndex.
@@ -320,9 +348,7 @@ func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
 	defer e.mu.RUnlock()
 
 	// Find the latest version with txIndex < callerTxIndex.
-	idx := sort.Search(len(e.versions), func(i int) bool {
-		return e.versions[i].txIndex >= txIndex
-	})
+	idx := e.before(txIndex)
 
 	if idx == 0 {
 		return nil, 0, 0, false

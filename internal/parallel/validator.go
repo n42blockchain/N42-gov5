@@ -16,7 +16,11 @@
 
 package parallel
 
-import "bytes"
+import (
+	"bytes"
+
+	"github.com/holiman/uint256"
+)
 
 // Validate checks whether a transaction's read set is still consistent
 // with the current MVS state. If any read has become stale (because a
@@ -70,7 +74,12 @@ func readValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 // transaction saw -- on every field, or on every field but the balance
 // when the read is balance-insensitive.
 func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
-	full, fullTx, fullInc, found, delta := mvs.ReadAccount(rd.Key, txIndex)
+	var deltaBuf uint256.Int
+	full, fullTx, fullInc, found, hasDelta := mvs.readAccountInto(&rd.Key, txIndex, &deltaBuf)
+	var delta *uint256.Int
+	if hasDelta {
+		delta = &deltaBuf
+	}
 	// Fast path: the same version as at read time, and no deltas then or now.
 	if !rd.HadDelta && delta == nil {
 		if rd.FromBase && !found {
@@ -80,15 +89,21 @@ func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 			return true
 		}
 	}
-	var cur []byte
+	var under []byte
 	switch {
 	case found:
-		cur = composeAccount(full, delta)
+		under = full
 	case rd.FromBase:
-		cur = composeAccount(rd.Base, delta)
+		under = rd.Base
 	default:
 		return false // the full write it depended on was removed
 	}
+	if rd.IgnoreBalance && under != nil {
+		// Deltas move only the balance: the composition equals its
+		// underlying account on every other field.
+		return accountEqualIgnoringBalance(under, rd.Value)
+	}
+	cur := composeAccount(under, delta)
 	if rd.IgnoreBalance {
 		return accountEqualIgnoringBalance(cur, rd.Value)
 	}
