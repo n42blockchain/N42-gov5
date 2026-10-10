@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,7 +34,16 @@ type frameRun struct {
 	// frame dissemination between nodes (P1b) a rotating leader can only
 	// fill blocks from frames it received itself.
 	broadcast bool
+	// workers is the number of goroutines that sign and encode frames ahead
+	// of the in-order dispatcher (<= 1: one). Frame k's content and seq are
+	// functions of k alone, so frames can be built out of order and consumed
+	// in order.
+	workers int
+	// corpus, when set, replaces building: pre-encoded frames are streamed
+	// from it in order (see -presign / -replay).
+	corpus *corpusReader
 
+	presigned, streamed                                  atomic.Int64
 	frames, txs, busy, failed, conns, rejected, timeouts atomic.Int64
 
 	// peerBusy counts Busy replies per peer (index into peers); sized by run.
@@ -140,7 +151,7 @@ func (fr *frameRun) run(progress bool) frameResult {
 					return
 				case <-t.C:
 					n := fr.txs.Load()
-					fmt.Printf("  frames=%d txs=%d (+%d/s) busy=%d busyRetries=%d failed=%d timeouts=%d\n", fr.frames.Load(), n, n-last, fr.busy.Load(), fr.busyRetries(), fr.failed.Load(), fr.timeouts.Load())
+					fmt.Printf("  frames=%d txs=%d (+%d/s) busy=%d busyRetries=%d failed=%d timeouts=%d presigned=%d streamed=%d\n", fr.frames.Load(), n, n-last, fr.busy.Load(), fr.busyRetries(), fr.failed.Load(), fr.timeouts.Load(), fr.presigned.Load(), fr.streamed.Load())
 					last = n
 				}
 			}
@@ -195,9 +206,14 @@ func (fr *frameRun) run(progress bool) frameResult {
 			}
 		}(p)
 	}
-	txs := make([][]byte, 0, frame.MaxTxs)
-	var peerSeq = make([]uint64, nPeers)
-	for k := int64(0); k < nFrames; k++ {
+	var src <-chan builtFrame
+	if fr.corpus != nil {
+		src = fr.corpus.stream(nFrames, &fr.streamed)
+	} else {
+		src = fr.produce(nFrames)
+	}
+	for bf := range src {
+		k := bf.k
 		lo, hi := k*frame.MaxTxs, (k+1)*frame.MaxTxs
 		if hi > fr.total {
 			hi = fr.total
@@ -207,39 +223,23 @@ func (fr *frameRun) run(progress bool) frameResult {
 				<-fr.permits
 			}
 		}
-		txs = txs[:0]
-		for i := lo; i < hi; i++ {
-			if b := fr.rawAt(i); b != nil {
-				txs = append(txs, b)
-			}
+		if bf.err != nil {
+			fr.failed.Add(hi - lo)
+			fmt.Printf("  frame %d encode: %v\n", k, bf.err)
+			continue
 		}
 		// Broadcast: every peer gets every frame with seq k. Otherwise
 		// frame k goes to peer k % len with that peer's own contiguous seq.
+		j := &frameJob{k: k, raw: bf.raw, ntx: bf.ntx}
 		if fr.broadcast {
-			raw, _, err := frame.Encode(fr.key, uint64(k), frame.TxTypeEthereum, txs)
-			if err != nil {
-				fr.failed.Add(hi - lo)
-				fmt.Printf("  frame %d encode: %v\n", k, err)
-				continue
-			}
-			j := &frameJob{k: k, raw: raw, ntx: len(txs)}
 			j.pending.Store(int32(nPeers))
 			for p := range chans {
 				chans[p] <- j
 			}
 			continue
 		}
-		p := int(k % int64(nPeers))
-		raw, _, err := frame.Encode(fr.key, peerSeq[p], frame.TxTypeEthereum, txs)
-		if err != nil {
-			fr.failed.Add(hi - lo)
-			fmt.Printf("  frame %d encode: %v\n", k, err)
-			continue
-		}
-		peerSeq[p]++
-		j := &frameJob{k: k, raw: raw, ntx: len(txs)}
 		j.pending.Store(1)
-		chans[p] <- j
+		chans[int(k%int64(nPeers))] <- j
 	}
 	for _, c := range chans {
 		close(c)
@@ -309,4 +309,174 @@ func (fr *frameRun) sendTo(conn *net.Conn, pi int, k int64, raw []byte, ntx int,
 			return false, buf
 		}
 	}
+}
+
+// builtFrame is one encoded frame (or the error that stopped its encoding).
+type builtFrame struct {
+	k   int64
+	raw []byte
+	ntx int
+	err error
+}
+
+// buildFrame signs-and-encodes frame k. The seq is k when broadcasting, else
+// k / peers (peer k % peers receives every peers-th frame, contiguously).
+func (fr *frameRun) buildFrame(k int64) builtFrame {
+	lo, hi := k*frame.MaxTxs, (k+1)*frame.MaxTxs
+	if hi > fr.total {
+		hi = fr.total
+	}
+	txs := make([][]byte, 0, hi-lo)
+	for i := lo; i < hi; i++ {
+		if b := fr.rawAt(i); b != nil {
+			txs = append(txs, b)
+		}
+	}
+	seq := uint64(k)
+	if !fr.broadcast {
+		seq = uint64(k) / uint64(len(fr.peers))
+	}
+	raw, _, err := frame.Encode(fr.key, seq, frame.TxTypeEthereum, txs)
+	return builtFrame{k: k, raw: raw, ntx: len(txs), err: err}
+}
+
+// produce builds frames 0..nFrames-1 on fr.workers goroutines and delivers
+// them in index order. Lookahead is bounded to a few frames per worker.
+func (fr *frameRun) produce(nFrames int64) <-chan builtFrame {
+	w := fr.workers
+	if w < 1 {
+		w = 1
+	}
+	out := make(chan builtFrame)
+	type job struct {
+		k int64
+		f chan builtFrame
+	}
+	work := make(chan job, w)
+	futures := make(chan chan builtFrame, 2*w)
+	for i := 0; i < w; i++ {
+		go func() {
+			for j := range work {
+				j.f <- fr.buildFrame(j.k)
+			}
+		}()
+	}
+	go func() {
+		for k := int64(0); k < nFrames; k++ {
+			f := make(chan builtFrame, 1)
+			futures <- f
+			work <- job{k, f}
+		}
+		close(work)
+		close(futures)
+	}()
+	go func() {
+		for f := range futures {
+			out <- <-f
+		}
+		close(out)
+	}()
+	return out
+}
+
+// Corpus file: header, then per frame u32 rawLen, u32 txCount, raw bytes.
+const corpusMagic = "TXFC0001"
+
+type corpusHeader struct {
+	Peers     uint32
+	Broadcast uint8
+	Total     uint64
+	Frames    uint64
+}
+
+// writeCorpus builds every frame (fr.workers goroutines) into path.
+func (fr *frameRun) writeCorpus(path string) error {
+	nFrames := (fr.total + frame.MaxTxs - 1) / frame.MaxTxs
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	h := corpusHeader{Peers: uint32(len(fr.peers)), Total: uint64(fr.total), Frames: uint64(nFrames)}
+	if fr.broadcast {
+		h.Broadcast = 1
+	}
+	_, _ = w.WriteString(corpusMagic)
+	_ = binary.Write(w, binary.LittleEndian, h)
+	for bf := range fr.produce(nFrames) {
+		if bf.err != nil {
+			f.Close()
+			return fmt.Errorf("frame %d: %w", bf.k, bf.err)
+		}
+		var hd [8]byte
+		binary.LittleEndian.PutUint32(hd[0:], uint32(len(bf.raw)))
+		binary.LittleEndian.PutUint32(hd[4:], uint32(bf.ntx))
+		_, _ = w.Write(hd[:])
+		_, _ = w.Write(bf.raw)
+		fr.presigned.Add(int64(bf.ntx))
+	}
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// corpusReader streams a corpus file's frames in order.
+type corpusReader struct {
+	f *os.File
+	r *bufio.Reader
+	h corpusHeader
+}
+
+func openCorpus(path string) (*corpusReader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	r := bufio.NewReaderSize(f, 4<<20)
+	var m [len(corpusMagic)]byte
+	if _, err := io.ReadFull(r, m[:]); err != nil || string(m[:]) != corpusMagic {
+		f.Close()
+		return nil, fmt.Errorf("%s: not a txflood corpus", path)
+	}
+	c := &corpusReader{f: f, r: r}
+	if err := binary.Read(r, binary.LittleEndian, &c.h); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// check verifies the corpus was built for this run's shape.
+func (c *corpusReader) check(peers int, broadcast bool, total int64) error {
+	if int(c.h.Peers) != peers || (c.h.Broadcast == 1) != broadcast || int64(c.h.Total) != total {
+		return fmt.Errorf("corpus built for peers=%d broadcast=%v total=%d, run has peers=%d broadcast=%v total=%d",
+			c.h.Peers, c.h.Broadcast == 1, c.h.Total, peers, broadcast, total)
+	}
+	return nil
+}
+
+func (c *corpusReader) stream(nFrames int64, streamed *atomic.Int64) <-chan builtFrame {
+	out := make(chan builtFrame, 8)
+	go func() {
+		defer close(out)
+		defer c.f.Close()
+		for k := int64(0); k < nFrames; k++ {
+			var hd [8]byte
+			if _, err := io.ReadFull(c.r, hd[:]); err != nil {
+				out <- builtFrame{k: k, err: err}
+				continue
+			}
+			raw := make([]byte, binary.LittleEndian.Uint32(hd[0:]))
+			if _, err := io.ReadFull(c.r, raw); err != nil {
+				out <- builtFrame{k: k, err: err}
+				continue
+			}
+			ntx := int(binary.LittleEndian.Uint32(hd[4:]))
+			streamed.Add(int64(ntx))
+			out <- builtFrame{k: k, raw: raw, ntx: ntx}
+		}
+	}()
+	return out
 }

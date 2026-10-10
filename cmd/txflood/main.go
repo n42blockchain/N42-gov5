@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -651,7 +652,22 @@ func main() {
 	framePeers := flag.String("frame-peers", "127.0.0.1:9100", "with -frames: comma-separated host:port ingest endpoints; connection w goes to peer w % len")
 	gatewayKey := flag.String("gateway-key", "", "with -frames: gateway private key (hex) that signs every frame")
 	frameBroadcast := flag.Bool("frame-broadcast", false, "with -frames: send every frame to every -frame-peers endpoint (each connection worker holds one connection per peer); needed with N42_FRAME_BLOCKS=1 so every rotating leader holds every frame")
+	signWorkers := flag.Int("sign-workers", 1, "with -frames: goroutines that sign and encode frames ahead of the in-order per-peer senders (frame content depends only on its index, so this keeps delivery order). One worker is the historical single producer, which caps a generator near 37k tx/s")
+	presignFile := flag.String("presign", "", "with -frames: after funding and the nonce probe, sign and encode every frame into this corpus file (-sign-workers goroutines), then stream the run from it. Opt-in; takes the signing off the flood's critical path")
+	replayFile := flag.String("replay", "", "with -frames: stream a corpus written by -presign (same -senders/-pertx/-frame-peers/-frame-broadcast/-sender-offset, nonces unchanged) and sign nothing; combine with -skip-funding. Depth-by-nonce pacing needs the same process to have probed nonces, so prefer -presign for that")
+	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile of the whole run to this file")
 	flag.Parse()
+	if *cpuProfile != "" {
+		pf, perr := os.Create(*cpuProfile)
+		if perr != nil {
+			panic(perr)
+		}
+		_ = pprof.StartCPUProfile(pf)
+		defer pprof.StopCPUProfile()
+	}
+	if *replayFile != "" {
+		*lazySign = true // nothing to pre-sign: only nonces are probed
+	}
 	if *senders < 0 || *perTx < 0 {
 		fmt.Fprintln(os.Stderr, "senders and pertx must be non-negative")
 		os.Exit(2)
@@ -921,6 +937,29 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
 		os.Exit(1)
 	}
+	// -presign: build the whole frame corpus before the barrier so the
+	// signing is off the flood's critical path.
+	if *framesMode && *presignFile != "" && *replayFile == "" {
+		gk, gerr := crypto.HexToECDSA(strings.TrimPrefix(*gatewayKey, "0x"))
+		if gerr != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: -presign needs a valid -gateway-key: %v\n", gerr)
+			os.Exit(2)
+		}
+		pre := &frameRun{
+			peers:     strings.Split(*framePeers, ","),
+			key:       gk,
+			total:     totalTxs,
+			rawAt:     func(i int64) []byte { return rawBytes(rawAt(i)) },
+			broadcast: *frameBroadcast,
+			workers:   *signWorkers,
+		}
+		t0 := time.Now()
+		if err := pre.writeCorpus(*presignFile); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: presign: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("presigned %d txs into %s in %s\n", pre.presigned.Load(), *presignFile, time.Since(t0).Round(time.Millisecond))
+	}
 	// Funding barrier (S49, docs/QS_BLOCK_TIME_BUDGET.md 6f1/6f2): funding is
 	// done and this generator is about to start flooding. If -wait-for-file is
 	// set, stop here until bench-run.sh has seen every generator reach this
@@ -1169,6 +1208,9 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Printf("frames: gateway %s -> %s\n", crypto.PubkeyToAddress(gk.PublicKey), *framePeers)
+		if *presignFile != "" {
+			*replayFile = *presignFile
+		}
 		fr := &frameRun{
 			peers:     strings.Split(*framePeers, ","),
 			key:       gk,
@@ -1177,6 +1219,19 @@ func main() {
 			rawAt:     func(i int64) []byte { return rawBytes(rawAt(i)) },
 			permits:   permits,
 			broadcast: *frameBroadcast,
+			workers:   *signWorkers,
+		}
+		if *replayFile != "" {
+			c, err := openCorpus(*replayFile)
+			if err == nil {
+				err = c.check(len(fr.peers), fr.broadcast, fr.total)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "FATAL: replay: %v\n", err)
+				os.Exit(1)
+			}
+			fr.corpus = c
+			fr.presigned.Store(int64(c.h.Total))
 		}
 		fmt.Printf("DONE %s\n", fr.run(true))
 		return
