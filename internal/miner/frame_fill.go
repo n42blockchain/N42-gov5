@@ -57,14 +57,18 @@ type framePick struct {
 	txs    int
 }
 
-// pickFrames takes frames from the store in arrival order, oldest first,
-// skipping those an unwritten ancestor already holds and those signed by
-// exclude (this node's own local frames; zero = none), and stops at the
-// first frame whose gas estimate does not fit the budget or at maxFrames.
-// Stopping rather than skipping keeps blocks in arrival order.
+// pickFrames takes frames from the store in arrival order (the store's
+// ring, oldest first: never map or hash order), so each gateway's frames
+// are consumed as a prefix and one sender's consecutive nonces, spread
+// over consecutive frames, stay contiguous. It skips frames a written
+// block holds (store pins), those an unwritten ancestor holds (inFlight)
+// and those signed by exclude (this node's own local frames; zero = none),
+// and stops at the first frame whose gas estimate does not fit the budget
+// or at maxFrames. Stopping rather than skipping keeps blocks in arrival
+// order.
 func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
 	var p framePick
-	st.Scan(func(h types.Hash, e store.Entry) bool {
+	st.ScanFillable(func(h types.Hash, e store.Entry) bool {
 		if inFlight != nil && inFlight(h) {
 			return true
 		}
@@ -363,9 +367,11 @@ func (w *worker) fillLocalFrames(env *environment, ibs *state.IntraBlockState, s
 			// transactions are not this block's to include.
 			break
 		}
-		if !st.PutEntry(f.hash, store.Entry{Raw: f.raw, Gas: f.gas, Txs: len(f.txs)}) && !st.Has(f.hash) {
-			// Refused (a written block holds it, or it exceeds the whole
-			// budget): the followers could not pull it, so it is not used.
+		// Local frames bypass the store's budget (bounded by the pool gas
+		// of one block): the pool must not starve behind gateway frames.
+		if st.Admit(f.hash, store.Entry{Raw: f.raw, Gas: f.gas, Txs: len(f.txs)}, true) != store.Stored && !st.Has(f.hash) {
+			// Refused (a block already took it): the followers could not
+			// pull it, so it is not used.
 			break
 		}
 		w.localFrames.mu.Lock()

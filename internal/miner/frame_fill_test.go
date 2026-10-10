@@ -61,11 +61,75 @@ func TestPickFramesOrderAndGasStop(t *testing.T) {
 		t.Fatal("frame above the budget was taken")
 	}
 
-	// Frames a written block holds leave the store; the next pick starts
-	// after them.
-	st.Remove(hashes[:6])
+	// Frames a written block holds stay stored but are not fillable; the
+	// next pick starts after them.
+	st.Include(hashes[:6], 9)
 	if p = pickFrames(st, nil, types.Address{}, perFrameGas, 1024); len(p.hashes) != 1 || p.hashes[0] != hashes[6] {
-		t.Fatal("pick after remove")
+		t.Fatal("pick after include")
+	}
+}
+
+// TestPickFramesFIFOAcrossGateways: the pick follows store arrival order,
+// not hash or map order. Two gateways' frames arrive interleaved; the
+// arrival order is chosen so it differs from hash order. Frames of a
+// block on an abandoned fork are fillable again, in their arrival place,
+// once a commit at that height passes them over.
+func TestPickFramesFIFOAcrossGateways(t *testing.T) {
+	keysA := frametest.Keys(t, 3, 81)
+	keysB := frametest.Keys(t, 3, 91)
+	fa := frametest.NewBuilder(keysA[0], big.NewInt(94), keysA[1:])
+	fbB := frametest.NewBuilder(keysB[0], big.NewInt(94), keysB[1:])
+	rawsA, hashesA, _ := fa.Frames(t, 6, 3)
+	rawsB, hashesB, _ := fbB.Frames(t, 6, 3)
+	type fr struct {
+		h   types.Hash
+		raw []byte
+	}
+	var arrival []fr
+	for i := range rawsA {
+		arrival = append(arrival, fr{hashesA[i], rawsA[i]}, fr{hashesB[i], rawsB[i]})
+	}
+	// Make sure arrival order is not sorted hash order, or the test proves
+	// nothing.
+	sorted := true
+	for i := 1; i < len(arrival); i++ {
+		if string(arrival[i-1].h[:]) > string(arrival[i].h[:]) {
+			sorted = false
+		}
+	}
+	if sorted {
+		arrival[0], arrival[len(arrival)-1] = arrival[len(arrival)-1], arrival[0]
+	}
+	st := store.New(1 << 30)
+	for _, a := range arrival {
+		f, err := frame.Decode(a.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !st.PutEntry(a.h, store.Entry{Raw: a.raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}) {
+			t.Fatal("put")
+		}
+	}
+	p := pickFrames(st, nil, types.Address{}, 1<<62, 1024)
+	if len(p.hashes) != len(arrival) {
+		t.Fatalf("picked %d of %d", len(p.hashes), len(arrival))
+	}
+	for i := range arrival {
+		if p.hashes[i] != arrival[i].h {
+			t.Fatalf("pick %d is not the %d-th arrival", i, i)
+		}
+	}
+	// Block 5 (a fork sibling) took the first four; block 5' took nothing.
+	// While pinned they are skipped; after the commit at 5 they are back,
+	// in front.
+	pinned := []types.Hash{arrival[0].h, arrival[1].h, arrival[2].h, arrival[3].h}
+	st.Include(pinned, 5)
+	if p = pickFrames(st, nil, types.Address{}, 1<<62, 2); p.hashes[0] != arrival[4].h || p.hashes[1] != arrival[5].h {
+		t.Fatal("pinned frames picked")
+	}
+	st.Commit(5, nil)
+	if p = pickFrames(st, nil, types.Address{}, 1<<62, 1); p.hashes[0] != arrival[0].h {
+		t.Fatal("released fork frames lost their arrival place")
 	}
 }
 
