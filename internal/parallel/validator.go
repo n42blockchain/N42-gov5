@@ -75,7 +75,11 @@ func readValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 // when the read is balance-insensitive.
 func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 	var deltaBuf uint256.Int
-	full, fullTx, fullInc, found, hasDelta := mvs.readAccountInto(&rd.Key, txIndex, &deltaBuf)
+	e := rd.entry
+	if e == nil {
+		e = mvs.lookup(&rd.Key)
+	}
+	full, fullTx, fullInc, found, hasDelta := e.readAccount(txIndex, &deltaBuf)
 	var delta *uint256.Int
 	if hasDelta {
 		delta = &deltaBuf

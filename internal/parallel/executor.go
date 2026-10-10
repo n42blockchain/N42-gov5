@@ -406,7 +406,7 @@ const (
 // neighbour's was written from two cores at once.
 type txSlot struct {
 	set    ReadWriteSet
-	_      [8]byte
+	_      [24]byte
 	reads  [arenaReads]ReadDescriptor
 	writes [arenaWrites]WriteDescriptor
 }
@@ -717,14 +717,14 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		wd := &rw.Writes[i]
 		switch {
 		case wd.Delta != nil:
-			e.mvs.WriteDelta(wd.Key, txIndex, inc, wd.Delta)
+			e.writeEntry(rw, &wd.Key).writeDelta(txIndex, inc, wd.Delta)
 		case wd.Key.Field == FieldCode:
 			// Code can alias EVM memory: copied.
 			e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
 		default:
 			// The state writer encodes every other value fresh and nothing
 			// mutates a recorded write: the store adopts it.
-			e.mvs.writeOwned(wd.Key, txIndex, inc, wd.Value)
+			e.writeEntry(rw, &wd.Key).writeOwned(txIndex, inc, wd.Value)
 		}
 	}
 	if ws != nil {
@@ -733,6 +733,30 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	}
 
 	e.status[txIndex] = StatusExecuted
+}
+
+// writeEntry returns the store entry for a write of rw to key. An account
+// the transaction read carries the entry its read was served from; when
+// the read found none, the entry created here is handed back to that read
+// so its validation skips the lookup as well.
+func (e *Executor) writeEntry(rw *ReadWriteSet, key *LocationKey) *mvEntry {
+	var rd *ReadDescriptor
+	if key.Field == FieldBalance {
+		for i := range rw.Reads {
+			if r := &rw.Reads[i]; r.Key.Field == FieldBalance && r.Key.Address == key.Address {
+				if r.entry != nil {
+					return r.entry
+				}
+				rd = r
+				break
+			}
+		}
+	}
+	ent := e.mvs.getOrCreateEntry(*key)
+	if rd != nil {
+		rd.entry = ent
+	}
+	return ent
 }
 
 // validateInOrder validates all executed txs in order.

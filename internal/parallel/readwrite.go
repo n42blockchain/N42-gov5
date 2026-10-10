@@ -23,22 +23,15 @@ import (
 )
 
 // ReadDescriptor records one read a transaction made during execution.
+// Its flags sit together after the version so the descriptor is 128 bytes.
 type ReadDescriptor struct {
 	Key               LocationKey
 	WriterTx          int    // index of the transaction that provided the value (-1 if from base state)
 	WriterIncarnation uint32 // incarnation of the writer tx at read time
 	FromBase          bool   // true if the value was read from the base DB (no MVS entry)
-	// Value is the bytes the transaction read (nil for a missing account or
-	// slot) when HasValue is set. Validation accepts a read whose version
-	// moved but whose bytes did not: a re-executed writer that produced the
-	// same value does not invalidate its dependants.
-	Value    []byte
+	// HasValue says Value holds the bytes read (see Value).
 	HasValue bool
-	// Account reads (FieldBalance) compose the latest full write, or the base
-	// value, with the balance deltas preceding transactions recorded after
-	// it. Base keeps the base bytes for that recomposition at validation;
-	// HadDelta says deltas took part in Value.
-	Base     []byte
+	// HadDelta says balance deltas took part in Value (see Base).
 	HadDelta bool
 	// IgnoreBalance marks an account read the transaction's outputs cannot
 	// depend on the balance of: it never observed the balance (no
@@ -46,6 +39,20 @@ type ReadDescriptor struct {
 	// account. Validation then compares every field but the balance, so a
 	// recipient credited by preceding transactions does not invalidate it.
 	IgnoreBalance bool
+	// Value is the bytes the transaction read (nil for a missing account or
+	// slot) when HasValue is set. Validation accepts a read whose version
+	// moved but whose bytes did not: a re-executed writer that produced the
+	// same value does not invalidate its dependants.
+	Value []byte
+	// Account reads (FieldBalance) compose the latest full write, or the base
+	// value, with the balance deltas preceding transactions recorded after
+	// it. Base keeps the base bytes for that recomposition at validation.
+	Base []byte
+	// entry is the store entry of Key when the reader found one, or the
+	// one the transaction's own write to Key created; nil means look it
+	// up. Entries are never removed from a store, so the pointer is the
+	// location's for the whole block.
+	entry *mvEntry
 }
 
 // WriteDescriptor records one write a transaction made during execution.
