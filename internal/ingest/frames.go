@@ -49,7 +49,7 @@ const FrameMagic = frameMagic
 const (
 	FrameAccepted       byte = 0 // stored in the frame store
 	FrameDuplicate      byte = 1 // already stored, or already in a block; nothing done
-	FrameBusy           byte = 2 // reserved: not produced since the P1a bridge was removed
+	FrameBusy           byte = 2 // store full of frames no committed block holds; nothing stored, resend later
 	FrameBadSignature   byte = 3 // gateway signature does not verify
 	FrameUnknownGateway byte = 4 // gateway not in the allowlist
 	FrameMalformed      byte = 5 // payload layout invalid; connection kept if framing held
@@ -233,9 +233,19 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 		reply[0] = FrameDuplicate
 		return reply, nil
 	}
-	if !st.PutEntry(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}) {
-		// Lost a race with the same frame on another connection, or the
-		// frame exceeds the whole budget; either way nothing is lost.
+	switch st.Admit(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}, false) {
+	case store.Stored:
+	case store.Busy:
+		// Bounded admission (S89): the store holds only frames no
+		// committed block has released yet. The sender backs off and
+		// resends; nothing is stored.
+		fi.busy.Add(1)
+		reply[0] = FrameBusy
+		return reply, nil
+	default:
+		// Lost a race with the same frame on another connection, a block
+		// already took it, or the frame exceeds the whole budget; either
+		// way nothing is lost.
 		fi.duplicate.Add(1)
 		reply[0] = FrameDuplicate
 		return reply, nil
@@ -249,22 +259,25 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 func (fi *frameIngest) statsLoop(ctx context.Context) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
-	var last uint64
+	var last, lastBusy uint64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			a := fi.accepted.Load()
-			if a == last {
+			a, b := fi.accepted.Load(), fi.busy.Load()
+			if a == last && b == lastBusy {
 				continue
 			}
 			st := fi.cfg.Store.Stats()
 			log.Info("ingest frames", "accepted", a, "acceptedDelta", a-last, "txs", fi.txsAccepted.Load(),
+				"busy", b, "busyDelta", b-lastBusy,
 				"dup", fi.duplicate.Load(), "badSig", fi.badSig.Load(),
 				"pulled", fi.pulled.Load(), "pullServed", fi.pullServed.Load(),
-				"storeFrames", st.Frames, "storeBytes", st.Bytes, "evicted", st.Evicted, "removed", st.Removed)
-			last = a
+				"storeFrames", st.Frames, "storeBytes", st.Bytes, "pending", st.Pending, "committed", st.Committed,
+				"committedHead", st.CommittedHead, "bypassed", st.Bypassed, "released", st.Released,
+				"evicted", st.Evicted, "removed", st.Removed)
+			last, lastBusy = a, b
 		}
 	}
 }
