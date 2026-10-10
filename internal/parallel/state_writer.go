@@ -56,15 +56,27 @@ func (w *ParallelStateWriter) Rebind(rw *ReadWriteSet) {
 
 // UpdateAccountData records an account update.
 func (w *ParallelStateWriter) UpdateAccountData(address types.Address, original, acc *account.StateAccount) error {
+	return w.updateAccountData(address, original, acc, w.deltaEligible != nil, w.deltaEligible)
+}
+
+// UpdateAccountDataEligible is UpdateAccountData with the delta eligibility
+// of address given (its balance was not observed) instead of asked of the
+// writer's predicate: for a caller that tracks the one or two addresses a
+// transaction touches without the IntraBlockState's balance-read hook.
+func (w *ParallelStateWriter) UpdateAccountDataEligible(address types.Address, original, acc *account.StateAccount, eligible bool) {
+	_ = w.updateAccountData(address, original, acc, eligible, nil)
+}
+
+func (w *ParallelStateWriter) updateAccountData(address types.Address, original, acc *account.StateAccount, eligible bool, pred func(types.Address) bool) error {
 	key := LocationKey{Address: address, Field: FieldBalance}
 	// A pure balance increase on an account whose balance the transaction
 	// never observed is a delta: commutative with every other delta on the
 	// account, so recipients credited by many transactions stop being a
 	// conflict. Any other change (nonce, code, storage root, a decrease, or
 	// an observed balance) is a full write.
-	if w.deltaEligible != nil && original != nil && acc != nil &&
+	if eligible && original != nil && acc != nil &&
 		original.Nonce == acc.Nonce && original.CodeHash == acc.CodeHash && original.Root == acc.Root &&
-		original.Initialised == acc.Initialised && acc.Balance.Gt(&original.Balance) && w.deltaEligible(address) {
+		original.Initialised == acc.Initialised && acc.Balance.Gt(&original.Balance) && (pred == nil || pred(address)) {
 		var d uint256.Int
 		d.Sub(&acc.Balance, &original.Balance)
 		w.rw.RecordDeltaWrite(key, &d) // copies d
