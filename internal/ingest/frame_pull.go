@@ -140,7 +140,10 @@ func (fi *frameIngest) admitPulled(want types.Hash, raw []byte) bool {
 	if err != nil || h != want {
 		return false
 	}
-	fi.cfg.Store.PutEntry(h, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)})
+	// Pulled for a proposal this node must vote on or import: admitted over
+	// the budget (bounded by one block's frames, MaxPullHashes) and evicted
+	// by the commit rule like any frame.
+	fi.cfg.Store.Admit(h, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}, true)
 	return true
 }
 
