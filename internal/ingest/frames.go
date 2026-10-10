@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -104,6 +106,7 @@ type FrameStats struct {
 	Accepted, Duplicate, Busy, BadSig, UnknownGateway, Malformed uint64
 	TxsAccepted                                                  uint64 // txs in accepted frames
 	PullServed, Pulled                                           uint64 // FRQ1 frames served / pulled and admitted
+	OutOfOrder                                                   uint64 // S90: refused as Busy, seq beyond last accepted + 1
 	Store                                                        store.Stats
 }
 
@@ -113,6 +116,13 @@ type frameIngest struct {
 
 	accepted, duplicate, busy, badSig, unknownGW, malformed, txsAccepted atomic.Uint64
 	pullServed, pulled                                                   atomic.Uint64
+	outOfOrder                                                           atomic.Uint64
+
+	// seqMu serialises the in-order check with the store admission; lastSeq
+	// is the last accepted FRM1 seq per gateway since node start.
+	seqMu   sync.Mutex
+	lastSeq map[types.Address]uint64
+	oooByGW map[types.Address]uint64
 }
 
 // EnableFrames turns on the gateway-signed frame path. Must be called
@@ -127,6 +137,9 @@ func (s *Server) EnableFrames(cfg FrameConfig) error {
 	fi := &frameIngest{
 		cfg:   cfg,
 		allow: make(map[types.Address]struct{}, len(cfg.Gateways)),
+
+		lastSeq: make(map[types.Address]uint64),
+		oooByGW: make(map[types.Address]uint64),
 	}
 	for _, g := range cfg.Gateways {
 		fi.allow[g] = struct{}{}
@@ -158,6 +171,7 @@ func (s *Server) FrameStats() FrameStats {
 		Malformed:      fi.malformed.Load(),
 		TxsAccepted:    fi.txsAccepted.Load(),
 		PullServed:     fi.pullServed.Load(),
+		OutOfOrder:     fi.outOfOrder.Load(),
 		Pulled:         fi.pulled.Load(),
 		Store:          fi.cfg.Store.Stats(),
 	}
@@ -233,8 +247,25 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 		reply[0] = FrameDuplicate
 		return reply, nil
 	}
+	// In-order admission (S90): after the first accepted frame of a gateway,
+	// a seq beyond last accepted + 1 is a gap and is answered Busy, so the
+	// sender retries it in place and a nonce gap never enters the store. A
+	// seq at or below last is a resend (possibly of an evicted or already
+	// included frame) and goes to the store, which answers Duplicate for
+	// known hashes; it does not move the sequence.
+	fi.seqMu.Lock()
+	defer fi.seqMu.Unlock()
+	if last, seen := fi.lastSeq[f.Gateway]; seen && f.Seq > last+1 {
+		fi.outOfOrder.Add(1)
+		fi.oooByGW[f.Gateway]++
+		reply[0] = FrameBusy
+		return reply, nil
+	}
 	switch st.Admit(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}, false) {
 	case store.Stored:
+		if last, seen := fi.lastSeq[f.Gateway]; !seen || f.Seq > last {
+			fi.lastSeq[f.Gateway] = f.Seq
+		}
 	case store.Busy:
 		// Bounded admission (S89): the store holds only frames no
 		// committed block has released yet. The sender backs off and
@@ -254,6 +285,18 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 	fi.txsAccepted.Add(uint64(f.TxCount))
 	reply[0] = FrameAccepted
 	return reply, nil
+}
+
+// oooString formats the per-gateway out-of-order counts for the stats line.
+func (fi *frameIngest) oooString() string {
+	fi.seqMu.Lock()
+	defer fi.seqMu.Unlock()
+	parts := make([]string, 0, len(fi.oooByGW))
+	for g, n := range fi.oooByGW {
+		parts = append(parts, fmt.Sprintf("%s=%d", g.Hex(), n))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func (fi *frameIngest) statsLoop(ctx context.Context) {
@@ -276,7 +319,8 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 				"pulled", fi.pulled.Load(), "pullServed", fi.pullServed.Load(),
 				"storeFrames", st.Frames, "storeBytes", st.Bytes, "pending", st.Pending, "committed", st.Committed,
 				"committedHead", st.CommittedHead, "bypassed", st.Bypassed, "released", st.Released,
-				"evicted", st.Evicted, "removed", st.Removed)
+				"evicted", st.Evicted, "removed", st.Removed,
+				"outOfOrder", fi.outOfOrder.Load(), "outOfOrderByGateway", fi.oooString())
 			last, lastBusy = a, b
 		}
 	}
