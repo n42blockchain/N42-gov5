@@ -1,6 +1,6 @@
 # From 150k to multi-million TPS: why the current design stops, and what replaces it
 
-Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P2a (vote on availability, lag-2 execution) measured at S95: 206k execTPS at 163k-tx blocks, serial import 670 ms, lag 2, no retention; P2a2 (stage pipelining across blocks) next.
+Date: 2026-10-09 (America/New_York). Status: P1a and P1b implemented (sections 5.1, 5.2); P2a (vote on availability, lag-2 execution) measured at S95: 206k execTPS at 163k-tx blocks, serial import 670 ms, lag 2, no retention; P2a2 (stage pipelining across blocks) implemented, S96 running on n42-r125 (P2a2 only); P3 (transfer fast path, sharded base cache) landed 2026-10-10 (6da19407, 664c6080, 38d37696, f9758584, 771142ae), see "P3 result" before section 6.
 Inputs: the n42-rs analysis and the gov5 critical-path map (scratchpad
 `n42rs-analysis.md`, `gov5-critical-path.md`, both derived from code, docs and
 logs; nothing re-measured), plus QS rounds S77-S86.
@@ -532,6 +532,40 @@ blocks with node3 heap profiles captured during the flood.
 S95 (35zzzbu, n42-r124) gave a valid warm-up win1 at 163k-tx blocks: execTPS 206,467, blockTime 0.789 s, lag flat at 2, 0 skips, with node3's import at 669-710 ms (exec 358-395 + root 101-113 + write 138-163 ms); the available-block cache no longer shows in the heap and MemAvailable stayed above 25 GB. The P2a gate reads lag <= 2 PASS, cycle <= 150 ms FAIL (670 ms, the serial per-block import) and execTPS >= 300k FAIL (206k), so the P2a mechanism (votes before execution, lag 2, no retention) is closed and the bound is the serial import. win2 (84k) is invalid because the generators did not run dry: supply was 12M txs each, and they stalled at 5.9M on Busy when the 2 GiB frame store filled (generation ~300k/s vs import 206k/s), the stall being a reply wait with no deadline in sendOneFrame (cmd/txflood/frames.go) that parked each per-peer sender instead of retrying; the full store's raw + decoded bytes (2.1 + 3.6 GB) put the node heaps at the 10 GiB GOMEMLIMIT (largest heap 8.6 GB: ingest readFrame 2.1 GB, decoded transactions 3.6 GB, qmdb map index 0.75 GB), and S96 runs the store at 1 GiB, and the round was aborted at the end of A1 by a checker race on a shutdown BAD BLOCK (`db closed`), not an import failure. P2a2 overlaps the execution of block N+1 with the state root and write of block N inside the lag executor: exec N+1 reads the in-memory post-state of N before N is rooted and persisted, N's write lands before N+1's, and a failure of N discards N+1's speculative execution. The expected cycle is max(exec, root+write), about 400 ms at 163k-tx blocks, i.e. about 400k execTPS. In the same step the per-node decoded-transaction memory is cut (the 16-block block cache is about 2.3 GB at 163k txs and the frame store holds 2 GiB of raw bytes) so heaps sit well under GOMEMLIMIT; the harness fixes the checker race and the generator supply before S96.
 
 P2a2 implemented (commits f5cc75d8, a07fc6a6, 7b717ac7, 09a7c782, 373eaa91, 5c9b3711): just before N's root (rewards applied) N's state is copied into a read-only snapshot; N+1's Block-STM runs on its own goroutine reading through that snapshot and never touches N's state; N+1's root, validation and write run afterwards on the executor goroutine so writes stay in parent order; the ahead run is used only if the parent's import wrote it and the applied head is exactly that parent, otherwise it is discarded and the block runs the serial path. Caveats: the fold stays with the execution half; ComputeRoot and the write's flush take the QMDB tree lock exclusively, so N+1's reads stall while they run; expected cycle max(exec+fold, root+write) ~ 440-500 ms at 163k. Block cache: default 512 untouched, the harness sets N42_BLOCK_CACHE_BLOCKS=4 (minimum 3; under P2a the deferred commit is retried right after the write that added the block to the cache, other readers fall back to MDBX).
+
+### P3 result (2026-10-10)
+
+Offline 163k-transfer exec-wave benchmark (Block-STM, 32 workers, 4 cores nice'd, MDBX state, relative numbers only).
+
+Where the exec wave goes:
+
+- EVM interpreter + intrinsic gas + StateTransition: ~12%.
+- State reads: ~27% (the recipient GetCode check under Prague alone is 19%).
+- IBS Reset + FinalizeTx: ~13%.
+- MVS writes plus deletes of the previous block's stale write keys: ~14% (delete ~9%, useless at incarnation 0).
+- AsMessage + tx.Hash: ~8%.
+- Allocation: ~16% in-wave plus ~17% background GC.
+- Signature recovery: 0% (memoised, ~33 ms per block outside the wave).
+
+Off-CPU: 99% of worker lock-blocked time was the single RWMutex of the block's base-read cache (internal/parallel/base_cache.go), ~60% of worker wall time. This explains the S79b "workers 95% off-CPU" finding.
+
+| Variant (median of 4 interleaved runs, per 163k block) | Exec wave ms | Process CPU ms |
+|---|---|---|
+| old path | 589 | 2143 |
+| transfer fast path | 570 (-3%) | 2053 |
+| fast path + base cache in 256 locked shards | 452 (-23%) | 1957 |
+
+Worker blocked time fell 71% with the sharded cache (understated at 4 cores).
+
+Fast path rules: non-nil recipient, empty data, no access list, gas limit 21000, recipient without code and not a precompile, EOA sender. It makes the same IntraBlockState calls in the same order as the EVM path (nonce/code-hash/balance checks, gas debit, nonce+1, Exist + Transfer, zero refund, tip min(tip, feeCap-baseFee) to the coinbase, base fee burned or sent to the Eip1559FeeCollector). Anything else falls back to the EVM path inside the same Block-STM incarnation. N42_TRANSFER_FAST_PATH=0 restores the old path.
+
+Differential test: random 400-tx blocks under mainnet_qmdb (Prague), London, and London + fee collector, comparing inclusion, failures, gas, receipts root and bytes, coinbase/collector balances, and state root.
+
+Limits: the benchmark uses MDBX state, not QMDB; the fleet chain config is assumed to be mainnet_qmdb with legacy 1 gwei txs.
+
+Conclusion: the EVM is not the exec bound; per-tx overhead is.
+
+S97 plan (P3b, in progress): code check from CodeHash without loading code, skip the stale-key delete at incarnation 0, memoise tx.Hash/AsMessage from frame decode, per-worker IBS / MV-view / receipt reuse to cut allocations. Target: exec wave <= 200 ms in the bench, then P4 (root + write <= 150 ms).
 
 ## 6. What this does not claim
 
