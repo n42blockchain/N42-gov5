@@ -180,3 +180,61 @@ func TestCommitToCanonicalNilHookIsNoop(t *testing.T) {
 		t.Fatalf("commit must succeed with no hook wired: %v", err)
 	}
 }
+
+// TestCommitToCanonicalDuplicateTxLookupFollowsIndexer pins the duplicate
+// (already canonical) commit branch to the normal path's rule: with a tx
+// indexer attached no TxLookup rows are written, without one they are.
+func TestCommitToCanonicalDuplicateTxLookupFollowsIndexer(t *testing.T) {
+	for _, withIndexer := range []bool{true, false} {
+		db := newRealignTestDB(t)
+		from := types.HexToAddress("0x100")
+		to := types.HexToAddress("0x200")
+		txn := transaction.NewTransaction(0, from, &to, uint256.NewInt(1), 21000, uint256.NewInt(1), nil)
+		child := block.NewBlock(&block.Header{
+			Number:     uint256.NewInt(9),
+			Difficulty: uint256.NewInt(1),
+			Root:       types.Hash{0x09},
+		}, []*transaction.Transaction{txn}).(*block.Block)
+		// The block is already imported and already the committed head.
+		if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+			if err := rawdb.WriteBlock(tx, child); err != nil {
+				return err
+			}
+			if err := rawdb.WriteCanonicalHash(tx, child.Hash(), 9); err != nil {
+				return err
+			}
+			rawdb.WriteHeadBlockHash(tx, child.Hash())
+			return rawdb.WriteHeadHeaderHash(tx, child.Hash())
+		}); err != nil {
+			t.Fatal(err)
+		}
+		bc := &BlockChain{ChainDB: db, ctx: context.Background()}
+		bc.currentBlock.Store(child)
+		if withIndexer {
+			bc.SetTxIndexer(&testTxIndexer{})
+		}
+		for i := 0; i < 2; i++ { // second call proves idempotence
+			if err := bc.CommitToCanonical(child.Hash()); err != nil {
+				t.Fatalf("indexer=%v commit %d: %v", withIndexer, i, err)
+			}
+		}
+		if err := db.View(context.Background(), func(tx kv.Tx) error {
+			got, err := rawdb.ReadTxLookupEntry(tx, txn.Hash())
+			if err != nil {
+				return err
+			}
+			if withIndexer && got != nil {
+				t.Fatalf("indexer on: tx lookup written (%d), want none", *got)
+			}
+			if !withIndexer && (got == nil || *got != 9) {
+				t.Fatalf("indexer off: tx lookup = %v, want 9", got)
+			}
+			if h := rawdb.ReadHeadBlockHash(tx); h != child.Hash() {
+				t.Fatalf("head = %s, want %s", h, child.Hash())
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

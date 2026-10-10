@@ -1478,10 +1478,19 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil && *hn >= blk.Number64().Uint64() {
 			if existing, rerr := rawdb.ReadCanonicalHash(tx, blk.Number64().Uint64()); rerr == nil && existing == hash {
 				// HotStuff imports every candidate as a side block, so the normal
-				// writeHeadBlock path never creates TxLookup entries. Repair them
-				// even for an idempotent/duplicate commit; this also self-heals
-				// databases produced before commit-time indexing was added.
-				rawdb.WriteTxLookupEntries(tx, blk)
+				// writeHeadBlock path never creates TxLookup entries. Without the
+				// tail indexer, repair them even for an idempotent/duplicate commit
+				// (this also self-heals databases produced before commit-time
+				// indexing was added). With the indexer on, the tail/segment tiers
+				// own the lookups and the normal path writes none: rewriting one row
+				// per transaction here held the MDBX writer for 5-27 s on a
+				// 163,000-tx block while a lagging node re-committed it. The write
+				// is timed as txlookup, not folded into the body phase.
+				if bc.txIndexer == nil {
+					tLookup := time.Now()
+					rawdb.WriteTxLookupEntries(tx, blk)
+					dLookup = time.Since(tLookup)
+				}
 				return nil
 			}
 		}
