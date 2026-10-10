@@ -134,17 +134,19 @@ func (bc *BlockChain) FramesInFlight() func(types.Hash) bool {
 const inFlightPruneDepth = 16
 
 // framesPersisted runs after a block is written: its frames are in the
-// Frames table now, so the store drops them (and refuses a resend) and the
-// in-flight set forgets them.
+// Frames table now. The store pins them to the block's height (not
+// fillable, not evictable) until a commit decides: committed frames are
+// evicted KeepBlocks later, frames of an abandoned fork become fillable
+// again (store.Commit). The in-flight set forgets them.
 func (bc *BlockChain) framesPersisted(b *block.Block) {
 	body, ok := b.Body().(*block.Body)
 	if !ok || !body.IsFrameBody() {
 		return
 	}
-	if st := bc.frames.store; st != nil {
-		st.Remove(body.FrameHashes)
-	}
 	number := b.Number64().Uint64()
+	if st := bc.frames.store; st != nil {
+		st.Include(body.FrameHashes, number)
+	}
 	fs := &bc.frames
 	fs.mu.Lock()
 	for _, h := range body.FrameHashes {
@@ -156,6 +158,60 @@ func (bc *BlockChain) framesPersisted(b *block.Block) {
 		}
 	}
 	fs.mu.Unlock()
+}
+
+// framesCommitWalkMax bounds the ancestor walk of framesCommitted. A
+// commit that jumps further (catch-up) marks only the newest blocks; frames
+// of the older ones are left pinned until released, then at worst filled
+// again and skipped as stale nonces.
+const framesCommitWalkMax = 256
+
+// framesCommitted runs after blk became the committed head. A commit also
+// commits every uncommitted ancestor, so the frames of the blocks between
+// the store's previous committed head and blk are marked first, oldest
+// first; then blk's own. The store releases fork pins at or below blk's
+// height and evicts committed frames past the keep margin.
+func (bc *BlockChain) framesCommitted(blk *block.Block) {
+	st := bc.frames.store
+	if st == nil || blk == nil {
+		return
+	}
+	number := blk.Number64().Uint64()
+	type commitStep struct {
+		n      uint64
+		hashes []types.Hash
+	}
+	var steps []commitStep
+	if body, ok := blk.Body().(*block.Body); ok && body.IsFrameBody() {
+		steps = append(steps, commitStep{number, body.FrameHashes})
+	}
+	if prev, ok := st.CommittedHead(); ok && number > prev+1 && bc.ChainDB != nil {
+		if tx, err := bc.ChainDB.BeginRo(context.Background()); err == nil {
+			hash, n := blk.ParentHash(), number-1
+			for walked := 0; n > prev && walked < framesCommitWalkMax; walked++ {
+				if hs, err := rawdb.ReadFrameBodyHashes(tx, hash, n); err == nil && len(hs) > 0 {
+					steps = append(steps, commitStep{n, hs})
+				}
+				hdr := rawdb.ReadHeader(tx, hash, n)
+				if hdr == nil {
+					break
+				}
+				hash, n = hdr.ParentHash, n-1
+			}
+			tx.Rollback()
+		}
+	}
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i].n == number {
+			continue
+		}
+		st.Commit(steps[i].n, steps[i].hashes)
+	}
+	var own []types.Hash
+	if len(steps) > 0 && steps[0].n == number {
+		own = steps[0].hashes
+	}
+	st.Commit(number, own)
 }
 
 func framePullTimeout() time.Duration {

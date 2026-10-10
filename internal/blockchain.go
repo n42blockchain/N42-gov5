@@ -1594,6 +1594,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	}
 	if committedBlk != nil {
 		bc.currentBlock.Store(committedBlk)
+		bc.framesCommitted(committedBlk)
 	}
 	// lock: waiting for MDBX's single writer. body: the closure. The remainder
 	// (total-lock-body) is mdbx_txn_commit -- writing and fsyncing the pages the
