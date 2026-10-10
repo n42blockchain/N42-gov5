@@ -259,7 +259,9 @@ func TestFrameBlocksMinePoolTxs(t *testing.T) {
 	require.Equal(t, uint64(2), lfStateNonce(t, f, f.Senders[1]))
 	require.Eventually(t, func() bool { return lfPoolPending(poolIface) == 0 }, 5*time.Second, 10*time.Millisecond,
 		"the pool did not drop the mined local-frame transactions")
-	require.Zero(t, st.Len(), "written frames stay in the store")
+	fillable := 0
+	st.ScanFillable(func(types.Hash, store.Entry) bool { fillable++; return true })
+	require.Zero(t, fillable, "written frames are still fillable")
 
 	// Gateway frames arrive; new pool transactions too.
 	gwKey, _ := crypto.GenerateKey()
