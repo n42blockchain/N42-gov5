@@ -487,6 +487,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// accounts it touches (~163k reads for ~23k accounts at the bench's
 		// block size).
 		wc.reader.SetBaseCache(baseCache)
+		// Its only consumer is the worker's IntraBlockState, which copies
+		// every account it reads.
+		wc.reader.ReuseAccountBuffer()
 		wc.ibs = state.New(wc.reader)
 		wc.writer = parallel.NewParallelStateWriter(nil)
 		// Every explicit balance read (GetBalance, Empty) of a transaction
