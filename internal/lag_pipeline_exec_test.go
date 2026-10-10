@@ -34,7 +34,17 @@ import (
 //     block 5 is retried, and the chain converges to the same results;
 //   - the pipeline is used, and nothing is left behind: no open read
 //     transaction, no available or queued block.
+//
+// "snapshot" makes each child finish before its parent's root touches the
+// tree, so the parent's writes reach it only through the snapshot;
+// "concurrent" lets the child run against the parent's root and write (and
+// the evictions of that write), as in production.
 func TestLagPipelineExecutesAheadOfRootAndWrite(t *testing.T) {
+	t.Run("snapshot", func(t *testing.T) { testLagPipelineAhead(t, true) })
+	t.Run("concurrent", func(t *testing.T) { testLagPipelineAhead(t, false) })
+}
+
+func testLagPipelineAhead(t *testing.T, await bool) {
 	const (
 		blocks   = 12
 		frames   = 4
@@ -49,9 +59,7 @@ func TestLagPipelineExecutesAheadOfRootAndWrite(t *testing.T) {
 	prevWait := lagPipeChildWaitForTest
 	lagPipeChildWaitForTest = 2 * time.Second
 	defer func() { lagPipeChildWaitForTest = prevWait }()
-	// The child executes before the parent's root touches the tree: it sees
-	// the parent's writes through the snapshot or not at all.
-	lagPipeAwaitAheadForTest = true
+	lagPipeAwaitAheadForTest = await
 	defer func() { lagPipeAwaitAheadForTest = false }()
 	prevGas := lagChainGasLimit
 	lagChainGasLimit = 1_000_000_000
