@@ -301,6 +301,10 @@ type worker struct {
 	isLocalBlock func(header *block.Header) bool
 	pendingTasks map[types.Hash]*task
 
+	// Local frames (frame blocks only): the signer the pool's transactions
+	// are framed under, and the frames built so far (see frame_fill.go).
+	localFrames localFrameState
+
 	// Cross-view speculative build state. specTask holds the parked result of
 	// a speculative commitWork (guarded by specMu); specParent is the parent
 	// the parked block extends. activeSpecInterrupt points at the interrupt of
@@ -2251,31 +2255,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// creates a state object, and a touched-but-unchanged object is one more
 	// no-op entry in an append-only commitment -- a root the followers, who
 	// never touched it, cannot reproduce.
-	staleTrimmed := 0
 	wd.SetStep("staleTrim")
 	tTrim := time.Now()
-	reader := ibs.GetStateReader()
-	for addr, list := range pending {
-		var nonce uint64
-		if acc, rerr := reader.ReadAccountData(addr); rerr == nil && acc != nil {
-			nonce = acc.Nonce
-		} else if rerr != nil {
-			continue // cannot tell; let execution decide as before
-		}
-		i := 0
-		for i < len(list) && list[i].Nonce() < nonce {
-			i++
-		}
-		if i == 0 {
-			continue
-		}
-		staleTrimmed += i
-		if i == len(list) {
-			delete(pending, addr)
-		} else {
-			pending[addr] = list[i:]
-		}
-	}
+	staleTrimmed := trimStalePending(ibs.GetStateReader(), pending)
 	dTrim := time.Since(tTrim)
 	if len(pending) == 0 {
 		pf.logIfSlow(blockNumber, dPending, dTrim)
@@ -2501,6 +2483,35 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// Bind the BAL hash even for an empty block or a block containing only bundle
 	// transactions. Once the fork is active the header field is mandatory.
 	return nil
+}
+
+// trimStalePending drops from pending every transaction whose nonce is
+// below its sender's state nonce in reader (already mined) and returns how
+// many it dropped. An account whose state cannot be read is left alone.
+func trimStalePending(reader state.StateReader, pending map[types.Address][]*transaction.Transaction) int {
+	trimmed := 0
+	for addr, list := range pending {
+		var nonce uint64
+		if acc, rerr := reader.ReadAccountData(addr); rerr == nil && acc != nil {
+			nonce = acc.Nonce
+		} else if rerr != nil {
+			continue // cannot tell; let execution decide as before
+		}
+		i := 0
+		for i < len(list) && list[i].Nonce() < nonce {
+			i++
+		}
+		if i == 0 {
+			continue
+		}
+		trimmed += i
+		if i == len(list) {
+			delete(pending, addr)
+		} else {
+			pending[addr] = list[i:]
+		}
+	}
+	return trimmed
 }
 
 func (w *worker) prepareWork(param *generateParams) (*environment, error) {

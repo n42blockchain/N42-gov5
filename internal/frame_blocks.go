@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -55,13 +56,21 @@ var ErrFramesUnavailable = errors.New("frame body: frames unavailable")
 
 var (
 	frameBlocksOnce sync.Once
-	frameBlocksOn   bool
+	frameBlocksOn   atomic.Bool
 )
 
 // FrameBlocksEnabled reports N42_FRAME_BLOCKS=1 (read once).
 func FrameBlocksEnabled() bool {
-	frameBlocksOnce.Do(func() { frameBlocksOn = os.Getenv(EnvFrameBlocks) == "1" })
-	return frameBlocksOn
+	frameBlocksOnce.Do(func() { frameBlocksOn.Store(os.Getenv(EnvFrameBlocks) == "1") })
+	return frameBlocksOn.Load()
+}
+
+// SetFrameBlocksForTest overrides N42_FRAME_BLOCKS for a test and returns
+// the restore function.
+func SetFrameBlocksForTest(on bool) func() {
+	prev := FrameBlocksEnabled()
+	frameBlocksOn.Store(on)
+	return func() { frameBlocksOn.Store(prev) }
 }
 
 // FramePuller fetches frames by hash from peers. It returns what it got,
