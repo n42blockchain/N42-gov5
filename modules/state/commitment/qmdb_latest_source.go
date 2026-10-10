@@ -32,6 +32,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -122,6 +123,21 @@ type LookupSource struct {
 	rc     *QMDBRootComputer
 	cold   kv.Getter
 	locked bool // the caller holds rc.LockReaders for the source's lifetime
+	// fresh, when set, retries a lookup whose live entry sits below the
+	// resident window and is not visible to cold (NewLookupSourceRefreshing).
+	fresh kv.RoDB
+}
+
+// NewLookupSourceRefreshing is NewLookupSource for a reader whose
+// transaction may predate a flush: the lag executor's pipelined execution of
+// block N+1 opens its transactions while block N's write is still to come,
+// and that write evicts the entries it flushed (a compaction can move an
+// entry N+1 reads without N having written its key). A lookup that finds
+// its live entry evicted and invisible to cold retries through a read
+// transaction opened then on db, which sees the flush. No limiter permit is
+// taken for it (kv.BeginRoNested): the caller already holds a transaction.
+func NewLookupSourceRefreshing(rc *QMDBRootComputer, cold kv.Getter, db kv.RoDB) *LookupSource {
+	return &LookupSource{rc: rc, cold: cold, fresh: db}
 }
 
 // NewLookupSource returns a source over rc for a reader holding cold, a read
@@ -146,6 +162,13 @@ func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
 	} else {
 		v, found, evicted = s.rc.Lookup(keyHash, s.cold)
 	}
+	if !found && evicted && s.fresh != nil && !s.locked {
+		if tx, err := kv.BeginRoNested(context.Background(), s.fresh); err == nil {
+			v, found, evicted = s.rc.Lookup(keyHash, tx)
+			tx.Rollback()
+			lookupRefreshes.Add(1)
+		}
+	}
 	if !found && evicted {
 		// Only possible with a transaction older than the last flush, which
 		// a worker opened during execution cannot be; keep it visible.
@@ -153,3 +176,11 @@ func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
 	}
 	return v, found
 }
+
+// lookupRefreshes counts lookups a refreshing source retried through a fresh
+// transaction (LookupRefreshes).
+var lookupRefreshes atomic.Uint64
+
+// LookupRefreshes reports how many lookups a refreshing source retried
+// (process-wide, since start).
+func LookupRefreshes() uint64 { return lookupRefreshes.Load() }

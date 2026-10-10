@@ -59,6 +59,15 @@ var (
 	qmdbReadMode     QMDBReadMode
 )
 
+// SetQMDBStateReadModeForTest overrides the configured mode and returns a
+// function restoring the previous one.
+func SetQMDBStateReadModeForTest(mode QMDBReadMode) func() {
+	qmdbReadModeOnce.Do(func() { qmdbReadMode = parseQMDBReadMode(os.Getenv("N42_STATE_READ_QMDB")) })
+	prev := qmdbReadMode
+	qmdbReadMode = mode
+	return func() { qmdbReadMode = prev }
+}
+
 // QMDBStateReadMode reports the configured mode. N42_STATE_READ_QMDB is an
 // environment variable rather than a config field for the same reason
 // N42_MDBX_SYNC is: it changes where consensus-critical state comes from and
