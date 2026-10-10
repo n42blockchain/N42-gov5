@@ -136,14 +136,19 @@ func (rw *ReadWriteSet) RecordDeltaWrite(key LocationKey, delta *uint256.Int) {
 // observed (per observed) and the transaction wrote no full value to the
 // account (a full write could carry the read balance forward).
 func (rw *ReadWriteSet) MarkBalanceInsensitive(observed func(types.Address) bool) {
+	// A transfer writes a few keys: scan them per read instead of building
+	// a map (one map per transaction was ~5% of the exec wave's
+	// allocations at 163k transfers). Large write sets keep the map.
 	var fullWrites map[types.Address]struct{}
-	for i := range rw.Writes {
-		wd := &rw.Writes[i]
-		if wd.Key.Field == FieldBalance && wd.Delta == nil {
-			if fullWrites == nil {
-				fullWrites = make(map[types.Address]struct{})
+	if len(rw.Writes) > markScanMaxWrites {
+		for i := range rw.Writes {
+			wd := &rw.Writes[i]
+			if wd.Key.Field == FieldBalance && wd.Delta == nil {
+				if fullWrites == nil {
+					fullWrites = make(map[types.Address]struct{})
+				}
+				fullWrites[wd.Key.Address] = struct{}{}
 			}
-			fullWrites[wd.Key.Address] = struct{}{}
 		}
 	}
 	for i := range rw.Reads {
@@ -154,11 +159,29 @@ func (rw *ReadWriteSet) MarkBalanceInsensitive(observed func(types.Address) bool
 		if observed(rd.Key.Address) {
 			continue
 		}
-		if _, full := fullWrites[rd.Key.Address]; full {
+		if len(rw.Writes) > markScanMaxWrites {
+			if _, full := fullWrites[rd.Key.Address]; full {
+				continue
+			}
+		} else if rw.hasFullBalanceWrite(rd.Key.Address) {
 			continue
 		}
 		rd.IgnoreBalance = true
 	}
+}
+
+// markScanMaxWrites is the write-set size up to which MarkBalanceInsensitive
+// scans the writes instead of indexing them.
+const markScanMaxWrites = 16
+
+func (rw *ReadWriteSet) hasFullBalanceWrite(addr types.Address) bool {
+	for i := range rw.Writes {
+		wd := &rw.Writes[i]
+		if wd.Key.Field == FieldBalance && wd.Delta == nil && wd.Key.Address == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // Clear resets the read and write sets for reuse.
