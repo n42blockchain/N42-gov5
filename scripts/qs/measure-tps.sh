@@ -23,7 +23,7 @@ while (( $# )); do
 done
 
 rpc() {
-  curl -s -m 10 -X POST -H 'Content-Type: application/json' \
+  curl -s -m "${RPC_MAX:-10}" -X POST -H 'Content-Type: application/json' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" \
     "http://127.0.0.1:$PORT"
 }
@@ -38,11 +38,15 @@ for (( w = 1; w <= WINDOWS; w++ )); do
 
   # One pass over the window's blocks; awk does the arithmetic so gas totals
   # stay exact (they exceed what bash integers handle comfortably).
+  # S90: occupancy = header gasUsed / header gasLimit, summed over every block
+  # of the window (a block with no parsable header, e.g. a timed-out fetch of a
+  # 160k-tx frame block, is counted in unparsed= instead of silently as 0).
+  # full(>=95%) = share of blocks whose own gasUsed/gasLimit >= 0.95.
   { for (( n = n0 + 1; n <= n1; n++ )); do
-      rpc eth_getBlockByNumber "[\"$(printf '0x%x' "$n")\",false]"
-      echo
+      RPC_MAX=90 rpc eth_getBlockByNumber "[\"$(printf '0x%x' "$n")\",false]"
     done
   } | awk -v elapsed="$elapsed" -v blocks="$((n1 - n0))" -v w="$w" '
+    NF == 0 { next }   # the RPC reply ends in a newline; never treat blank records as blocks
     {
       # transactions is an array of hashes; count the commas + 1 when non-empty
       tx = 0
@@ -51,9 +55,12 @@ for (( w = 1; w <= WINDOWS; w++ )); do
         if (length(seg) > 0) { tx = gsub(/,/, ",", seg) + 1 }
       }
       txs += tx
-      if (match($0, /"gasUsed":"0x[0-9a-f]*"/))  { gu = hex(substr($0, RSTART + 12, RLENGTH - 13)); used += gu }
-      if (match($0, /"gasLimit":"0x[0-9a-f]*"/)) { gl = hex(substr($0, RSTART + 13, RLENGTH - 14)); lim  += gl }
-      if (gl > 0 && gu / gl >= 0.95) full++
+      gu = -1; gl = -1
+      if (match($0, /"gasUsed":"0x[0-9a-f]*"/))  { gu = hex(substr($0, RSTART + 12, RLENGTH - 13)) }
+      if (match($0, /"gasLimit":"0x[0-9a-f]*"/)) { gl = hex(substr($0, RSTART + 13, RLENGTH - 14)) }
+      if (gu < 0 || gl <= 0) { unparsed++; next }
+      used += gu; lim += gl; parsed++
+      if (gu / gl >= 0.95) full++
     }
     function hex(s,   i, c, v, d) {
       v = 0
@@ -66,8 +73,10 @@ for (( w = 1; w <= WINDOWS; w++ )); do
     END {
       tps = elapsed > 0 ? txs / elapsed : 0
       occ = lim  > 0 ? 100 * used / lim : 0
+      fullpct = parsed > 0 ? 100 * full / parsed : 0
+      etps = elapsed > 0 ? used / 21000 / elapsed : 0   # execTPS: valid for pure 21000-gas transfers
       bt  = blocks > 0 ? elapsed / blocks : 0
-      printf "win%d: blocks=%d txs=%d TPS=%.0f occupancy=%.1f%% blockTime=%.3fs full(>=95%%)=%d\n",
-             w, blocks, txs, tps, occ, bt, full
+      printf "win%d: blocks=%d txs=%d TPS=%.0f occupancy=%.1f%% blockTime=%.3fs full(>=95%%)=%.1f%% (%d of %d blocks) unparsed=%d execTPS=%.0f\n",
+             w, blocks, txs, tps, occ, bt, fullpct, full, parsed, unparsed, etps
     }'
 done
