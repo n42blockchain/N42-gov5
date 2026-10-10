@@ -70,6 +70,13 @@ func (evm *EVM) precompile(addr types.Address) (PrecompiledContract, bool) {
 	return evm.precompileLegacy(addr)
 }
 
+// IsPrecompile reports whether a CALL to addr would run a precompile under
+// this EVM's rules (the same lookup call uses).
+func (evm *EVM) IsPrecompile(addr types.Address) bool {
+	_, ok := evm.precompile(addr)
+	return ok
+}
+
 // precompileLegacy provides backward compatibility with global precompile maps.
 // This will be removed once migration to Registry is complete.
 func (evm *EVM) precompileLegacy(addr types.Address) (PrecompiledContract, bool) {
