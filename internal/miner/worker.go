@@ -333,6 +333,9 @@ type worker struct {
 	// candidate per parent makes each node produce exactly one block per height.
 	// Guarded by mu; pruned below the branch-switch window as heights advance.
 	sealedOnParent map[types.Hash]block.IBlock
+	// sealedOnParentSlim marks the sealedOnParent entries already replaced
+	// by their slim copy (recordSealedOnParent).
+	sealedOnParentSlim map[types.Hash]struct{}
 	// sealedByHash holds this node's recent sealed blocks by hash from the
 	// moment they are sealed, before their write lands: a speculative build
 	// whose parent is one of them builds on the miner tree's own post-state
@@ -1166,9 +1169,13 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 		}
 	}
 	sealhash := w.engine.SealHash(blk.Header())
+	// Only the header is ever read back (ownSealed callers), and the full
+	// block is the very object the import resolves: kept whole, every
+	// transaction it decodes stays reachable from here.
+	slim := slimSealedBlock(blk)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.sealedByHash[blk.Hash()] = blk
+	w.sealedByHash[blk.Hash()] = slim
 	if t := w.pendingTasks[sealhash]; t != nil {
 		if t.post != nil {
 			w.sealedPost[blk.Hash()] = t.post
@@ -1270,11 +1277,38 @@ func (w *worker) firstSealedOnParent(parent types.Hash) block.IBlock {
 // parent arrives must not leave this map empty) and prunes entries older than
 // the 256-block branch-switch window — a sibling that far back can no longer
 // be unwound/switched, so it needs no suppression record.
+//
+// A kept block is re-proposed whole only while its height is undecided; at or
+// below the written head the guard reads its hash and frame list alone. Those
+// entries are slimmed to that (slimSealedBlock) on every record: the kept
+// block is the object the import resolves, so holding it whole held every
+// decoded transaction of every block this node sealed in the window -- ~82
+// blocks of 75k at +150 s on a 7-node fleet (3.5 GB, round S97), heading for
+// 512.
 func (w *worker) recordSealedOnParent(parent types.Hash, blk block.IBlock) {
+	var head uint64
+	haveHead := false
+	if w.chain != nil {
+		if cur := w.chain.CurrentBlock(); cur != nil && cur.Number64() != nil {
+			head, haveHead = cur.Number64().Uint64(), true
+		}
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if _, ok := w.sealedOnParent[parent]; !ok {
 		w.sealedOnParent[parent] = blk
+	}
+	if haveHead {
+		if w.sealedOnParentSlim == nil {
+			w.sealedOnParentSlim = make(map[types.Hash]struct{})
+		}
+		for p, b := range w.sealedOnParent {
+			if _, done := w.sealedOnParentSlim[p]; done || b.Number64().Uint64() > head {
+				continue
+			}
+			w.sealedOnParent[p] = slimSealedBlock(b)
+			w.sealedOnParentSlim[p] = struct{}{}
+		}
 	}
 	if len(w.sealedOnParent) <= 512 {
 		return
@@ -1287,8 +1321,44 @@ func (w *worker) recordSealedOnParent(parent types.Hash, blk block.IBlock) {
 	for p, b := range w.sealedOnParent {
 		if b.Number64().Uint64() < cutoff {
 			delete(w.sealedOnParent, p)
+			delete(w.sealedOnParentSlim, p)
 		}
 	}
+}
+
+// slimSealedBlock returns a new block without blk's transactions and frame
+// bytes: the same header (so the same hash) and, for a frame block, the same
+// frame hash list. blk is returned unchanged when the copy would not hash the
+// same.
+func slimSealedBlock(blk block.IBlock) block.IBlock {
+	b, ok := blk.(*block.Block)
+	if !ok || b == nil {
+		return blk
+	}
+	// A copy is made even while the body holds nothing yet: a lag-built block
+	// is remembered before the import resolves it in place.
+	body, ok := b.Body().(*block.Body)
+	if !ok || body == nil {
+		return blk
+	}
+	hdr, ok := b.Header().(*block.Header)
+	if !ok || hdr == nil {
+		return blk
+	}
+	// NewBlock copies the header untouched; the frame list is shared, never
+	// mutated after assembly.
+	s := block.NewBlock(hdr, nil)
+	if body.IsFrameBody() {
+		sb, ok := s.Body().(*block.Body)
+		if !ok {
+			return blk
+		}
+		sb.FrameHashes = body.FrameHashes
+	}
+	if s.Hash() != b.Hash() {
+		return blk
+	}
+	return s
 }
 
 func (w *worker) taskLoop() error {
