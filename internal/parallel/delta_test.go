@@ -204,3 +204,39 @@ func TestExecutor_HotRecipientBlockDeltas(t *testing.T) {
 		t.Fatalf("credits: %d", total)
 	}
 }
+
+// MarkBalanceInsensitive scans small write sets and indexes large ones; both
+// must flag exactly the reads the definition picks: an unobserved balance
+// read of an account the transaction wrote no full value to.
+func TestMarkBalanceInsensitiveSmallAndLargeWriteSets(t *testing.T) {
+	for _, nWrites := range []int{0, 1, 3, markScanMaxWrites, markScanMaxWrites + 1, 40} {
+		rw := NewReadWriteSet(1)
+		key := func(i int) LocationKey {
+			k := LocationKey{Field: FieldBalance}
+			k.Address[0] = byte(i)
+			return k
+		}
+		full := map[byte]bool{}
+		for i := 0; i < nWrites; i++ {
+			k := key(i * 3 % 64)
+			if i%2 == 0 {
+				rw.RecordWrite(k, encAcc(1, uint64(i)))
+				full[k.Address[0]] = true
+			} else {
+				rw.RecordDeltaWrite(k, uint256.NewInt(uint64(i)))
+			}
+		}
+		for i := 0; i < 64; i++ {
+			rw.RecordAccountRead(key(i), -1, 0, true, encAcc(0, 1), encAcc(0, 1), false)
+		}
+		observed := func(a types.Address) bool { return a[0]%5 == 0 }
+		rw.MarkBalanceInsensitive(observed)
+		for i := range rw.Reads {
+			a := rw.Reads[i].Key.Address
+			want := !observed(a) && !full[a[0]]
+			if rw.Reads[i].IgnoreBalance != want {
+				t.Fatalf("%d writes: read of %x IgnoreBalance=%v, want %v", nWrites, a[0], rw.Reads[i].IgnoreBalance, want)
+			}
+		}
+	}
+}
