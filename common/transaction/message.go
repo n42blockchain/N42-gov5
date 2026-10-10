@@ -79,14 +79,31 @@ func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uin
 
 // AsMessage returns the transaction as a core.Message.
 func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error) {
-	msg := Message{
+	var msg Message
+	if err := tx.asMessageInto(&msg, s, baseFee, tx.To()); err != nil {
+		return Message{}, err
+	}
+	return msg, nil
+}
+
+// AsMessageInto builds the transaction's message in *dst, which a caller
+// executing many transactions reuses instead of letting a fresh Message
+// escape per transaction. The message's recipient points at the
+// transaction's own (immutable) recipient rather than at a copy: the
+// executor only reads it. On error *dst is left zeroed.
+func (tx *Transaction) AsMessageInto(dst *Message, s Signer, baseFee *uint256.Int) error {
+	return tx.asMessageInto(dst, s, baseFee, tx.inner.to())
+}
+
+func (tx *Transaction) asMessageInto(msg *Message, s Signer, baseFee *uint256.Int, to *types.Address) error {
+	*msg = Message{
 		nonce:      tx.Nonce(),
 		gasLimit:   tx.Gas(),
 		gasPrice:   copyUint256OrZero(tx.GasPrice()),
 		feeCap:     copyUint256OrZero(tx.GasFeeCap()),
 		tip:        copyUint256OrZero(tx.GasTipCap()),
 		blobHashes: append([]types.Hash(nil), tx.BlobHashes()...),
-		to:         tx.To(),
+		to:         to,
 		amount:     copyUint256OrZero(tx.Value()),
 		data:       tx.Data(),
 		accessList: tx.AccessList(),
@@ -105,18 +122,19 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 	}
 	if from := tx.From(); from != nil {
 		msg.from = *from
-		return msg, nil
+		return nil
 	}
 	if s == nil {
-		return Message{}, fmt.Errorf("missing signer for sender derivation")
+		*msg = Message{}
+		return fmt.Errorf("missing signer for sender derivation")
 	}
 	from, err := Sender(s, tx)
 	if err != nil {
-		return Message{}, err
+		*msg = Message{}
+		return err
 	}
 	msg.from = from
-
-	return msg, nil
+	return nil
 }
 
 func copyUint256OrZero(v *uint256.Int) uint256.Int {

@@ -422,6 +422,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		ibs      *state.IntraBlockState
 		evm      *vm2.EVM
 		observed map[types.Address]struct{}
+		msg      transaction.Message // rebuilt per transaction (AsMessageInto)
 	}
 	// A chained speculative build reads its unwritten own parents through
 	// post-state snapshots layered on the block's reader; the per-worker
@@ -502,7 +503,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		sink := func(recipient types.Address, amount *uint256.Int) {
 			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
 		}
-		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink, signer)
+		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink, signer, &wc.msg)
 		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
 		txResults[txIndex] = parallelTxResult{
@@ -842,7 +843,8 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 
 // parallelApplyTx executes a single transaction in the parallel context.
 // Similar to applyTransaction but adapted for parallel execution with
-// per-tx IntraBlockState and ParallelStateWriter.
+// per-tx IntraBlockState and ParallelStateWriter. msgBuf, when not nil, is
+// the worker's reusable Message (its contents are overwritten).
 func parallelApplyTx(
 	config *params.ChainConfig,
 	engine consensus.Engine,
@@ -855,6 +857,7 @@ func parallelApplyTx(
 	cfg vm2.Config,
 	sink FeeSink,
 	signer transaction.Signer,
+	msgBuf *transaction.Message,
 ) (*block.Receipt, uint64, []*block.Log, error) {
 	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
 	if err != nil {
@@ -868,11 +871,15 @@ func parallelApplyTx(
 	if signer == nil {
 		signer = transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time)
 	}
-	msg, err := tx.AsMessage(signer, header.BaseFee)
-	if err != nil {
+	if msgBuf == nil {
+		msgBuf = new(transaction.Message)
+	}
+	if err := tx.AsMessageInto(msgBuf, signer, header.BaseFee); err != nil {
 		return nil, 0, nil, err
 	}
-	NormalizeExecutionMessage(&msg, cfg.StatelessExec, engine != nil)
+	msg := msgBuf
+	NormalizeExecutionMessage(msg, cfg.StatelessExec, engine != nil)
+	txHash := tx.Hash()
 
 	// A plain EOA-to-EOA transfer skips the EVM (transfer_fast_path.go); any
 	// other transaction, or one the fast path declines before writing
@@ -881,14 +888,14 @@ func parallelApplyTx(
 	fast := false
 	if transferFastPath {
 		if e, ok := evm.(*vm2.EVM); ok {
-			result, fast = tryFastTransfer(e, ibs, &msg, gp, sink)
+			result, fast = tryFastTransfer(e, ibs, msg, gp, sink)
 		}
 	}
 	if !fast {
-		txContext := NewEVMTxContext(&msg)
+		txContext := NewEVMTxContext(msg)
 		evm.Reset(txContext, ibs)
 
-		result, err = ApplyMessageWithFeeSink(evm, &msg, gp, true, false, sink)
+		result, err = ApplyMessageWithFeeSink(evm, msg, gp, true, false, sink)
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -904,7 +911,7 @@ func parallelApplyTx(
 	// serial miner/importer produce.
 	gasUsed := result.UsedGas
 	blockGasUsed := result.BlockGasUsed
-	logs := ibs.GetLogs(tx.Hash())
+	logs := ibs.GetLogs(txHash)
 
 	var receipt *block.Receipt
 	if !cfg.NoReceipts {
@@ -914,7 +921,7 @@ func parallelApplyTx(
 		} else {
 			receipt.Status = block.ReceiptStatusSuccessful
 		}
-		receipt.TxHash = tx.Hash()
+		receipt.TxHash = txHash
 		receipt.GasUsed = gasUsed
 		if msg.To() == nil {
 			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, tx.Nonce())
