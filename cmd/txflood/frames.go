@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ecdsa"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -32,7 +33,7 @@ type frameRun struct {
 	// fill blocks from frames it received itself.
 	broadcast bool
 
-	frames, txs, busy, failed, conns, rejected atomic.Int64
+	frames, txs, busy, failed, conns, rejected, timeouts atomic.Int64
 
 	// peerBusy counts Busy replies per peer (index into peers); sized by run.
 	peerBusy []atomic.Int64
@@ -47,6 +48,9 @@ const (
 	busyBackoffMin = 5 * time.Millisecond
 	busyBackoffMax = 200 * time.Millisecond
 )
+
+// frameReplyTimeout bounds one frame write plus its reply.
+const frameReplyTimeout = 10 * time.Second
 
 // busyRetries sums the per-peer Busy retry counters.
 func (fr *frameRun) busyRetries() int64 {
@@ -104,6 +108,9 @@ func sendOneFrame(conn net.Conn, raw []byte, buf []byte) (byte, []byte, error) {
 	binary.LittleEndian.PutUint32(magic[:], ingest.FrameMagic)
 	buf = append(buf, magic[:]...)
 	buf = append(buf, raw...)
+	// One deadline covers the write and the reply wait, so a peer that stops
+	// answering cannot park the sender forever.
+	_ = conn.SetDeadline(time.Now().Add(frameReplyTimeout))
 	if _, err := conn.Write(buf); err != nil {
 		return 0, buf, err
 	}
@@ -111,6 +118,7 @@ func sendOneFrame(conn net.Conn, raw []byte, buf []byte) (byte, []byte, error) {
 	if _, err := io.ReadFull(conn, reply[:]); err != nil {
 		return 0, buf, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return reply[0], buf, nil
 }
 
@@ -132,7 +140,7 @@ func (fr *frameRun) run(progress bool) frameResult {
 					return
 				case <-t.C:
 					n := fr.txs.Load()
-					fmt.Printf("  frames=%d txs=%d (+%d/s) busy=%d busyRetries=%d failed=%d\n", fr.frames.Load(), n, n-last, fr.busy.Load(), fr.busyRetries(), fr.failed.Load())
+					fmt.Printf("  frames=%d txs=%d (+%d/s) busy=%d busyRetries=%d failed=%d timeouts=%d\n", fr.frames.Load(), n, n-last, fr.busy.Load(), fr.busyRetries(), fr.failed.Load(), fr.timeouts.Load())
 					last = n
 				}
 			}
@@ -271,6 +279,10 @@ func (fr *frameRun) sendTo(conn *net.Conn, pi int, k int64, raw []byte, ntx int,
 		status, nb, err := send(*conn, raw, buf)
 		buf = nb
 		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				fr.timeouts.Add(1)
+			}
 			(*conn).Close()
 			*conn = nil
 			if attempt++; attempt > 50 {
