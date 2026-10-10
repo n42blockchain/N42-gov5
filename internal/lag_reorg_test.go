@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"math/big"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
@@ -213,4 +215,56 @@ func TestLagTwoChainReorgRollsBackExecution(t *testing.T) {
 func (lc *lagChain) balanceAtGenesis() *uint256.Int {
 	v, _ := uint256.FromHex("0x56bc75e2d63100000")
 	return v
+}
+
+// TestLagExecutorImportsInParentOrder: available blocks handed to the lag
+// executor out of order (as pushes and own seals can arrive) are imported in
+// parent order on its goroutine, each import is reported to consensus
+// through the hook, and the executed results lag the queue by nothing once
+// it drains.
+func TestLagExecutorImportsInParentOrder(t *testing.T) {
+	defer block.SetDeferredDepthForTest(2, 0)()
+	lc := newLagChain(t)
+	g := lc.bc.genesisBlock.Header().(*block.Header)
+	a1 := lc.addrs[1]
+	b1 := lc.build(g, 0, lc.transfer(0, 0, a1, 1))
+	b2 := lc.build(b1.Header().(*block.Header), 0, lc.transfer(0, 1, a1, 1))
+
+	var mu sync.Mutex
+	var order []types.Hash
+	lc.bc.SetLagImportedHook(func(h, _ types.Hash) {
+		mu.Lock()
+		order = append(order, h)
+		mu.Unlock()
+	})
+	waitImported := func(want int) {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			mu.Lock()
+			n := len(order)
+			mu.Unlock()
+			if n >= want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("lag executor imported %d of %d", n, want)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	// Out of order: the child first.
+	lc.bc.EnqueueLagImport(b2)
+	lc.bc.EnqueueLagImport(b1)
+	waitImported(2)
+	// Block 3 can be built only now: its header reports block 1.
+	b3 := lc.build(b2.Header().(*block.Header), 0, lc.transfer(0, 2, a1, 1))
+	lc.bc.EnqueueLagImport(b3)
+	waitImported(3)
+	require.Equal(t, []types.Hash{b1.Hash(), b2.Hash(), b3.Hash()}, order)
+	imported, last, queued := lc.bc.LagStats()
+	require.Equal(t, uint64(3), imported)
+	require.Equal(t, uint64(3), last)
+	require.Equal(t, 0, queued)
+	require.False(t, lc.bc.LagImportQueued(b3.Hash()))
+	require.Equal(t, lc.result(b1.Hash()).Root, b3.Header().(*block.Header).Root)
 }
