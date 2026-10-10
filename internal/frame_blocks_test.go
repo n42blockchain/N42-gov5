@@ -16,8 +16,11 @@ import (
 	"github.com/n42blockchain/N42/internal/frame/frametest"
 	"github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/internal/ingest"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/lib/rlp"
+	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 // TestResolveFramesPullsMissing: a follower holds two of a block's three
@@ -131,5 +134,71 @@ func TestResolveFramesPullsMissing(t *testing.T) {
 	followerStore.Commit(5+keep, nil)
 	if followerStore.Len() != 0 || followerStore.Put(hashes[0], raws[0]) {
 		t.Fatalf("after the keep margin: %+v", followerStore.Stats())
+	}
+}
+
+// TestFramesCommittedWalksAncestors: blocks 6 and 7 are written; a sibling
+// 6' holds another frame. The commit of 7 also commits 6 (its parent, read
+// from the database), so 6's frames are marked committed rather than
+// released, while the frame only 6' held becomes fillable again.
+func TestFramesCommittedWalksAncestors(t *testing.T) {
+	keys := frametest.Keys(t, 3, 21)
+	fb := frametest.NewBuilder(keys[0], senderRecoveryChainID, keys[1:])
+	raws, hashes, _ := fb.Frames(t, 3, 2)
+	st := store.NewWithKeep(1<<24, 4)
+	for i := range raws {
+		st.Put(hashes[i], raws[i])
+	}
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	bc := &BlockChain{ctx: context.Background(), ChainDB: memdb.NewTestDB(t)}
+	bc.SetFrameStore(st)
+	st.Commit(5, nil) // the committed head before this test
+
+	mk := func(n uint64, parent types.Hash, extra byte, idx ...int) *block.Block {
+		hdr := &block.Header{Number: uint256.NewInt(n), ParentHash: parent, Difficulty: uint256.NewInt(0),
+			BaseFee: uint256.NewInt(1), GasLimit: 1 << 30, Extra: []byte{extra}}
+		var hs []types.Hash
+		var rs [][]byte
+		for _, i := range idx {
+			hs = append(hs, hashes[i])
+			rs = append(rs, raws[i])
+		}
+		b := block.NewFrameBlockFromReceipt(hdr, hs, nil, nil, nil).(*block.Block)
+		b.Body().(*block.Body).FrameData = rs
+		return b
+	}
+	b6 := mk(6, types.Hash{0x05}, 0, 0)
+	b6s := mk(6, types.Hash{0x05}, 1, 2)
+	b7 := mk(7, b6.Hash(), 0, 1)
+	if err := bc.ChainDB.Update(context.Background(), func(tx kv.RwTx) error {
+		for _, b := range []*block.Block{b6, b6s, b7} {
+			if err := rawdb.WriteBlock(tx, b); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []*block.Block{b6, b6s, b7} {
+		bc.framesPersisted(b)
+	}
+	for i := range hashes {
+		if !st.Included(hashes[i]) {
+			t.Fatalf("frame %d not pinned", i)
+		}
+	}
+	bc.framesCommitted(b7)
+	if s := st.Stats(); s.Committed != 2 || s.Pending != 0 || s.Released != 1 || s.CommittedHead != 7 {
+		t.Fatalf("after commit of 7: %+v", s)
+	}
+	if st.Included(hashes[2]) || !st.Included(hashes[0]) {
+		t.Fatal("fork frame still pinned, or the committed ancestor's frame released")
+	}
+	// Keep 4: block 6's frame goes at head 10, block 7's at 11.
+	st.Commit(10, nil)
+	if st.Has(hashes[0]) || !st.Has(hashes[1]) || !st.Has(hashes[2]) {
+		t.Fatalf("at head 10: %+v", st.Stats())
 	}
 }
