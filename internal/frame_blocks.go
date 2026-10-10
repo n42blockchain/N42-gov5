@@ -90,6 +90,9 @@ type frameBlockState struct {
 	// chained build on an unwritten ancestor does not include a frame twice.
 	mu       sync.Mutex
 	inFlight map[types.Hash]uint64
+	// orphanReleased counts in-flight frames of losing blocks made
+	// fillable again (ReleaseFramesInFlight, framesCommitted).
+	orphanReleased atomic.Uint64
 
 	loggedMu sync.Mutex
 	logged   map[types.Hash]struct{}
@@ -128,6 +131,32 @@ func (bc *BlockChain) FramesInFlight() func(types.Hash) bool {
 	fs.mu.Unlock()
 	return func(h types.Hash) bool { _, ok := snap[h]; return ok }
 }
+
+// ReleaseFramesInFlight makes the frames of a block at number that lost
+// (a sealed sibling the miner dropped, a build abandoned after assembly)
+// fillable again at once: the in-flight entries recorded for exactly that
+// height are dropped; an entry a later block re-recorded is kept. It returns
+// how many were released.
+func (bc *BlockChain) ReleaseFramesInFlight(hashes []types.Hash, number uint64) int {
+	fs := &bc.frames
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	n := 0
+	for _, h := range hashes {
+		if at, ok := fs.inFlight[h]; ok && at == number {
+			delete(fs.inFlight, h)
+			n++
+		}
+	}
+	if n > 0 {
+		fs.orphanReleased.Add(uint64(n))
+	}
+	return n
+}
+
+// OrphanFramesReleased returns how many in-flight frames of losing blocks
+// were made fillable again since start (S90 defect 2).
+func (bc *BlockChain) OrphanFramesReleased() uint64 { return bc.frames.orphanReleased.Load() }
 
 // inFlightPruneDepth: in-flight entries of blocks this far below a written
 // block belong to abandoned siblings; their frames become fillable again.
@@ -212,6 +241,34 @@ func (bc *BlockChain) framesCommitted(blk *block.Block) {
 		own = steps[0].hashes
 	}
 	st.Commit(number, own)
+	bc.releaseOrphanFrames(number)
+}
+
+// releaseOrphanFrames drops every in-flight entry at or below the committed
+// height. The committed chain up to it is written (imports run in order and
+// a commit needs its block stored), and writing a block drops its own
+// entries, so what is left there belongs to blocks that lost: a sealed
+// sibling the miner never wrote, a proposal this node resolved and the
+// quorum did not take. S90 (B1): a leader sealed one height twice, the
+// loser's frames stayed in flight for 16 blocks, the fill packed every
+// later frame of those senders behind a nonce gap and ~44 blocks executed
+// nothing. Their frames are fillable again from this commit on, and being
+// older in arrival order they are the next fill's first frames.
+func (bc *BlockChain) releaseOrphanFrames(committed uint64) {
+	fs := &bc.frames
+	fs.mu.Lock()
+	n := 0
+	for h, at := range fs.inFlight {
+		if at <= committed {
+			delete(fs.inFlight, h)
+			n++
+		}
+	}
+	fs.mu.Unlock()
+	if n > 0 {
+		fs.orphanReleased.Add(uint64(n))
+		log.Info("frame blocks: orphan frames fillable again", "committed", committed, "frames", n)
+	}
 }
 
 func framePullTimeout() time.Duration {

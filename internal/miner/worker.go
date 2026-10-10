@@ -659,6 +659,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 			log.Info("miner: converging on lowest-hash sibling; re-proposing it",
 				"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
 				"kept", low.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
+			w.releaseLostFrames(blk, low)
 			if err := w.chain.SealedBlock(low); err != nil {
 				log.Warn("miner: re-push of lowest sibling failed", "err", err)
 			}
@@ -699,11 +700,13 @@ func (w *worker) handleSealed(blk block.IBlock) {
 				"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
 				"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12],
 				"currentBlock", w.chain.CurrentBlock().Number64().Uint64())
+			w.releaseLostFrames(blk, kept)
 			return
 		}
 		log.Info("miner: suppressing divergent same-height sibling; re-proposing first sealed block",
 			"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
 			"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
+		w.releaseLostFrames(blk, kept)
 		if err := w.chain.SealedBlock(kept); err != nil {
 			log.Warn("miner: re-push of kept sibling failed", "err", err)
 		}
@@ -777,6 +780,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		if cerr != nil {
 			log.Info("miner: sealed block is stale before its write; dropping",
 				"number", blockNumber.Uint64(), "hash", hash.Hex()[:12], "err", cerr)
+			w.releaseLostFrames(blk, nil)
 			return
 		}
 	}
@@ -888,6 +892,44 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		return
 	}
 	w.writeAndFinish(job)
+}
+
+// releaseLostFrames makes the frames of a sealed frame block that lost
+// (dropped as a divergent or stale sibling) fillable again at once, except
+// those the block kept in its place also holds (S90 defect 2: the loser's
+// frames stayed in flight and every later frame of their senders skipped).
+func (w *worker) releaseLostFrames(lost, kept block.IBlock) {
+	if lost == nil {
+		return
+	}
+	bc, ok := w.chain.(*internal.BlockChain)
+	if !ok {
+		return
+	}
+	body, ok := lost.Body().(*block.Body)
+	if !ok || !body.IsFrameBody() {
+		return
+	}
+	hashes := body.FrameHashes
+	if kept != nil {
+		if kb, ok := kept.Body().(*block.Body); ok && kb.IsFrameBody() {
+			keep := make(map[types.Hash]struct{}, len(kb.FrameHashes))
+			for _, h := range kb.FrameHashes {
+				keep[h] = struct{}{}
+			}
+			out := make([]types.Hash, 0, len(hashes))
+			for _, h := range hashes {
+				if _, ok := keep[h]; !ok {
+					out = append(out, h)
+				}
+			}
+			hashes = out
+		}
+	}
+	if n := bc.ReleaseFramesInFlight(hashes, lost.Number64().Uint64()); n > 0 {
+		log.Info("miner: frames of a losing sealed block fillable again", "number", lost.Number64().Uint64(),
+			"hash", lost.Hash().Hex()[:12], "frames", n)
+	}
 }
 
 // writeAndFinish runs the S19 journal-latch wait, WriteBlockWithState
