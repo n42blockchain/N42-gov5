@@ -340,6 +340,18 @@ Fix before the rerun: get funding mined under frame blocks (genesis
 allocation for the 8000 senders, or an unframed warm-up block phase for
 funding), then run the one P1 gate round again.
 
+**S88 plan (35zzzbn).** Rerun of the S87 P1 gate on n42-r118, which is r117
+plus local frames for pool transactions: the leader packs its own pool
+transactions (the RPC funding transactions included) into locally built
+frames, so funding is mined under `N42_FRAME_BLOCKS=1` and the gateway flood
+can start. Configuration is otherwise unchanged from S87 (txflood-r45 with
+`-frames -gateway-key -frame-peers -frame-broadcast -interleave`, pertx
+12000, 1 GiB frame store, 900 s warm-up decay). The gate is the same:
+gas occupancy >= 95% AND B mean >= 300k TPS; the flood flags are echoed into
+the round log at each leg start so the run can be checked for `-frames` and
+`-interleave`. Anything short of that, or another round with no flood, is
+read as in S87: the gate is not decided.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
