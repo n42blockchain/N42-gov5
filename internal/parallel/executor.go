@@ -582,8 +582,14 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	tDelete := time.Now()
 	rw := e.rwSets[txIndex]
 	if rw != nil {
-		for _, wd := range rw.Writes {
-			e.mvs.Delete(wd.Key, txIndex)
+		// Incarnation 0 is the transaction's first execution against this
+		// executor's fresh MVS: a kept set's writes are the previous block's
+		// and were never stored here, so there is nothing to withdraw (the
+		// deletes were ~9% of the exec wave at 163k transfers).
+		if e.incarnation[txIndex] > 0 {
+			for _, wd := range rw.Writes {
+				e.mvs.Delete(wd.Key, txIndex)
+			}
 		}
 		rw.Clear()
 	} else {

@@ -1,7 +1,9 @@
 package parallel
 
 import (
+	"bytes"
 	"errors"
+	"sync/atomic"
 	"testing"
 )
 
@@ -90,4 +92,50 @@ func TestExecutorArenaFreeListKeepsTheLargest(t *testing.T) {
 	if big == 0 {
 		t.Fatalf("free list after the big blocks: caps %v, want one of at least 4096", caps)
 	}
+}
+
+// Incarnation 0 skips withdrawing the kept set's writes (they belong to the
+// previous block, not to this MVS); a re-executed incarnation must still
+// withdraw what its previous incarnation stored. Tx 1's first execution
+// claims a base read of the key tx 0 writes and writes keyA; validation
+// fails it, and the re-execution writes keyB instead: keyA must be gone.
+func TestExecutorReexecutionWithdrawsPreviousWrites(t *testing.T) {
+	shared, keyA, keyB := balanceKey(0xA0), balanceKey(0xA1), balanceKey(0xA2)
+	var runs [3]atomic.Int32
+	var exec *Executor
+	exec = NewExecutor(3, 2, func(txIndex int, rw *ReadWriteSet) error {
+		n := runs[txIndex].Add(1)
+		switch txIndex {
+		case 0:
+			rw.RecordWrite(shared, []byte{1})
+		case 1:
+			if n == 1 {
+				rw.RecordRead(shared, -1, 0, true)
+				rw.RecordWrite(keyA, []byte{1})
+				return nil
+			}
+			_, wtx, winc, found := exec.MVS().Read(shared, txIndex)
+			if !found {
+				t.Errorf("re-execution of tx 1 does not see tx 0's write")
+			}
+			rw.RecordRead(shared, wtx, winc, false)
+			rw.RecordWrite(keyB, []byte{2})
+		}
+		return nil
+	})
+	for i, r := range exec.Run() {
+		if r.Err != nil {
+			t.Fatalf("tx %d: %v", i, r.Err)
+		}
+	}
+	if got := runs[1].Load(); got < 2 {
+		t.Fatalf("tx 1 executed %d times, want a re-execution", got)
+	}
+	if _, wtx, _, found := exec.MVS().Read(keyA, 3); found {
+		t.Fatalf("keyA still holds tx %d's write from the aborted incarnation", wtx)
+	}
+	if v, wtx, _, found := exec.MVS().Read(keyB, 3); !found || wtx != 1 || !bytes.Equal(v, []byte{2}) {
+		t.Fatalf("keyB: found=%v writer=%d value=%x, want tx 1's write 02", found, wtx, v)
+	}
+	exec.Release()
 }
