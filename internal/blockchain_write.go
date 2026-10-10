@@ -275,7 +275,8 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 
 		if len(receipts) > 0 {
 			tPhase = time.Now()
-			if err := rawdb.AppendReceipts(tx, blockNumber.Uint64(), receipts); err != nil {
+			encoded := bc.receiptsFuture.encodedFor(blk.Hash(), receipts)
+			if err := rawdb.AppendReceiptsEncoded(tx, blockNumber.Uint64(), receipts, encoded); err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
 				return err
 			}
