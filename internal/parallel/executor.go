@@ -632,12 +632,19 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	// Apply writes to MVS with incarnation tag.
 	tWrite := time.Now()
 	inc := e.incarnation[txIndex]
-	for _, wd := range rw.Writes {
-		if wd.Delta != nil {
+	for i := range rw.Writes {
+		wd := &rw.Writes[i]
+		switch {
+		case wd.Delta != nil:
 			e.mvs.WriteDelta(wd.Key, txIndex, inc, wd.Delta)
-			continue
+		case wd.Key.Field == FieldCode:
+			// Code can alias EVM memory: copied.
+			e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
+		default:
+			// The state writer encodes every other value fresh and nothing
+			// mutates a recorded write: the store adopts it.
+			e.mvs.writeOwned(wd.Key, txIndex, inc, wd.Value)
 		}
-		e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
 	}
 	if ws != nil {
 		ws.mvsWriteNs += int64(time.Since(tWrite))
