@@ -27,7 +27,6 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
@@ -122,6 +121,10 @@ type lagPipeline struct {
 	parent *lagPipeParent
 	// spec: the one ahead execution.
 	spec *aheadExec
+	// draining: discarded ahead executions whose goroutines may still run.
+	// They share the block's transaction objects (the sender cache), so no
+	// other execution of the same block starts until they finish.
+	draining []*aheadExec
 
 	launched  atomic.Uint64
 	used      atomic.Uint64
@@ -382,6 +385,9 @@ func (bc *BlockChain) lagPipeLaunch() {
 func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	defer close(a.done)
 	defer func() { a.took = time.Since(a.started) }()
+	// A discarded run of the same block may still be filling its
+	// transactions' senders.
+	a.pipe.awaitDrained(a.blk.Hash())
 	if err := bc.ResolveFrames(a.blk); err != nil {
 		a.err = err
 		return
@@ -389,6 +395,17 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	if !bc.process.(*StateProcessor).ParallelApplicable(a.blk) {
 		a.err = ErrParallelNotApplicable
 		return
+	}
+	layers := []*state.PostState{par.post}
+	if j := bc.lagWritePending(par.header.ParentHash); j != nil {
+		// The grandparent's write is in flight (lag_writer.go): the store
+		// does not hold it yet, its post-state does. Checked before the
+		// transaction opens: a write that is not pending now is durable in it.
+		if j.post != nil {
+			layers = append(layers, j.post)
+		} else {
+			<-j.done
+		}
 	}
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
 	if err != nil {
@@ -404,7 +421,6 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff {
 		base = commitment.NewQMDBStateReader(commitment.NewLookupSourceRefreshing(bc.qmdbRootComputer, tx, bc.ChainDB), base, mode)
 	}
-	layers := []*state.PostState{par.post}
 	prefetch := state.NewAccountPrefetch(state.LayerPostStates(layers, base))
 	ibs := state.New(prefetch)
 	ibs.SetAccountPrefetch(prefetch)
@@ -415,7 +431,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		if hash == par.hash {
 			return par.header
 		}
-		return rawdb.ReadHeader(tx, hash, number)
+		return bc.readHeaderOrPending(tx, hash, number)
 	}
 	run, err := bc.process.(*StateProcessor).ExecuteParallelAhead(a.blk, ibs, GetHashFn(hdr, getHeader))
 	if err != nil {
@@ -435,6 +451,9 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 	a := p.spec
 	if a == nil || a.blk.Hash() != blk.Hash() {
 		p.mu.Unlock()
+		// The serial path executes blk next: a discarded run of it must not
+		// still be filling its transactions' senders.
+		p.awaitDrained(blk.Hash())
 		return nil
 	}
 	p.spec = nil
@@ -449,13 +468,14 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		reason = "parent not written by its publishing import"
 	case a.parent != blk.ParentHash():
 		reason = "different parent"
-	case !bc.AppliedHeadIsExactly(a.parent, number-1):
+	case !bc.lagAppliedIs(a.parent, number-1):
 		reason = "applied head is not the parent"
 	}
 	if reason != "" {
 		log.Debug("lag pipeline: ahead execution discarded", "number", number, "hash", blk.Hash().Hex()[:12], "reason", reason)
 		p.discarded.Add(1)
 		a.release()
+		p.awaitDrained(blk.Hash())
 		return nil
 	}
 	p.used.Add(1)
@@ -466,7 +486,44 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 // closed once its goroutine finishes.
 func (p *lagPipeline) discardLocked(a *aheadExec) {
 	p.discarded.Add(1)
+	p.draining = append(p.draining, a)
 	go a.release()
+}
+
+// drainingLocked returns a discarded execution of hash still running, and
+// forgets the finished ones (p.mu held).
+func (p *lagPipeline) drainingLocked(hash types.Hash) *aheadExec {
+	var running *aheadExec
+	keep := p.draining[:0]
+	for _, a := range p.draining {
+		select {
+		case <-a.done:
+			continue
+		default:
+		}
+		keep = append(keep, a)
+		if a.blk.Hash() == hash {
+			running = a
+		}
+	}
+	for i := len(keep); i < len(p.draining); i++ {
+		p.draining[i] = nil
+	}
+	p.draining = keep
+	return running
+}
+
+// awaitDrained waits until no discarded execution of hash runs.
+func (p *lagPipeline) awaitDrained(hash types.Hash) {
+	for {
+		p.mu.Lock()
+		a := p.drainingLocked(hash)
+		p.mu.Unlock()
+		if a == nil {
+			return
+		}
+		<-a.done
+	}
 }
 
 // lagPipeSettle settles the pipeline after an import of h that ran its

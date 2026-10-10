@@ -184,6 +184,8 @@ type BlockChain struct {
 	avail   availableState
 	lagExec lagExecutor
 	lagPipe lagPipeline
+	// lagWrite: the lag executor's ordered writer (lag_writer.go).
+	lagWrite lagWriter
 
 	// executedHook, when set, fires the moment a block's execution and state
 	// validation succeed during import — BEFORE writeBlockWithState. Wired to

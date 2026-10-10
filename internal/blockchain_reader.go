@@ -101,6 +101,10 @@ func (bc *BlockChain) GetBlock(hash types.Hash, number uint64) block.IBlock {
 		return blk
 	}
 	blockCacheMisses.Inc()
+	// Applied, its write in flight (lag_writer.go).
+	if j := bc.lagWritePending(hash); j != nil && j.number == number {
+		return j.blk
+	}
 
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
 	if err != nil {
@@ -180,6 +184,9 @@ func (bc *BlockChain) HasBlock(hash types.Hash, number uint64) bool {
 	if bc.blockCache.Contains(hash) {
 		return true
 	}
+	if j := bc.lagWritePending(hash); j != nil && j.number == number {
+		return true // applied, its write in flight (lag_writer.go)
+	}
 
 	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
 		flag = rawdb.HasHeader(tx, hash, number)
@@ -201,6 +208,9 @@ func (bc *BlockChain) GetHeader(h types.Hash, number *uint256.Int) block.IHeader
 		return header
 	}
 	headerCacheMisses.Inc()
+	if hdr := bc.pendingHeader(h, number.Uint64()); hdr != nil {
+		return hdr
+	}
 
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
 	if err != nil {

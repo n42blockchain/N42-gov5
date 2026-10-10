@@ -66,6 +66,7 @@ type importBenchRow struct {
 	ahead                    bool
 	root, process, valid, wr time.Duration
 	publish                  time.Duration
+	wait                     time.Duration // the hand-off's wait for the previous write
 	cr                       commitment.ComputeRootPhases
 	w                        blockWritePhases
 }
@@ -243,9 +244,6 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	blockWritePhasesHook = func(n uint64, ph blockWritePhases) {
 		mu.Lock()
 		row(n).w = ph
-		if cr := commitment.LastComputeRootPhases(); cr != nil {
-			row(n).cr = *cr
-		}
 		mu.Unlock()
 	}
 	importPhasesHook = func(n uint64, ph ProcessPhases, process, validate, write time.Duration, ahead bool) {
@@ -253,6 +251,14 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		r := row(n)
 		r.root, r.process, r.valid, r.wr, r.ahead = ph.Finalize, process, validate, write, ahead
 		r.publish = time.Duration(lagPublishNanos.Swap(0))
+		// This block's root: the next one has not started (the import
+		// goroutine is still in this one).
+		if cr := commitment.LastComputeRootPhases(); cr != nil {
+			r.cr = *cr
+		}
+		if handed, _, wait := bc.LagWriteStats(); handed > 0 {
+			r.wait = wait
+		}
 		mu.Unlock()
 	}
 	defer func() { blockWritePhasesHook, importPhasesHook = nil, nil }()
@@ -320,8 +326,13 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 
 	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n%3s %5s %7s %7s | %6s %6s %5s %6s %6s %5s | %7s %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s\n",
-		"n", "ahead", "root", "write", "other", "publ", "lock", "ops", "apply", "fold",
+	// write is the block's write on whichever goroutine ran it (the ordered
+	// writer's, N42_LAG_WRITE_ASYNC); hand is what the import itself spent
+	// on it (all of it when synchronous; the wait for the previous write and
+	// the capture of the QMDB rows when handed off), so the next block's root
+	// waits root+hand: the critical path.
+	fmt.Fprintf(&b, "\n%3s %5s %7s %7s %6s %6s | %6s %6s %5s %6s %6s %5s | %7s %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s\n",
+		"n", "ahead", "root", "write", "hand", "wait", "other", "publ", "lock", "ops", "apply", "fold",
 		"begin", "rcpt", "block", "ce", "state", "chgSet", "chgHis", "qflush", "qmeta", "commit", "post")
 	var keysN []uint64
 	for n := range rows {
@@ -340,15 +351,18 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		r := rows[n]
 		cr := r.cr
 		other := r.root - r.publish - cr.LockWait - cr.Collect - cr.Apply - cr.Fold
-		fmt.Fprintf(&b, "%3d %5v %7.1f %7.1f | %6.1f %6.1f %5.1f %6.1f %6.1f %5.1f | %7.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f\n",
-			n, r.ahead, ms(r.root), ms(r.wr), ms(other), ms(r.publish), ms(cr.LockWait), ms(cr.Collect), ms(cr.Apply), ms(cr.Fold),
+		fmt.Fprintf(&b, "%3d %5v %7.1f %7.1f %6.1f %6.1f | %6.1f %6.1f %5.1f %6.1f %6.1f %5.1f | %7.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f\n",
+			n, r.ahead, ms(r.root), ms(r.w.Total), ms(r.wr), ms(r.wait), ms(other), ms(r.publish), ms(cr.LockWait), ms(cr.Collect), ms(cr.Apply), ms(cr.Fold),
 			ms(r.w.Begin), ms(r.w.Receipts), ms(r.w.Block), ms(r.w.Evidence), ms(r.w.State), ms(r.w.ChgTruncate+r.w.ChgSets),
 			ms(r.w.ChgHistory), ms(r.w.QMDBFlush), ms(r.w.QMDBMeta), ms(r.w.Commit), ms(r.w.Post))
 		if n <= 2 {
 			continue // warm-up
 		}
 		add("root", ms(r.root))
-		add("write", ms(r.wr))
+		add("write", ms(r.w.Total))
+		add("handoff", ms(r.wr))
+		add("handoff.wait", ms(r.wait))
+		add("critical", ms(r.root+r.wr))
 		add("root.other", ms(other))
 		add("root.publish", ms(r.publish))
 		add("root.lock", ms(cr.LockWait))
@@ -365,8 +379,7 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		add("w.qmeta", ms(r.w.QMDBMeta))
 		add("w.commit", ms(r.w.Commit))
 		add("w.post", ms(r.w.Post))
-		add("w.rest", ms(r.wr-r.w.Total))
-		add("root+write", ms(r.root+r.wr))
+		add("root+write", ms(r.root+r.w.Total))
 	}
 	names := make([]string, 0, len(cols))
 	for k := range cols {
