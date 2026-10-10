@@ -310,6 +310,18 @@ func marshalLogsForStorage(logs block.Logs) ([]byte, error) {
 }
 
 func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.Receipts) error {
+	return AppendReceiptsEncoded(tx, blockNumber, receipts, nil)
+}
+
+// EncodeReceiptsForStorage returns the Receipts row AppendReceipts stores
+// for receipts, so a caller can encode it ahead of the write transaction.
+func EncodeReceiptsForStorage(receipts block.Receipts) ([]byte, error) {
+	return marshalReceiptsForStorage(receipts)
+}
+
+// AppendReceiptsEncoded is AppendReceipts with the Receipts row already
+// encoded by EncodeReceiptsForStorage (nil encodes it here).
+func AppendReceiptsEncoded(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.Receipts, encoded []byte) error {
 	for txID, receipt := range receipts {
 		if len(receipt.Logs) == 0 {
 			continue
@@ -324,11 +336,14 @@ func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.R
 		}
 	}
 
-	data, err := marshalReceiptsForStorage(receipts)
-	if err != nil {
-		return fmt.Errorf("encode block receipts for block %d: %w", blockNumber, err)
+	data := encoded
+	if data == nil {
+		var err error
+		if data, err = marshalReceiptsForStorage(receipts); err != nil {
+			return fmt.Errorf("encode block receipts for block %d: %w", blockNumber, err)
+		}
 	}
-	if err = tx.Append(modules.Receipts, modules.EncodeBlockNumber(blockNumber), data); err != nil {
+	if err := tx.Append(modules.Receipts, modules.EncodeBlockNumber(blockNumber), data); err != nil {
 		return fmt.Errorf("writing receipts for block %d: %w", blockNumber, err)
 	}
 	return nil

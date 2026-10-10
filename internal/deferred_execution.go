@@ -161,31 +161,55 @@ func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Has
 // bloom, gas used) of one block, computed on its own goroutine as soon as
 // the receipts are final. At 163k transactions it is ~45 ms of hashing that
 // otherwise ran serially inside the write.
+//
+// It also encodes the block's Receipts row first (~15 ms at 163k), which
+// the write appends before anything else.
 type receiptsResultFuture struct {
 	hash     types.Hash
 	receipts []*block.Receipt
 	done     chan struct{}
 	result   rawdb.ExecutedResult // Root unset
+
+	encodedDone chan struct{}
+	encoded     []byte // nil: encode inline
 }
 
 // startReceiptsResult starts computing the receipts part of hash's result.
 // receipts must not change afterwards (they are final once execution and
 // collection are done; the write only reads them).
 func startReceiptsResult(config *params.ChainConfig, number uint64, hash types.Hash, receipts []*block.Receipt) *receiptsResultFuture {
-	f := &receiptsResultFuture{hash: hash, receipts: receipts, done: make(chan struct{})}
+	f := &receiptsResultFuture{hash: hash, receipts: receipts, done: make(chan struct{}), encodedDone: make(chan struct{})}
 	go func() {
 		defer close(f.done)
+		if enc, err := rawdb.EncodeReceiptsForStorage(receipts); err == nil {
+			f.encoded = enc
+		}
+		close(f.encodedDone)
 		f.result = ExecutedResultFor(config, number, types.Hash{}, receipts)
 	}()
 	return f
+}
+
+// encodedFor returns the encoded Receipts row when the future is for hash
+// and exactly these receipts (waiting for it), nil otherwise.
+func (f *receiptsResultFuture) encodedFor(hash types.Hash, receipts []*block.Receipt) []byte {
+	if !f.matches(hash, receipts) {
+		return nil
+	}
+	<-f.encodedDone
+	return f.encoded
+}
+
+func (f *receiptsResultFuture) matches(hash types.Hash, receipts []*block.Receipt) bool {
+	return f != nil && f.hash == hash && len(f.receipts) == len(receipts) &&
+		(len(receipts) == 0 || f.receipts[0] == receipts[0])
 }
 
 // resultFor returns the block's executed result with root, waiting for the
 // receipts part, when the future is for hash and exactly these receipts;
 // ok=false otherwise (the caller derives it inline).
 func (f *receiptsResultFuture) resultFor(hash types.Hash, root types.Hash, receipts []*block.Receipt) (rawdb.ExecutedResult, bool) {
-	if f == nil || f.hash != hash || len(f.receipts) != len(receipts) ||
-		(len(receipts) > 0 && f.receipts[0] != receipts[0]) {
+	if !f.matches(hash, receipts) {
 		return rawdb.ExecutedResult{}, false
 	}
 	<-f.done
