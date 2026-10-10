@@ -598,6 +598,16 @@ Remaining for <= 100 ms: run the MDBX write (changesets, CommitBlock, flush, com
 
 1M arithmetic: at 163k blocks the pipelined cycle is max(exec ~160, root+write 155) in the bench, so S98 tests whether the fleet gets near 163k/0.3 s = 540k, and the next step toward 1M is the ordered writer.
 
+### Memory fixes after S97 (2026-10-10, commits 3b85e970, a0aba225, 606a98f1)
+
+(a) The txlookup tail never drained. The tail holds every block's tx hashes until they are sealed into RecSplit segments. One builder seals a 1M-tx segment in about 4 s (~250k tx/s), below the 290k/s inflow, so with a 15 s tick about 4M hashes piled up, and the single hash->block map never shrank after deletes. Fix 3b85e970: a per-block bucket index (~37 B/tx, freed with the block; newest-first lookup keeps eth_getTransactionByHash correct), the sealer builds up to 3 segments concurrently (N42_TXINDEX_SEAL_WORKERS) appended in block order, tick 2 s, no hash-slice copy. Test: 2M txs at 10k/block through the real sealer, tail peak 190k (bound 230k), heap flat.
+
+(b) Decoded transactions. The leader's miner kept every block it sealed: sealedByHash (16) and sealedOnParent (up to 512) held the block object that the import later fills with decoded txs, about 82 blocks over 150 s and growing toward 512. Ingest cache, frame store, txpool and available-block cache were ruled out. Fix a0aba225: sealedByHash stores a header+frame-list copy; sealedOnParent keeps the full block only while its height is undecided and swaps in the slim copy once the written head reaches it. Test internal/miner/sealed_heap_test.go (heap < 3 blocks over 60 sealed blocks; ~9 MB/block without the fix).
+
+(c) Fix 606a98f1: fetch-on-miss imported every peer's copy of a block (108 goroutines holding copies behind the chain lock in the +180 s dump); now one import per hash at a time.
+
+Expected steady-state heap per node at 290k tx/s is about 3-3.5 GiB (estimate; S97 was 8.5). Binary n42-r131 (HEAD 5e594590, includes P3c + P4) sha f4709990....
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
