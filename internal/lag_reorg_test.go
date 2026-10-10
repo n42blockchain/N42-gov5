@@ -87,7 +87,7 @@ func newLagChainKeys(t *testing.T, keys []*ecdsa.PrivateKey) *lagChain {
 		lc.addrs = append(lc.addrs, crypto.PubkeyToAddress(k.PublicKey))
 		alloc[lc.addrs[i]] = conf.GenesisAccount{Balance: "0x56bc75e2d63100000"}
 	}
-	genesis := &GenesisBlock{GenesisConfig: &conf.Genesis{Config: cfg, Alloc: alloc, GasLimit: 30_000_000,
+	genesis := &GenesisBlock{GenesisConfig: &conf.Genesis{Config: cfg, Alloc: alloc, GasLimit: lagChainGasLimit,
 		Difficulty: uint256.NewInt(0), Timestamp: 1, BaseFee: uint256.NewInt(1),
 		Coinbase: types.HexToAddress("0x1111111111111111111111111111111111111111")}}
 	var gb *block.Block
