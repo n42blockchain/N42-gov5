@@ -110,9 +110,26 @@ func TestResolveFramesPullsMissing(t *testing.T) {
 	if in := bc.FramesInFlight(); !in(hashes[0]) || !in(hashes[2]) {
 		t.Fatal("resolved frames not in flight")
 	}
-	// Writing the block drops its frames from the store and the in-flight set.
+	// Writing the block pins its frames in the store (not fillable, not
+	// evictable) and drops them from the in-flight set.
 	bc.framesPersisted(blk)
-	if followerStore.Len() != 0 || bc.FramesInFlight()(hashes[1]) {
-		t.Fatal("persisted frames still held")
+	if followerStore.Len() != 3 || bc.FramesInFlight()(hashes[1]) {
+		t.Fatal("persisted frames dropped or still in flight")
+	}
+	for _, h := range hashes {
+		if !followerStore.Included(h) {
+			t.Fatalf("frame %s not pinned by the written block", h)
+		}
+	}
+	// Committing it marks them; KeepBlocks commits later they are evicted
+	// and a resend is refused.
+	bc.framesCommitted(blk)
+	keep := followerStore.Stats().KeepBlocks
+	if followerStore.Len() != 3 || followerStore.Stats().Committed != 3 {
+		t.Fatalf("after commit: %+v", followerStore.Stats())
+	}
+	followerStore.Commit(5+keep, nil)
+	if followerStore.Len() != 0 || followerStore.Put(hashes[0], raws[0]) {
+		t.Fatalf("after the keep margin: %+v", followerStore.Stats())
 	}
 }

@@ -718,6 +718,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				Number:   blockNumber.Uint64(),
 			})
 		}
+		bc.framesCommitted(concreteBlock)
 		bc.notifyBlockCommitted(blockNumber.Uint64())
 	}
 
