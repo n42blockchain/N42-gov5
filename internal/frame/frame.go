@@ -135,6 +135,17 @@ func ParseHeader(b []byte) (Header, error) {
 // Size is the encoded length of a frame with this header.
 func (h *Header) Size() int { return HeaderSize + int(h.PayloadLen) + SigSize }
 
+// GatewayOf returns the gateway address in an encoded frame's header
+// without decoding the rest. It does not verify anything.
+func GatewayOf(raw []byte) (types.Address, bool) {
+	var a types.Address
+	if len(raw) < HeaderSize {
+		return a, false
+	}
+	copy(a[:], raw[2:22])
+	return a, true
+}
+
 // Frame is a decoded view over one encoded frame. Raw holds the whole
 // encoding (header || payload || sig); Payload and Sig alias into it, so a
 // frame costs one allocation however many transactions it carries.
@@ -230,6 +241,27 @@ func (f *Frame) Verify() (types.Hash, error) {
 // Encode packs txs into a frame signed by key. The gateway address in the
 // header is the key's address. It returns the encoding and the FrameHash.
 func Encode(key *ecdsa.PrivateKey, seq uint64, txType uint8, txs [][]byte) ([]byte, types.Hash, error) {
+	return EncodeWith(KeySigner(key), seq, txType, txs)
+}
+
+// Signer signs frames: Address goes into the header's gateway field and
+// SignHash returns the 65-byte recoverable secp256k1 signature of a 32-byte
+// FrameHash under Address's key.
+type Signer struct {
+	Address  types.Address
+	SignHash func(hash []byte) ([]byte, error)
+}
+
+// KeySigner returns a Signer over a private key.
+func KeySigner(key *ecdsa.PrivateKey) *Signer {
+	return &Signer{
+		Address:  crypto.PubkeyToAddress(key.PublicKey),
+		SignHash: func(hash []byte) ([]byte, error) { return crypto.Sign(hash, key) },
+	}
+}
+
+// EncodeWith is Encode with the signature produced by s.
+func EncodeWith(s *Signer, seq uint64, txType uint8, txs [][]byte) ([]byte, types.Hash, error) {
 	if len(txs) > MaxTxs {
 		return nil, types.Hash{}, ErrTooManyTxs
 	}
@@ -249,7 +281,7 @@ func Encode(key *ecdsa.PrivateKey, seq uint64, txType uint8, txs [][]byte) ([]by
 	h := Header{
 		Version:    Version,
 		TxType:     txType,
-		Gateway:    crypto.PubkeyToAddress(key.PublicKey),
+		Gateway:    s.Address,
 		Seq:        seq,
 		TxCount:    uint16(len(txs)), // #nosec G115 -- bounded by MaxTxs
 		PayloadLen: uint32(payload),  // #nosec G115 -- bounded by MaxPayload
@@ -263,9 +295,12 @@ func Encode(key *ecdsa.PrivateKey, seq uint64, txType uint8, txs [][]byte) ([]by
 		off += copy(raw[off:], tx)
 	}
 	hash := crypto.Keccak256Hash(raw[:off])
-	sig, err := crypto.Sign(hash[:], key)
+	sig, err := s.SignHash(hash[:])
 	if err != nil {
 		return nil, types.Hash{}, err
+	}
+	if len(sig) != SigSize {
+		return nil, types.Hash{}, fmt.Errorf("%w: signature of %d bytes", ErrBadSignature, len(sig))
 	}
 	copy(raw[off:], sig)
 	return raw, hash, nil
