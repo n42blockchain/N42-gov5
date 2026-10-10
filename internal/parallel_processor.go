@@ -499,7 +499,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		wc.sink = func(recipient types.Address, amount *uint256.Int) {
 			wc.fees = append(wc.fees, deferredFee{recipient: recipient, amount: *amount})
 		}
-		return wc, tx.Rollback, nil
+		return wc, func() { wc.scratch.fast.flush(); tx.Rollback() }, nil
 	}
 	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
 		tx := txs[txIndex]
@@ -901,6 +901,7 @@ func parallelApplyTx(
 	}
 	if sc == nil {
 		sc = new(parallelTxScratch)
+		defer sc.fast.flush()
 	}
 	msg := &sc.msg
 	if err := tx.AsMessageInto(msg, signer, header.BaseFee); err != nil {

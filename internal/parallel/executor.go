@@ -189,6 +189,10 @@ type workerStat struct {
 	busyNs      int64
 	mvsWriteNs  int64
 	mvsDeleteNs int64
+	execs       int64 // executions, folded into totalExecutions after the wave
+	// Pad to two cache lines: neighbouring workers write their slots on
+	// every transaction.
+	_ [72]byte
 }
 
 // WorkerStatsSummary aggregates the per-worker S82 timings from the most
@@ -563,12 +567,25 @@ func (e *Executor) executeParallel(txIndices []int) {
 	close(work)
 
 	wg.Wait()
+	var execs, busy int64
+	for i := range e.workerStats {
+		execs += e.workerStats[i].execs
+		busy += e.workerStats[i].busyNs
+	}
+	e.totalExecutions.Add(execs)
+	e.busyNanos.Add(busy)
 }
 
 // executeSingle executes a single transaction. ws is the calling worker's
 // S82 stat slot, or nil from runSequential (which has no worker to charge).
 func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
-	e.totalExecutions.Add(1)
+	// A worker counts in its own slot (folded after the wave): a shared
+	// atomic add per transaction bounced one cache line between workers.
+	if ws != nil {
+		ws.execs++
+	} else {
+		e.totalExecutions.Add(1)
+	}
 
 	// Reuse the transaction's read/write set. NewExecutor allocates one per
 	// transaction; a fresh one per execution made that allocation dead and
@@ -603,9 +620,10 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 	tCall := time.Now()
 	err := e.exec(ctx, txIndex, rw)
 	busy := int64(time.Since(tCall))
-	e.busyNanos.Add(busy)
 	if ws != nil {
 		ws.busyNs += busy
+	} else {
+		e.busyNanos.Add(busy)
 	}
 
 	e.results[txIndex] = TxResult{Err: err}
