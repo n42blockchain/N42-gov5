@@ -198,7 +198,7 @@ func (bc *BlockChain) SetPrefetchPredictor(p *PrefetchPredictor) {
 // 2,700 ms of a 3.53 s block cycle at a 480M gas ceiling -- 94.6% of it in
 // mdbx_txn_commit, because 22,857 hash-keyed rows touch nearly that many
 // separate B-tree leaves. When an indexer is attached, nothing is written here
-// and it owns the newest blocks instead.
+// and it owns the newest blocks instead. Add takes ownership of hashes.
 type TxIndexer interface {
 	Add(number uint64, hashes []types.Hash)
 }
