@@ -446,6 +446,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		gp      common.GasPool
 		fees    []deferredFee
 		sink    FeeSink
+		// ibsUsed: a transaction ran on ibs since its last Reset.
+		ibsUsed bool
 	}
 	// A chained speculative build reads its unwritten own parents through
 	// post-state snapshots layered on the block's reader; the per-worker
@@ -516,8 +518,35 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// IntraBlockState forgets the previous transaction's objects.
 		wc.reader.Rebind(rw, txIndex)
 		wc.writer.Rebind(rw)
-		wc.ibs.Reset()
-		clear(wc.observed)
+		wc.fees = wc.fees[:0]
+		r := &txResults[txIndex]
+		wc.scratch.msgReady = false
+		if transferFastPath && transferDirectPath && signer != nil {
+			// A plain transfer straight on the reader and writer, without
+			// the IntraBlockState (tryDirectTransfer).
+			msg := &wc.scratch.msg
+			if tx.AsMessageInto(msg, signer, concreteHeader.BaseFee) == nil {
+				NormalizeExecutionMessage(msg, cfg.StatelessExec, p.engine != nil)
+				wc.scratch.msgReady = true
+				if res, ok := tryDirectTransfer(wc.evm, wc.reader, wc.writer, rw, msg, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
+					wc.scratch.msgReady = false
+					var receipt *block.Receipt
+					if !cfg.NoReceipts {
+						receipt = wc.scratch.fillReceipt(false, tx, tx.Hash(), res, msg, nil, concreteHeader, uint(txIndex), wc.evm)
+					}
+					r.receipt, r.gasUsed, r.err, r.logs = receipt, res.BlockGasUsed, nil, nil
+					r.setFees(wc.fees)
+					return nil
+				}
+			}
+		}
+		// The IntraBlockState is reset only once a transaction has used it
+		// since its last reset: direct transfers leave it untouched.
+		if wc.ibsUsed {
+			wc.ibs.Reset()
+			clear(wc.observed)
+		}
+		wc.ibsUsed = true
 		txIBS, pWriter := wc.ibs, wc.writer
 
 		txIBS.Prepare(tx.Hash(), blockHash, txIndex)
@@ -529,12 +558,10 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 
 		vmenv := wc.evm
 
-		wc.fees = wc.fees[:0]
 		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, wc.sink, signer, &wc.scratch)
 		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
 		// Field by field: the slot's fee buffer must survive the write.
-		r := &txResults[txIndex]
 		r.receipt, r.gasUsed, r.err, r.logs = receipt, gasUsed, err, logs
 		r.setFees(wc.fees)
 
@@ -876,6 +903,10 @@ type parallelTxScratch struct {
 	// to the same block.
 	receipts []block.Receipt
 	chunk    int
+	// msgReady says msg already holds this transaction's message (built
+	// for a declined direct transfer); parallelApplyTx then skips building
+	// it again.
+	msgReady bool
 }
 
 // newReceipt returns a zero receipt carved from the scratch's chunk. The
@@ -894,6 +925,36 @@ func (sc *parallelTxScratch) newReceipt() *block.Receipt {
 	r := &sc.receipts[0]
 	sc.receipts = sc.receipts[1:]
 	return r
+}
+
+// fillReceipt builds a transaction's receipt from its execution result,
+// carved from the scratch's chunk unless owned (a scratch made for one
+// call).
+func (sc *parallelTxScratch) fillReceipt(owned bool, tx *transaction.Transaction, txHash types.Hash, result *ExecutionResult, msg *transaction.Message, logs []*block.Log, header *block.Header, txIndex uint, evm vm2.VMInterface) *block.Receipt {
+	var receipt *block.Receipt
+	if owned {
+		receipt = new(block.Receipt)
+	} else {
+		receipt = sc.newReceipt()
+	}
+	receipt.Type = tx.Type()
+	if result.Failed() {
+		receipt.Status = block.ReceiptStatusFailed
+	} else {
+		receipt.Status = block.ReceiptStatusSuccessful
+	}
+	receipt.TxHash = txHash
+	receipt.GasUsed = result.UsedGas
+	if msg.To() == nil {
+		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, tx.Nonce())
+	}
+	receipt.Logs = logs
+	if len(logs) != 0 {
+		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+	} // else the zero bloom, which is what CreateBloom returns for no logs
+	receipt.BlockNumber = header.Number
+	receipt.TransactionIndex = txIndex
+	return receipt
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.
@@ -932,10 +993,15 @@ func parallelApplyTx(
 		defer sc.fast.flush()
 	}
 	msg := &sc.msg
-	if err := tx.AsMessageInto(msg, signer, header.BaseFee); err != nil {
-		return nil, 0, nil, err
+	if sc.msgReady {
+		// The caller built it for the direct transfer attempt.
+		sc.msgReady = false
+	} else {
+		if err := tx.AsMessageInto(msg, signer, header.BaseFee); err != nil {
+			return nil, 0, nil, err
+		}
+		NormalizeExecutionMessage(msg, cfg.StatelessExec, engine != nil)
 	}
-	NormalizeExecutionMessage(msg, cfg.StatelessExec, engine != nil)
 	txHash := tx.Hash()
 
 	// A plain EOA-to-EOA transfer skips the EVM (transfer_fast_path.go); any
@@ -966,34 +1032,12 @@ func parallelApplyTx(
 	// EIP-7778 BlockGasUsed (pre-refund, floor-clamped) under Glamsterdam
 	// so the parallel path validates against the same header.GasUsed the
 	// serial miner/importer produce.
-	gasUsed := result.UsedGas
 	blockGasUsed := result.BlockGasUsed
 	logs := ibs.GetLogs(txHash)
 
 	var receipt *block.Receipt
 	if !cfg.NoReceipts {
-		if owned {
-			receipt = new(block.Receipt)
-		} else {
-			receipt = sc.newReceipt()
-		}
-		receipt.Type = tx.Type()
-		if result.Failed() {
-			receipt.Status = block.ReceiptStatusFailed
-		} else {
-			receipt.Status = block.ReceiptStatusSuccessful
-		}
-		receipt.TxHash = txHash
-		receipt.GasUsed = gasUsed
-		if msg.To() == nil {
-			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, tx.Nonce())
-		}
-		receipt.Logs = logs
-		if len(logs) != 0 {
-			receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
-		} // else the zero bloom, which is what CreateBloom returns for no logs
-		receipt.BlockNumber = header.Number
-		receipt.TransactionIndex = uint(ibs.TxIndex())
+		receipt = sc.fillReceipt(owned, tx, txHash, result, msg, logs, header, uint(ibs.TxIndex()), evm)
 	}
 
 	return receipt, blockGasUsed, logs, nil

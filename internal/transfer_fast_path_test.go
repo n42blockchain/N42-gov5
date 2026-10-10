@@ -223,9 +223,15 @@ type fastPathOutcome struct {
 }
 
 func runFastPathBlock(t *testing.T, db kv.RwDB, cfg *params.ChainConfig, header *block.Header, txs []*transaction.Transaction, fast bool) fastPathOutcome {
-	saved := transferFastPath
-	transferFastPath = fast
-	defer func() { transferFastPath = saved }()
+	return runFastPathBlockMode(t, db, cfg, header, txs, fast, transferDirectPath)
+}
+
+// runFastPathBlockMode is runFastPathBlock with the direct (no
+// IntraBlockState) transfer path set explicitly.
+func runFastPathBlockMode(t *testing.T, db kv.RwDB, cfg *params.ChainConfig, header *block.Header, txs []*transaction.Transaction, fast, direct bool) fastPathOutcome {
+	saved, savedDirect := transferFastPath, transferDirectPath
+	transferFastPath, transferDirectPath = fast, direct
+	defer func() { transferFastPath, transferDirectPath = saved, savedDirect }()
 
 	bc := &BlockChain{ctx: context.Background(), ChainDB: db}
 	sp := NewStateProcessor(cfg, bc, coreTFakerEngine{})
@@ -296,10 +302,19 @@ func TestTransferFastPathMatchesEVM(t *testing.T) {
 				before := fastTransfers.Load()
 				slow := runFastPathBlock(t, db, c.cfg, header, txs, false)
 				require.Equal(t, before, fastTransfers.Load(), "the EVM run took the fast path")
-				fast := runFastPathBlock(t, db, c.cfg, header, txs, true)
+				// The fast path on the IntraBlockState, then the direct one:
+				// both must equal the EVM run.
+				onIBS := runFastPathBlockMode(t, db, c.cfg, header, txs, true, false)
+				tookIBS := fastTransfers.Load() - before
+				require.Greater(t, tookIBS, uint64(0), "the fast run never took the fast path")
+				require.Less(t, tookIBS, uint64(len(onIBS.included)), "every included tx took the fast path: the fallbacks were not exercised")
+				before = fastTransfers.Load()
+				directBefore := directTransfers.Load()
+				fast := runFastPathBlockMode(t, db, c.cfg, header, txs, true, true)
 				took := fastTransfers.Load() - before
-				require.Greater(t, took, uint64(0), "the fast run never took the fast path")
-				require.Less(t, took, uint64(len(fast.included)), "every included tx took the fast path: the fallbacks were not exercised")
+				tookDirect := directTransfers.Load() - directBefore
+				require.Greater(t, tookDirect, uint64(0), "the direct run never took the direct path")
+				require.Equal(t, onIBS, fast, "the direct path differs from the fast path on the IntraBlockState")
 
 				require.Equal(t, slow.included, fast.included, "included transactions")
 				require.Equal(t, slow.failed, fast.failed, "failed count")
@@ -320,7 +335,7 @@ func TestTransferFastPathMatchesEVM(t *testing.T) {
 				require.Equal(t, slow.coinbase, fast.coinbase, "coinbase balance")
 				require.Equal(t, slow.collector, fast.collector, "collector balance")
 				require.Equal(t, slow.stateRoot, fast.stateRoot, "state root")
-				t.Logf("seed %d: %d txs, %d included, %d failed, %d fast", seed, len(txs), len(fast.included), fast.failed, took)
+				t.Logf("seed %d: %d txs, %d included, %d failed, %d fast, %d direct", seed, len(txs), len(fast.included), fast.failed, took, tookDirect)
 			}
 		})
 	}
