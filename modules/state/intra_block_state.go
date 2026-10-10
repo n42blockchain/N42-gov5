@@ -48,7 +48,13 @@ import (
 // produces witness bytes that differ between runs of the same block, which
 // breaks witness-based replay and bit-for-bit reproducibility.
 func sortedAddresses[V any](m map[types.Address]V) []types.Address {
-	addrs := make([]types.Address, 0, len(m))
+	return sortedAddressesInto(make([]types.Address, 0, len(m)), m)
+}
+
+// sortedAddressesInto is sortedAddresses appending to buf[:0], for a caller
+// that keeps a scratch slice across calls.
+func sortedAddressesInto[V any](buf []types.Address, m map[types.Address]V) []types.Address {
+	addrs := buf[:0]
 	for addr := range m {
 		addrs = append(addrs, addr)
 	}
@@ -56,6 +62,22 @@ func sortedAddresses[V any](m map[types.Address]V) []types.Address {
 		return bytes.Compare(a[:], b[:])
 	})
 	return addrs
+}
+
+// smallMapReuse is the size up to which a per-transaction map is cleared and
+// kept instead of reallocated. A map that held more is replaced: clear()
+// keeps the high-water bucket array, which every later iteration scans in
+// full (see Reset). A transaction touches a handful of accounts, so the
+// Block-STM workers' per-transaction Reset reuses its maps instead of
+// allocating six of them per transaction.
+const smallMapReuse = 32
+
+func reuseMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil || len(m) > smallMapReuse {
+		return make(map[K]V)
+	}
+	clear(m)
+	return m
 }
 
 // pendingIncreaseAddrs returns, sorted, the addresses whose balance increase
@@ -107,6 +129,10 @@ type BalanceIncrease struct {
 // NOT THREAD SAFE!
 type IntraBlockState struct {
 	stateReader StateReader
+
+	// addrScratch is FinalizeTx's reusable buffer for the sorted dirty
+	// addresses.
+	addrScratch []types.Address
 
 	// discardBlockChanges disables bookkeeping that is needed only to emit a
 	// block-level write set. Witness validation still executes every state
@@ -513,7 +539,7 @@ func (sdb *IntraBlockState) SetDiscardBlockChanges(discard bool) {
 // Maps that get range-iterated downstream (notably the ones consumed
 // by sortedAddresses in FinalizeTx — balanceInc, journal.dirties — and
 // the stateObjects map iterated here) are reallocated rather than
-// clear()ed. Go's clear() leaves the bucket array sized to the
+// clear()ed once they held more than smallMapReuse entries. Go's clear() leaves the bucket array sized to the
 // historical high-water mark; on a 24M-block replay a single heavy
 // block (e.g. a 5K-touch AMM block) inflates buckets that subsequent
 // iterations must scan in full, even when len() drops to ~50. pprof
@@ -524,10 +550,10 @@ func (sdb *IntraBlockState) Reset() {
 	for _, so := range sdb.stateObjects {
 		putStateObject(so)
 	}
-	sdb.stateObjects = make(map[types.Address]*stateObject)
+	sdb.stateObjects = reuseMap(sdb.stateObjects)
 	sdb.lastObj = nil
-	sdb.stateObjectsDirty = make(map[types.Address]struct{})
-	sdb.nilAccounts = make(map[types.Address]struct{})
+	sdb.stateObjectsDirty = reuseMap(sdb.stateObjectsDirty)
+	sdb.nilAccounts = reuseMap(sdb.nilAccounts)
 	clear(sdb.storageWipes)
 	clear(sdb.priorTxWipes)
 	clear(sdb.wipedStorageSlots)
@@ -546,7 +572,7 @@ func (sdb *IntraBlockState) Reset() {
 		sdb.logArena.reset()
 	}
 	sdb.nextRevisionID = 0
-	sdb.logs = make(map[types.Hash][]*block.Log)
+	sdb.logs = reuseMap(sdb.logs)
 	sdb.logSize = 0
 	sdb.clearJournalAndRefund()
 	if sdb.accessList == nil {
@@ -554,7 +580,7 @@ func (sdb *IntraBlockState) Reset() {
 	} else {
 		sdb.accessList.Reset()
 	}
-	sdb.balanceInc = make(map[types.Address]*BalanceIncrease)
+	sdb.balanceInc = reuseMap(sdb.balanceInc)
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -1298,7 +1324,8 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			sdb.stateObjectsDirty[addr] = struct{}{}
 		}
 	} else {
-		for _, addr := range sortedAddresses(sdb.journal.dirties) {
+		sdb.addrScratch = sortedAddressesInto(sdb.addrScratch, sdb.journal.dirties)
+		for _, addr := range sdb.addrScratch {
 			so, exist := sdb.stateObjects[addr]
 			if !exist {
 				continue
