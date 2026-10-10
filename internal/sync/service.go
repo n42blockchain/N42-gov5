@@ -128,6 +128,9 @@ type Service struct {
 	rateLimiter *limiter
 
 	seenBlockCache *lru.Cache[types.Hash, *block.Block]
+	// fetchAligning holds the hashes a fetch-on-miss response is importing
+	// (FetchBlockByHash): other peers' copies of the same block are dropped.
+	fetchAligning sync.Map
 	seenBlockLock  sync.RWMutex
 	badBlockLock   sync.RWMutex
 	badBlockCache  *lru.Cache[types.Hash, bool]
