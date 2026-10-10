@@ -34,6 +34,9 @@ type fastPathWorld struct {
 	balances  []*uint256.Int
 	eoas      []types.Address
 	contracts []types.Address
+	// delegated are EIP-7702 delegated EOAs used as recipients: delegated
+	// to each contract and to a plain EOA.
+	delegated []types.Address
 }
 
 func newFastPathWorld(t *testing.T, rng *rand.Rand) *fastPathWorld {
@@ -59,6 +62,9 @@ func newFastPathWorld(t *testing.T, rng *rand.Rand) *fastPathWorld {
 	}
 	for i := 0; i < 3; i++ {
 		w.contracts = append(w.contracts, types.BytesToAddress(crypto.Keccak256([]byte{0xC0, byte(i)})))
+	}
+	for i := 0; i < 4; i++ {
+		w.delegated = append(w.delegated, types.BytesToAddress(crypto.Keccak256([]byte{0xD0, byte(i)})))
 	}
 	return w
 }
@@ -89,6 +95,15 @@ func (w *fastPathWorld) fund(t *testing.T, db kv.RwDB) {
 			ibs.SetBalance(a, uint256.NewInt(5))
 			ibs.SetNonce(a, 1)
 			ibs.SetCode(a, fastPathContractCodes[i])
+		}
+		for i, a := range w.delegated {
+			target := w.eoas[1]
+			if i < len(w.contracts) {
+				target = w.contracts[i]
+			}
+			ibs.CreateAccount(a, true)
+			ibs.SetBalance(a, uint256.NewInt(3))
+			ibs.SetCode(a, append([]byte{0xef, 0x01, 0x00}, target.Bytes()...))
 		}
 		return ibs.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsBerlin: true, IsLondon: true}, writer)
 	}))
@@ -122,8 +137,10 @@ func (w *fastPathWorld) randomBlock(t *testing.T, rng *rand.Rand, cfg *params.Ch
 		switch r := rng.Intn(20); {
 		case r < 12:
 			to = w.eoas[rng.Intn(len(w.eoas))]
-		case r < 14:
+		case r < 13:
 			to = w.contracts[rng.Intn(len(w.contracts))]
+		case r < 14:
+			to = w.delegated[rng.Intn(len(w.delegated))]
 		case r < 15:
 			to = precompiles[rng.Intn(len(precompiles))]
 		case r < 17:
