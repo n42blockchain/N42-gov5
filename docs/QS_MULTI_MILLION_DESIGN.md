@@ -240,11 +240,44 @@ construction; the check only resolves its frames and checks the gas sum.
 Leader. `fillTransactions` takes whole frames, oldest first, skipping
 frames held by unwritten ancestors (in-flight set), until the next frame's
 admission gas estimate (sum of gas limits, RLP walk to the gas field)
-does not fit or `N42_FRAME_BLOCK_MAX_FRAMES` (default 1024). Bundles and
-the pool are not read. Execution is `BuildParallelFrames` (Block-STM, same
+does not fit or `N42_FRAME_BLOCK_MAX_FRAMES` (default 1024), after the
+pool's local frames (below). Bundles are not read. Execution is `BuildParallelFrames` (Block-STM, same
 code as the import) with a serial fallback that drops a frame on a failure
 outside the skip rule; assembly stamps FrameTxRoot without a
 per-transaction root.
+
+Local frames (S87 fix, 2026-10-09). S87 found the leader never mined the
+pool: JSON-RPC user transactions and the benchmark's funding sat there
+while every block came out empty. Now the leader first takes the pool's
+pending executable transactions (stale ones trimmed against the build's
+parent state, then the pool fill's price-and-nonce order), packs them into
+**local frames** of <= 500 transactions (and <= 1 MiB) signed by its own
+frame key, puts them into its frame store and places them in the body
+BEFORE the gateway frames, up to `N42_FRAME_BLOCK_POOL_GAS` (gas, default
+a tenth of the block gas limit; what the pool leaves unused goes to the
+gateway frames). An account whose next transaction does not fit, is
+priced out by the base fee or has no Ethereum encoding is passed over
+with its later transactions. Followers pull local frames over FRQ1 like
+any frame. The pool learns about them as about any mined transaction: on
+the head move its reset drops pending transactions below the sender's
+state nonce (`demoteUnexecutables`), and a reorg diff reads frame bodies
+decoded from `Frames`. The gateway pick skips the leader's own local
+frames (leftovers of a discarded build are framed afresh from the pool);
+an unused local frame leaves the store after 64 blocks.
+
+Frame key. With the etherbase account unlocked in the keystore, the
+leader signs with it, so the frame signer is the validator address. A
+HotStuff validator has only its BLS key (the qs fleet keystores hold
+nothing else) and no secp256k1 key for its address; it signs with a key
+derived from its BLS secret (`frame.DeriveLocalKey`: keccak256 of a domain
+tag, a counter and the secret), logged at start as "Local frame signer".
+That address is not the validator address, so followers admit those
+frames only when `N42_FRAME_GATEWAYS` lists it.
+
+Admission (FRM1 push and FRQ1 pull alike): the signature must verify and
+the signer must be in `N42_FRAME_GATEWAYS` OR in the current HotStuff
+validator set (read per frame). With `N42_FRAME_BLOCKS=1` frame ingest
+starts even with an empty gateway list (validators only).
 
 Follower. `InsertChain` (before bc.lock) and the deferred check resolve
 the hashes: frame store, then `Frames`, then FRQ1 to
@@ -255,8 +288,10 @@ resolution; round 2 waits for import/check as before. Senders are
 recovered by the existing batched step of the import (sender_recovery.go)
 on the decoded transactions.
 
-Env summary: `N42_FRAME_GATEWAYS`, `N42_FRAME_STORE_BYTES`,
-`N42_FRAME_BLOCKS=1` (leader production), `N42_FRAME_BLOCK_MAX_FRAMES`,
+Env summary: `N42_FRAME_GATEWAYS` (frame signers admitted beside the
+current validators), `N42_FRAME_STORE_BYTES`,
+`N42_FRAME_BLOCKS=1` (leader production), `N42_FRAME_BLOCK_POOL_GAS`
+(pool share of a frame block, default gas limit / 10), `N42_FRAME_BLOCK_MAX_FRAMES`,
 `N42_FRAME_PULL_PEERS`, `N42_FRAME_PULL_TIMEOUT_MS`; txflood `-frames
 -gateway-key <hex> -frame-peers a,b,... -frame-broadcast`.
 
