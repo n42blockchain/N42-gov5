@@ -867,6 +867,30 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 type parallelTxScratch struct {
 	msg  transaction.Message
 	fast fastTransferScratch
+	// receipts is the unused tail of the worker's current receipt chunk:
+	// one allocation per chunk instead of one per transaction. A chunk
+	// stays reachable while any of its receipts is, and all of them belong
+	// to the same block.
+	receipts []block.Receipt
+	chunk    int
+}
+
+// newReceipt returns a zero receipt carved from the scratch's chunk. The
+// chunks grow from 16 to 256 receipts, so a small block does not pay for
+// a large one's chunk.
+func (sc *parallelTxScratch) newReceipt() *block.Receipt {
+	if len(sc.receipts) == 0 {
+		switch {
+		case sc.chunk == 0:
+			sc.chunk = 16
+		case sc.chunk < 256:
+			sc.chunk *= 2
+		}
+		sc.receipts = make([]block.Receipt, sc.chunk)
+	}
+	r := &sc.receipts[0]
+	sc.receipts = sc.receipts[1:]
+	return r
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.
@@ -899,7 +923,8 @@ func parallelApplyTx(
 	if signer == nil {
 		signer = transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time)
 	}
-	if sc == nil {
+	owned := sc == nil
+	if owned {
 		sc = new(parallelTxScratch)
 		defer sc.fast.flush()
 	}
@@ -944,7 +969,12 @@ func parallelApplyTx(
 
 	var receipt *block.Receipt
 	if !cfg.NoReceipts {
-		receipt = &block.Receipt{Type: tx.Type()}
+		if owned {
+			receipt = new(block.Receipt)
+		} else {
+			receipt = sc.newReceipt()
+		}
+		receipt.Type = tx.Type()
 		if result.Failed() {
 			receipt.Status = block.ReceiptStatusFailed
 		} else {

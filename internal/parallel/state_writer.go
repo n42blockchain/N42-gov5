@@ -65,7 +65,9 @@ func (w *ParallelStateWriter) UpdateAccountData(address types.Address, original,
 	if w.deltaEligible != nil && original != nil && acc != nil &&
 		original.Nonce == acc.Nonce && original.CodeHash == acc.CodeHash && original.Root == acc.Root &&
 		original.Initialised == acc.Initialised && acc.Balance.Gt(&original.Balance) && w.deltaEligible(address) {
-		w.rw.RecordDeltaWrite(key, new(uint256.Int).Sub(&acc.Balance, &original.Balance))
+		var d uint256.Int
+		d.Sub(&acc.Balance, &original.Balance)
+		w.rw.RecordDeltaWrite(key, &d) // copies d
 		return nil
 	}
 	data, err := encodeAccount(acc)

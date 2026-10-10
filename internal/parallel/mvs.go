@@ -67,9 +67,11 @@ type versionedValue struct {
 	txIndex     int
 	incarnation uint32 // incarnation of the writing tx
 	value       []byte // serialized value; nil means "deleted"
-	// delta, when non-nil, makes this version a balance increment over the
-	// composition of the versions before it (value is then unused).
-	delta *uint256.Int
+	// isDelta makes this version a balance increment of delta over the
+	// composition of the versions before it (value is then unused). The
+	// delta is held by value: a pointer cost an allocation per credit.
+	isDelta bool
+	delta   uint256.Int
 }
 
 // mvEntry holds all versions for one location, sorted by txIndex ascending.
@@ -241,34 +243,50 @@ func (e *mvEntry) before(txIndex int) int {
 
 // Write records that transaction txIndex (at given incarnation) wrote value to the given location.
 // If txIndex already has a write here, it is overwritten (for re-execution).
+// The value is copied.
 func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []byte) {
-	e := m.getOrCreateEntry(key)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Find or insert.
-	idx := sort.Search(len(e.versions), func(i int) bool {
-		return e.versions[i].txIndex >= txIndex
-	})
-
-	// Copy value to avoid external mutation.
 	var vc []byte
 	if value != nil {
 		vc = make([]byte, len(value))
 		copy(vc, value)
 	}
+	m.writeOwned(key, txIndex, incarnation, vc)
+}
 
+// writeOwned is Write adopting value without a copy: the caller hands over
+// a slice nobody mutates afterwards (the executor's write descriptors,
+// which the state writer encodes fresh per write).
+func (m *MVS) writeOwned(key LocationKey, txIndex int, incarnation uint32, value []byte) {
+	e := m.getOrCreateEntry(key)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	idx := e.slot(txIndex)
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
 		// Overwrite existing.
-		e.versions[idx].value = vc
-		e.versions[idx].incarnation = incarnation
-		e.versions[idx].delta = nil
+		v := &e.versions[idx]
+		v.value = value
+		v.incarnation = incarnation
+		v.isDelta = false
+		v.delta.Clear()
 	} else {
 		// Insert at sorted position.
 		e.versions = append(e.versions, versionedValue{})
 		copy(e.versions[idx+1:], e.versions[idx:])
-		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, value: vc}
+		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, value: value}
 	}
+}
+
+// slot returns the index of txIndex's version, or where it is inserted
+// (e.mu held). A worker writes in index order, so the usual slot is the end.
+func (e *mvEntry) slot(txIndex int) int {
+	n := len(e.versions)
+	if n == 0 || e.versions[n-1].txIndex < txIndex {
+		return n
+	}
+	return sort.Search(n, func(i int) bool {
+		return e.versions[i].txIndex >= txIndex
+	})
 }
 
 // WriteDelta records that transaction txIndex added delta to the account at
@@ -278,18 +296,17 @@ func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	idx := sort.Search(len(e.versions), func(i int) bool {
-		return e.versions[i].txIndex >= txIndex
-	})
-	d := delta.Clone()
+	idx := e.slot(txIndex)
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
-		e.versions[idx].value = nil
-		e.versions[idx].incarnation = incarnation
-		e.versions[idx].delta = d
+		v := &e.versions[idx]
+		v.value = nil
+		v.incarnation = incarnation
+		v.isDelta = true
+		v.delta.Set(delta)
 	} else {
 		e.versions = append(e.versions, versionedValue{})
 		copy(e.versions[idx+1:], e.versions[idx:])
-		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, delta: d}
+		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, isDelta: true, delta: *delta}
 	}
 }
 
@@ -319,12 +336,12 @@ func (m *MVS) readAccountInto(key *LocationKey, txIndex int, delta *uint256.Int)
 
 	for i := e.before(txIndex) - 1; i >= 0; i-- {
 		v := &e.versions[i]
-		if v.delta != nil {
+		if v.isDelta {
 			if !hasDelta {
-				delta.Set(v.delta)
+				delta.Set(&v.delta)
 				hasDelta = true
 			} else {
-				delta.Add(delta, v.delta)
+				delta.Add(delta, &v.delta)
 			}
 			continue
 		}
@@ -354,15 +371,15 @@ func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
 		return nil, 0, 0, false
 	}
 
-	v := e.versions[idx-1]
-	if v.delta == nil {
+	v := &e.versions[idx-1]
+	if !v.isDelta {
 		return v.value, v.txIndex, v.incarnation, true
 	}
 	var delta uint256.Int
 	for i := idx - 1; i >= 0; i-- {
-		w := e.versions[i]
-		if w.delta != nil {
-			delta.Add(&delta, w.delta)
+		w := &e.versions[i]
+		if w.isDelta {
+			delta.Add(&delta, &w.delta)
 			continue
 		}
 		return composeAccount(w.value, &delta), w.txIndex, w.incarnation, true
@@ -416,12 +433,12 @@ func (m *MVS) ApplyAll(numTxs int, fn func(key LocationKey, value []byte, delta 
 			var val []byte
 			fullFound := false
 			for i := idx - 1; i >= 0; i-- {
-				v := e.versions[i]
-				if v.delta != nil {
+				v := &e.versions[i]
+				if v.isDelta {
 					if delta == nil {
 						delta = new(uint256.Int)
 					}
-					delta.Add(delta, v.delta)
+					delta.Add(delta, &v.delta)
 					continue
 				}
 				// Copy value while holding the lock to avoid data race.
