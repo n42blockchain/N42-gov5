@@ -169,6 +169,16 @@ func (bc *BlockChain) headerAnywhere(tx kv.Getter, hash types.Hash, number uint6
 			return h
 		}
 	}
+	// Written after tx began and already forgotten from the available
+	// blocks (the ordered writer forgets a block once it is durable).
+	if j := bc.lagWritePending(hash); j != nil && j.number == number {
+		return j.hdr
+	}
+	if bc.headerCache != nil {
+		if h, ok := bc.headerCache.Get(hash); ok && h != nil && h.Number.Uint64() == number {
+			return h
+		}
+	}
 	return nil
 }
 
@@ -514,11 +524,13 @@ func (bc *BlockChain) lagStep() bool {
 			authorized = true
 			q.lastAuth = time.Now()
 		}
-		var err error
-		if authorized {
-			_, err = bc.InsertChainAuthorized([]block.IBlock{b})
-		} else {
-			_, err = bc.InsertChain([]block.IBlock{b})
+		handed, err := bc.insertChainLag(b, authorized)
+		if handed {
+			// Applied; the ordered writer reports it once durable
+			// (lag_writer.go). It leaves the queue now so it is not imported
+			// again while the store is one block behind.
+			bc.lagExecUnqueue(b.Hash())
+			return true
 		}
 		// The pipeline was settled inside the import (lagPipeSettle).
 		written := err == nil && bc.blockStored(b.Hash(), n)
@@ -541,10 +553,11 @@ func (bc *BlockChain) lagStep() bool {
 	return false
 }
 
-// lagParentReady: the parent is the state a non-authorized import runs on.
+// lagParentReady: the parent is the state a non-authorized import runs on
+// (applied in memory, its write possibly still in flight).
 func (bc *BlockChain) lagParentReady(parent types.Hash, number uint64) bool {
 	if bc.qmdbEnabled {
-		return bc.AppliedHeadIsExactly(parent, number)
+		return bc.lagAppliedIs(parent, number)
 	}
 	return bc.blockStored(parent, number)
 }
@@ -572,11 +585,16 @@ func (bc *BlockChain) lagForget(hash types.Hash) {
 
 // lagUnqueue drops hash from the executor's queue and the available blocks.
 func (bc *BlockChain) lagUnqueue(hash types.Hash) {
+	bc.lagExecUnqueue(hash)
+	bc.forgetAvailable(hash)
+}
+
+// lagExecUnqueue drops hash from the executor's queue only.
+func (bc *BlockChain) lagExecUnqueue(hash types.Hash) {
 	le := &bc.lagExec
 	le.mu.Lock()
 	delete(le.queued, hash)
 	le.mu.Unlock()
-	bc.forgetAvailable(hash)
 }
 
 func (bc *BlockChain) lagDone(b *block.Block, imported bool) {
@@ -590,10 +608,5 @@ func (bc *BlockChain) lagDone(b *block.Block, imported bool) {
 	// Written by this executor: its child's ahead execution stays usable
 	// (lagPipeSettle marked it).
 	bc.lagUnqueue(b.Hash())
-	le := &bc.lagExec
-	le.imported.Add(1)
-	le.lastNum.Store(b.Number64().Uint64())
-	if fn := le.hook.Load(); fn != nil {
-		(*fn)(b.Hash(), b.TxHash())
-	}
+	bc.lagReported(b.Number64().Uint64(), b.Hash(), b.TxHash())
 }

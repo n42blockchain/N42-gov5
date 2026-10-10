@@ -1140,6 +1140,21 @@ func (bc *BlockChain) revertSpeculativeOnStartup() {
 }
 
 func (bc *BlockChain) Close() error {
+	// A write handed to the ordered writer lands before the store closes, and
+	// no import hands off another one after it: imports stop, and an import
+	// in progress (it holds bc.lock) finishes first -- bounded, so a stuck
+	// import cannot hang the shutdown.
+	bc.StopInsert()
+	locked := false
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if locked = bc.lock.TryLock(); locked {
+			break
+		}
+	}
+	bc.waitLagWrite()
+	if locked {
+		bc.lock.Unlock()
+	}
 	bc.cancel()
 	bc.wg.Wait()
 	if bc.freezer != nil {
@@ -2036,6 +2051,20 @@ func (bc *BlockChain) InsertChain(chain []block.IBlock) (int, error) {
 	return bc.insertChain(chain, false)
 }
 
+// insertChainLag is the lag executor's import of one block: its write may
+// be handed to the ordered writer (lag_writer.go), reported in handed.
+func (bc *BlockChain) insertChainLag(b block.IBlock, authorizedSwitch bool) (handed bool, err error) {
+	chain := []block.IBlock{b}
+	if err := bc.resolveChainFrames(chain); err != nil {
+		return false, err
+	}
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	lag := &lagInsert{}
+	_, err = bc.insertChainMode(chain, authorizedSwitch, lag)
+	return lag.handed, err
+}
+
 // resolveChainFrames resolves every frame body in chain before the import
 // takes bc.lock (a pull can wait on peers). It stops at the first block that
 // cannot be resolved; the caller imports nothing.
@@ -2079,8 +2108,21 @@ func (bc *BlockChain) InsertChainAuthorized(chain []block.IBlock) (int, error) {
 }
 
 func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (int, error) {
+	return bc.insertChainMode(chain, authorizedSwitch, nil)
+}
+
+// insertChainMode is insertChain; lag is non-nil for the lag executor's
+// import, whose write may go to the ordered writer.
+func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch bool, lag *lagInsert) (int, error) {
 	if bc.insertStopped() {
 		return 0, nil
+	}
+	// Only the child of the block whose write is in flight imports while
+	// that write runs; everything else sees the durable state.
+	if bc.lagWrite.inflight != nil && !bc.lagWriteFastCandidate(chain, lag) {
+		if err := bc.joinLagWrite(); err != nil {
+			return 0, err
+		}
 	}
 
 	var (
@@ -2420,7 +2462,20 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// so the execution's read snapshot sees the reverted state. No-op on the
 		// plain forward path.
 		tAlign := time.Now()
-		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash(), authorizedSwitch); uerr != nil {
+		// The child of the block whose write is in flight: the tree is exactly
+		// its parent (checked), so the marker-based alignment below, which
+		// reads the durable marker one block behind, has nothing to do.
+		lagFast := bc.lagWrite.inflight != nil && bc.lagWriteFastReady()
+		if lagFast {
+			bc.lagWrite.overlap.Add(1)
+		} else {
+			if err := bc.joinLagWrite(); err != nil {
+				return it.index, err
+			}
+		}
+		if lagFast {
+			// skip the alignment
+		} else if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash(), authorizedSwitch); uerr != nil {
 			if errors.Is(uerr, consensus.ErrUnknownAncestor) || errors.Is(uerr, errRevertUnavailable) {
 				// Either the incoming block's parent is a sibling this node never
 				// applied, or the revert hit a recoverable local QMDB condition
@@ -2444,7 +2499,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// appends on the live tree; executing the incoming winner on top would
 		// compute a shifted root. The miner peels on its own path — this covers
 		// the import path racing ahead of it.
-		bc.PeelDanglingQMDBAppends()
+		if !lagFast {
+			bc.PeelDanglingQMDBAppends()
+		}
 		// Pre-execution invariant: the live tree must BE the parent's
 		// post-state. Any tree/marker discontinuity (observed live: a store
 		// rewound by an unwind while the marker claimed blocks the tree never
@@ -2453,7 +2510,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// loudly-but-wastefully after. Realign the marker to the tree and
 		// future-queue the block; catch-up then replays forward from the
 		// tree's true height.
-		if qerr := bc.ensureQMDBTreeAtParent(blk); qerr != nil {
+		if lagFast {
+			// checked by lagWriteFastReady
+		} else if qerr := bc.ensureQMDBTreeAtParent(blk); qerr != nil {
 			if errors.Is(qerr, errQMDBBehindParent) {
 				log.Debug("block ahead of the applied state; future-queuing",
 					"number", blockNumber.Uint64())
@@ -2473,6 +2532,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		tAhead := time.Now()
 		ahead := bc.lagPipeTake(blk, blockNumber.Uint64())
 		dAheadWait := time.Since(tAhead)
+		if lagFast && ahead == nil {
+			// The serial path reads the store, which does not hold the
+			// parent yet: let its write land first.
+			if err := bc.joinLagWrite(); err != nil {
+				return it.index, err
+			}
+		}
 		if ahead != nil {
 			aheadTaken = append(aheadTaken, ahead)
 		}
@@ -2486,7 +2552,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		}
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk, ahead, func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
-				return rawdb.ReadHeader(tx, hash, number)
+				return bc.readHeaderOrPending(tx, hash, number)
 			}
 			blockHashFunc := GetHashFn(concreteHeader, getHeader)
 
@@ -2502,7 +2568,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 
 			if bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(concreteBlock.Header().(*block.Header).Time) {
 				hdr := concreteBlock.Header().(*block.Header)
-				parentHdr := rawdb.ReadHeader(tx, hdr.ParentHash, hdr.Number.Uint64()-1)
+				parentHdr := bc.readHeaderOrPending(tx, hdr.ParentHash, hdr.Number.Uint64()-1)
 				if parentHdr == nil {
 					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], hdr.Number.Uint64())
 				}
@@ -2613,7 +2679,24 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		wstart := time.Now()
 		var status WriteStatus
 		if err = lagPipeInjectedFailure(blk.Hash()); err == nil {
-			status, err = bc.writeBlockWithState(blk, receipts, ibs, nopay)
+			if lag != nil && bc.lagWriteUsable(blk, ibs) {
+				// The ordered writer makes it durable; the next block's root
+				// overlaps the write (lag_writer.go).
+				var handAhead *aheadExec
+				if ahead != nil {
+					// Its read transaction stays open until the write is done.
+					handAhead = ahead
+					aheadTaken = aheadTaken[:len(aheadTaken)-1]
+				}
+				if err = bc.lagWriteHandOff(concreteBlock, receipts, ibs, nopay, handAhead); err == nil {
+					lag.handed = true
+					status = SideStatTy
+				} else if handAhead != nil {
+					aheadTaken = append(aheadTaken, handAhead)
+				}
+			} else {
+				status, err = bc.writeBlockWithState(blk, receipts, ibs, nopay)
+			}
 		}
 		bc.receiptsFuture = nil
 		if err != nil {
@@ -3544,6 +3627,11 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
 		return
 	}
+	// A write in flight first: its block is not this one's to peel, and a
+	// failed one reloads the tree (which drops these appends too).
+	if err := bc.joinLagWrite(); err != nil {
+		log.Warn("peel: the write in flight failed; tree reloaded from the store", "err", err)
+	}
 	// Idempotent with the writeBlockWithState failure path: make sure the
 	// staged flush is discarded before the peel — ApplyUndo prunes revived
 	// slots out of deadFlushed and must see the re-queued reclaim list.
@@ -3578,6 +3666,9 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authorizedSwitch bool) error {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil
+	}
+	if err := bc.joinLagWrite(); err != nil {
+		return err
 	}
 	// The revert chain must start from the tree the applied marker describes.
 	// A dangling candidate's appends (a leader whose sealed block lost the

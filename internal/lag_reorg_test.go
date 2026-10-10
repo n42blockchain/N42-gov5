@@ -61,6 +61,14 @@ func newLagChain(t *testing.T) *lagChain {
 // chains built from the same keys share their genesis.
 func newLagChainKeys(t *testing.T, keys []*ecdsa.PrivateKey) *lagChain {
 	t.Helper()
+	return newLagChainEngine(t, keys, lagTestEngine{})
+}
+
+// newLagChainEngine is newLagChainKeys under engine (the HotStuff-ruled
+// importBenchEngine runs the commit-only canonical rule the ordered writer
+// needs).
+func newLagChainEngine(t *testing.T, keys []*ecdsa.PrivateKey, engine consensus.Engine) *lagChain {
+	t.Helper()
 	ctx := context.Background()
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -98,7 +106,7 @@ func newLagChainKeys(t *testing.T, keys []*ecdsa.PrivateKey) *lagChain {
 	}))
 	prev := block.DeferredExecutionTime
 	t.Cleanup(func() { block.DeferredExecutionTime = prev })
-	bci, err := NewBlockChain(ctx, gb, lagTestEngine{}, db, nil, cfg)
+	bci, err := NewBlockChain(ctx, gb, engine, db, nil, cfg)
 	require.NoError(t, err)
 	lc.bc = bci.(*BlockChain)
 	rc := commitment.NewQMDBRootComputer()

@@ -76,6 +76,28 @@ const (
 )
 
 func testLagPipelineAhead(t *testing.T, await bool, arrival lagArrival) {
+	testLagPipelineAheadEngine(t, await, arrival, false)
+}
+
+// TestLagPipelineAheadOrderedWriter is the pipeline test under HotStuff's
+// commit-only canonical rule, where the lag executor hands every write to
+// the ordered writer (lag_writer.go): each child's root runs while its
+// parent's write is in flight, and the results still match the serial
+// chain's block for block.
+func TestLagPipelineAheadOrderedWriter(t *testing.T) {
+	defer SetLagWriteAsyncForTest(true)()
+	// Slow writes, so every child imports while its parent's write is in
+	// flight.
+	lagWriteBeforeCommitForTest = func(uint64) error {
+		time.Sleep(30 * time.Millisecond)
+		return nil
+	}
+	defer func() { lagWriteBeforeCommitForTest = nil }()
+	t.Run("midImport", func(t *testing.T) { testLagPipelineAheadEngine(t, false, arrivalMidImport, true) })
+	t.Run("beforeSnapshot", func(t *testing.T) { testLagPipelineAheadEngine(t, false, arrivalBeforeSnapshot, true) })
+}
+
+func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, ordered bool) {
 	const (
 		blocks   = 12
 		frames   = 4
@@ -99,7 +121,12 @@ func testLagPipelineAhead(t *testing.T, await bool, arrival lagArrival) {
 	defer func() { lagChainGasLimit = prevGas }()
 
 	keys := frametest.Keys(t, 65, 83)
-	piped := newLagChainKeys(t, keys[1:])
+	var piped *lagChain
+	if ordered {
+		piped = newLagChainEngine(t, keys[1:], importBenchEngine{})
+	} else {
+		piped = newLagChainKeys(t, keys[1:])
+	}
 	piped.bc.SetParallelEVM(true)
 	pipedStore := store.NewWithKeep(64<<20, 16)
 	piped.bc.SetFrameStore(pipedStore)
@@ -300,6 +327,15 @@ func testLagPipelineAhead(t *testing.T, await bool, arrival lagArrival) {
 	}
 	orderMu.Unlock()
 
+	if ordered {
+		handed, failed, _ := piped.bc.LagWriteStats()
+		t.Logf("ordered writer: %d writes handed off, %d failed", handed, failed)
+		require.GreaterOrEqual(t, handed, uint64(blocks-1), "the ordered writer barely ran")
+		require.Zero(t, failed)
+		overlaps := piped.bc.LagWriteOverlaps()
+		t.Logf("imports overlapping their parent's write: %d", overlaps)
+		require.GreaterOrEqual(t, overlaps, uint64(blocks/2), "children did not import while their parent's write was in flight")
+	}
 	launched, used, discarded, _ := piped.bc.LagPipelineStats()
 	skips := piped.bc.LagPipelineSkipStats()
 	t.Logf("ahead executions: launched %d, used %d, discarded %d, skips %+v", launched, used, discarded, skips)

@@ -628,6 +628,17 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 	return n, nil
 }
 
+// FlushPersistsAll reports whether FlushTo's rows are everything this
+// computer persists for a block -- no MDBX-backed index written through the
+// block's transaction, no history journal -- so the rows can be captured
+// into a buffer and replayed into the block's transaction later (the lag
+// executor's ordered writer).
+func (r *QMDBRootComputer) FlushPersistsAll() bool {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	return r.mdbxIdx == nil && r.histStore == nil
+}
+
 // CommitFlushed adopts the cursor staged by the last FlushTo after its
 // surrounding transaction committed. Call before EvictFlushed — eviction only
 // covers slots below the ADOPTED cursor, so an uncommitted flush never has its

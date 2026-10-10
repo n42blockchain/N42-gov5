@@ -162,7 +162,35 @@ var blockWritePhasesHook func(number uint64, ph blockWritePhases)
 
 // writeBlockWithState persists block, receipts, state, and reward data, then
 // decides whether a reorg is needed. Returns the resulting WriteStatus.
+// Callers hold bc.lock; a write the ordered writer has in flight is joined
+// first (lag_writer.go).
 func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, retErr error) {
+	if err := bc.joinLagWrite(); err != nil {
+		return NonStatTy, err
+	}
+	return bc.writeBlockWithStateOpt(blk, receipts, ibs, nopay, nil)
+}
+
+// writeBlockWithStateJob is the ordered writer's write of j (its own
+// goroutine): the same transaction, with the QMDB rows and undo record
+// captured at the hand-off and no tree bookkeeping after the commit (the
+// joiner does it).
+func (bc *BlockChain) writeBlockWithStateJob(j *lagWriteJob) (WriteStatus, error) {
+	return bc.writeBlockWithStateOpt(j.blk, j.receipts, j.ibs, j.nopay, j)
+}
+
+func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int, job *lagWriteJob) (status WriteStatus, retErr error) {
+	// The receipts future of this block: the import's, or the one the hand-off
+	// took with it.
+	var future *receiptsResultFuture
+	writeCtx := bc.ctx
+	if job == nil {
+		future = bc.receiptsFuture
+	} else {
+		future = job.future
+		// A handed-off write finishes even when shutdown cancels bc.ctx.
+		writeCtx = bc.headWriteContext()
+	}
 	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
 	if err != nil {
 		return NonStatTy, err
@@ -206,7 +234,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 
 	var externTd *uint256.Int
 	isolatedQMDBSeal := false
-	if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+	if job == nil && ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 		if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
 			isolatedQMDBSeal = true
 		}
@@ -249,7 +277,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		nSlots int
 	)
 
-	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+	if err := bc.ChainDB.Update(writeCtx, func(tx kv.RwTx) error {
 		tClosureStart = time.Now()
 		// Reject an in-flight leader candidate before touching receipts, logs,
 		// changesets, or any other append-only table. The applied head can move
@@ -275,7 +303,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 
 		if len(receipts) > 0 {
 			tPhase = time.Now()
-			encoded := bc.receiptsFuture.encodedFor(blk.Hash(), receipts)
+			encoded := future.encodedFor(blk.Hash(), receipts)
 			if err := rawdb.AppendReceiptsEncoded(tx, blockNumber.Uint64(), receipts, encoded); err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
 				return err
@@ -496,7 +524,12 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				dRoot2 = time.Since(tPhase)
 			}
 			tPhase = time.Now()
-			if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
+			if job != nil {
+				// The rows the hand-off captured from the tree at this block.
+				if err := job.flush.replay(tx); err != nil {
+					return fmt.Errorf("writing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+			} else if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
 				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			dQMDBFlush = time.Since(tPhase)
@@ -508,8 +541,10 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// cursor pointing past rows that never reached disk, and evicted
 			// entries recoverable from nowhere. Peek at the undo without
 			// consuming it; the failure path needs it intact.
-			undo := bc.qmdbRootComputer.LastUndo()
-			if undo == nil {
+			var undo *qmdb.BlockUndo
+			if job != nil {
+				undo = job.undo
+			} else if undo = bc.qmdbRootComputer.LastUndo(); undo == nil {
 				undo = &qmdb.BlockUndo{PrevNextSlot: bc.qmdbRootComputer.Tree().NextSlot()}
 			}
 			if err := rawdb.WriteQMDBUndo(tx, blockNumber.Uint64(), undo); err != nil {
@@ -543,7 +578,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				result, hinted := bc.takeExecutedResultHint(blk.Hash())
 				if !hinted || result.Root != root {
 					var ok bool
-					if result, ok = bc.receiptsFuture.resultFor(blk.Hash(), root, receipts); !ok {
+					if result, ok = future.resultFor(blk.Hash(), root, receipts); !ok {
 						result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
 					}
 				}
@@ -601,7 +636,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		dInClosure = time.Since(tClosureStart)
 		return nil
 	}); err != nil {
-		if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+		if job == nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 			// The tx rolled back: discard the staged flush cursor and re-queue
 			// the staged dead-row reclaims. lastUndo is intentionally KEPT —
 			// the peel (revertUncommittedQMDBAppends / the next import's
@@ -622,7 +657,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
 	// isolates the MDBX Commit (fsync) from everything the closure did.
 	dUpdate := time.Since(tUpdateStart)
-	if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+	if job == nil && ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 		// The tx is durable: adopt the staged flush cursor, then evict the
 		// flushed window (its rows are now recoverable from cold) and consume
 		// the undo so a LATER failure can't peel this committed block's appends
