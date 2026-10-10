@@ -364,3 +364,37 @@ func BenchmarkFrameIngest(b *testing.B) {
 	b.ReportMetric(float64(b.N)/el.Seconds(), "frames/s")
 	b.ReportMetric(float64(b.N*frame.MaxTxs)/el.Seconds(), "tx/s")
 }
+
+// TestFrameIngestInOrder: after a gateway's first accepted frame only
+// seq == last+1 is admitted; a gap is answered Busy and counted, the missing
+// frame then unlocks its successor, and resends stay duplicates.
+func TestFrameIngestInOrder(t *testing.T) {
+	gw, _ := crypto.GenerateKey()
+	txs, _ := signedTxs(t, 20, 100)
+	frames := packFrames(t, gw, txs)
+	srv := startFrameServer(t, nil, FrameConfig{
+		Gateways: []types.Address{crypto.PubkeyToAddress(gw.PublicKey)},
+		Store:    store.New(64 << 20),
+	})
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	want := func(i int, status byte) {
+		t.Helper()
+		if got, _ := sendFrame(t, conn, frames[i]); got != status {
+			t.Fatalf("frame %d: status %d, want %d", i, got, status)
+		}
+	}
+	want(1, FrameAccepted) // first frame after start: any seq
+	want(3, FrameBusy)     // gap: seq 2 is missing
+	want(1, FrameDuplicate)
+	want(2, FrameAccepted)
+	want(3, FrameAccepted)
+	want(2, FrameDuplicate)
+	st := srv.FrameStats()
+	if st.Accepted != 3 || st.OutOfOrder != 1 || st.Store.Frames != 3 {
+		t.Fatalf("stats %+v", st)
+	}
+}
