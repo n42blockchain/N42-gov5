@@ -116,6 +116,7 @@ type BalanceIncrease struct {
 	increase    uint256.Int
 	transferred bool // Set to true when the corresponding stateObject is created and balance increase is transferred to the stateObject
 	count       int  // Number of increases - this needs tracking for proper reversion
+	detached    bool // taken by the running root walk without an object (root_dirty_set.go)
 }
 
 // IntraBlockState is responsible for caching and managing state changes
@@ -235,6 +236,16 @@ type IntraBlockState struct {
 	// dirty set is final (rewards, pending credits and journal merged) and
 	// before the root computer is called (SetBeforeRootHook).
 	beforeRoot func()
+
+	// rootPostHook is beforeRoot's form that receives the block's
+	// post-state, built from the root's own dirty set
+	// (SetRootPostStateHook).
+	rootPostHook func(*PostState)
+
+	// detachPending lets the root computation read a pending balance credit
+	// of an account it never loaded from the prefetch layer, in parallel,
+	// instead of materialising its object (SetDetachedPendingCredits).
+	detachPending bool
 
 	// lastIntermediateRoot is what IntermediateRoot last returned
 	// (LastIntermediateRoot); the deferred-execution write reads it.
@@ -1589,21 +1600,45 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// sorted CommitBlock loop, in IntermediateRoot) made the witness byte
 	// stream nondeterministic run-to-run, breaking ethel replay / mobile
 	// verification reproducibility.
-	for _, addr := range s.pendingIncreaseAddrs() {
+	// Check if LtHash is supported — if so, collect originals.
+	ltRC, ltEnabled := s.rootComputer.(LtHashRootComputer)
+
+	pending := s.pendingIncreaseAddrs()
+	var detached pendingCredits
+	if !ltEnabled {
+		detached, pending = s.detachPendingCredits(pending)
+	}
+	for _, addr := range pending {
 		s.getStateObject(addr)
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
 	// Merge journal.dirties — Finalize (block rewards) and post-block system
-	// calls write to journal but there's no FinalizeTx after them.
-	for addr := range s.journal.dirties {
-		s.stateObjectsDirty[addr] = struct{}{}
+	// calls write to journal but there's no FinalizeTx after them. A
+	// detached credit stays out: it has no object, and CommitBlock merges it
+	// once it has.
+	if len(detached.addrs) == 0 {
+		for addr := range s.journal.dirties {
+			s.stateObjectsDirty[addr] = struct{}{}
+		}
+	} else {
+		for addr := range s.journal.dirties {
+			if _, loaded := s.stateObjects[addr]; !loaded {
+				if bi := s.balanceInc[addr]; bi != nil && bi.detached {
+					continue
+				}
+			}
+			s.stateObjectsDirty[addr] = struct{}{}
+		}
+		detached.release()
 	}
 
-	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty))
+	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty)+len(detached.addrs))
 	storage := make(map[types.Address]map[types.Hash]*uint256.Int)
-
-	// Check if LtHash is supported — if so, collect originals.
-	ltRC, ltEnabled := s.rootComputer.(LtHashRootComputer)
+	var post *PostState
+	if s.rootPostHook != nil {
+		post = &PostState{accounts: accounts, storage: storage,
+			wiped: make(map[types.Address]struct{}), code: make(map[types.Hash][]byte)}
+	}
 	var originals map[types.Address]*account.StateAccount
 	var originalStorage map[types.Address]map[types.Hash]*uint256.Int
 	if ltEnabled {
@@ -1618,6 +1653,9 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		// Without incarnation, old storage is not auto-isolated — must be explicitly deleted.
 		if obj == nil || obj.deleted || obj.selfdestructed {
 			accounts[addr] = nil
+			if post != nil {
+				post.wiped[addr] = struct{}{}
+			}
 			// Collect storage slots for deletion so the RootComputer removes them
 			// from the hashed state. Prefer the COMPLETE pre-block slot set captured
 			// at wipe time (wipedStorageSlots) — deleting only obj.blockOriginStorage
@@ -1692,6 +1730,9 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		acct := new(account.StateAccount)
 		acct.Copy(&obj.data)
 		accounts[addr] = acct
+		if post != nil {
+			post.noteAlive(addr, obj, s)
+		}
 
 		if ltEnabled {
 			orig := new(account.StateAccount)
@@ -1738,11 +1779,25 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		}
 	}
 
+	// The detached credits: accounts the block only credited and never
+	// loaded, read from the prefetch layer (no storage, never deleted).
+	for i, addr := range detached.addrs {
+		a := detached.accts[i]
+		accounts[addr] = a
+		if post != nil && accountIsEmpty(a) {
+			post.wiped[addr] = struct{}{}
+		}
+	}
+
 	// The dirty set is final here: everything the root walk is about to
 	// commit is in the state objects, and nothing below changes them.
 	if hook := s.beforeRoot; hook != nil {
 		s.beforeRoot = nil
 		hook()
+	}
+	if hook := s.rootPostHook; hook != nil {
+		s.rootPostHook = nil
+		hook(post)
 	}
 
 	// Use LtHash-aware path if available.

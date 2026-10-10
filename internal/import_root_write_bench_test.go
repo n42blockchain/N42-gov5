@@ -313,6 +313,9 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	for i, h := range wireHashes {
 		res := (&lagChain{t: t, db: db}).result(h)
 		require.Equal(t, uint64(nTxs)*21000, res.GasUsed, "block %d did not execute every transfer", i+1)
+		// The roots depend on the transfers only (not on the signatures),
+		// so two builds compare them run against run.
+		t.Logf("block %d state root %x", i+1, res.Root)
 	}
 
 	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

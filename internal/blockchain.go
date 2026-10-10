@@ -2273,6 +2273,9 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			stateReader = prefetch
 			ibs = state.New(stateReader)
 			ibs.SetAccountPrefetch(prefetch)
+			// The root takes the block's prefetched credits without
+			// materialising them; CommitBlock does, in the write.
+			ibs.SetDetachedPendingCredits(bc.qmdbEnabled)
 		}
 		bc.lagPipeHook(blk, ibs)
 		// Inject root computer for tree-based state root computation.
