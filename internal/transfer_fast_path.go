@@ -43,10 +43,19 @@ var transferFastPath = os.Getenv("N42_TRANSFER_FAST_PATH") != "0"
 // lifetime; tests and diagnostics).
 var fastTransfers atomic.Uint64
 
+// fastTransferScratch holds a worker's per-transaction values for the fast
+// path, reused across its transactions (the IntraBlockState copies every
+// amount it is handed, and the result is read before the next transaction).
+type fastTransferScratch struct {
+	mgval, balanceCheck, zero, tip, amount, burn uint256.Int
+	result                                       ExecutionResult
+}
+
 // tryFastTransfer applies msg as a plain transfer when it is one. It returns
 // (result, true) when the transaction was applied, and (nil, false) with no
-// state written and gp untouched otherwise.
-func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.Message, gp *common.GasPool, sink FeeSink) (*ExecutionResult, bool) {
+// state written and gp untouched otherwise. sc may be nil; the result points
+// into it and is valid until its next use.
+func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.Message, gp *common.GasPool, sink FeeSink, sc *fastTransferScratch) (*ExecutionResult, bool) {
 	// Shape checks: nothing here reads state.
 	to := msg.To()
 	if to == nil || len(msg.Data()) != 0 || len(msg.AccessList()) != 0 || len(msg.AuthList()) != 0 ||
@@ -87,16 +96,19 @@ func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.
 			return nil, false
 		}
 	}
-	var mgval, balanceCheck uint256.Int
+	if sc == nil {
+		sc = new(fastTransferScratch)
+	}
+	mgval, balanceCheck := &sc.mgval, &sc.balanceCheck
 	mgval.SetUint64(gas)
-	if _, overflow := mgval.MulOverflow(&mgval, gasPrice); overflow {
+	if _, overflow := mgval.MulOverflow(mgval, gasPrice); overflow {
 		return nil, false
 	}
 	balanceCheck.SetUint64(gas)
-	if _, overflow := balanceCheck.MulOverflow(&balanceCheck, feeCap); overflow {
+	if _, overflow := balanceCheck.MulOverflow(balanceCheck, feeCap); overflow {
 		return nil, false
 	}
-	if _, overflow := balanceCheck.AddOverflow(&balanceCheck, value); overflow {
+	if _, overflow := balanceCheck.AddOverflow(balanceCheck, value); overflow {
 		return nil, false
 	}
 
@@ -109,7 +121,7 @@ func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.
 	if ch := ibs.GetCodeHash(from); ch != emptyCodeHash && ch != (types.Hash{}) {
 		return nil, false // delegated (EIP-7702) or contract sender
 	}
-	if ibs.GetBalance(from).Lt(&balanceCheck) {
+	if ibs.GetBalance(from).Lt(balanceCheck) {
 		return nil, false
 	}
 	// A recipient that does not exist yet is created (or, for a zero value,
@@ -127,30 +139,33 @@ func tryFastTransfer(evm *vm2.EVM, ibs *state.IntraBlockState, msg *transaction.
 	// Writes, in the EVM path's order: buyGas, the nonce bump, the value
 	// transfer (CanTransfer holds: the balance covers gas*feeCap + value and
 	// gas*gasPrice <= gas*feeCap was debited), the zero refund of refundGas.
-	ibs.SubBalance(from, &mgval)
+	ibs.SubBalance(from, mgval)
 	ibs.SetNonce(from, nonce+1)
 	blockCtx.Transfer(ibs, from, *to, value, false)
-	ibs.AddBalance(from, new(uint256.Int)) // refundGas: no gas left, no refund counter
+	sc.zero.Clear()
+	ibs.AddBalance(from, &sc.zero) // refundGas: no gas left, no refund counter
 	gp.AddGas(0)
 
 	// Fee credits, exactly as TransitionDb computes them.
 	effectiveTip := gasPrice
 	if rules.IsLondon {
 		if feeCap.Gt(blockCtx.BaseFee) {
-			effectiveTip = cmath.Min256(tip, new(uint256.Int).Sub(feeCap, blockCtx.BaseFee))
+			effectiveTip = cmath.Min256(tip, sc.tip.Sub(feeCap, blockCtx.BaseFee))
 		} else {
 			effectiveTip = u256.Num0
 		}
 	}
-	amount := new(uint256.Int).SetUint64(gas)
+	amount := sc.amount.SetUint64(gas)
 	amount.Mul(amount, effectiveTip)
 	creditFeeTo(ibs, sink, policy.priorityFeeRecipient(blockCtx.Coinbase), amount)
 	if policy.shouldCollectEIP1559Fee(msg, rules) {
-		burnAmount := new(uint256.Int).Mul(new(uint256.Int).SetUint64(gas), blockCtx.BaseFee)
+		burnAmount := sc.burn.SetUint64(gas)
+		burnAmount.Mul(burnAmount, blockCtx.BaseFee)
 		creditFeeTo(ibs, sink, *chainCfg.Eip1559FeeCollector, burnAmount)
 	}
 	fastTransfers.Add(1)
-	return &ExecutionResult{UsedGas: gas, BlockGasUsed: gas}, true
+	sc.result = ExecutionResult{UsedGas: gas, BlockGasUsed: gas}
+	return &sc.result, true
 }
 
 // creditFeeTo is StateTransition.creditFee without a StateTransition.

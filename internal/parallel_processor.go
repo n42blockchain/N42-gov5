@@ -71,6 +71,22 @@ type parallelTxResult struct {
 	err     error
 	logs    []*block.Log
 	fees    []deferredFee
+	// feeBuf holds fees in place for the usual one or two credits, so a
+	// transaction's fees cost no allocation.
+	feeBuf [2]deferredFee
+}
+
+// setFees stores a copy of fees in the slot.
+func (r *parallelTxResult) setFees(fees []deferredFee) {
+	switch {
+	case len(fees) == 0:
+		r.fees = nil
+	case len(fees) <= len(r.feeBuf):
+		n := copy(r.feeBuf[:], fees)
+		r.fees = r.feeBuf[:n:n]
+	default:
+		r.fees = append([]deferredFee(nil), fees...)
+	}
 }
 
 // txResultsFree keeps a block's worth of parallelTxResult slots across blocks.
@@ -123,7 +139,7 @@ func giveTxResults(r []parallelTxResult) {
 // sink; ProcessParallel sums them and credits the state once per recipient.
 type deferredFee struct {
 	recipient types.Address
-	amount    *uint256.Int
+	amount    uint256.Int
 }
 
 // deferredFeeRecipients lists the accounts whose credits ProcessParallel
@@ -422,7 +438,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		ibs      *state.IntraBlockState
 		evm      *vm2.EVM
 		observed map[types.Address]struct{}
-		msg      transaction.Message // rebuilt per transaction (AsMessageInto)
+		// Per-transaction scratch, reused across the worker's
+		// transactions: the message, the fast path's values, the gas
+		// pool, and the fee sink with its buffer (copied out per
+		// transaction into the result slot).
+		scratch parallelTxScratch
+		gp      common.GasPool
+		fees    []deferredFee
+		sink    FeeSink
 	}
 	// A chained speculative build reads its unwritten own parents through
 	// post-state snapshots layered on the block's reader; the per-worker
@@ -473,6 +496,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		wc.ibs.SetBalanceReadHook(func(a types.Address) { wc.observed[a] = struct{}{} })
 		wc.writer.SetDeltaEligible(func(a types.Address) bool { _, seen := wc.observed[a]; return !seen })
 		wc.evm = vm2.NewEVM(blockContext, evmtypes.TxContext{}, wc.ibs, chainConfig, cfg)
+		wc.sink = func(recipient types.Address, amount *uint256.Int) {
+			wc.fees = append(wc.fees, deferredFee{recipient: recipient, amount: *amount})
+		}
 		return wc, tx.Rollback, nil
 	}
 	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
@@ -494,25 +520,20 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		txIBS.Prepare(tx.Hash(), blockHash, txIndex)
 
 		// Each tx gets its own gas pool (block-level gas validation happens after).
-		gp := new(common.GasPool)
+		gp := &wc.gp
+		*gp = 0
 		gp.AddGas(concreteHeader.GasLimit)
 
 		vmenv := wc.evm
 
-		var fees []deferredFee
-		sink := func(recipient types.Address, amount *uint256.Int) {
-			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
-		}
-		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink, signer, &wc.msg)
+		wc.fees = wc.fees[:0]
+		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, wc.sink, signer, &wc.scratch)
 		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
-		txResults[txIndex] = parallelTxResult{
-			receipt: receipt,
-			gasUsed: gasUsed,
-			err:     err,
-			logs:    logs,
-			fees:    fees,
-		}
+		// Field by field: the slot's fee buffer must survive the write.
+		r := &txResults[txIndex]
+		r.receipt, r.gasUsed, r.err, r.logs = receipt, gasUsed, err, logs
+		r.setFees(wc.fees)
 
 		return err
 	})
@@ -767,7 +788,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				totals[f.recipient] = t
 				order = append(order, f.recipient)
 			}
-			t.Add(t, f.amount)
+			t.Add(t, &f.amount)
 		}
 	}
 	for _, r := range order {
@@ -841,10 +862,17 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 	return state.LayerPostStates(postLayers, base)
 }
 
+// parallelTxScratch is a Block-STM worker's reusable per-transaction state
+// for parallelApplyTx.
+type parallelTxScratch struct {
+	msg  transaction.Message
+	fast fastTransferScratch
+}
+
 // parallelApplyTx executes a single transaction in the parallel context.
 // Similar to applyTransaction but adapted for parallel execution with
-// per-tx IntraBlockState and ParallelStateWriter. msgBuf, when not nil, is
-// the worker's reusable Message (its contents are overwritten).
+// per-tx IntraBlockState and ParallelStateWriter. sc, when not nil, is the
+// worker's reusable per-transaction scratch (its contents are overwritten).
 func parallelApplyTx(
 	config *params.ChainConfig,
 	engine consensus.Engine,
@@ -857,7 +885,7 @@ func parallelApplyTx(
 	cfg vm2.Config,
 	sink FeeSink,
 	signer transaction.Signer,
-	msgBuf *transaction.Message,
+	sc *parallelTxScratch,
 ) (*block.Receipt, uint64, []*block.Log, error) {
 	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
 	if err != nil {
@@ -871,13 +899,13 @@ func parallelApplyTx(
 	if signer == nil {
 		signer = transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time)
 	}
-	if msgBuf == nil {
-		msgBuf = new(transaction.Message)
+	if sc == nil {
+		sc = new(parallelTxScratch)
 	}
-	if err := tx.AsMessageInto(msgBuf, signer, header.BaseFee); err != nil {
+	msg := &sc.msg
+	if err := tx.AsMessageInto(msg, signer, header.BaseFee); err != nil {
 		return nil, 0, nil, err
 	}
-	msg := msgBuf
 	NormalizeExecutionMessage(msg, cfg.StatelessExec, engine != nil)
 	txHash := tx.Hash()
 
@@ -888,7 +916,7 @@ func parallelApplyTx(
 	fast := false
 	if transferFastPath {
 		if e, ok := evm.(*vm2.EVM); ok {
-			result, fast = tryFastTransfer(e, ibs, msg, gp, sink)
+			result, fast = tryFastTransfer(e, ibs, msg, gp, sink, &sc.fast)
 		}
 	}
 	if !fast {
