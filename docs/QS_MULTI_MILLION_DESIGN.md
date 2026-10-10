@@ -567,6 +567,8 @@ Conclusion: the EVM is not the exec bound; per-tx overhead is.
 
 S97 plan (P3b, in progress): code check from CodeHash without loading code, skip the stale-key delete at incarnation 0, memoise tx.Hash/AsMessage from frame decode, per-worker IBS / MV-view / receipt reuse to cut allocations. Target: exec wave <= 200 ms in the bench, then P4 (root + write <= 150 ms).
 
+S96 result (2026-10-10): the round was valid on all five legs but showed no gain over S95: B1 201,033 / 182,017 and B2 179,300 / 171,150 execTPS against 206k, with the gate (>= 300k) failing. Imports remain strictly serial (0-8 ms gap), with median exec 379-388 + root ~102 + write 156-163 = ~710 ms per block; the ahead execution was used on only 15-23% of blocks, and where used the block took 505-530 ms against 731-737 without. The mechanism is correct but rarely armed: block N+1 reaches the lag executor only after N is written, because it enters the queue on its QC and the lag gate ties that to N's import, so nothing is left to run ahead when N starts its root. Side findings: lag exactly 2, heaps 8.4-8.7 GiB under the limit, txflood timeouts=0 with working backpressure, commit-to-canonical read ~0 with block cache 4, and B2 write 194-196 ms vs 156-163 in B1 unexplained. S97 plan: n42-r127 (P3 + P3b) plus the ahead-trigger fix (start N+1's speculative execution at availability, not at QC); expected cycle max(exec, root+write) with exec cut by P3/P3b.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
