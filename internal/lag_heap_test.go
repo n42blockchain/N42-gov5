@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/frametest"
 	"github.com/n42blockchain/N42/internal/frame/store"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
 // lagChainGasLimit is the genesis gas limit of a lagChain.
@@ -37,10 +38,21 @@ var lagChainGasLimit uint64 = 30_000_000
 // GC must not grow by more than a small fraction of one block per block:
 // nothing but state legitimately accumulates, and the state here is a
 // fixed set of accounts.
+//
+// "pipelined" runs the same blocks on Block-STM with the stage pipeline,
+// each child queued while its parent is mid-import (as the sealed /
+// push-path children of S96 are once they run ahead), so an ahead
+// execution, its snapshot and its read transaction are live across every
+// import: they must not accumulate either.
 func TestLagPipelineHeapBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("signs and imports 800,000 transactions")
 	}
+	t.Run("serial", func(t *testing.T) { testLagPipelineHeapBounded(t, false) })
+	t.Run("pipelined", func(t *testing.T) { testLagPipelineHeapBounded(t, true) })
+}
+
+func testLagPipelineHeapBounded(t *testing.T, pipelined bool) {
 	const (
 		blocks    = 40
 		frames    = 40
@@ -62,6 +74,11 @@ func TestLagPipelineHeapBounded(t *testing.T) {
 
 	keys := frametest.Keys(t, 65, 71)
 	lc := newLagChainKeys(t, keys[1:])
+	if pipelined {
+		defer commitment.SetQMDBStateReadModeForTest(commitment.QMDBReadOn)()
+		defer SetLagPipelineForTest(true)()
+		lc.bc.SetParallelEVM(true)
+	}
 	st := store.NewWithKeep(64<<20, 16)
 	lc.bc.SetFrameStore(st)
 	signer := transaction.LatestSignerForChainID(lc.cfg.ChainID)
@@ -81,6 +98,28 @@ func TestLagPipelineHeapBounded(t *testing.T) {
 				t.Fatalf("lag executor at %d (queued %d), want %d", last, q, n)
 			}
 			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	if pipelined {
+		// A publishing parent holds at its snapshot until its child is
+		// queued.
+		prevWait := lagPipeChildWaitForTest
+		lagPipeChildWaitForTest = 2 * time.Second
+		defer func() { lagPipeChildWaitForTest = prevWait }()
+	}
+	waitPublished := func(h types.Hash) {
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			lc.bc.lagPipe.mu.Lock()
+			par := lc.bc.lagPipe.parent
+			lc.bc.lagPipe.mu.Unlock()
+			if par != nil && par.hash == h {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("block %x never published its snapshot", h[:4])
+			}
+			time.Sleep(100 * time.Microsecond)
 		}
 	}
 	heapAfterGC := func() uint64 {
@@ -106,6 +145,10 @@ func TestLagPipelineHeapBounded(t *testing.T) {
 		if n >= 2 {
 			waitLag(n - 2)
 		}
+		if pipelined && n >= 2 {
+			// Block n arrives while n-1 is mid-import, past its snapshot.
+			waitPublished(parent.Hash())
+		}
 		hdr := &block.Header{ParentHash: parent.Hash(), Number: parent.Number.Clone(), GasLimit: parent.GasLimit,
 			Time: parent.Time + 10, BaseFee: parent.BaseFee, Difficulty: parentDifficulty(parent),
 			Coinbase: types.HexToAddress("0x1111111111111111111111111111111111111111")}
@@ -126,7 +169,12 @@ func TestLagPipelineHeapBounded(t *testing.T) {
 		require.False(t, retry)
 		require.NoError(t, err, "availability check of block %d", n)
 		parent = w.Header().(*block.Header)
-		waitLag(n)
+		if pipelined {
+			// n stays queued until n+1 arrives mid-import; measure n-1.
+			waitLag(n - 1)
+		} else {
+			waitLag(n)
+		}
 		inuse = append(inuse, heapAfterGC())
 		lc.bc.avail.mu.Lock()
 		nAvail := len(lc.bc.avail.m)
@@ -137,7 +185,17 @@ func TestLagPipelineHeapBounded(t *testing.T) {
 			lc.bc.blockCache.Len(), lc.bc.receiptCache.Len(), lc.bc.futureBlocks.Len(), lc.bc.headerCache.Len(),
 			lc.bc.witnessCache.Len(), st.Len(), st.Stats().Bytes>>20)
 	}
+	waitLag(blocks)
 	require.Equal(t, uint64(frames*perFrame*21000), lc.result(parent.Hash()).GasUsed, "block %d did not execute every transfer", blocks)
+	if pipelined {
+		launched, used, discarded, _ := lc.bc.LagPipelineStats()
+		t.Logf("ahead executions: launched %d, used %d, discarded %d, skips %+v", launched, used, discarded, lc.bc.LagPipelineSkipStats())
+		require.GreaterOrEqual(t, used, uint64(blocks-2), "the pipeline did not run ahead")
+		require.Eventually(t, func() bool {
+			_, _, _, open := lc.bc.LagPipelineStats()
+			return open == 0
+		}, 5*time.Second, time.Millisecond, "ahead executions left read transactions open")
+	}
 	perBlock := (int64(inuse[blocks]) - int64(inuse[warmup])) / int64(blocks-warmup)
 	t.Logf("live heap growth after block %d: %.2f MiB per block (bound %.2f MiB)", warmup,
 		float64(perBlock)/(1<<20), float64(boundPerB)/(1<<20))
