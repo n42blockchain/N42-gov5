@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,11 +33,48 @@ type frameRun struct {
 	broadcast bool
 
 	frames, txs, busy, failed, conns, rejected atomic.Int64
+
+	// peerBusy counts Busy replies per peer (index into peers); sized by run.
+	peerBusy []atomic.Int64
+	// Test hooks: nil means sendOneFrame / time.Sleep.
+	sendFn func(conn net.Conn, raw, buf []byte) (byte, []byte, error)
+	sleep  func(time.Duration)
+}
+
+// Busy backoff: the same frame is resent to the same peer after 5 ms,
+// doubling to 200 ms, until the peer accepts it or reports a duplicate.
+const (
+	busyBackoffMin = 5 * time.Millisecond
+	busyBackoffMax = 200 * time.Millisecond
+)
+
+// busyRetries sums the per-peer Busy retry counters.
+func (fr *frameRun) busyRetries() int64 {
+	var n int64
+	for i := range fr.peerBusy {
+		n += fr.peerBusy[i].Load()
+	}
+	return n
+}
+
+// busyByPeer formats the per-peer Busy retry counts, e.g. "a:1=3,b:2=0".
+func (fr *frameRun) busyByPeer() string {
+	parts := make([]string, len(fr.peers))
+	for i, p := range fr.peers {
+		var n int64
+		if i < len(fr.peerBusy) {
+			n = fr.peerBusy[i].Load()
+		}
+		parts[i] = fmt.Sprintf("%s=%d", p, n)
+	}
+	return strings.Join(parts, ",")
 }
 
 // frameResult summarises a finished -frames run.
 type frameResult struct {
 	Frames, Txs, Busy, Failed int64
+	BusyRetries               int64
+	BusyByPeer                string
 	Elapsed                   time.Duration
 }
 
@@ -45,8 +83,8 @@ func (r frameResult) String() string {
 	if s <= 0 {
 		s = 1e-9
 	}
-	return fmt.Sprintf("frames=%d txs=%d busy=%d failed=%d in %s (%.0f frames/s, %.0f tx/s accepted)",
-		r.Frames, r.Txs, r.Busy, r.Failed, r.Elapsed.Round(time.Millisecond), float64(r.Frames)/s, float64(r.Txs)/s)
+	return fmt.Sprintf("frames=%d txs=%d busy=%d busyRetries=%d failed=%d in %s (%.0f frames/s, %.0f tx/s accepted) busyByPeer=[%s]",
+		r.Frames, r.Txs, r.Busy, r.BusyRetries, r.Failed, r.Elapsed.Round(time.Millisecond), float64(r.Frames)/s, float64(r.Txs)/s, r.BusyByPeer)
 }
 
 // sendOneFrame writes the magic word and the frame, then reads the reply.
@@ -68,6 +106,7 @@ func sendOneFrame(conn net.Conn, raw []byte, buf []byte) (byte, []byte, error) {
 
 func (fr *frameRun) run(progress bool) frameResult {
 	nFrames := (fr.total + frame.MaxTxs - 1) / frame.MaxTxs
+	fr.peerBusy = make([]atomic.Int64, len(fr.peers))
 	var next atomic.Int64
 	next.Store(-1)
 	start := time.Now()
@@ -83,7 +122,7 @@ func (fr *frameRun) run(progress bool) frameResult {
 					return
 				case <-t.C:
 					n := fr.txs.Load()
-					fmt.Printf("  frames=%d txs=%d (+%d/s) busy=%d failed=%d\n", fr.frames.Load(), n, n-last, fr.busy.Load(), fr.failed.Load())
+					fmt.Printf("  frames=%d txs=%d (+%d/s) busy=%d busyRetries=%d failed=%d\n", fr.frames.Load(), n, n-last, fr.busy.Load(), fr.busyRetries(), fr.failed.Load())
 					last = n
 				}
 			}
@@ -137,11 +176,12 @@ func (fr *frameRun) run(progress bool) frameResult {
 					fmt.Printf("  frame %d encode: %v\n", k, err)
 					continue
 				}
-				delivered := false
+				// Sent only when every target holds the frame.
+				delivered := true
 				for _, p := range targets {
 					var ok bool
-					ok, buf = fr.sendTo(&conns[p], fr.peers[p], k, raw, len(txs), buf)
-					delivered = delivered || ok
+					ok, buf = fr.sendTo(&conns[p], p, k, raw, len(txs), buf)
+					delivered = delivered && ok
 				}
 				if delivered {
 					fr.frames.Add(1)
@@ -154,32 +194,42 @@ func (fr *frameRun) run(progress bool) frameResult {
 	}
 	wg.Wait()
 	close(stop)
-	return frameResult{Frames: fr.frames.Load(), Txs: fr.txs.Load(), Busy: fr.busy.Load(), Failed: fr.failed.Load(), Elapsed: time.Since(start)}
+	return frameResult{Frames: fr.frames.Load(), Txs: fr.txs.Load(), Busy: fr.busy.Load(), BusyRetries: fr.busyRetries(), BusyByPeer: fr.busyByPeer(), Failed: fr.failed.Load(), Elapsed: time.Since(start)}
 }
 
-// sendTo delivers one frame to one peer over *conn (dialled on demand),
-// resending on busy and on a dropped connection. It reports whether the
-// peer holds the frame (accepted or duplicate).
-func (fr *frameRun) sendTo(conn *net.Conn, peer string, k int64, raw []byte, ntx int, buf []byte) (bool, []byte) {
-	for attempt := 0; ; attempt++ {
+// sendTo delivers one frame to peer pi over *conn (dialled on demand),
+// resending on Busy (unbounded, with backoff) and on a dropped connection.
+// It reports whether the peer holds the frame (accepted or duplicate).
+func (fr *frameRun) sendTo(conn *net.Conn, pi int, k int64, raw []byte, ntx int, buf []byte) (bool, []byte) {
+	peer := fr.peers[pi]
+	send := fr.sendFn
+	if send == nil {
+		send = sendOneFrame
+	}
+	sleep := fr.sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	backoff := busyBackoffMin
+	for attempt := 0; ; {
 		if *conn == nil {
 			c, err := net.DialTimeout("tcp", peer, 2*time.Second)
 			if err != nil {
-				if attempt > 50 {
+				if attempt++; attempt > 50 {
 					return false, buf
 				}
-				time.Sleep(200 * time.Millisecond)
+				sleep(200 * time.Millisecond)
 				continue
 			}
 			*conn = c
 			fr.conns.Add(1)
 		}
-		status, nb, err := sendOneFrame(*conn, raw, buf)
+		status, nb, err := send(*conn, raw, buf)
 		buf = nb
 		if err != nil {
 			(*conn).Close()
 			*conn = nil
-			if attempt > 50 {
+			if attempt++; attempt > 50 {
 				return false, buf
 			}
 			continue
@@ -188,11 +238,11 @@ func (fr *frameRun) sendTo(conn *net.Conn, peer string, k int64, raw []byte, ntx
 		case ingest.FrameBusy:
 			// Not stored: back off and resend the same frame.
 			fr.busy.Add(1)
-			d := time.Duration(attempt+1) * 2 * time.Millisecond
-			if d > 100*time.Millisecond {
-				d = 100 * time.Millisecond
+			fr.peerBusy[pi].Add(1)
+			sleep(backoff)
+			if backoff *= 2; backoff > busyBackoffMax {
+				backoff = busyBackoffMax
 			}
-			time.Sleep(d)
 			continue
 		case ingest.FrameAccepted, ingest.FrameDuplicate:
 			return true, buf
