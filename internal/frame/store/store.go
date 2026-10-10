@@ -41,6 +41,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -77,6 +78,31 @@ type Stats struct {
 	Hits          uint64
 	Misses        uint64
 	Removed       uint64 // unincluded frames dropped by Remove
+	// Sender recovery at admission (P2a): frames whose senders are cached,
+	// frames admitted and not yet recovered, and frames recovered since
+	// start (zero without a recoverer).
+	WithSenders    int
+	RecoverPending int64
+	Recovered      uint64
+}
+
+// Senders are a frame's transaction senders, recovered at admission and
+// aligned with frame.DecodeTxs's output (undecodable entries dropped). A
+// zero address marks an entry whose signature did not recover; it is left
+// to execution. Signer is the signer the recovery ran under: a block whose
+// own signer differs re-derives (transaction.Sender checks the memo's
+// signer), so a cached sender can never change a verdict.
+type Senders struct {
+	Signer transaction.Signer
+	Addrs  []types.Address
+}
+
+// Recoverer recovers the senders of admitted frames in the background and
+// hands them back through SetSenders. Submit must not block.
+type Recoverer interface {
+	Submit(h types.Hash, raw []byte)
+	Pending() int64
+	Recovered() uint64
 }
 
 // Entry is one stored frame with the metadata computed at admission.
@@ -101,6 +127,7 @@ type slot struct {
 	Entry
 	pendAt   uint64 // highest height of a written, uncommitted block holding it (0 = none)
 	commitAt uint64 // height of the committed block holding it (0 = none)
+	senders  *Senders
 }
 
 func (sl *slot) included() bool { return sl.pendAt != 0 || sl.commitAt != 0 }
@@ -135,6 +162,9 @@ type Store struct {
 	haveHead  bool
 	nPend     int // stored frames with pendAt != 0 and commitAt == 0
 	nCommit   int // stored frames with commitAt != 0
+	nSenders  int // stored frames with cached senders
+
+	recoverer atomic.Pointer[recovererBox]
 
 	// Frames dropped after a block took them, or by Remove: a Put of one of
 	// these is answered as a duplicate. FIFO-bounded by tombstoneCap.
@@ -196,6 +226,49 @@ func (s *Store) PutEntry(h types.Hash, e Entry) bool {
 	return s.Admit(h, e, false) == Stored
 }
 
+type recovererBox struct{ r Recoverer }
+
+// SetRecoverer attaches the background sender recovery every admitted frame
+// is handed to (nil detaches).
+func (s *Store) SetRecoverer(r Recoverer) {
+	if r == nil {
+		s.recoverer.Store(nil)
+		return
+	}
+	s.recoverer.Store(&recovererBox{r: r})
+}
+
+// SetSenders caches the recovered senders of the stored frame h. It reports
+// false when h is no longer stored.
+func (s *Store) SetSenders(h types.Hash, ss *Senders) bool {
+	if ss == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sl, ok := s.m[h]
+	if !ok {
+		return false
+	}
+	if sl.senders == nil {
+		s.nSenders++
+	}
+	sl.senders = ss
+	s.m[h] = sl
+	return true
+}
+
+// Senders returns the cached senders of frame h, or nil.
+func (s *Store) Senders(h types.Hash) *Senders {
+	s.mu.RLock()
+	sl, ok := s.m[h]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return sl.senders
+}
+
 // Admit stores e under h. With bypass the byte budget is not applied:
 // frames needed to vote on or import a proposal (FRQ1 pulls) and the
 // leader's own local frames, each bounded by one block. Without it a frame
@@ -228,6 +301,11 @@ func (s *Store) Admit(h types.Hash, e Entry, bypass bool) Result {
 	s.ring = append(s.ring, h)
 	s.used += size
 	s.puts.Add(1)
+	if box := s.recoverer.Load(); box != nil {
+		// Under the store lock only to keep Submit ordered with the insert;
+		// Submit never blocks.
+		box.r.Submit(h, e.Raw)
+	}
 	return Stored
 }
 
@@ -329,6 +407,9 @@ func (s *Store) evictCommittedLocked() {
 		s.used -= int64(len(sl.Raw))
 		delete(s.m, c.h)
 		s.nCommit--
+		if sl.senders != nil {
+			s.nSenders--
+		}
 		s.evicted.Add(1)
 		s.evictedBytes.Add(uint64(len(sl.Raw)))
 		s.tombstoneLocked(c.h)
@@ -468,6 +549,9 @@ func (s *Store) Remove(hs []types.Hash) {
 			s.used -= int64(len(sl.Raw))
 			delete(s.m, h)
 			s.removed.Add(1)
+			if sl.senders != nil {
+				s.nSenders--
+			}
 		}
 		s.tombstoneLocked(h)
 	}
@@ -500,8 +584,12 @@ func (s *Store) CommittedHead() (uint64, bool) {
 func (s *Store) Stats() Stats {
 	s.mu.RLock()
 	st := Stats{Frames: len(s.m), Bytes: s.used, Budget: s.budget, KeepBlocks: s.keep, CommittedHead: s.committed,
-		Pending: s.nPend, Committed: s.nCommit}
+		Pending: s.nPend, Committed: s.nCommit, WithSenders: s.nSenders}
 	s.mu.RUnlock()
+	if box := s.recoverer.Load(); box != nil {
+		st.RecoverPending = box.r.Pending()
+		st.Recovered = box.r.Recovered()
+	}
 	st.Puts = s.puts.Load()
 	st.Duplicates = s.dups.Load()
 	st.Rejected = s.rejected.Load()
