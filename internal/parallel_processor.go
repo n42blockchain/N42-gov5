@@ -874,12 +874,24 @@ func parallelApplyTx(
 	}
 	NormalizeExecutionMessage(&msg, cfg.StatelessExec, engine != nil)
 
-	txContext := NewEVMTxContext(&msg)
-	evm.Reset(txContext, ibs)
+	// A plain EOA-to-EOA transfer skips the EVM (transfer_fast_path.go); any
+	// other transaction, or one the fast path declines before writing
+	// anything, runs the EVM path below in this same incarnation.
+	var result *ExecutionResult
+	fast := false
+	if transferFastPath {
+		if e, ok := evm.(*vm2.EVM); ok {
+			result, fast = tryFastTransfer(e, ibs, &msg, gp, sink)
+		}
+	}
+	if !fast {
+		txContext := NewEVMTxContext(&msg)
+		evm.Reset(txContext, ibs)
 
-	result, err := ApplyMessageWithFeeSink(evm, &msg, gp, true, false, sink)
-	if err != nil {
-		return nil, 0, nil, err
+		result, err = ApplyMessageWithFeeSink(evm, &msg, gp, true, false, sink)
+		if err != nil {
+			return nil, 0, nil, err
+		}
 	}
 
 	if err = ibs.FinalizeTx(rules, stateWriter); err != nil {
@@ -908,7 +920,9 @@ func parallelApplyTx(
 			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, tx.Nonce())
 		}
 		receipt.Logs = logs
-		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+		if len(logs) != 0 {
+			receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+		} // else the zero bloom, which is what CreateBloom returns for no logs
 		receipt.BlockNumber = header.Number
 		receipt.TransactionIndex = uint(ibs.TxIndex())
 	}
