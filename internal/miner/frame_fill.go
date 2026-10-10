@@ -20,7 +20,11 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -29,8 +33,10 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
+	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 // EnvFrameBlockMaxFrames caps the frames in one block (default 1024).
@@ -52,14 +58,20 @@ type framePick struct {
 }
 
 // pickFrames takes frames from the store in arrival order, oldest first,
-// skipping those an unwritten ancestor already holds, and stops at the
+// skipping those an unwritten ancestor already holds and those signed by
+// exclude (this node's own local frames; zero = none), and stops at the
 // first frame whose gas estimate does not fit the budget or at maxFrames.
 // Stopping rather than skipping keeps blocks in arrival order.
-func pickFrames(st *store.Store, inFlight func(types.Hash) bool, budget uint64, maxFrames int) framePick {
+func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
 	var p framePick
 	st.Scan(func(h types.Hash, e store.Entry) bool {
 		if inFlight != nil && inFlight(h) {
 			return true
+		}
+		if exclude != (types.Address{}) {
+			if gw, ok := frame.GatewayOf(e.Raw); ok && gw == exclude {
+				return true
+			}
 		}
 		if len(p.hashes) >= maxFrames || p.gas+e.Gas > budget {
 			return false
@@ -86,7 +98,19 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	header := env.header
 	number := header.Number.Uint64()
 	t0 := time.Now()
-	pick := pickFrames(bc.FrameStore(), bc.FramesInFlight(), env.gasPool.Gas(), frameBlockMaxFrames())
+	st := bc.FrameStore()
+	inFlight := bc.FramesInFlight()
+	budget := env.gasPool.Gas()
+	maxFrames := frameBlockMaxFrames()
+	// Pool transactions first, as this node's local frames, up to the pool
+	// gas budget; gateway frames fill the rest.
+	local, own := w.fillLocalFrames(env, ibs, st, inFlight, budget, maxFrames)
+	gw := pickFrames(st, inFlight, own, budget-local.gas, maxFrames-len(local.hashes))
+	pick := local
+	pick.hashes = append(pick.hashes, gw.hashes...)
+	pick.raws = append(pick.raws, gw.raws...)
+	pick.gas += gw.gas
+	pick.txs += gw.txs
 	if len(pick.hashes) == 0 {
 		return nil
 	}
@@ -116,6 +140,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 			tl.PendingTxCount = len(flat)
 		}
 		log.Info("miner: frame fill", "n", number, "path", path, "frames", len(hashes), "picked", len(pick.hashes),
+			"localFrames", len(local.hashes), "localTxs", local.txs,
 			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "gasEst", pick.gas, "gasUsed", header.GasUsed,
 			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec))
 		return nil
@@ -181,4 +206,200 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 		return nil
 	}
 	return finish(hashes, raws, "serial", skipped)
+}
+
+// EnvFrameBlockPoolGas is the gas a frame block gives the transaction pool,
+// packed into the leader's local frames ahead of the gateway frames
+// (default: a tenth of the block gas limit). Pool transactions that do not
+// fit wait for the next block; gas the pool does not use goes to gateway
+// frames.
+const EnvFrameBlockPoolGas = "N42_FRAME_BLOCK_POOL_GAS"
+
+func framePoolGas(gasLimit uint64) uint64 {
+	if v, err := strconv.ParseUint(os.Getenv(EnvFrameBlockPoolGas), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return gasLimit / 10
+}
+
+// localFramePruneDepth: a local frame built this many blocks ago that no
+// block took (its build was discarded) leaves the store; its transactions
+// are still in the pool and are framed again.
+const localFramePruneDepth = 64
+
+// localFrameState is the worker's local-frame bookkeeping.
+type localFrameState struct {
+	signer atomic.Pointer[frame.Signer]
+	seq    atomic.Uint64
+
+	mu    sync.Mutex
+	built map[types.Hash]uint64 // FrameHash -> number of the block built
+}
+
+// SetLocalFrameSigner sets the key the leader frames pool transactions
+// under when frame blocks are on (nil = no local frames: the pool is not
+// mined in frame blocks).
+func (w *worker) SetLocalFrameSigner(s *frame.Signer) {
+	if w.localFrames.seq.Load() == 0 {
+		// Seeded from the clock so a restarted node does not rebuild a
+		// frame hash its previous run already used.
+		w.localFrames.seq.CompareAndSwap(0, uint64(time.Now().UnixNano())) // #nosec G115 -- positive
+	}
+	w.localFrames.signer.Store(s)
+}
+
+// localFrame is one frame packed from pool transactions.
+type localFrame struct {
+	hash types.Hash
+	raw  []byte
+	gas  uint64
+	txs  []*transaction.Transaction
+}
+
+// packLocalFrames packs pending pool transactions into frames signed by s,
+// in the pool fill's order (price and nonce), each frame at most
+// frame.MaxTxs transactions and frame.MaxPayload bytes, until the gas
+// limits of the packed transactions reach budget. An account whose next
+// transaction does not fit the remaining budget, cannot pay baseFee, or has
+// no frame encoding is passed over with its later transactions, as the pool
+// fill does.
+func packLocalFrames(s *frame.Signer, nextSeq func() uint64, pending map[types.Address][]*transaction.Transaction,
+	baseFee *uint256.Int, budget uint64) ([]localFrame, error) {
+	if s == nil || len(pending) == 0 || budget < params.TxGas {
+		return nil, nil
+	}
+	txSet := builder.NewTxByPriceAndNonce(pending, baseFee)
+	var (
+		out      []localFrame
+		encs     [][]byte
+		txs      []*transaction.Transaction
+		gas      uint64
+		payload  int
+		remain   = budget
+		flushErr error
+	)
+	flush := func() {
+		if len(encs) == 0 || flushErr != nil {
+			return
+		}
+		raw, h, err := frame.EncodeWith(s, nextSeq(), frame.TxTypeEthereum, encs)
+		if err != nil {
+			flushErr = err
+			return
+		}
+		out = append(out, localFrame{hash: h, raw: raw, gas: gas, txs: txs})
+		encs, txs, gas, payload = nil, nil, 0, 0
+	}
+	for remain >= params.TxGas && flushErr == nil {
+		tx := txSet.Peek()
+		if tx == nil {
+			break
+		}
+		if tx.Gas() > remain {
+			txSet.Pop()
+			continue
+		}
+		feeCap := tx.GasFeeCap()
+		if feeCap == nil {
+			feeCap = tx.GasPrice()
+		}
+		if baseFee != nil && feeCap != nil && feeCap.Cmp(baseFee) < 0 {
+			txSet.Pop()
+			continue
+		}
+		enc, err := tx.EthEncoded()
+		if err != nil || len(enc) == 0 || len(enc) > 0xFFFF {
+			txSet.Pop()
+			continue
+		}
+		if len(encs) == frame.MaxTxs || payload+2+len(enc) > frame.MaxPayload {
+			flush()
+		}
+		encs = append(encs, enc)
+		txs = append(txs, tx)
+		gas += tx.Gas()
+		payload += 2 + len(enc)
+		remain -= tx.Gas()
+		txSet.Shift()
+	}
+	flush()
+	return out, flushErr
+}
+
+// fillLocalFrames frames the pool's pending transactions for this block:
+// stale ones (already mined on this build's parent state) are trimmed, the
+// rest packed under the local signer up to the pool gas budget, and each
+// frame is put into the frame store, where the followers pull it from
+// (FRQ1) like any frame. It returns the frames and the local signer's
+// address (zero when there is no signer), which the gateway pick excludes.
+func (w *worker) fillLocalFrames(env *environment, ibs *state.IntraBlockState, st *store.Store,
+	inFlight func(types.Hash) bool, budget uint64, maxFrames int) (framePick, types.Address) {
+	var p framePick
+	s := w.localFrames.signer.Load()
+	if s == nil || w.txsPool == nil || maxFrames <= 0 {
+		return p, types.Address{}
+	}
+	number := env.header.Number.Uint64()
+	w.pruneLocalFrames(st, inFlight, number)
+	poolGas := framePoolGas(env.header.GasLimit)
+	if poolGas > budget {
+		poolGas = budget
+	}
+	pending := w.txsPool.Pending(false)
+	if len(pending) == 0 {
+		return p, s.Address
+	}
+	trimStalePending(ibs.GetStateReader(), pending)
+	frames, err := packLocalFrames(s, func() uint64 { return w.localFrames.seq.Add(1) }, pending, env.header.BaseFee, poolGas)
+	if err != nil {
+		log.Warn("miner: local frames not built", "n", number, "err", err)
+	}
+	for _, f := range frames {
+		if len(p.hashes) >= maxFrames {
+			break
+		}
+		if inFlight != nil && inFlight(f.hash) {
+			// An unwritten ancestor holds the identical frame; its
+			// transactions are not this block's to include.
+			break
+		}
+		if !st.PutEntry(f.hash, store.Entry{Raw: f.raw, Gas: f.gas, Txs: len(f.txs)}) && !st.Has(f.hash) {
+			// Refused (a written block holds it, or it exceeds the whole
+			// budget): the followers could not pull it, so it is not used.
+			break
+		}
+		w.localFrames.mu.Lock()
+		if w.localFrames.built == nil {
+			w.localFrames.built = make(map[types.Hash]uint64)
+		}
+		w.localFrames.built[f.hash] = number
+		w.localFrames.mu.Unlock()
+		p.hashes = append(p.hashes, f.hash)
+		p.raws = append(p.raws, f.raw)
+		p.gas += f.gas
+		p.txs += len(f.txs)
+	}
+	return p, s.Address
+}
+
+// pruneLocalFrames drops local frames built localFramePruneDepth blocks
+// before number that no unwritten block holds. A frame a written block took
+// has left the store already; removing it again is a no-op.
+func (w *worker) pruneLocalFrames(st *store.Store, inFlight func(types.Hash) bool, number uint64) {
+	lf := &w.localFrames
+	lf.mu.Lock()
+	var drop []types.Hash
+	for h, n := range lf.built {
+		if n+localFramePruneDepth >= number {
+			continue
+		}
+		delete(lf.built, h)
+		if inFlight == nil || !inFlight(h) {
+			drop = append(drop, h)
+		}
+	}
+	lf.mu.Unlock()
+	if len(drop) > 0 {
+		st.Remove(drop)
+	}
 }

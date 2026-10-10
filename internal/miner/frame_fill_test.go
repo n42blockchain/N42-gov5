@@ -38,7 +38,7 @@ func TestPickFramesOrderAndGasStop(t *testing.T) {
 	st, hashes := frameStoreOf(t, 20, 500)
 	const perFrameGas = 500 * 21000
 
-	p := pickFrames(st, nil, 70_000_000, 1024)
+	p := pickFrames(st, nil, types.Address{}, 70_000_000, 1024)
 	if len(p.hashes) != 6 || p.gas != 6*perFrameGas || p.txs != 3000 {
 		t.Fatalf("picked %d frames gas %d txs %d", len(p.hashes), p.gas, p.txs)
 	}
@@ -49,22 +49,22 @@ func TestPickFramesOrderAndGasStop(t *testing.T) {
 	}
 
 	inFlight := map[types.Hash]bool{hashes[0]: true, hashes[2]: true}
-	p = pickFrames(st, func(h types.Hash) bool { return inFlight[h] }, 3*perFrameGas, 1024)
+	p = pickFrames(st, func(h types.Hash) bool { return inFlight[h] }, types.Address{}, 3*perFrameGas, 1024)
 	if len(p.hashes) != 3 || p.hashes[0] != hashes[1] || p.hashes[1] != hashes[3] || p.hashes[2] != hashes[4] {
 		t.Fatalf("in-flight skip: %v", p.hashes)
 	}
 
-	if p = pickFrames(st, nil, 1<<62, 5); len(p.hashes) != 5 {
+	if p = pickFrames(st, nil, types.Address{}, 1<<62, 5); len(p.hashes) != 5 {
 		t.Fatalf("max frames: %d", len(p.hashes))
 	}
-	if p = pickFrames(st, nil, perFrameGas-1, 1024); len(p.hashes) != 0 {
+	if p = pickFrames(st, nil, types.Address{}, perFrameGas-1, 1024); len(p.hashes) != 0 {
 		t.Fatal("frame above the budget was taken")
 	}
 
 	// Frames a written block holds leave the store; the next pick starts
 	// after them.
 	st.Remove(hashes[:6])
-	if p = pickFrames(st, nil, perFrameGas, 1024); len(p.hashes) != 1 || p.hashes[0] != hashes[6] {
+	if p = pickFrames(st, nil, types.Address{}, perFrameGas, 1024); len(p.hashes) != 1 || p.hashes[0] != hashes[6] {
 		t.Fatal("pick after remove")
 	}
 }
@@ -81,7 +81,7 @@ func TestPickFramesRate(t *testing.T) {
 	t0 := time.Now()
 	n := 0
 	for i := 0; i < rounds; i++ {
-		n += len(pickFrames(st, inFlight, 1<<62, 1024).hashes)
+		n += len(pickFrames(st, inFlight, types.Address{}, 1<<62, 1024).hashes)
 	}
 	el := time.Since(t0)
 	t.Logf("pickFrames: %d frames in %v = %.0f frames/s", n, el, float64(n)/el.Seconds())

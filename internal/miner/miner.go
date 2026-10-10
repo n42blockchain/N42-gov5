@@ -38,6 +38,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -180,6 +181,13 @@ func (miner *Miner) Close() {
 
 func (m *Miner) Mining() bool {
 	return m.worker.isRunning()
+}
+
+// SetLocalFrameSigner sets the key this node frames its pool transactions
+// under when it fills frame blocks (N42_FRAME_BLOCKS=1); nil disables local
+// frames.
+func (m *Miner) SetLocalFrameSigner(s *frame.Signer) {
+	m.worker.SetLocalFrameSigner(s)
 }
 
 func (m *Miner) SetCoinbase(addr types.Address) {
