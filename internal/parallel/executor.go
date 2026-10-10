@@ -502,7 +502,8 @@ func (e *Executor) executeParallel(txIndices []int) {
 	var queues [][]int
 	work := make(chan int, len(txIndices))
 	if e.affinity != nil {
-		queues, e.waveKeys, e.waveTopChain = partitionByAffinity(txIndices, e.workers, e.affinity, waveLPT)
+		keys := e.affinityKeys(txIndices)
+		queues, e.waveKeys, e.waveTopChain = partitionByAffinity(txIndices, e.workers, func(i int) uint64 { return keys[i] }, waveLPT)
 	}
 
 	// S82: fresh per-call worker stats. Each goroutine below writes only its
@@ -580,6 +581,43 @@ func (e *Executor) executeParallel(txIndices []int) {
 	}
 	e.totalExecutions.Add(execs)
 	e.busyNanos.Add(busy)
+}
+
+// affinityKeysChunk is the number of transactions below which the
+// affinity keys are computed on the calling goroutine.
+const affinityKeysChunk = 4096
+
+// affinityKeys computes the affinity key of every transaction in txIndices,
+// indexed by transaction index, on GOMAXPROCS goroutines. A key reads the
+// transaction's sender, a cache miss per transaction: serial, that was
+// ~13 ms of a 163k-transfer block's exec wave, with the workers waiting.
+func (e *Executor) affinityKeys(txIndices []int) []uint64 {
+	keys := make([]uint64, e.numTxs)
+	n := len(txIndices)
+	g := runtime.GOMAXPROCS(0)
+	if g > n/affinityKeysChunk {
+		g = n / affinityKeysChunk
+	}
+	if g <= 1 {
+		for _, idx := range txIndices {
+			keys[idx] = e.affinity(idx)
+		}
+		return keys
+	}
+	var wg sync.WaitGroup
+	per := (n + g - 1) / g
+	for lo := 0; lo < n; lo += per {
+		hi := min(lo+per, n)
+		wg.Add(1)
+		go func(part []int) {
+			defer wg.Done()
+			for _, idx := range part {
+				keys[idx] = e.affinity(idx)
+			}
+		}(txIndices[lo:hi])
+	}
+	wg.Wait()
+	return keys
 }
 
 // executeSingle executes a single transaction. ws is the calling worker's
