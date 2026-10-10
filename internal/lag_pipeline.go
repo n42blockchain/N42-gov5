@@ -70,6 +70,7 @@ type availableState struct {
 type lagQueued struct {
 	blk      *block.Block
 	since    time.Time
+	lastAuth time.Time // last import attempt with switch authority
 	stuckLog bool
 }
 
@@ -459,10 +460,12 @@ func (bc *BlockChain) lagStep() bool {
 		ready := bc.lagParentReady(b.ParentHash(), n-1)
 		authorized := false
 		if !ready {
-			if !bc.blockStored(b.ParentHash(), n-1) || time.Since(q.since) < lagAuthorizedGrace {
+			if !bc.blockStored(b.ParentHash(), n-1) || time.Since(q.since) < lagAuthorizedGrace ||
+				time.Since(q.lastAuth) < lagAuthorizedGrace {
 				continue
 			}
 			authorized = true
+			q.lastAuth = time.Now()
 		}
 		var err error
 		if authorized {
