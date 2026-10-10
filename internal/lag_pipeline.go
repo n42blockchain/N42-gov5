@@ -120,6 +120,28 @@ func (bc *BlockChain) AvailableBlock(hash types.Hash) *block.Block {
 	return a.m[hash]
 }
 
+// forgetAvailable drops hash from the available blocks: it is written (its
+// header and body are in the store now) or it can never import here. An
+// available block holds its decoded body -- every transaction with its
+// sender, ~0.9 KB each -- so keeping imported blocks until the FIFO bound
+// pushed them out held 256 blocks of them (S93/S94: +0.2-0.35 GB of live
+// heap per imported block).
+func (bc *BlockChain) forgetAvailable(hash types.Hash) {
+	a := &bc.avail
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.m[hash]; !ok {
+		return
+	}
+	delete(a.m, hash)
+	for i, h := range a.fifo {
+		if h == hash {
+			a.fifo = append(a.fifo[:i], a.fifo[i+1:]...)
+			break
+		}
+	}
+}
+
 // HasAvailableBlock reports whether hash is available here (held, checked
 // or sealed, possibly not executed yet) or already stored.
 func (bc *BlockChain) HasAvailableBlock(hash types.Hash) bool {
@@ -532,6 +554,7 @@ func (bc *BlockChain) lagForget(hash types.Hash) {
 	le.mu.Lock()
 	delete(le.queued, hash)
 	le.mu.Unlock()
+	bc.forgetAvailable(hash)
 }
 
 func (bc *BlockChain) lagDone(b *block.Block, imported bool) {
