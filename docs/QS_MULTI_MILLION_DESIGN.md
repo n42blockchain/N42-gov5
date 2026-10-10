@@ -621,6 +621,14 @@ Not kept (step 3): writing the credits directly in CommitBlock saved ~1 ms. Writ
 Binary n42-r132, HEAD dbf218da, sha256 1709457e05417ba19e962696db4637904d6c5c922ac9900632a2d42b6221f706. The cycle model is now max(execution ~160 ms at 163k on the fleet, write ~90, critical path ~40): execution is the limit, so the next step is P3d (exec). S98 (running on r131) does not carry P4b; S99 will carry r132 or its successor.
 
 
+### S98 result (2026-10-10, 35zzzbx, n42-r131)
+
+B2 win2 reached 274k execTPS at 163k-tx blocks (B1 187k and 103k, B2 223k and 274k; the A legs ran 87-90k, interval-bound). The per-block cycle is 280-330 ms median while the chain runs (exec ~146, root ~70, write ~120 ms at 163k; the ahead run covered 95-100% of blocks on the leader and 61-91% on followers). The gate of >= 500k is not met. The pipeline math is confirmed: a 330 ms cycle at 163k is about 495k tx/s of running time, so P4b's off-path write and P3d's exec cut are the right next steps for the cycle itself. The wall is elsewhere: 34-41% of wall time was lost to stalls, of two kinds. (1) View timeouts after a node's align phase takes seconds (node1 align 5.1 s on one block, 110 s over 21 blocks in B1). (2) A node 32 blocks behind taking the leader tenure and waiting on its own execution (24.6 s + 21.5 s stalls in B1 win2). Healthy view timing totals 251 ms (propose 181, r1 64, r2 11), so transport and votes are not the wall. Supply is not the limit: presign took 55 s per leg, timeouts 0, busy backpressure from the first seconds, about 4.7M txs queued.
+
+Memory: the fixes held in the sense that the heap returns to 1.6-2.0 GiB after each leg and live is 3.6-3.9 GiB (top inuse buckets: ingest.readFrame 1.6 GB, qmdb.newMapIndexSized 755 MB, senderCachePut 632 MB, DecodeEthereumTransaction ~620 MB cum, NewReadWriteSet 205 MB). But the GOGC sawtooth up to the 10 GiB GOMEMLIMIT (NextGC 9.3 GiB) times 7 nodes puts the 7 nodes at 10-11 GiB Sys each, anon at 74-80 GiB, and evicts the MDBX page cache (halved; major faults 184-309k per 10 s against 1.6k on the A legs), with GC thrash (+49-57 per 30 s) on the lagging node. Sender recovery costs 400 ms/block for the first ~45 s after each per-leg restart (cold sender cache) and 42 ms afterwards. No BAD BLOCK, no restarts, all nodes imported identical block sets.
+
+Conclusion: the new wall is the stall path, align seconds plus the lagged leader, fed by page-cache pressure. S99 = n42-r133 (P4b + P3d) with GOMEMLIMIT lowered so the fleet's anon stays ~50 GiB, plus whatever P5 (align / lagged-leader) lands.
+
 ## 6. What this does not claim
 
 - 4M is not a measured number anywhere, including n42-rs. The honest
