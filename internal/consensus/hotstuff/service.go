@@ -571,7 +571,10 @@ type Service struct {
 
 	// Rate-limit state persistence (persist every N views or on commit).
 	lastPersistedView ViewNumber
-	persistInterval   uint64
+	persistViewMu     sync.Mutex // lastPersistedView: output loop and commit loop
+	// commitCh feeds the commit loop (commit_loop.go).
+	commitCh        chan commitJob
+	persistInterval uint64
 }
 
 // SetAvailabilityProbe attaches the chain's available-block lookup (P2a): a
@@ -668,7 +671,9 @@ func (s *Service) Start() error {
 	// Register Rotor relay stream handler for direct validator messaging.
 	s.setupRotorStreamHandler()
 
-	s.wg.Add(3)
+	s.commitCh = make(chan commitJob, commitQueueLen)
+	s.wg.Add(4)
+	go s.commitLoop()
 	go s.processOutputs()
 	go s.pacemakerLoop()
 	go s.subscribeMessages()
@@ -693,6 +698,104 @@ func (s *Service) Stop() {
 	}
 
 	log.Info("HotStuff service stopped")
+}
+
+// handleBlockCommitted canonicalizes a committed block and persists the
+// consensus state with it. Runs on the output loop, or on the commit loop
+// under the lag gate (commitAsync).
+func (s *Service) handleBlockCommitted(output EngineOutput) {
+	log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
+	// Post-commit phase timings — OBSERVABILITY ONLY. Both steps run inline
+	// on the serial output loop and each opens its own MDBX write tx (a
+	// second and third fsync for the block), so they belong in the
+	// block-write cost picture alongside "blockwrite phases".
+	tObserve := time.Now()
+	if s.availableHere(output.Hash) {
+		// P2a: committed on availability; its execution runs behind in
+		// the lag executor, which retries the canonical commit on import.
+	} else if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
+		s.requestCommittedCatchUp(output.Hash, number)
+	}
+	dObserve := time.Since(tObserve)
+	var dCanon, dPersist time.Duration
+	// Make the committed block the canonical head so every node's chain follows
+	// the single committed chain (the miner may have locally inserted a
+	// different same-height candidate via resultLoop). Skipped silently if the
+	// block isn't in the DB yet — it reconciles on a later commit / future-block
+	// import once the block arrives via direct push.
+	// Mark pending reconfigurations as committed now that the block has a
+	// CommitQC. Hoisted ABOVE canonicalization so the state snapshot taken
+	// below observes it: that snapshot must be resolved before any write
+	// transaction opens, and the canonicalization transaction is now where
+	// the state gets written. Safe to move — the CommitQC is what makes the
+	// reconfiguration committed, and it exists here whether or not the local
+	// canonical table has caught up; this ran unconditionally before too.
+	if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+		rm.MarkCommitted()
+	}
+	// Persist the consensus state INSIDE the canonicalization transaction
+	// when the producer supports it: one write transaction per committed
+	// block instead of two. It also closes a crash window — canonical head
+	// and consensus state now move together, where a crash between the two
+	// transactions used to leave a node whose persisted view/lock did not
+	// match its applied chain.
+	hook := s.newStateHook()
+	cw, canMerge := s.blockProducer.(CanonicalCommitterWithTx)
+	var cErr error
+	if s.blockProducer != nil {
+		tCanon := time.Now()
+		if canMerge && hook != nil {
+			cErr = cw.CommitToCanonicalWith(output.Hash, hook.run)
+		} else {
+			cErr = s.blockProducer.CommitToCanonical(output.Hash)
+		}
+		if cErr != nil {
+			log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", cErr)
+			// Remember it — NotifyBlockImported retries when the block lands.
+			s.pendingMu.Lock()
+			if s.pendingCommits == nil || len(s.pendingCommits) >= maxPendingCommits {
+				s.pendingCommits = make(map[types.Hash]struct{})
+			}
+			s.pendingCommits[output.Hash] = struct{}{}
+			s.pendingMu.Unlock()
+		} else {
+			s.pendingMu.Lock()
+			delete(s.pendingCommits, output.Hash)
+			s.pendingMu.Unlock()
+		}
+		dCanon = time.Since(tCanon)
+	}
+	updateMetricsBlockCommitted(output.View)
+	tPersist := time.Now()
+	// The hook must have completed AND the enclosing transaction must have
+	// committed. Update invokes the hook before tx.Commit, so hook.done alone
+	// can be true when the final MDBX commit fails and rolls every write back.
+	// In every other case the state still has to reach disk, so fall back to
+	// its own transaction.
+	if stateHookCommitted(hook, cErr) {
+		s.setLastPersistedView(hook.view)
+	} else {
+		s.persistState()
+	}
+	dPersist = time.Since(tPersist)
+	log.Info("hotstuff: commit phases",
+		"view", output.View, "observe", dObserve, "canon", dCanon, "persist", dPersist,
+		"total", time.Since(tObserve))
+
+	// Process pending equivocation slashing.
+	if s.slashingExecutor != nil {
+		if n, err := s.slashingExecutor.ProcessPendingSlashing(s.ctx); err != nil {
+			log.Error("hotstuff: slashing execution failed", "err", err)
+		} else if n > 0 {
+			log.Warn("hotstuff: validators slashed for equivocation", "count", n)
+		}
+	}
+
+	// Block randomness is NOT fed to the EVM from here anymore: the
+	// 0x0302 beacon reads the header's PrevRanDao (consensus-committed,
+	// identical for leader/followers/replay). A process-local feed keyed
+	// by whatever QC this node last observed diverged between roles and
+	// was unreproducible at replay.
 }
 
 // processOutputs reads EngineOutput actions and dispatches them.
@@ -770,98 +873,11 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 			sp.PrepareSpeculativeBlock(output.Hash)
 		}
 	case OutputBlockCommitted:
-		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
-		// Post-commit phase timings — OBSERVABILITY ONLY. Both steps run inline
-		// on the serial output loop and each opens its own MDBX write tx (a
-		// second and third fsync for the block), so they belong in the
-		// block-write cost picture alongside "blockwrite phases".
-		tObserve := time.Now()
-		if s.availableHere(output.Hash) {
-			// P2a: committed on availability; its execution runs behind in
-			// the lag executor, which retries the canonical commit on import.
-		} else if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
-			s.requestCommittedCatchUp(output.Hash, number)
+		if s.commitAsync() {
+			s.enqueueCommit(output)
+			return
 		}
-		dObserve := time.Since(tObserve)
-		var dCanon, dPersist time.Duration
-		// Make the committed block the canonical head so every node's chain follows
-		// the single committed chain (the miner may have locally inserted a
-		// different same-height candidate via resultLoop). Skipped silently if the
-		// block isn't in the DB yet — it reconciles on a later commit / future-block
-		// import once the block arrives via direct push.
-		// Mark pending reconfigurations as committed now that the block has a
-		// CommitQC. Hoisted ABOVE canonicalization so the state snapshot taken
-		// below observes it: that snapshot must be resolved before any write
-		// transaction opens, and the canonicalization transaction is now where
-		// the state gets written. Safe to move — the CommitQC is what makes the
-		// reconfiguration committed, and it exists here whether or not the local
-		// canonical table has caught up; this ran unconditionally before too.
-		if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
-			rm.MarkCommitted()
-		}
-		// Persist the consensus state INSIDE the canonicalization transaction
-		// when the producer supports it: one write transaction per committed
-		// block instead of two. It also closes a crash window — canonical head
-		// and consensus state now move together, where a crash between the two
-		// transactions used to leave a node whose persisted view/lock did not
-		// match its applied chain.
-		hook := s.newStateHook()
-		cw, canMerge := s.blockProducer.(CanonicalCommitterWithTx)
-		var cErr error
-		if s.blockProducer != nil {
-			tCanon := time.Now()
-			if canMerge && hook != nil {
-				cErr = cw.CommitToCanonicalWith(output.Hash, hook.run)
-			} else {
-				cErr = s.blockProducer.CommitToCanonical(output.Hash)
-			}
-			if cErr != nil {
-				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", cErr)
-				// Remember it — NotifyBlockImported retries when the block lands.
-				s.pendingMu.Lock()
-				if s.pendingCommits == nil || len(s.pendingCommits) >= maxPendingCommits {
-					s.pendingCommits = make(map[types.Hash]struct{})
-				}
-				s.pendingCommits[output.Hash] = struct{}{}
-				s.pendingMu.Unlock()
-			} else {
-				s.pendingMu.Lock()
-				delete(s.pendingCommits, output.Hash)
-				s.pendingMu.Unlock()
-			}
-			dCanon = time.Since(tCanon)
-		}
-		updateMetricsBlockCommitted(output.View)
-		tPersist := time.Now()
-		// The hook must have completed AND the enclosing transaction must have
-		// committed. Update invokes the hook before tx.Commit, so hook.done alone
-		// can be true when the final MDBX commit fails and rolls every write back.
-		// In every other case the state still has to reach disk, so fall back to
-		// its own transaction.
-		if stateHookCommitted(hook, cErr) {
-			s.lastPersistedView = hook.view
-		} else {
-			s.persistState()
-		}
-		dPersist = time.Since(tPersist)
-		log.Info("hotstuff: commit phases",
-			"view", output.View, "observe", dObserve, "canon", dCanon, "persist", dPersist,
-			"total", time.Since(tObserve))
-
-		// Process pending equivocation slashing.
-		if s.slashingExecutor != nil {
-			if n, err := s.slashingExecutor.ProcessPendingSlashing(s.ctx); err != nil {
-				log.Error("hotstuff: slashing execution failed", "err", err)
-			} else if n > 0 {
-				log.Warn("hotstuff: validators slashed for equivocation", "count", n)
-			}
-		}
-
-		// Block randomness is NOT fed to the EVM from here anymore: the
-		// 0x0302 beacon reads the header's PrevRanDao (consensus-committed,
-		// identical for leader/followers/replay). A process-local feed keyed
-		// by whatever QC this node last observed diverged between roles and
-		// was unreproducible at replay.
+		s.handleBlockCommitted(output)
 	case OutputViewChanged:
 		log.Debug("hotstuff: view changed", "view", output.View)
 		updateMetricsViewChanged(output.View)
@@ -895,7 +911,7 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 			s.triggerBlockProduction(output.View, lq.BlockHash)
 		}
 		// Rate-limited persistence.
-		if output.View-s.lastPersistedView >= s.persistInterval {
+		if output.View-s.getLastPersistedView() >= s.persistInterval {
 			s.persistState()
 		}
 	case OutputEpochStaged:
@@ -1517,7 +1533,7 @@ func (s *Service) persistStateCtx(ctx context.Context) {
 		log.Warn("hotstuff: failed to persist state", "err", err)
 		return
 	}
-	s.lastPersistedView = h.view
+	s.setLastPersistedView(h.view)
 }
 
 // recoverEpochState restores the persisted validator-set state after a restart.
