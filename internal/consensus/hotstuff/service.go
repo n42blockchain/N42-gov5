@@ -13,12 +13,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -740,7 +743,15 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// this, a single dropped push stalls the view to the full timeout and the
 		// chain head never advances. FetchBlockByHash is a no-op if we have it.
 		if s.blockFetcher != nil && !s.availableHere(output.Hash) {
-			s.blockFetcher.FetchBlockByHash(output.Hash)
+			if d := fetchOnMissGrace(); d > 0 {
+				// The leader dispatches the push and the Proposal together
+				// (proposalPushGrace is zero), so a Proposal that lands first
+				// usually has its block a few ms behind: fetch only if it is
+				// still missing after the grace.
+				s.scheduleFetchOnMiss(output.Hash, d)
+			} else {
+				s.blockFetcher.FetchBlockByHash(output.Hash)
+			}
 		}
 	case OutputSpeculativeBuild:
 		// Advisory: this node leads the next view; start building on the block
@@ -1766,12 +1777,83 @@ func (s *Service) Rotor() *Rotor {
 // Currently the miner already broadcasts sealed blocks via the sync layer's
 // block gossip topic (SealedBlock → p2p.Broadcast in blockchain.go).
 // This method adds a small delay before sending the Proposal to give the
-// block gossip time to propagate to followers.
+// block gossip time to propagate to followers (proposalPushGrace).
 func (s *Service) broadcastBlockData(_ types.Hash) {
-	// The miner's SealedBlock already gossips the block on the standard
-	// block topic. We just need the Proposal to arrive slightly after,
-	// giving followers time to import. A brief yield is sufficient.
-	time.Sleep(50 * time.Millisecond)
+	if d := proposalPushGrace(); d > 0 {
+		time.Sleep(d)
+	}
+}
+
+// fetchOnMissGrace is how long a follower waits for the direct push of a
+// proposed block it does not hold before fetching it: the push grace's
+// counterpart. Zero (fetch at once) unless the leader sends the Proposal
+// without a push grace.
+func fetchOnMissGrace() time.Duration {
+	if proposalPushGrace() == 0 {
+		return 100 * time.Millisecond
+	}
+	return 0
+}
+
+// scheduleFetchOnMiss fetches hash after d unless, by then, the block has
+// arrived (held available or imported) or the view moved on.
+func (s *Service) scheduleFetchOnMiss(hash types.Hash, d time.Duration) {
+	time.AfterFunc(d, func() {
+		if (s.ctx != nil && s.ctx.Err() != nil) || s.blockFetcher == nil || s.availableHere(hash) {
+			return
+		}
+		s.pendingMu.Lock()
+		_, pending := s.pendingExecutions[hash]
+		s.pendingMu.Unlock()
+		if !pending {
+			return
+		}
+		s.blockFetcher.FetchBlockByHash(hash)
+	})
+}
+
+// legacyProposalPushGrace is the pause the leader takes between handing its
+// sealed block to the direct push and publishing the Proposal, when the vote
+// waits for the block.
+const legacyProposalPushGrace = 50 * time.Millisecond
+
+// proposalPushGrace is how long the leader holds a Proposal after the block's
+// direct push was dispatched. Under vote on availability it is zero: a
+// follower votes on the EventBlockChecked / header-known events whichever of
+// the Proposal and the push lands first (processProposal defers the vote,
+// onBlockChecked casts it), so the pause only added a fixed 50 ms to every
+// view's Round 1 (the r1kth floor of 55 ms measured on empty blocks).
+// N42_PROPOSAL_PUSH_GRACE_MS overrides both modes (0 = no pause).
+func proposalPushGrace() time.Duration {
+	if ms, ok := proposalPushGraceEnv(); ok {
+		return time.Duration(ms) * time.Millisecond
+	}
+	if block.VoteOnAvailability() {
+		return 0
+	}
+	return legacyProposalPushGrace
+}
+
+var (
+	proposalPushGraceOnce sync.Once
+	proposalPushGraceMs   int64
+	proposalPushGraceSet  bool
+)
+
+func proposalPushGraceEnv() (int64, bool) {
+	proposalPushGraceOnce.Do(func() {
+		v := os.Getenv("N42_PROPOSAL_PUSH_GRACE_MS")
+		if v == "" {
+			return
+		}
+		ms, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || ms < 0 {
+			log.Warn("ignoring invalid N42_PROPOSAL_PUSH_GRACE_MS", "value", v)
+			return
+		}
+		proposalPushGraceMs, proposalPushGraceSet = ms, true
+	})
+	return proposalPushGraceMs, proposalPushGraceSet
 }
 
 // maxPendingCommits bounds the deferred-commit set; a node that far behind
