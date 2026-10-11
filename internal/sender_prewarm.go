@@ -219,19 +219,14 @@ func (j *senderJob) frame(i int, final bool) bool {
 				continue
 			}
 			if !t.Own {
-				break // not stored (pulled past the budget and evicted, or read from the Frames table)
-			}
-			if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
-				j.st.FinishRecover(t, ss)
-				frame.ApplySenders(txs, ss)
+				// Not stored (pulled past the budget and evicted, or read
+				// from the Frames table): attested senders still apply.
+				if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
+					frame.ApplySenders(txs, ss)
+				}
 				break
-			} else if !final && j.src != nil && j.src.Pending(sp.H) {
-				// Attestations may still arrive: look again in the last pass.
-				j.st.FinishRecover(t, nil)
-				return false
 			}
-			j.st.FinishRecover(t, j.recoverOwned(t, txs))
-			return true
+			return j.owned(t, txs, final)
 		}
 	} else if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
 		frame.ApplySenders(txs, ss)
@@ -243,6 +238,23 @@ func (j *senderJob) frame(i int, final bool) bool {
 			_, _ = transaction.Sender(j.signer, tx)
 		}
 	}
+	return true
+}
+
+// owned settles a frame this job claimed: from the source, deferred to the
+// last pass while attestations may still arrive, or recovered here. The
+// claim is released on every path, a panic included, so no waiter hangs.
+func (j *senderJob) owned(t store.RecoverTicket, txs []*transaction.Transaction, final bool) (done bool) {
+	var ss *store.Senders
+	defer func() { j.st.FinishRecover(t, ss) }()
+	if ss = j.fromSource(t.H, len(txs), final); ss != nil {
+		frame.ApplySenders(txs, ss)
+		return true
+	}
+	if !final && j.src != nil && j.src.Pending(t.H) {
+		return false
+	}
+	ss = j.recoverTxs(t.H, txs)
 	return true
 }
 
@@ -258,15 +270,9 @@ func (j *senderJob) fromSource(h types.Hash, n int, final bool) *store.Senders {
 	return &store.Senders{Signer: j.signer, Addrs: addrs}
 }
 
-// recoverOwned recovers txs (an owned frame) and returns its senders for
-// the store. A panic releases the claim with no result.
-func (j *senderJob) recoverOwned(t store.RecoverTicket, txs []*transaction.Transaction) (ss *store.Senders) {
-	defer func() {
-		if r := recover(); r != nil {
-			j.st.FinishRecover(t, nil)
-			panic(r)
-		}
-	}()
+// recoverTxs recovers txs (an owned frame h) and returns its senders for
+// the store.
+func (j *senderJob) recoverTxs(h types.Hash, txs []*transaction.Transaction) *store.Senders {
 	addrs := make([]types.Address, len(txs))
 	for k, tx := range txs {
 		if tx == nil {
@@ -276,9 +282,9 @@ func (j *senderJob) recoverOwned(t store.RecoverTicket, txs []*transaction.Trans
 			addrs[k] = a
 		}
 	}
-	ss = &store.Senders{Signer: j.signer, Addrs: addrs}
+	ss := &store.Senders{Signer: j.signer, Addrs: addrs}
 	if j.src != nil {
-		j.src.Recovered(t.H, ss)
+		j.src.Recovered(h, ss)
 	}
 	return ss
 }
