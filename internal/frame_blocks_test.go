@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -200,5 +201,64 @@ func TestFramesCommittedWalksAncestors(t *testing.T) {
 	st.Commit(10, nil)
 	if st.Has(hashes[0]) || !st.Has(hashes[1]) || !st.Has(hashes[2]) {
 		t.Fatalf("at head 10: %+v", st.Stats())
+	}
+}
+
+// P7: resolving one block does not wait for another block's resolution
+// stuck in a frame pull (the resolve lock is per block, not chain-wide).
+func TestResolveFramesNotBlockedByAnotherBlocksPull(t *testing.T) {
+	keys := frametest.Keys(t, 2, 7)
+	fb := frametest.NewBuilder(keys[0], senderRecoveryChainID, keys[1:])
+	raws, hashes, txs := fb.Frames(t, 2, 10)
+	st := store.New(1 << 24)
+	st.Put(hashes[0], raws[0]) // frame 1 is missing: its block pulls
+	bc := &BlockChain{ctx: context.Background(), ChainDB: memdb.NewTestDB(t)}
+	bc.SetFrameStore(st)
+	release := make(chan struct{})
+	pulling := make(chan struct{}, 1)
+	bc.SetFramePuller(func(ctx context.Context, want []types.Hash) map[types.Hash][]byte {
+		pulling <- struct{}{}
+		<-release
+		return nil
+	})
+	wire := func(n uint64, hs []types.Hash, tx int) *block.Block {
+		hdr := &block.Header{Number: uint256.NewInt(n), Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(1), GasLimit: 1 << 30}
+		sealed := block.NewFrameBlockFromReceipt(hdr, hs, txs[:tx], nil, nil)
+		enc, err := rlp.EncodeToBytes(sealed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b block.Block
+		if err := rlp.DecodeBytes(enc, &b); err != nil {
+			t.Fatal(err)
+		}
+		return &b
+	}
+	stuck := wire(5, hashes, len(txs))
+	var ready *block.Block
+	for n := uint64(6); n < 600; n++ {
+		if b := wire(n, hashes[:1], 10); b.Hash()[0]%64 != stuck.Hash()[0]%64 {
+			ready = b
+			break
+		}
+	}
+	if ready == nil {
+		t.Fatal("no block on another stripe")
+	}
+	go func() { _ = bc.ResolveFrames(stuck) }()
+	<-pulling
+	done := make(chan error, 1)
+	go func() { done <- bc.ResolveFrames(ready) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a resolvable block waited for another block's frame pull")
+	}
+	close(release)
+	if len(ready.Transactions()) != 10 {
+		t.Fatalf("resolved %d txs", len(ready.Transactions()))
 	}
 }

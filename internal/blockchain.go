@@ -2778,7 +2778,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// Executed ahead: exec/collect above ran while the parent was
 				// rooted and written; aheadWait is what this import waited
 				// for it, aheadRun its whole run.
-				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took)
+				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took, "aheadPre", ahead.pre)
 			}
 			// The root's own split (P7: the fleet logged only the total):
 			// the wait for the tree's readers, the dirty-set collection, the

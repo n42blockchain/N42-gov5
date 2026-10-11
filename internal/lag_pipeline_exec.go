@@ -164,6 +164,7 @@ type aheadExec struct {
 	parentOK bool // the parent's publishing import wrote it (under lagPipeline.mu)
 	done     chan struct{}
 	started  time.Time
+	pre      time.Duration // from launch to the start of the Block-STM run
 
 	// Set by the executing goroutine before done closes.
 	ibs    *state.IntraBlockState
@@ -433,6 +434,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		}
 		return bc.readHeaderOrPending(tx, hash, number)
 	}
+	a.pre = time.Since(a.started)
 	run, err := bc.process.(*StateProcessor).ExecuteParallelAhead(a.blk, ibs, GetHashFn(hdr, getHeader))
 	if err != nil {
 		a.err = err
