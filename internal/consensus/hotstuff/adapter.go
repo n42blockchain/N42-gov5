@@ -178,6 +178,14 @@ func (h *HotStuff) Authorize(signer types.Address, secretKey blscommon.SecretKey
 	h.secretKey = secretKey
 }
 
+// SignerKey returns the authorized validator address and BLS key (zero and
+// nil before Authorize). Frame sender attestations (P8b) are signed with it.
+func (h *HotStuff) SignerKey() (types.Address, blscommon.SecretKey) {
+	h.lock.RLock()
+	defer h.lock.RUnlock()
+	return h.signer, h.secretKey
+}
+
 // InitEngine initializes the core consensus engine with the given validator set.
 // Must be called after Authorize and before participating in consensus.
 func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32) error {

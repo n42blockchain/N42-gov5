@@ -107,17 +107,8 @@ type frameBlockState struct {
 }
 
 // FrameSenderSource supplies a frame's senders from somewhere other than
-// a local recovery (P8b: f+1 matching validator attestations). Safe for
-// concurrent use.
-type FrameSenderSource interface {
-	// Senders returns frame h's n senders when they are attested, else nil.
-	Senders(h types.Hash, n int) []types.Address
-	// Pending reports whether attestations for h are expected (this node
-	// is not on h's committee): a sender job looks again before recovering.
-	Pending(h types.Hash) bool
-	// Recovered is told every frame this node recovered itself.
-	Recovered(h types.Hash, ss *store.Senders)
-}
+// a local recovery (P8b: f+1 matching validator attestations).
+type FrameSenderSource = frame.SenderSource
 
 type frameSenderSourceBox struct{ s FrameSenderSource }
 

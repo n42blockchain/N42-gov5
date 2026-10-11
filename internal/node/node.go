@@ -101,6 +101,7 @@ import (
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/frame"
+	"github.com/n42blockchain/N42/internal/frame/attest"
 	framestore "github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/internal/ingest"
 	"github.com/n42blockchain/N42/internal/mcp"
@@ -2436,9 +2437,103 @@ func (n *Node) enableFrameIngest() {
 			next := new(big.Int).Add(h.Number.ToBig(), big.NewInt(1))
 			return transaction.MakeSignerWithTimestamp(cfg, next, h.Time+1)
 		}, frame.RecoverWorkersFromEnv())
+		if pool := n.frameAttestPool(st, realBC); pool != nil {
+			rec.SetSource(pool)
+			realBC.SetFrameSenderSource(pool)
+		}
 		rec.Start(n.ctx)
 		log.Info("Frame sender recovery at admission", "workers", frame.RecoverWorkersFromEnv())
 	}
+}
+
+// frameAttestPool starts frame sender attestation (P8b,
+// N42_FRAME_ATTEST=1) on a HotStuff node: this node attests the frames
+// whose committee it is on, pushes the attestations to the other
+// validators' ingest listeners, and takes the senders of every other frame
+// from f+1 matching attestations. Nil when off.
+func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *attest.Pool {
+	if !attest.Enabled() {
+		return nil
+	}
+	hs, ok := resolveHotStuffEngine(n.engine)
+	if !ok {
+		log.Warn("Frame attestation off: not a HotStuff node")
+		return nil
+	}
+	// The validator view is rebuilt only when the engine's set changes.
+	var (
+		vmu    sync.Mutex
+		lastVS *hotstuff.ValidatorSet
+		lastV  *attest.Validators
+	)
+	validators := func() *attest.Validators {
+		eng := hs.Engine()
+		if eng == nil {
+			return nil
+		}
+		vs := eng.CurrentValidatorSet()
+		if vs == nil || vs.IsEmpty() {
+			return nil
+		}
+		vmu.Lock()
+		defer vmu.Unlock()
+		if vs == lastVS {
+			return lastV
+		}
+		v := &attest.Validators{Sorted: attest.SortAddresses(vs.Addresses()), F: int(vs.FaultTolerance())}
+		v.Verify = func(a types.Address, msg, sig []byte) bool {
+			i := vs.FindByAddress(a)
+			if i < 0 {
+				return false
+			}
+			pk, err := vs.GetPublicKey(hotstuff.ValidatorIndex(i))
+			return err == nil && hotstuff.VerifyBLSSignature(sig, pk, msg)
+		}
+		lastVS, lastV = vs, v
+		return v
+	}
+	self := func() types.Address {
+		a, key := hs.SignerKey()
+		if key == nil {
+			return types.Address{}
+		}
+		return a
+	}
+	sign := func(msg []byte) ([]byte, error) {
+		_, key := hs.SignerKey()
+		if key == nil {
+			return nil, errors.New("no validator key")
+		}
+		return key.Sign(msg).Marshal(), nil
+	}
+	cfg := bc.Config()
+	signer := func() transaction.Signer {
+		cur := bc.CurrentBlock()
+		if cur == nil || cur.Header() == nil {
+			return nil
+		}
+		h, ok := cur.Header().(*block.Header)
+		if !ok || h == nil || h.Number == nil {
+			return nil
+		}
+		next := new(big.Int).Add(h.Number.ToBig(), big.NewInt(1))
+		return transaction.MakeSignerWithTimestamp(cfg, next, h.Time+1)
+	}
+	peers := attest.PeersFromEnv(ingest.PullPeersFromEnv(), n.config.IngestCfg.Addr)
+	pusher := attest.NewPusher(peers)
+	pusher.Start(n.ctx)
+	flush := 20 * time.Millisecond
+	if v, err := strconv.Atoi(os.Getenv(attest.EnvFlushMs)); err == nil && v > 0 {
+		flush = time.Duration(v) * time.Millisecond
+	}
+	pool := attest.NewPool(attest.Config{
+		Validators: validators, Self: self, Sign: sign, Signer: signer, Store: st,
+		CommitteeSize: attest.CommitteeSizeFromEnv(), Send: pusher.Send, FlushEvery: flush,
+	})
+	pool.Start(n.ctx)
+	n.ingestServer.SetAttestHandler(pool.HandleWire)
+	log.Info("Frame sender attestation", "committee", attest.CommitteeSizeFromEnv(), "peers", peers, "flush", flush)
+	return pool
 }
 
 // frameValidatorCheck returns the frame admission check for the current

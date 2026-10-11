@@ -31,6 +31,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/frame/attest"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -75,6 +76,9 @@ type Server struct {
 
 	// Gateway-signed frame path; nil when disabled. See EnableFrames.
 	frames *frameIngest
+
+	// attest takes frame attestation batches (P8b), nil = refused.
+	attest atomic.Pointer[attestHandler]
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -293,6 +297,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
+		if numTxs == attest.Magic {
+			if err := s.readAttest(conn); err != nil {
+				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+					log.Debug("Ingest attestation error", "err", err)
+				}
+				return
+			}
+			continue
+		}
+
 		if numTxs == frameReqMagic {
 			if err := s.serveFrameRequest(conn); err != nil {
 				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
@@ -500,5 +514,40 @@ func (s *Server) drainBatch(r io.Reader, numTxs uint32) error {
 			return err
 		}
 	}
+	return nil
+}
+
+type attestHandler struct{ fn func(body []byte) }
+
+// SetAttestHandler installs the handler of frame attestation batches
+// (attest.Magic messages, P8b); nil refuses them.
+func (s *Server) SetAttestHandler(fn func(body []byte)) {
+	if fn == nil {
+		s.attest.Store(nil)
+		return
+	}
+	s.attest.Store(&attestHandler{fn: fn})
+}
+
+// readAttest reads one attestation batch after its magic word: body
+// length u32 | body. There is no reply.
+func (s *Server) readAttest(r io.Reader) error {
+	var l [4]byte
+	if _, err := io.ReadFull(r, l[:]); err != nil {
+		return err
+	}
+	n := binary.LittleEndian.Uint32(l[:])
+	if n > attest.MaxBody {
+		return fmt.Errorf("ingest: attestation batch of %d bytes", n)
+	}
+	h := s.attest.Load()
+	if h == nil {
+		return errors.New("ingest: frame attestation disabled")
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return err
+	}
+	h.fn(body)
 	return nil
 }
