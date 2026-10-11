@@ -106,6 +106,15 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 	// effect of a losing, failing check is the log line below -- the
 	// import's own outcome, and the vote already unlocked by
 	// NotifyBlockImported, are both untouched.
+	// P7: a block the chain's lag executor imports (vote on availability)
+	// takes the sequential order even with the concurrent switch on: the
+	// check is what queues it for the executor, and a direct InsertChain
+	// here would race the executor for bc.lock and write the block
+	// synchronously, bypassing the ordered writer (S99: 71-78% of the 163k
+	// imports wrote on the critical path this way).
+	if concurrent && s.lagExecutorOwns(blk) {
+		concurrent = false
+	}
 	if concurrent {
 		go s.deferredCheck(blk)
 	} else {
@@ -113,7 +122,7 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 		// P2a: an availability-checked block was handed to the chain's lag
 		// executor, which imports it in parent order off this path and
 		// notifies consensus itself.
-		if lq, ok := s.cfg.chain.(interface{ LagImportQueued(types.Hash) bool }); ok && lq.LagImportQueued(blk.Hash()) {
+		if s.lagImportQueued(blk) {
 			log.Info("block push: queued for the lag executor", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "tMs", time.Now().UnixMilli())
 			return
 		}
@@ -159,6 +168,19 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 	}
 	s.retryDeferredChildren(blk.Hash())
+}
+
+// lagExecutorOwns reports whether the chain's lag executor imports blk once
+// its availability check passes (vote on availability, a frame block).
+func (s *Service) lagExecutorOwns(blk block.IBlock) bool {
+	lo, ok := s.cfg.chain.(interface{ LagExecutorOwns(block.IBlock) bool })
+	return ok && lo.LagExecutorOwns(blk)
+}
+
+// lagImportQueued reports whether the chain's lag executor holds blk.
+func (s *Service) lagImportQueued(blk block.IBlock) bool {
+	lq, ok := s.cfg.chain.(interface{ LagImportQueued(types.Hash) bool })
+	return ok && lq.LagImportQueued(blk.Hash())
 }
 
 // deferredCheck runs the deferred-execution vote check on an arrived block

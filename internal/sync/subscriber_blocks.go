@@ -56,6 +56,11 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 	}
 
 	s.deferredCheck(blk)
+	// P7: queued for the lag executor by the check -- it imports the block
+	// through the ordered writer; a direct InsertChain would write it here.
+	if s.lagImportQueued(blk) {
+		return nil
+	}
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		// If parent is missing, queue as future block instead of marking bad.
 		// The parent may arrive moments later via gossip.

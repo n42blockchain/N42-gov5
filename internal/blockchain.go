@@ -2771,6 +2771,11 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// for it, aheadRun its whole run.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took)
 			}
+			if lag != nil && lag.handed {
+				// write above is the hand-off to the ordered writer;
+				// handWait is its wait for the previous block's write.
+				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()))
+			}
 			fields = append(fields, bc.lagPipeLogFields()...)
 			if procPhases.Skipped > 0 {
 				fields = append(fields, "skipped", procPhases.Skipped)

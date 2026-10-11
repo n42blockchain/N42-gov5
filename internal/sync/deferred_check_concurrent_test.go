@@ -265,3 +265,47 @@ func TestHandlePushedBlockImportFailureDoesNotNotify(t *testing.T) {
 		}
 	}
 }
+
+// lagOwnedTestChain is an orderTestChain whose lag executor owns every
+// block: the check queues it, and the import is the executor's.
+type lagOwnedTestChain struct {
+	*orderTestChain
+	queued sync.Map
+}
+
+func (c *lagOwnedTestChain) LagExecutorOwns(block.IBlock) bool { return true }
+
+func (c *lagOwnedTestChain) CheckDeferredBlock(blk block.IBlock) (bool, bool, error) {
+	checked, retry, err := c.orderTestChain.CheckDeferredBlock(blk)
+	if err == nil {
+		c.queued.Store(blk.Hash(), true)
+	}
+	return checked, retry, err
+}
+
+func (c *lagOwnedTestChain) LagImportQueued(h types.Hash) bool {
+	_, ok := c.queued.Load(h)
+	return ok
+}
+
+// P7: with the concurrent switch on, a block the lag executor owns is not
+// imported by the push handler (that import raced the executor and wrote
+// synchronously, bypassing the ordered writer); the check queues it.
+func TestHandlePushedBlockConcurrentLeavesLagBlockToExecutor(t *testing.T) {
+	chain := &lagOwnedTestChain{orderTestChain: newOrderTestChain()}
+	chain.checkDelay = 20 * time.Millisecond
+	notifier := &recordingNotifier{}
+	svc := &Service{ctx: context.Background(), cfg: &config{chain: chain, blockImportNotifier: notifier}}
+	blk := orderTestBlock(3, types.Hash{0x03})
+
+	svc.handlePushedBlock(blk, true)
+
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+	if !chain.insertStart.IsZero() {
+		t.Fatal("push handler imported a block the lag executor owns")
+	}
+	if !chain.LagImportQueued(blk.Hash()) {
+		t.Fatal("the check did not queue the block for the lag executor")
+	}
+}
