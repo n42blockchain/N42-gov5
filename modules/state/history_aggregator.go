@@ -27,6 +27,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 
@@ -155,6 +156,43 @@ func (p *PreparedHistory) Apply(rwTx kv.RwTx) error {
 		}
 	}
 	return nil
+}
+
+// ApplyFrom puts the prepared rows from index from on, stopping at the
+// first key boundary once budget has elapsed (at least one key's rows go in),
+// and returns the index of the first row it did not put (Len when done). One
+// key's chunk rows always go in together, so a write cut between two calls
+// leaves every key either at its old chunks or at its new ones.
+//
+// Splitting a fold across write transactions is safe without the marker in
+// each: the rows are puts only, and preparing the same range again reads
+// each key's last chunk and unions the same block numbers in, which yields
+// the same rows whether or not an earlier, interrupted write put them. A key
+// can also never be indexed past what its changesets hold: the rows describe
+// changesets that are already durable.
+func (p *PreparedHistory) ApplyFrom(rwTx kv.RwTx, from int, budget time.Duration) (int, error) {
+	start := time.Now()
+	i := from
+	for i < len(p.rows) {
+		r := p.rows[i]
+		if err := rwTx.Put(r.bucket, r.key, r.value); err != nil {
+			return i, err
+		}
+		i++
+		if i < len(p.rows) && time.Since(start) >= budget && !sameHistoryKey(p.rows[i-1], p.rows[i]) {
+			break
+		}
+	}
+	return i, nil
+}
+
+// sameHistoryKey reports whether two rows are chunks of one key (a chunk key
+// is the key followed by an 8-byte block suffix).
+func sameHistoryKey(a, b preparedHistoryRow) bool {
+	if a.bucket != b.bucket || len(a.key) != len(b.key) || len(a.key) < 8 {
+		return false
+	}
+	return bytes.Equal(a.key[:len(a.key)-8], b.key[:len(b.key)-8])
 }
 
 func prepareHistoryMap(tx kv.Tx, bucket string, m map[string]*roaring64.Bitmap, p *PreparedHistory) error {

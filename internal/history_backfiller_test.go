@@ -286,3 +286,78 @@ func TestRestartDoesNotSeedOverRealProgress(t *testing.T) {
 		"seeding moved a marker that already described real progress; blocks %d..%d would be "+
 			"claimed as indexed while their rows were never written", progress, uint64(9_999_999))
 }
+
+// dumpTable returns every row of table.
+func dumpTable(t *testing.T, db kv.RwDB, table string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		c, err := tx.Cursor(table)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
+			if err != nil {
+				return err
+			}
+			out[string(k)] = string(v)
+		}
+		return nil
+	}))
+	return out
+}
+
+// P7: a fold split into many short write transactions (one key each here)
+// writes exactly the rows one transaction writes, and a fold interrupted
+// between two of them -- marker still at its old value, some rows put --
+// folds again to the same rows and marker.
+func TestBackfillSplitFoldMatchesOneTransaction(t *testing.T) {
+	const blocks = 24
+	whole := memdb.NewTestDB(t)
+	seedChangesets(t, whole, blocks)
+	b := NewHistoryBackfiller(whole, func() uint64 { return blocks }, 100, time.Hour)
+	require.NoError(t, b.step())
+	want := dumpTable(t, whole, modules.AccountsHistory)
+	require.Len(t, want, blocks)
+
+	prevBudget, prevYield := historyFoldTxnBudget, historyFoldYield
+	historyFoldTxnBudget, historyFoldYield = 0, 0
+	defer func() { historyFoldTxnBudget, historyFoldYield = prevBudget, prevYield }()
+
+	// Split: one key per transaction.
+	split := memdb.NewTestDB(t)
+	seedChangesets(t, split, blocks)
+	txns := 0
+	historyFoldBetweenTxnsForTest = func() error { txns++; return nil }
+	defer func() { historyFoldBetweenTxnsForTest = nil }()
+	bs := NewHistoryBackfiller(split, func() uint64 { return blocks }, 100, time.Hour)
+	require.NoError(t, bs.step())
+	require.Equal(t, blocks-1, txns, "one key per transaction")
+	require.Equal(t, want, dumpTable(t, split, modules.AccountsHistory))
+	n, ok := markerOf(t, bs)
+	require.True(t, ok)
+	require.Equal(t, uint64(blocks), n)
+
+	// Interrupted after 5 transactions: rows put, marker unmoved.
+	crash := memdb.NewTestDB(t)
+	seedChangesets(t, crash, blocks)
+	txns = 0
+	historyFoldBetweenTxnsForTest = func() error {
+		txns++
+		if txns == 5 {
+			return context.Canceled
+		}
+		return nil
+	}
+	bc := NewHistoryBackfiller(crash, func() uint64 { return blocks }, 100, time.Hour)
+	require.Error(t, bc.step())
+	_, ok = markerOf(t, bc)
+	require.False(t, ok, "the marker must not move before the last rows")
+	require.Len(t, dumpTable(t, crash, modules.AccountsHistory), 5)
+	historyFoldBetweenTxnsForTest = nil
+	require.NoError(t, bc.step())
+	require.Equal(t, want, dumpTable(t, crash, modules.AccountsHistory))
+	n, _ = markerOf(t, bc)
+	require.Equal(t, uint64(blocks), n)
+}
