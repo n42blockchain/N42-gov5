@@ -6,8 +6,13 @@ package state
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
@@ -207,5 +212,37 @@ func TestHistoryAggregatorPrepareOutsideWrite(t *testing.T) {
 		if !bytes.Equal(v, got[k]) {
 			t.Fatalf("row %x diverged:\n flush   =%x\n prepared=%x", k, v, got[k])
 		}
+	}
+}
+
+// P7: ApplyFrom with an exhausted budget stops at a key boundary, never
+// between two chunks of one key, and puts every row across calls.
+func TestPreparedHistoryApplyFromKeepsKeysWhole(t *testing.T) {
+	_, tx := memdb.NewTestTx(t)
+	chunk := func(addr byte, suffix uint64) []byte {
+		k := make([]byte, 28)
+		k[19] = addr
+		binary.BigEndian.PutUint64(k[20:], suffix)
+		return k
+	}
+	p := &PreparedHistory{rows: []preparedHistoryRow{
+		{bucket: modules.AccountsHistory, key: chunk(1, 100), value: []byte{1}},
+		{bucket: modules.AccountsHistory, key: chunk(1, math.MaxUint64), value: []byte{2}},
+		{bucket: modules.AccountsHistory, key: chunk(2, math.MaxUint64), value: []byte{3}},
+		{bucket: modules.StorageHistory, key: chunk(2, math.MaxUint64), value: []byte{4}},
+	}}
+	next, err := p.ApplyFrom(tx, 0, 0)
+	require.NoError(t, err)
+	require.Equal(t, 2, next, "both chunks of the first key, then stop")
+	next, err = p.ApplyFrom(tx, next, 0)
+	require.NoError(t, err)
+	require.Equal(t, 3, next)
+	next, err = p.ApplyFrom(tx, next, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, p.Len(), next)
+	for _, r := range p.rows {
+		v, err := tx.GetOne(r.bucket, r.key)
+		require.NoError(t, err)
+		require.Equal(t, r.value, v)
 	}
 }

@@ -5,6 +5,8 @@ package internal
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -270,33 +272,82 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 		return false, err
 	}
 
-	// Index rows and the marker go in ONE transaction. A crash may lose both
-	// (the range is simply rebuilt) but can never leave the marker ahead of the
-	// rows, which is the case that would let a query read a gap as untouched.
-	// Rows prepared against a marker that has since moved describe an index
-	// that no longer exists; they are dropped and the next tick starts over.
+	// The rows go in over write transactions of at most historyFoldTxnBudget
+	// of puts each, with a pause between them so a block write waiting for
+	// the MDBX writer takes it (P7: one transaction per fold held the writer
+	// 0.4-2.1 s on S99, ~20k rows dirtying 80-97 MB, and the block writes
+	// queued behind it). The marker goes in with the LAST rows only. A crash
+	// between transactions leaves the marker at from and some rows put; the
+	// range is folded again on restart and, because the rows are puts of
+	// unions, produces the same rows (PreparedHistory.ApplyFrom). The marker
+	// can never get ahead of its rows, which is the case that would let a
+	// query read a gap as untouched.
 	stale := false
-	if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
-		cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
-		if err != nil {
-			return err
+	next := 0
+	for {
+		last := false
+		if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
+			cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
+			if err != nil {
+				return err
+			}
+			if cur != from || ok != seeded {
+				stale = true
+				return nil
+			}
+			n, err := prepared.ApplyFrom(tx, next, historyFoldTxnBudget)
+			if err != nil {
+				return err
+			}
+			next = n
+			if next < prepared.Len() {
+				return nil
+			}
+			last = true
+			return rawdb.WriteHistoryIndexedThrough(tx, to)
+		}); err != nil {
+			return false, err
 		}
-		if cur != from || ok != seeded {
-			stale = true
-			return nil
+		if stale || last {
+			break
 		}
-		if err := prepared.Apply(tx); err != nil {
-			return err
+		if fn := historyFoldBetweenTxnsForTest; fn != nil {
+			if err := fn(); err != nil {
+				return false, err
+			}
 		}
-		return rawdb.WriteHistoryIndexedThrough(tx, to)
-	}); err != nil {
-		return false, err
+		select {
+		case <-b.ctx.Done():
+			return false, b.ctx.Err()
+		case <-time.After(historyFoldYield):
+		}
 	}
 	if stale {
 		log.Warn("history backfill: marker moved while the fold was prepared; dropped", "from", from, "to", to)
 		return false, nil
 	}
 	return true, nil
+}
+
+// historyFoldTxnBudget bounds the puts of one fold write transaction
+// (N42_HISTORY_FOLD_TXN_MS, default 30 ms; the commit adds its own few ms).
+var historyFoldTxnBudget = envMillis("N42_HISTORY_FOLD_TXN_MS", 30*time.Millisecond)
+
+// historyFoldBetweenTxnsForTest, when set, runs between two fold write
+// transactions; an error stops the fold there (tests: a crash mid-fold).
+var historyFoldBetweenTxnsForTest func() error
+
+// historyFoldYield is the pause between two fold write transactions, in
+// which a waiting block write takes the MDBX writer.
+var historyFoldYield = envMillis("N42_HISTORY_FOLD_YIELD_MS", 5*time.Millisecond)
+
+func envMillis(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return def
 }
 
 func (b *HistoryBackfiller) readMarker() (uint64, bool, error) {
