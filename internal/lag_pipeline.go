@@ -397,6 +397,22 @@ func (bc *BlockChain) SetLagImportedHook(fn func(hash, txHash types.Hash)) {
 	bc.lagExec.hook.Store(&fn)
 }
 
+// LagExecutorOwns reports whether blk is imported by the lag executor once
+// its availability check passes (vote on availability, a frame or empty
+// block under deferred execution): the receive paths then leave the import
+// to the executor, whose write goes through the ordered writer.
+func (bc *BlockChain) LagExecutorOwns(blk block.IBlock) bool {
+	if !block.VoteOnAvailability() || bc.chainConfig == nil {
+		return false
+	}
+	hdr, ok := blk.Header().(*block.Header)
+	if !ok || !bc.chainConfig.IsDeferredExecution(hdr.Time) {
+		return false
+	}
+	body, ok := blk.Body().(*block.Body)
+	return ok && (body.IsFrameBody() || len(body.Txs) == 0)
+}
+
 // LagImportQueued reports whether hash waits in the lag executor (or is
 // being imported by it): the push path leaves its import to the executor.
 func (bc *BlockChain) LagImportQueued(hash types.Hash) bool {
