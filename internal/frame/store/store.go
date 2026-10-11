@@ -128,6 +128,9 @@ type slot struct {
 	pendAt   uint64 // highest height of a written, uncommitted block holding it (0 = none)
 	commitAt uint64 // height of the committed block holding it (0 = none)
 	senders  *Senders
+	// claimed: a block resolved this frame, so that block's import recovers
+	// its senders and admission recovery skips it.
+	claimed bool
 }
 
 func (sl *slot) included() bool { return sl.pendAt != 0 || sl.commitAt != 0 }
@@ -256,6 +259,29 @@ func (s *Store) SetSenders(h types.Hash, ss *Senders) bool {
 	sl.senders = ss
 	s.m[h] = sl
 	return true
+}
+
+// Claim marks the stored frames among hs as resolved by a block: the
+// block's own sender job recovers them, so admission recovery skips them
+// instead of recovering them a second time.
+func (s *Store) Claim(hs []types.Hash) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, h := range hs {
+		if sl, ok := s.m[h]; ok && !sl.claimed {
+			sl.claimed = true
+			s.m[h] = sl
+		}
+	}
+}
+
+// NeedsSenders reports whether admission recovery should recover frame h:
+// it is stored, has no cached senders and no block has claimed it.
+func (s *Store) NeedsSenders(h types.Hash) bool {
+	s.mu.RLock()
+	sl, ok := s.m[h]
+	s.mu.RUnlock()
+	return ok && sl.senders == nil && !sl.claimed
 }
 
 // Senders returns the cached senders of frame h, or nil.

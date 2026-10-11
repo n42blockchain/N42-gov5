@@ -381,7 +381,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// with From() nil the key fell back to the index, a sender's nonce
 		// chain ran on 32 workers at once, and every link but the first
 		// failed its nonce check wave after wave until the 64-wave limit.
-		recoverBlockSenders(signer, txs)
+		// P7: the block's sender job (sender_prewarm.go) started when it was
+		// queued; the import joins it and waits only for what is left.
+		p.bc.recoverBlockSendersFor(blockHash, signer, txs)
 	}
 	tRecovered := time.Now()
 

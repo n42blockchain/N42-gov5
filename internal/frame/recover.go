@@ -73,6 +73,7 @@ type SenderRecoverer struct {
 	pending                 atomic.Int64
 	frames, txs, failed     atomic.Uint64
 	dropped, gone, decodeKO atomic.Uint64
+	skipped                 atomic.Uint64
 
 	startOnce, stopOnce sync.Once
 	cancel              context.CancelFunc
@@ -88,6 +89,7 @@ type RecoverStats struct {
 	Failed  uint64 // transactions whose signature did not recover
 	Dropped uint64 // frames not queued (queue full); recovered at import
 	Gone    uint64 // frames that left the store before their recovery finished
+	Skipped uint64 // frames a block claimed (or already cached) before their turn
 }
 
 // NewSenderRecoverer returns a pool of workers (<= 0 selects the default)
@@ -143,7 +145,7 @@ func (r *SenderRecoverer) Recovered() uint64 { return r.frames.Load() }
 // Stats returns a snapshot of the counters.
 func (r *SenderRecoverer) Stats() RecoverStats {
 	return RecoverStats{Pending: r.pending.Load(), Frames: r.frames.Load(), Txs: r.txs.Load(),
-		Failed: r.failed.Load(), Dropped: r.dropped.Load(), Gone: r.gone.Load()}
+		Failed: r.failed.Load(), Dropped: r.dropped.Load(), Gone: r.gone.Load(), Skipped: r.skipped.Load()}
 }
 
 func (r *SenderRecoverer) run(ctx context.Context) {
@@ -163,6 +165,14 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 	defer func() { _ = recover() }() // a bad frame costs its own recovery, never the worker
 	if !r.st.Has(j.h) {
 		r.gone.Add(1)
+		return
+	}
+	// A block already resolved it (its import's sender job recovers it), or
+	// its senders are cached: recovering it here would be the same work twice
+	// (P7: on S99 the queue ran 8-14k frames behind and kept re-recovering
+	// frames the imports had already recovered).
+	if !r.st.NeedsSenders(j.h) {
+		r.skipped.Add(1)
 		return
 	}
 	signer := r.signer()

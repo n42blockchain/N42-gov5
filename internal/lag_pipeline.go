@@ -444,11 +444,17 @@ func (bc *BlockChain) EnqueueLagImport(b *block.Block) {
 		le.queued = make(map[types.Hash]*lagQueued)
 		le.kick = make(chan struct{}, 1)
 	}
+	fresh := false
 	if _, ok := le.queued[b.Hash()]; !ok {
 		le.queued[b.Hash()] = &lagQueued{blk: b, since: time.Now()}
+		fresh = true
 	}
 	kick := le.kick
 	le.mu.Unlock()
+	if fresh {
+		// Its senders are recovered from now on, not when it executes (P7).
+		bc.startSenderJob(b)
+	}
 	if le.started.CompareAndSwap(false, true) {
 		go bc.lagLoop()
 	}
@@ -595,6 +601,7 @@ func (bc *BlockChain) blockStored(hash types.Hash, number uint64) bool {
 }
 
 func (bc *BlockChain) lagForget(hash types.Hash) {
+	bc.dropSenderJob(hash)
 	bc.lagUnqueue(hash)
 	bc.lagPipeForget(hash)
 }

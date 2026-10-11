@@ -148,3 +148,33 @@ func TestSenderRecovererSkipsGoneFrames(t *testing.T) {
 		t.Fatalf("stats %+v", s)
 	}
 }
+
+// TestSenderRecovererSkipsClaimedFrames (P7): a frame a block has already
+// resolved is recovered by that block's import, so admission recovery skips
+// it instead of recovering it twice; unclaimed frames are still recovered.
+func TestSenderRecovererSkipsClaimedFrames(t *testing.T) {
+	keys := frametest.Keys(t, 2, 17)
+	fb := frametest.NewBuilder(keys[0], recoverChainID, keys[1:])
+	raws, hashes, _ := fb.Frames(t, 3, 5)
+	signer := transaction.LatestSignerForChainID(recoverChainID)
+	st := store.New(1 << 24)
+	rec := frame.NewSenderRecoverer(st, func() transaction.Signer { return signer }, 1)
+	// Queued before the workers start; frame 0 is claimed while it waits.
+	for i := range raws {
+		st.Put(hashes[i], raws[i])
+		rec.Submit(hashes[i], raws[i])
+	}
+	st.Claim(hashes[:1])
+	if st.NeedsSenders(hashes[0]) || !st.NeedsSenders(hashes[1]) {
+		t.Fatal("NeedsSenders ignores the claim")
+	}
+	rec.Start(context.Background())
+	defer rec.Stop()
+	waitFor(t, "drain", func() bool { return rec.Pending() == 0 })
+	if s := rec.Stats(); s.Skipped != 1 || s.Frames != 2 {
+		t.Fatalf("stats %+v", s)
+	}
+	if st.Senders(hashes[0]) != nil || st.Senders(hashes[1]) == nil || st.Senders(hashes[2]) == nil {
+		t.Fatal("claimed frame recovered, or an unclaimed one skipped")
+	}
+}
