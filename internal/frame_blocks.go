@@ -81,9 +81,13 @@ type frameBlockState struct {
 	store  *store.Store
 	puller FramePuller
 
-	// resolveMu serialises body resolution: a pushed block can reach the
-	// deferred check and the import on two goroutines.
-	resolveMu sync.Mutex
+	// resolveMu serialises the resolution of one block's body: a pushed
+	// block can reach the deferred check and the import on two goroutines.
+	// Striped by block hash (P7): one lock for every block made an ahead run
+	// whose block was already resolved wait behind another block's decode or
+	// its frame pull (up to N42_FRAME_PULL_TIMEOUT_MS) -- 170-250 ms of
+	// S99's ahead runs went to their preamble against 7-14 in the bench.
+	resolveMu [64]sync.Mutex
 
 	// inFlight: frames named by blocks built or resolved here and not yet
 	// written (FrameHash -> block number). The builder skips them, so a
@@ -289,8 +293,9 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		return nil
 	}
 	fs := &bc.frames
-	fs.resolveMu.Lock()
-	defer fs.resolveMu.Unlock()
+	mu := &fs.resolveMu[b.Hash()[0]%byte(len(fs.resolveMu))]
+	mu.Lock()
+	defer mu.Unlock()
 	if body.Txs != nil {
 		return nil
 	}
