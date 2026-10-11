@@ -75,7 +75,7 @@ func TestTakeSenderJobMatchesOnlyItsBlock(t *testing.T) {
 	}
 	// No job: plain recovery, also on a nil chain.
 	var nilBC *BlockChain
-	nilBC.recoverBlockSendersFor(h, signer, other)
+	nilBC.recoverBlockSendersFor(h, signer, other, nil)
 	for i, tx := range other {
 		if _, ok := transaction.CachedSender(signer, tx); !ok {
 			t.Fatalf("tx %d not recovered by the fallback", i)

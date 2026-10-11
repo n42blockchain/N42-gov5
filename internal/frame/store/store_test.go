@@ -279,3 +279,56 @@ func TestScanRemoveTombstone(t *testing.T) {
 		t.Fatalf("scan after remove %v", order)
 	}
 }
+
+// TestBeginRecoverOneOwner (P8a): exactly one caller owns a frame's sender
+// recovery; the others wait for it and then read the result, and an
+// abandoned recovery is owned again by the next caller.
+func TestBeginRecoverOneOwner(t *testing.T) {
+	s := New(1 << 20)
+	h := types.Hash{1}
+	if tk := s.BeginRecover(h, false); tk.Stored || tk.Own {
+		t.Fatal("a frame not stored was claimed")
+	}
+	s.Put(h, []byte("frame"))
+	own := s.BeginRecover(h, false)
+	if !own.Own {
+		t.Fatal("first caller does not own the recovery")
+	}
+	other := s.BeginRecover(h, false)
+	if other.Own || other.Wait == nil || other.Senders != nil {
+		t.Fatalf("second caller: %+v", other)
+	}
+	if s.NeedsSenders(h) {
+		t.Fatal("admission would recover a frame being recovered")
+	}
+	// An abandoned recovery wakes the waiter and frees the claim.
+	s.FinishRecover(own, nil)
+	<-other.Wait
+	again := s.BeginRecover(h, false)
+	if !again.Own {
+		t.Fatal("abandoned recovery not claimable")
+	}
+	ss := &Senders{Addrs: []types.Address{{2}}}
+	waiter := s.BeginRecover(h, false)
+	s.FinishRecover(again, ss)
+	<-waiter.Wait
+	if got := s.BeginRecover(h, false); got.Senders != ss || got.Own {
+		t.Fatalf("after finish: %+v", got)
+	}
+	// Admission skips a frame a block claimed; a block does not.
+	h2 := types.Hash{3}
+	s.Put(h2, []byte("frame2"))
+	s.Claim([]types.Hash{h2})
+	if tk := s.BeginRecover(h2, true); tk.Own || tk.Wait != nil {
+		t.Fatal("admission took a claimed frame")
+	}
+	tk := s.BeginRecover(h2, false)
+	if !tk.Own {
+		t.Fatal("the block's job cannot own its claimed frame")
+	}
+	// A frame dropped while being recovered still wakes its waiters.
+	w := s.BeginRecover(h2, false)
+	s.Remove([]types.Hash{h2})
+	s.FinishRecover(tk, ss)
+	<-w.Wait
+}

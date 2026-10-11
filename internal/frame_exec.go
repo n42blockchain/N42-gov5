@@ -186,12 +186,13 @@ type FrameBuildResult struct {
 
 // BuildParallelFrames runs the leader's Block-STM build over the
 // transactions of whole frames (StateProcessor.BuildParallelFrames).
-func (bc *BlockChain) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*FrameBuildResult, error) {
+// spans (optional, FrameSpansFor) name the frames txs decode from.
+func (bc *BlockChain) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, spans []FrameSpan, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*FrameBuildResult, error) {
 	sp, ok := bc.process.(*StateProcessor)
 	if !ok || sp == nil {
 		return nil, ErrParallelNotApplicable
 	}
-	run, err := sp.BuildParallelFrames(header, txs, ibs, blockHashFunc)
+	run, err := sp.BuildParallelFrames(header, txs, spans, ibs, blockHashFunc)
 	if err != nil {
 		return nil, err
 	}

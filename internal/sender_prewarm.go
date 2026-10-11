@@ -26,6 +26,8 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/frame"
+	"github.com/n42blockchain/N42/internal/frame/store"
 )
 
 // Per-block sender recovery ahead of the import (P7).
@@ -83,12 +85,68 @@ func SetSenderPrewarmWorkersForTest(n int) func() {
 	return func() { senderPrewarmWorkers = prev }
 }
 
-// senderJob recovers one block's senders.
+// FrameSpan is one frame of a frame block's transaction list: txs[Lo:Hi]
+// decode from frame H.
+type FrameSpan struct {
+	H      types.Hash
+	Lo, Hi int
+}
+
+// FrameSpansOf returns the spans of a frame block's n transactions from its
+// frames' headers, or nil when the body is not a resolved frame body or an
+// undecodable entry was dropped (the counts no longer line up): such a
+// block recovers per transaction, as before P8a.
+func FrameSpansOf(body *block.Body, n int) []FrameSpan {
+	if body == nil || !body.IsFrameBody() || len(body.FrameData) != len(body.FrameHashes) {
+		return nil
+	}
+	spans := make([]FrameSpan, len(body.FrameHashes))
+	lo := 0
+	for i, raw := range body.FrameData {
+		h, err := frame.ParseHeader(raw)
+		if err != nil {
+			return nil
+		}
+		hi := lo + int(h.TxCount)
+		spans[i] = FrameSpan{H: body.FrameHashes[i], Lo: lo, Hi: hi}
+		lo = hi
+	}
+	if lo != n {
+		return nil
+	}
+	return spans
+}
+
+// FrameSpansFor returns the spans of frames whose decoded transactions are
+// per[i] (concatenated in order), named by hashes.
+func FrameSpansFor(hashes []types.Hash, per [][]*transaction.Transaction) []FrameSpan {
+	if len(hashes) != len(per) {
+		return nil
+	}
+	spans := make([]FrameSpan, len(per))
+	lo := 0
+	for i, p := range per {
+		spans[i] = FrameSpan{H: hashes[i], Lo: lo, Hi: lo + len(p)}
+		lo += len(p)
+	}
+	return spans
+}
+
+// senderJob recovers one block's senders. With spans (a frame block) the
+// unit of work is a frame, and each frame's recovery is claimed in the
+// frame store (P8a): admission, this job and any other block holding the
+// frame recover it once between them, and the others take the result.
 type senderJob struct {
 	signer transaction.Signer
 	txs    []*transaction.Transaction
 	next   atomic.Int64
 	start  time.Time
+
+	spans []FrameSpan
+	st    *store.Store
+	// src (optional) is consulted before recovering a frame the store has
+	// no senders for (P8b attestations).
+	src FrameSenderSource
 
 	// The background workers: bgDone closes when the last one exits.
 	bgLeft atomic.Int32
@@ -99,6 +157,10 @@ func (j *senderJob) run() {
 	// A panic costs only this worker's remaining chunks: execution recovers
 	// whatever is left inline, as it would without the job.
 	defer func() { _ = recover() }()
+	if j.spans != nil {
+		j.runFrames()
+		return
+	}
 	n := int64(len(j.txs))
 	for {
 		s := j.next.Add(senderJobChunk) - senderJobChunk
@@ -115,6 +177,110 @@ func (j *senderJob) run() {
 			}
 		}
 	}
+}
+
+// runFrames is run over frames: a first pass takes every frame nobody else
+// is on, a second waits for (or then recovers) the frames another path was
+// recovering or another source may still answer for.
+func (j *senderJob) runFrames() {
+	var later []int
+	n := int64(len(j.spans))
+	for {
+		i := j.next.Add(1) - 1
+		if i >= n {
+			break
+		}
+		if !j.frame(int(i), false) {
+			later = append(later, int(i))
+		}
+	}
+	for _, i := range later {
+		j.frame(i, true)
+	}
+}
+
+// frame recovers the senders of span i, or takes them from the store or
+// the source. Outside the final pass it returns false instead of waiting.
+func (j *senderJob) frame(i int, final bool) bool {
+	sp := j.spans[i]
+	txs := j.txs[sp.Lo:sp.Hi]
+	if j.st != nil {
+		for {
+			t := j.st.BeginRecover(sp.H, false)
+			if t.Senders != nil {
+				frame.ApplySenders(txs, t.Senders)
+				break
+			}
+			if t.Wait != nil {
+				if !final {
+					return false
+				}
+				<-t.Wait
+				continue
+			}
+			if !t.Own {
+				break // not stored (pulled past the budget and evicted, or read from the Frames table)
+			}
+			if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
+				j.st.FinishRecover(t, ss)
+				frame.ApplySenders(txs, ss)
+				break
+			} else if !final && j.src != nil && j.src.Pending(sp.H) {
+				// Attestations may still arrive: look again in the last pass.
+				j.st.FinishRecover(t, nil)
+				return false
+			}
+			j.st.FinishRecover(t, j.recoverOwned(t, txs))
+			return true
+		}
+	} else if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
+		frame.ApplySenders(txs, ss)
+	}
+	// Senders taken from elsewhere leave only failed entries (zero
+	// addresses) to derive; with no store this recovers the frame.
+	for _, tx := range txs {
+		if tx != nil {
+			_, _ = transaction.Sender(j.signer, tx)
+		}
+	}
+	return true
+}
+
+// fromSource asks the attestation source for frame h's senders.
+func (j *senderJob) fromSource(h types.Hash, n int, final bool) *store.Senders {
+	if j.src == nil {
+		return nil
+	}
+	addrs := j.src.Senders(h, n)
+	if addrs == nil {
+		return nil
+	}
+	return &store.Senders{Signer: j.signer, Addrs: addrs}
+}
+
+// recoverOwned recovers txs (an owned frame) and returns its senders for
+// the store. A panic releases the claim with no result.
+func (j *senderJob) recoverOwned(t store.RecoverTicket, txs []*transaction.Transaction) (ss *store.Senders) {
+	defer func() {
+		if r := recover(); r != nil {
+			j.st.FinishRecover(t, nil)
+			panic(r)
+		}
+	}()
+	addrs := make([]types.Address, len(txs))
+	for k, tx := range txs {
+		if tx == nil {
+			continue
+		}
+		if a, err := transaction.Sender(j.signer, tx); err == nil {
+			addrs[k] = a
+		}
+	}
+	ss = &store.Senders{Signer: j.signer, Addrs: addrs}
+	if j.src != nil {
+		j.src.Recovered(t.H, ss)
+	}
+	return ss
 }
 
 // spawn starts the background workers; done runs once after the last one.
@@ -191,8 +357,8 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 		if len(txs) < senderRecoveryMinTxs {
 			return
 		}
-		j := &senderJob{signer: transaction.MakeSignerWithTimestamp(bc.chainConfig, hdr.Number.ToBig(), hdr.Time),
-			txs: txs, start: time.Now()}
+		j := bc.newSenderJob(transaction.MakeSignerWithTimestamp(bc.chainConfig, hdr.Number.ToBig(), hdr.Time),
+			txs, FrameSpansOf(body, len(txs)))
 		js.mu.Lock()
 		if js.m == nil {
 			js.m = make(map[types.Hash]*senderJob)
@@ -253,9 +419,23 @@ func (bc *BlockChain) forgetSenderJob(h types.Hash, j *senderJob) {
 // SenderJobHits returns how many imports joined a block's sender job.
 func (bc *BlockChain) SenderJobHits() uint64 { return bc.senderJobs.hits.Load() }
 
+// newSenderJob returns a job over txs; with spans it works frame by frame
+// against the frame store and the attestation source.
+func (bc *BlockChain) newSenderJob(signer transaction.Signer, txs []*transaction.Transaction, spans []FrameSpan) *senderJob {
+	j := &senderJob{signer: signer, txs: txs, start: time.Now(), spans: spans}
+	if spans != nil && bc != nil {
+		j.st = bc.frames.store
+		j.src = bc.frameSenderSource()
+	}
+	return j
+}
+
 // recoverBlockSendersFor recovers txs' senders for the import of block h:
-// it joins the block's job when one runs, else recovers them itself.
-func (bc *BlockChain) recoverBlockSendersFor(h types.Hash, signer transaction.Signer, txs []*transaction.Transaction) {
+// it joins the block's job when one runs, else recovers them itself --
+// frame by frame through the store's claims when spans are given (P8a), so
+// a frame admission or another block is recovering is waited for, not
+// recovered twice.
+func (bc *BlockChain) recoverBlockSendersFor(h types.Hash, signer transaction.Signer, txs []*transaction.Transaction, spans []FrameSpan) {
 	if bc != nil {
 		if j := bc.takeSenderJob(h, signer, txs); j != nil {
 			workers := senderRecoveryFanout()
@@ -263,6 +443,14 @@ func (bc *BlockChain) recoverBlockSendersFor(h types.Hash, signer transaction.Si
 				workers = len(txs)/senderJobChunk + 1
 			}
 			j.join(workers)
+			return
+		}
+		if spans != nil && signer != nil && len(txs) >= senderRecoveryMinTxs {
+			workers := senderRecoveryFanout()
+			if workers > len(spans) {
+				workers = len(spans)
+			}
+			bc.newSenderJob(signer, txs, spans).join(workers)
 			return
 		}
 	}

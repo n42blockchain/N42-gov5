@@ -131,7 +131,19 @@ type slot struct {
 	// claimed: a block resolved this frame, so that block's import recovers
 	// its senders and admission recovery skips it.
 	claimed bool
+	// recov is the frame's sender recovery state (P8a): exactly one path
+	// (admission, a block's sender job, the import) owns the recovery of a
+	// frame; the others wait on recWait or take the result.
+	recov   uint8
+	recWait chan struct{}
 }
+
+// Sender recovery states of a stored frame.
+const (
+	recNone    uint8 = iota // nobody has recovered it
+	recRunning              // an owner is recovering it
+	recDone                 // senders cached
+)
 
 func (sl *slot) included() bool { return sl.pendAt != 0 || sl.commitAt != 0 }
 
@@ -257,8 +269,77 @@ func (s *Store) SetSenders(h types.Hash, ss *Senders) bool {
 		s.nSenders++
 	}
 	sl.senders = ss
+	if sl.recov == recNone {
+		// A running owner finishes (and wakes its waiters) on its own.
+		sl.recov = recDone
+	}
 	s.m[h] = sl
 	return true
+}
+
+// RecoverTicket is the answer of BeginRecover. Exactly one of Senders,
+// Wait and Own is set for a stored frame; none for a frame not stored.
+type RecoverTicket struct {
+	H       types.Hash
+	Stored  bool
+	Senders *Senders        // already recovered
+	Wait    <-chan struct{} // another owner is recovering it; closed when done
+	Own     bool            // the caller recovers it and must call FinishRecover
+	ch      chan struct{}
+}
+
+// BeginRecover claims the sender recovery of frame h for the caller (P8a:
+// one recovery per frame per node). With skipClaimed (admission recovery)
+// a frame a block has claimed is neither owned nor waited for: the block's
+// job recovers it.
+func (s *Store) BeginRecover(h types.Hash, skipClaimed bool) RecoverTicket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sl, ok := s.m[h]
+	if !ok {
+		return RecoverTicket{H: h}
+	}
+	t := RecoverTicket{H: h, Stored: true}
+	switch {
+	case sl.senders != nil:
+		t.Senders = sl.senders
+	case sl.recov == recRunning:
+		t.Wait = sl.recWait
+	case skipClaimed && sl.claimed:
+	default:
+		sl.recov = recRunning
+		sl.recWait = make(chan struct{})
+		s.m[h] = sl
+		t.Own, t.ch = true, sl.recWait
+	}
+	return t
+}
+
+// FinishRecover ends an owned recovery: ss (nil when the recovery failed
+// or was abandoned) is cached with the frame and every waiter is woken. A
+// frame that left the store meanwhile only wakes its waiters.
+func (s *Store) FinishRecover(t RecoverTicket, ss *Senders) {
+	if !t.Own || t.ch == nil {
+		return
+	}
+	s.mu.Lock()
+	if sl, ok := s.m[t.H]; ok && sl.recWait == t.ch {
+		if ss != nil {
+			if sl.senders == nil {
+				s.nSenders++
+			}
+			sl.senders = ss
+		}
+		if sl.senders != nil {
+			sl.recov = recDone
+		} else {
+			sl.recov = recNone
+		}
+		sl.recWait = nil
+		s.m[t.H] = sl
+	}
+	s.mu.Unlock()
+	close(t.ch)
 }
 
 // Claim marks the stored frames among hs as resolved by a block: the
@@ -281,7 +362,7 @@ func (s *Store) NeedsSenders(h types.Hash) bool {
 	s.mu.RLock()
 	sl, ok := s.m[h]
 	s.mu.RUnlock()
-	return ok && sl.senders == nil && !sl.claimed
+	return ok && sl.senders == nil && !sl.claimed && sl.recov == recNone
 }
 
 // Senders returns the cached senders of frame h, or nil.

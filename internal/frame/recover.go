@@ -73,7 +73,13 @@ type SenderRecoverer struct {
 	pending                 atomic.Int64
 	frames, txs, failed     atomic.Uint64
 	dropped, gone, decodeKO atomic.Uint64
-	skipped                 atomic.Uint64
+	skipped, deferred       atomic.Uint64
+
+	// skip (optional) reports frames this node leaves to another source
+	// (P8b: frames whose senders a committee attests); done (optional) is
+	// told every frame recovered here.
+	skip func(types.Hash) bool
+	done func(types.Hash, *store.Senders)
 
 	startOnce, stopOnce sync.Once
 	cancel              context.CancelFunc
@@ -90,6 +96,8 @@ type RecoverStats struct {
 	Dropped uint64 // frames not queued (queue full); recovered at import
 	Gone    uint64 // frames that left the store before their recovery finished
 	Skipped uint64 // frames a block claimed (or already cached) before their turn
+	// Deferred: frames left to another source (P8b attestation).
+	Deferred uint64
 }
 
 // NewSenderRecoverer returns a pool of workers (<= 0 selects the default)
@@ -100,6 +108,11 @@ func NewSenderRecoverer(st *store.Store, signer func() transaction.Signer, worke
 		workers = DefaultRecoverWorkers
 	}
 	return &SenderRecoverer{st: st, signer: signer, jobs: make(chan recoverJob, recoverQueueCap), workers: workers}
+}
+
+// SetHooks sets the optional skip and done hooks (before Start).
+func (r *SenderRecoverer) SetHooks(skip func(types.Hash) bool, done func(types.Hash, *store.Senders)) {
+	r.skip, r.done = skip, done
 }
 
 // Start launches the workers and attaches the recoverer to the store.
@@ -145,7 +158,7 @@ func (r *SenderRecoverer) Recovered() uint64 { return r.frames.Load() }
 // Stats returns a snapshot of the counters.
 func (r *SenderRecoverer) Stats() RecoverStats {
 	return RecoverStats{Pending: r.pending.Load(), Frames: r.frames.Load(), Txs: r.txs.Load(),
-		Failed: r.failed.Load(), Dropped: r.dropped.Load(), Gone: r.gone.Load(), Skipped: r.skipped.Load()}
+		Failed: r.failed.Load(), Dropped: r.dropped.Load(), Gone: r.gone.Load(), Skipped: r.skipped.Load(), Deferred: r.deferred.Load()}
 }
 
 func (r *SenderRecoverer) run(ctx context.Context) {
@@ -162,35 +175,47 @@ func (r *SenderRecoverer) run(ctx context.Context) {
 }
 
 func (r *SenderRecoverer) recoverOne(j recoverJob) {
-	defer func() { _ = recover() }() // a bad frame costs its own recovery, never the worker
-	if !r.st.Has(j.h) {
+	// A block already resolved it (its import's sender job recovers it),
+	// its senders are cached, or another path is recovering it right now:
+	// recovering it here would be the same work twice (P7, P8a). The claim
+	// is atomic with the store, so exactly one path recovers each frame.
+	t := r.st.BeginRecover(j.h, true)
+	if !t.Stored {
 		r.gone.Add(1)
 		return
 	}
-	// A block already resolved it (its import's sender job recovers it), or
-	// its senders are cached: recovering it here would be the same work twice
-	// (P7: on S99 the queue ran 8-14k frames behind and kept re-recovering
-	// frames the imports had already recovered).
-	if !r.st.NeedsSenders(j.h) {
+	if !t.Own {
 		r.skipped.Add(1)
 		return
 	}
+	var ss *store.Senders
+	// A bad frame costs its own recovery, never the worker; the claim is
+	// released either way so a block recovers what this did not.
+	defer func() {
+		_ = recover()
+		r.st.FinishRecover(t, ss)
+	}()
 	signer := r.signer()
 	if signer == nil {
 		return
 	}
-	ss, failed, err := RecoverSenders(signer, j.raw)
+	if r.skip != nil && r.skip(j.h) {
+		// Another source answers for this frame (P8b attestation): leave it.
+		r.deferred.Add(1)
+		return
+	}
+	got, failed, err := RecoverSenders(signer, j.raw)
 	if err != nil {
 		r.decodeKO.Add(1)
 		return
 	}
+	ss = got
 	r.failed.Add(uint64(failed))
-	if !r.st.SetSenders(j.h, ss) {
-		r.gone.Add(1)
-		return
-	}
 	r.frames.Add(1)
-	r.txs.Add(uint64(len(ss.Addrs) - failed))
+	r.txs.Add(uint64(len(got.Addrs) - failed))
+	if r.done != nil {
+		r.done(j.h, got)
+	}
 }
 
 // RecoverSenders decodes one frame and recovers its transactions' senders
