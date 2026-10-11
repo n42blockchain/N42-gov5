@@ -229,7 +229,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
 	}
 	body, _ := b.Body().(*block.Body)
-	run, err := p.runParallel(concreteHeader, b.Hash(), txs, ibs, blockHashFunc, false, body.IsFrameBody())
+	run, err := p.runParallel(concreteHeader, b.Hash(), txs, ibs, blockHashFunc, false, body.IsFrameBody(), FrameSpansOf(body, len(txs)))
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
@@ -261,7 +261,8 @@ func (p *StateProcessor) ExecuteParallelAhead(b *block.Block, ibs *state.IntraBl
 	}
 	hdr := b.Header().(*block.Header)
 	body, _ := b.Body().(*block.Body)
-	return p.runParallelMode(hdr, b.Hash(), b.Transactions(), ibs, blockHashFunc, false, body.IsFrameBody(), true)
+	txs := b.Transactions()
+	return p.runParallelMode(hdr, b.Hash(), txs, ibs, blockHashFunc, false, body.IsFrameBody(), true, FrameSpansOf(body, len(txs)))
 }
 
 // FinishParallel is the second half: the gas check, block end and Finalize
@@ -309,7 +310,7 @@ func (p *StateProcessor) BuildParallel(header *block.Header, txs []*transaction.
 	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
 		return nil, ErrParallelNotApplicable
 	}
-	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true, false)
+	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true, false, nil)
 }
 
 // ErrFrameTxNotSkippable: a frame build met a transaction failure the skip
@@ -321,11 +322,14 @@ var ErrFrameTxNotSkippable = errors.New("frame build: transaction failure outsid
 // frames: like the import of a frame block, every transaction stays in the
 // block and skip-rule failures get skip receipts. Any other failure returns
 // ErrFrameTxNotSkippable before the state is touched.
-func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+//
+// spans (optional) name the frames txs decode from, so their senders are
+// recovered under the frame store's claims (P8a).
+func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, spans []FrameSpan, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
 	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
 		return nil, ErrParallelNotApplicable
 	}
-	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true, true)
+	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true, true, spans)
 }
 
 // runParallel is the shared core: sender gate, per-worker readers, the
@@ -336,14 +340,14 @@ func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transa
 // skip-rule failure keeps its transaction with a skip receipt and fails
 // neither mode; in lenient mode any other failure returns
 // ErrFrameTxNotSkippable before the state is applied.
-func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid bool) (*parallelRun, error) {
-	return p.runParallelMode(concreteHeader, blockHash, txs, ibs, blockHashFunc, lenient, skipInvalid, false)
+func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid bool, spans []FrameSpan) (*parallelRun, error) {
+	return p.runParallelMode(concreteHeader, blockHash, txs, ibs, blockHashFunc, lenient, skipInvalid, false, spans)
 }
 
 // runParallelMode is runParallel; ahead (strict runs only) stops after the
 // fold, before block end and Finalize, and reads the QMDB tree without
 // holding its reader lock across the run (ExecuteParallelAhead).
-func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid, ahead bool) (*parallelRun, error) {
+func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid, ahead bool, spans []FrameSpan) (*parallelRun, error) {
 	numTxs := len(txs)
 	tStart := time.Now()
 	senderHintHits := 0
@@ -383,7 +387,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// failed its nonce check wave after wave until the 64-wave limit.
 		// P7: the block's sender job (sender_prewarm.go) started when it was
 		// queued; the import joins it and waits only for what is left.
-		p.bc.recoverBlockSendersFor(blockHash, signer, txs)
+		p.bc.recoverBlockSendersFor(blockHash, signer, txs, spans)
 	}
 	tRecovered := time.Now()
 

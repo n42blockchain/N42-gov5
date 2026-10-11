@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hash"
@@ -715,6 +716,9 @@ func recoverPlainRS(sighash types.Hash, R, S *uint256.Int, Vb *big.Int, homestea
 	R.WriteToSlice(sig[:32])
 	S.WriteToSlice(sig[32:64])
 	sig[64] = V
+	if countRecoveries.Load() {
+		recoveries.Add(1)
+	}
 	// recover the public key from the signature
 	pub, err := crypto.Ecrecover(sighash[:], sig)
 	if err != nil {
@@ -743,3 +747,25 @@ func DeriveChainId(v *uint256.Int) *uint256.Int {
 	r := new(uint256.Int).Sub(v, u256.Num35)
 	return r.Div(r, u256.Num2)
 }
+
+// Sender recovery accounting for tests (P8a): when on, every secp256k1
+// sender recovery is counted. Off in production: one atomic load per
+// recovery, no shared counter traffic.
+var (
+	countRecoveries atomic.Bool
+	recoveries      atomic.Uint64
+)
+
+// CountSenderRecoveriesForTest starts counting sender recoveries from zero
+// and returns a function that stops counting and returns the count.
+func CountSenderRecoveriesForTest() func() uint64 {
+	recoveries.Store(0)
+	countRecoveries.Store(true)
+	return func() uint64 {
+		countRecoveries.Store(false)
+		return recoveries.Load()
+	}
+}
+
+// SenderRecoveriesForTest returns the count so far (counting stays on).
+func SenderRecoveriesForTest() uint64 { return recoveries.Load() }

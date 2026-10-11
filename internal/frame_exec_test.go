@@ -92,7 +92,7 @@ func (f *frameExecFixture) builderRun(t *testing.T, txs []*transaction.Transacti
 	err := f.bc.ChainDB.View(context.Background(), func(tx kv.Tx) error {
 		ibs := state.New(state.NewPlainStateReader(tx))
 		var err error
-		run, err = f.sp.BuildParallelFrames(f.header, txs, ibs, func(uint64) types.Hash { return types.Hash{} })
+		run, err = f.sp.BuildParallelFrames(f.header, txs, nil, ibs, func(uint64) types.Hash { return types.Hash{} })
 		return err
 	})
 	if err != nil {

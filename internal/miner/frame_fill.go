@@ -155,7 +155,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	}
 
 	if parallelOK && parallelFillEnabled() && env.tcount == 0 && len(flat) > 4 {
-		run, perr := bc.BuildParallelFrames(header, flat, ibs, internal.GetHashFn(header, getHeader))
+		run, perr := bc.BuildParallelFrames(header, flat, internal.FrameSpansFor(pick.hashes, per), ibs, internal.GetHashFn(header, getHeader))
 		if perr == nil {
 			if err := env.gasPool.SubGas(run.UsedGas); err != nil {
 				return err

@@ -221,7 +221,23 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// construction -- so recov cannot show this saving even in principle,
 		// and it does not. End-to-end total is the only honest reading of it.
 		hintFills := applySenderHints(p.bc.senderHints, signer, b.Transactions())
-		joinRecover = recoverBlockSendersAsync(signer, b.Transactions())
+		framed := false
+		if body, _ := b.Body().(*block.Body); body.IsFrameBody() {
+			// A frame block recovers frame by frame under the frame store's
+			// claims (P8a), joining the block's sender job, before it
+			// executes: a transaction the executor reached first would be
+			// recovered inline while admission or another block holds its
+			// frame, i.e. twice. Admission has usually recovered the frames
+			// already, so the barrier waits only for the rest.
+			txs := b.Transactions()
+			if spans := FrameSpansOf(body, len(txs)); spans != nil {
+				p.bc.recoverBlockSendersFor(b.Hash(), signer, txs, spans)
+				framed = true
+			}
+		}
+		if !framed {
+			joinRecover = recoverBlockSendersAsync(signer, b.Transactions())
+		}
 		if senderSourceTrace && len(b.Transactions()) > 0 {
 			h, m := transaction.SenderCacheStats()
 			log.Info("sender source", "txs", len(b.Transactions()), "hintFills", hintFills,
