@@ -186,6 +186,9 @@ type BlockChain struct {
 	lagPipe lagPipeline
 	// lagWrite: the lag executor's ordered writer (lag_writer.go).
 	lagWrite lagWriter
+	// senderJobs: per-block sender recovery started when a block is queued
+	// for the lag executor (sender_prewarm.go).
+	senderJobs senderJobs
 
 	// executedHook, when set, fires the moment a block's execution and state
 	// validation succeed during import — BEFORE writeBlockWithState. Wired to

@@ -67,6 +67,7 @@ type importBenchRow struct {
 	root, process, valid, wr time.Duration
 	publish                  time.Duration
 	wait                     time.Duration // the hand-off's wait for the previous write
+	recov, exec              time.Duration
 	cr                       commitment.ComputeRootPhases
 	w                        blockWritePhases
 }
@@ -132,6 +133,7 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	nRecipients := benchEnvInt("N42_BENCH_RECIPIENTS", 22857)
 	nFiller := benchEnvInt("N42_BENCH_FILLER", 200000)
 	nBlocks := benchEnvInt("N42_BENCH_BLOCKS", 8)
+	admitPct := benchEnvInt("N42_BENCH_ADMIT_SENDERS_PCT", 100)
 	const perFrame = 160
 
 	defer SetFrameBlocksForTest(true)()
@@ -250,6 +252,7 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		mu.Lock()
 		r := row(n)
 		r.root, r.process, r.valid, r.wr, r.ahead = ph.Finalize, process, validate, write, ahead
+		r.recov, r.exec = ph.Recover, ph.Exec
 		r.publish = time.Duration(lagPublishNanos.Swap(0))
 		// This block's root: the next one has not started (the import
 		// goroutine is still in this one).
@@ -284,9 +287,14 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		n := uint64(i + 1)
 		// Senders recovered at admission, as the fleet's frame recoverer
 		// does (N42_FRAME_RECOVER_WORKERS): the import only attaches them.
+		// N42_BENCH_ADMIT_SENDERS_PCT (default 100) leaves the rest of the
+		// frames unrecovered, as when admission recovery runs behind ingest
+		// (S99: 8-14k frames pending).
 		for j := range blocks[i].raws {
 			require.True(t, fstore.Put(blocks[i].hashes[j], blocks[i].raws[j]))
-			require.True(t, fstore.SetSenders(blocks[i].hashes[j], &store.Senders{Signer: importSigner, Addrs: blocks[i].from[j]}))
+			if j*100 < admitPct*len(blocks[i].raws) {
+				require.True(t, fstore.SetSenders(blocks[i].hashes[j], &store.Senders{Signer: importSigner, Addrs: blocks[i].from[j]}))
+			}
 		}
 		// The leader gate: block n carries the result of n-2.
 		if n >= 3 {
@@ -359,6 +367,8 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 			continue // warm-up
 		}
 		add("root", ms(r.root))
+		add("recov", ms(r.recov))
+		add("exec", ms(r.exec))
 		add("write", ms(r.w.Total))
 		add("handoff", ms(r.wr))
 		add("handoff.wait", ms(r.wait))

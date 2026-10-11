@@ -379,6 +379,11 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	body.Txs = txs
 	body.FrameData = raws
 	bc.MarkFramesInFlight(hashes, b.Number64().Uint64())
+	if fs.store != nil {
+		// This block's import recovers the senders admission has not:
+		// admission recovery skips these frames from now on (P7).
+		fs.store.Claim(hashes)
+	}
 	log.Debug("frame body resolved", "number", b.Number64().Uint64(), "frames", len(hashes), "txs", len(txs),
 		"dropped", dropped, "cachedSenders", cached, "fromDB", fromDB, "pulled", pulled, "ms", time.Since(t0).Milliseconds())
 	return nil
