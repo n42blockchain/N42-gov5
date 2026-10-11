@@ -208,6 +208,7 @@ type Node struct {
 	p2pGenesisHash     types.Hash                  // genesis hash used for P2P fork digest
 	exexManager        *exex.Manager               // Execution Extensions manager
 	hotstuffService    *hotstuff.Service           // HotStuff BFT consensus service (nil if not using HotStuff)
+	hotstuffJournalDB  kv.RwDB                     // separate vote journal store (nil unless enabled)
 	bundlerService     *bundler.BundlerService     // ERC-4337 bundler service (nil if disabled)
 	peerdasService     *peerdas.Service            // PeerDAS (EIP-7594) data availability service (nil if disabled)
 	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
@@ -1880,6 +1881,15 @@ func (n *Node) Start() error {
 			svc.SetH2V4Identity(identity)
 		}
 		svc.SetBlockProducer(n.miner)
+		if hotstuff.SeparateVoteJournalEnabled() && n.config.NodeCfg.DataDir != "" {
+			jdb, err := openVoteJournalDB(n.ctx, filepath.Join(n.config.NodeCfg.DataDir, "hotstuff-journal"))
+			if err != nil {
+				return fmt.Errorf("open hotstuff vote journal: %w", err)
+			}
+			n.hotstuffJournalDB = jdb
+			svc.SetVoteJournalDB(jdb)
+			log.Info("hotstuff: votes journalled in a separate store (N42_VOTE_JOURNAL_SEPARATE)", "path", filepath.Join(n.config.NodeCfg.DataDir, "hotstuff-journal"))
+		}
 		if err := svc.Start(); err != nil {
 			// A consensus service that failed to start (topic-join / gossip
 			// registration error) leaves the node unable to vote or propose,
@@ -3559,6 +3569,9 @@ func (n *Node) stopServices() []error {
 			if n.hotstuffService != nil {
 				n.hotstuffService.Stop()
 			}
+			if n.hotstuffJournalDB != nil {
+				n.hotstuffJournalDB.Close()
+			}
 			return nil
 		}},
 		// 9. Consensus engine
@@ -3845,6 +3858,17 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return nil, err
 	}
 	return chainKv, nil
+}
+
+// openVoteJournalDB opens the separate HotStuff vote journal store
+// (hotstuff.SeparateVoteJournalEnabled): one table, a few hundred bytes,
+// with the chain database's durability mode.
+func openVoteJournalDB(ctx context.Context, path string) (kv.RwDB, error) {
+	logger := log2.New()
+	opts := mdbx.NewMDBX(logger).Path(path).Label(kv.ConsensusDB).
+		WithTableCfg(hotstuff.VoteJournalTables).
+		MapSize(64 * datasize.MB).GrowthStep(4 * datasize.MB)
+	return mdbxSyncModeOr(opts, logger).Open(ctx)
 }
 
 // mdbxSyncModeOr applies a non-default MDBX durability mode when

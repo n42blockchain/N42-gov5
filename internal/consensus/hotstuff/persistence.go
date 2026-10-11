@@ -141,6 +141,12 @@ func mergeMonotonic(tx kv.RwTx, state *ConsensusState) (*ConsensusState, error) 
 		// the write keeps whatever is on disk, which is the safe direction.
 		return nil, fmt.Errorf("read previous hotstuff state: %w", err)
 	}
+	return mergeConsensusStates(state, prev)
+}
+
+// mergeConsensusStates folds prev into state with the rules of
+// mergeMonotonic. A nil prev returns state unchanged.
+func mergeConsensusStates(state, prev *ConsensusState) (*ConsensusState, error) {
 	if prev == nil {
 		return state, nil
 	}
