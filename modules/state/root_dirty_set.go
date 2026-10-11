@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -29,6 +30,18 @@ import (
 // detachMinPending is the pending-credit count below which the root walk
 // materialises credits serially as before.
 const detachMinPending = 2048
+
+// lastRootCredits is the most recent root walk's detached credits (high 32
+// bits) and materialised ones (low 32 bits), for the import phases line.
+var lastRootCredits atomic.Int64
+
+// LastRootCredits returns how many pending credits the most recent root
+// walk through a root computer took detached (P4b) and how many it
+// materialised as state objects.
+func LastRootCredits() (detached, materialised int) {
+	v := lastRootCredits.Load()
+	return int(v >> 32), int(v & 0xffffffff)
+}
 
 // SetRootPostStateHook installs fn to run once inside the next root
 // computation through a RootComputer, at the point SetBeforeRootHook's hook

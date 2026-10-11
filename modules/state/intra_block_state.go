@@ -1608,6 +1608,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	if !ltEnabled {
 		detached, pending = s.detachPendingCredits(pending)
 	}
+	lastRootCredits.Store(int64(len(detached.addrs))<<32 | int64(len(pending)))
 	for _, addr := range pending {
 		s.getStateObject(addr)
 		s.stateObjectsDirty[addr] = struct{}{}

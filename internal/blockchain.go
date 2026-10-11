@@ -2771,6 +2771,17 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// for it, aheadRun its whole run.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took)
 			}
+			// The root's own split (P7: the fleet logged only the total):
+			// the wait for the tree's readers, the dirty-set collection, the
+			// apply, the snapshot publish, and the credits the root took
+			// detached (P4b) against those it materialised as objects.
+			if cr := commitment.LastComputeRootPhases(); cr != nil {
+				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply)
+			}
+			if det, mat := state.LastRootCredits(); det+mat > 0 {
+				fields = append(fields, "creditsDetached", det, "creditsMaterialised", mat)
+			}
+			fields = append(fields, "publish", time.Duration(lagPublishNanos.Load()))
 			if lag != nil && lag.handed {
 				// write above is the hand-off to the ordered writer;
 				// handWait is its wait for the previous block's write.
