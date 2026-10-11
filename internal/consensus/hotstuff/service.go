@@ -494,6 +494,9 @@ type Service struct {
 	engine *HotStuff
 	p2p    P2PPublisher
 	db     kv.RwDB
+	// journalDB, when set, is a small store of its own that takes the vote
+	// journal off the chain database's single writer (vote_journal_db.go).
+	journalDB kv.RwDB
 
 	gossipTopic  string // fully qualified gossip topic string
 	rpcTopic     string // fully qualified RPC topic string
@@ -643,6 +646,12 @@ func (s *Service) Start() error {
 		if err := s.recoverState(); err != nil {
 			log.Warn("hotstuff: failed to recover persisted state", "err", err)
 		}
+	}
+
+	// A separate vote journal extends the chain database's record: anchor it
+	// with one before the first vote (see mergeVoteJournal).
+	if err := s.anchorVoteJournal(); err != nil {
+		return fmt.Errorf("hotstuff: vote journal: %w", err)
 	}
 
 	// Install the durable vote journal before any event can be processed. From
@@ -1422,10 +1431,14 @@ func (s *Service) pacemakerLoop() {
 // mutex held, so it must not touch any locked engine accessor — everything it
 // needs is already in state.
 func (s *Service) JournalVote(state *ConsensusState) error {
-	if s.db == nil {
+	db := s.db
+	if s.journalDB != nil {
+		db = s.journalDB
+	}
+	if db == nil {
 		return nil // no store configured (tests/embedded): journalling is a no-op
 	}
-	return s.db.Update(s.ctx, func(tx kv.RwTx) error {
+	return db.Update(s.ctx, func(tx kv.RwTx) error {
 		return SaveConsensusState(tx, state)
 	})
 }
@@ -1559,6 +1572,10 @@ func (s *Service) recoverState() error {
 		state, err = LoadConsensusState(tx)
 		return err
 	}); err != nil {
+		return err
+	}
+	state, err := s.mergeVoteJournal(state)
+	if err != nil {
 		return err
 	}
 	if state == nil {
