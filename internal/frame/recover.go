@@ -74,12 +74,11 @@ type SenderRecoverer struct {
 	frames, txs, failed     atomic.Uint64
 	dropped, gone, decodeKO atomic.Uint64
 	skipped, deferred       atomic.Uint64
+	attested                atomic.Uint64
 
-	// skip (optional) reports frames this node leaves to another source
-	// (P8b: frames whose senders a committee attests); done (optional) is
-	// told every frame recovered here.
-	skip func(types.Hash) bool
-	done func(types.Hash, *store.Senders)
+	// src (optional) answers frames from another source (P8b: senders a
+	// committee attests) and is told every frame recovered here.
+	src SenderSource
 
 	startOnce, stopOnce sync.Once
 	cancel              context.CancelFunc
@@ -96,8 +95,9 @@ type RecoverStats struct {
 	Dropped uint64 // frames not queued (queue full); recovered at import
 	Gone    uint64 // frames that left the store before their recovery finished
 	Skipped uint64 // frames a block claimed (or already cached) before their turn
-	// Deferred: frames left to another source (P8b attestation).
-	Deferred uint64
+	// Deferred: frames left to another source (P8b attestation);
+	// Attested: frames whose senders the source had at their turn.
+	Deferred, Attested uint64
 }
 
 // NewSenderRecoverer returns a pool of workers (<= 0 selects the default)
@@ -110,10 +110,20 @@ func NewSenderRecoverer(st *store.Store, signer func() transaction.Signer, worke
 	return &SenderRecoverer{st: st, signer: signer, jobs: make(chan recoverJob, recoverQueueCap), workers: workers}
 }
 
-// SetHooks sets the optional skip and done hooks (before Start).
-func (r *SenderRecoverer) SetHooks(skip func(types.Hash) bool, done func(types.Hash, *store.Senders)) {
-	r.skip, r.done = skip, done
+// SenderSource supplies frame senders from somewhere other than a local
+// recovery (P8b attestations). Safe for concurrent use.
+type SenderSource interface {
+	// Senders returns frame h's senders when attested (n < 0: any count).
+	Senders(h types.Hash, n int) []types.Address
+	// Pending reports that h's senders are expected from the source: this
+	// node does not recover h at admission.
+	Pending(h types.Hash) bool
+	// Recovered is told every frame this node recovered itself.
+	Recovered(h types.Hash, ss *store.Senders)
 }
+
+// SetSource attaches the sender source (before Start).
+func (r *SenderRecoverer) SetSource(src SenderSource) { r.src = src }
 
 // Start launches the workers and attaches the recoverer to the store.
 func (r *SenderRecoverer) Start(ctx context.Context) {
@@ -158,7 +168,7 @@ func (r *SenderRecoverer) Recovered() uint64 { return r.frames.Load() }
 // Stats returns a snapshot of the counters.
 func (r *SenderRecoverer) Stats() RecoverStats {
 	return RecoverStats{Pending: r.pending.Load(), Frames: r.frames.Load(), Txs: r.txs.Load(),
-		Failed: r.failed.Load(), Dropped: r.dropped.Load(), Gone: r.gone.Load(), Skipped: r.skipped.Load(), Deferred: r.deferred.Load()}
+		Failed: r.failed.Load(), Dropped: r.dropped.Load(), Gone: r.gone.Load(), Skipped: r.skipped.Load(), Deferred: r.deferred.Load(), Attested: r.attested.Load()}
 }
 
 func (r *SenderRecoverer) run(ctx context.Context) {
@@ -199,10 +209,17 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 	if signer == nil {
 		return
 	}
-	if r.skip != nil && r.skip(j.h) {
-		// Another source answers for this frame (P8b attestation): leave it.
-		r.deferred.Add(1)
-		return
+	if r.src != nil {
+		if addrs := r.src.Senders(j.h, -1); addrs != nil {
+			ss = &store.Senders{Signer: signer, Addrs: addrs}
+			r.attested.Add(1)
+			return
+		}
+		if r.src.Pending(j.h) {
+			// Another source answers for this frame: leave it.
+			r.deferred.Add(1)
+			return
+		}
 	}
 	got, failed, err := RecoverSenders(signer, j.raw)
 	if err != nil {
@@ -213,8 +230,8 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 	r.failed.Add(uint64(failed))
 	r.frames.Add(1)
 	r.txs.Add(uint64(len(got.Addrs) - failed))
-	if r.done != nil {
-		r.done(j.h, got)
+	if r.src != nil {
+		r.src.Recovered(j.h, got)
 	}
 }
 
