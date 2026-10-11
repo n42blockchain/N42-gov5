@@ -2026,6 +2026,15 @@ func (bc *BlockChain) AddFutureBlock(blk block.IBlock) error {
 	if err != nil {
 		return err
 	}
+	// The lag executor holds it and imports it once its parent is applied:
+	// a future-queue entry would only retry the same import and keep a
+	// second reference to a decoded block (P7: S99's leader future-queued
+	// 136 163k-tx blocks in 18 minutes, its heap spiking by 60-140M objects
+	// in 30 s, while node6 queued 12).
+	if bc.LagImportQueued(blk.Hash()) {
+		log.Debug("future block left to the lag executor", "hash", blk.Hash(), "number", blockNumber.Uint64())
+		return nil
+	}
 	log.Info("add future block", "hash", blk.Hash(), "number", blockNumber.Uint64(), "stateRoot", blk.StateRoot(), "txs", len(blk.Body().Transactions()))
 	bc.futureBlocks.Add(blk.Hash(), concreteBlock)
 	return nil
