@@ -50,6 +50,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
@@ -162,6 +163,14 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		MapSize(64 * datasize.GB).Open(ctx)
 	require.NoError(t, err)
 	defer db.Close()
+	// N42_BENCH_FRAME_DB=1: frames in their own store, as N42_FRAME_DB.
+	if os.Getenv("N42_BENCH_FRAME_DB") == "1" {
+		fdb, err := mdbx.NewMDBX(log.New()).WriteMergeThreshold(4 * 8192).Path(dir + "/frames").Label(kv.ChainDB).
+			WithTableCfg(rawdb.FrameStoreTables).MapSize(64 * datasize.GB).Open(ctx)
+		require.NoError(t, err)
+		defer fdb.Close()
+		defer rawdb.SetFrameStore(fdb)()
+	}
 
 	cfg := &params.ChainConfig{
 		ChainID: big.NewInt(1337), Consensus: params.Faker,
@@ -439,6 +448,8 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		add("w.post", ms(r.w.Post))
 		add("w.prep", ms(r.w.Prep))
 		add("w.prepWait", ms(r.w.PrepWait))
+		add("w.frames", ms(r.w.Frames))
+		add("w.framesWait", ms(r.w.FramesWait))
 		add("root+write", ms(r.root+r.w.Total))
 		if r.ahead {
 			// The ahead run (P10): its preamble, recovery, setup, wave,

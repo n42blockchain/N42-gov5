@@ -143,6 +143,9 @@ type lagWriteJob struct {
 	// goroutine from before the hand-off's wait for the previous write
 	// (nil: CommitBlock runs inside the write, N42_LAG_WRITE_PREPARE=0).
 	prep *stateWritePrep
+	// frames: the block's frames being written to the frame store
+	// (rawdb.FrameStore), from the hand-off on; nil without one.
+	frames *framesWrite
 
 	done chan struct{}
 	err  error
@@ -188,6 +191,40 @@ func (bc *BlockChain) startStateWritePrep(ibs *state.IntraBlockState, number uin
 func (sp *stateWritePrep) wait() (*state.PreparedStateWrite, error) {
 	<-sp.done
 	return sp.p, sp.err
+}
+
+// framesWrite is one block's frames going to the frame store in their own
+// durable transaction, which the block's write waits for before it commits.
+type framesWrite struct {
+	done chan struct{}
+	err  error
+	took time.Duration
+}
+
+// startFramesWrite writes blk's frames to the frame store on its own
+// goroutine, or returns nil (no frame store, not a frame body).
+func startFramesWrite(blk *block.Block) *framesWrite {
+	if rawdb.FrameStore() == nil {
+		return nil
+	}
+	body, ok := blk.Body().(*block.Body)
+	if !ok || !body.IsFrameBody() || len(body.FrameData) == 0 {
+		return nil
+	}
+	fw := &framesWrite{done: make(chan struct{})}
+	hashes, raws := body.FrameHashes, body.FrameData
+	go func() {
+		t0 := time.Now()
+		fw.err = rawdb.WriteFramesToStore(context.Background(), hashes, raws)
+		fw.took = time.Since(t0)
+		close(fw.done)
+	}()
+	return fw
+}
+
+func (fw *framesWrite) wait() error {
+	<-fw.done
+	return fw.err
 }
 
 // qmdbFlushRows captures a FlushTo for replay into a later transaction. The
@@ -321,11 +358,18 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	if lagWritePrepare && bc.chainConfig != nil {
 		prep = bc.startStateWritePrep(ibs, blk.Number64().Uint64())
 	}
+	// So do its frames, which go to the frame store in their own durable
+	// transaction (a block that ends up not written leaves them there, as
+	// content-addressed rows nothing names).
+	frames := startFramesWrite(blk)
 	failed := func(err error) error {
 		if prep != nil {
 			// Nothing writes this block now; let the preparation finish
 			// with the block state it owns.
 			_, _ = prep.wait()
+		}
+		if frames != nil {
+			_ = frames.wait()
 		}
 		return err
 	}
@@ -337,7 +381,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
-		prep: prep, done: make(chan struct{})}
+		prep: prep, frames: frames, done: make(chan struct{})}
 	rc := bc.qmdbRootComputer
 	if _, err := rc.FlushTo(&j.flush); err != nil {
 		rc.AbortFlushed()
