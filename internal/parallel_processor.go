@@ -466,9 +466,6 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// plain transfers, and an EVM-visible difference shows as a BAD BLOCK.
 	feeRecipients := deferredFeeRecipients(chainConfig, concreteHeader)
 
-	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
-		return nil, err
-	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
 
@@ -679,6 +676,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		}
 		return uint64(txIndex)
 	})
+	// The keys, messages and hashes need no state: they are prepared before
+	// the block-start system calls, whose reads of the tree wait while the
+	// parent's root holds it (an ahead run starts at the parent's snapshot,
+	// just before its ComputeRoot), so the preparation overlaps that wait
+	// instead of following it (P10).
+	executor.PrepareAffinity()
+	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
+		executor.Release()
+		return nil, err
+	}
 	// Run parallel execution with wave-based validation. The tree's reader
 	// lock is held once for the whole run (the workers' lookups skip it);
 	// nothing in the run takes the writer side -- the owner is this

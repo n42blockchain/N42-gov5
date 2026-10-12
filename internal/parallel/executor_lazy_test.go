@@ -1,6 +1,7 @@
 package parallel
 
 import (
+	"encoding/binary"
 	"fmt"
 	"testing"
 )
@@ -103,4 +104,60 @@ func TestExecutor_SenderChainsWithAffinity(t *testing.T) {
 		t.Fatalf("too many executions for %d txs: %d (aborts %d)", numTxs, execs, aborts)
 	}
 	fmt.Printf("affinity: %d txs, %d executions, %d aborts\n", numTxs, execs, aborts)
+}
+
+// TestExecutor_PresizesSenderVersions (P10): with affinity keys that are a
+// sender address's first 8 bytes, the sender's account version list is
+// sized for its whole chain at the first write, and PrepareAffinity's keys
+// give the same result as keys computed by the first wave.
+func TestExecutor_PresizesSenderVersions(t *testing.T) {
+	const S, L = 6, 25
+	numTxs := S * L
+	sender := func(i int) int { return i % S }
+	addrOf := func(s int) LocationKey {
+		k := LocationKey{Field: FieldBalance}
+		k.Address[0] = byte(10 + s)
+		k.Address[7] = 0x5a
+		return k
+	}
+	for _, prepare := range []bool{false, true} {
+		var ex *Executor
+		ex = NewExecutor(numTxs, 3, func(i int, rw *ReadWriteSet) error {
+			k := addrOf(sender(i))
+			v, wtx, winc, found := ex.MVS().Read(k, i)
+			if found {
+				rw.RecordRead(k, wtx, winc, false)
+			} else {
+				rw.RecordRead(k, -1, 0, true)
+				v = []byte{0}
+			}
+			rw.RecordWrite(k, []byte{v[0] + 1})
+			return nil
+		})
+		ex.SetAffinity(func(i int) uint64 {
+			k := addrOf(sender(i))
+			return binary.LittleEndian.Uint64(k.Address[:8])
+		})
+		if prepare {
+			ex.PrepareAffinity()
+		}
+		for i, r := range ex.Run() {
+			if r.Err != nil {
+				t.Fatalf("tx %d: %v", i, r.Err)
+			}
+		}
+		for s := 0; s < S; s++ {
+			k := addrOf(s)
+			e := ex.MVS().lookup(&k)
+			if e == nil || len(e.versions) != L {
+				t.Fatalf("prepare=%v sender %d: %d versions, want %d", prepare, s, len(e.versions), L)
+			}
+			if presizeVersions && cap(e.versions) != L {
+				t.Fatalf("prepare=%v sender %d: capacity %d, want %d (presized)", prepare, s, cap(e.versions), L)
+			}
+			if v, _, _, _ := ex.MVS().Read(k, numTxs); v[0] != L {
+				t.Fatalf("prepare=%v sender %d: final %d, want %d", prepare, s, v[0], L)
+			}
+		}
+	}
 }

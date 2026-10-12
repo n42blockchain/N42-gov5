@@ -17,6 +17,7 @@
 package parallel
 
 import (
+	"encoding/binary"
 	"os"
 	"runtime"
 	"sort"
@@ -117,6 +118,12 @@ type Executor struct {
 	// recent executeParallel call. Only computed in LPT mode (0 otherwise).
 	waveKeys     int
 	waveTopChain int
+	// waveAffKeys: the current wave's affinity key per transaction index
+	// (nil without affinity).
+	waveAffKeys []uint64
+	// preKeys: every transaction's affinity key, computed by
+	// PrepareAffinity before Run (nil: computed by the first wave).
+	preKeys []uint64
 }
 
 // waveLPT (N42_WAVE_LPT=1) replaces the modulo sender-to-worker assignment
@@ -195,9 +202,13 @@ type workerStat struct {
 	// transaction reads the clock twice instead of five times (the reads
 	// were ~2.5% of the exec wave's CPU at 163k transfers).
 	clock time.Time
+	// keyCount counts the worker's queued transactions per affinity key
+	// (P10): a sender's account gets one version per transaction of its
+	// chain, and its version list is sized for all of them at the first.
+	keyCount map[uint64]int32
 	// Pad to two cache lines: neighbouring workers write their slots on
 	// every transaction.
-	_ [48]byte
+	_ [40]byte
 }
 
 // WorkerStatsSummary aggregates the per-worker S82 timings from the most
@@ -531,10 +542,18 @@ func (e *Executor) executeParallel(txIndices []int) {
 	// transactions that hash to it; without one, a shared channel.
 	var queues [][]int
 	work := make(chan int, len(txIndices))
+	var keys []uint64
 	if e.affinity != nil {
-		keys := e.affinityKeys(txIndices)
+		if e.preKeys != nil && len(txIndices) == e.numTxs {
+			// The first wave runs every transaction: PrepareAffinity's keys.
+			keys = e.preKeys
+		} else {
+			keys = e.affinityKeys(txIndices)
+		}
+		e.preKeys = nil
 		queues, e.waveKeys, e.waveTopChain = partitionByAffinity(txIndices, e.workers, func(i int) uint64 { return keys[i] }, waveLPT)
 	}
+	e.waveAffKeys = keys
 
 	// S82: fresh per-call worker stats. Each goroutine below writes only its
 	// own index, so no synchronization is needed on the hot path.
@@ -583,6 +602,12 @@ func (e *Executor) executeParallel(txIndices []int) {
 			}
 			if queues != nil {
 				ws.queueLen = len(queues[workerID])
+				if presizeVersions && e.incarnationsZero(queues[workerID]) {
+					ws.keyCount = make(map[uint64]int32, len(queues[workerID])/8+1)
+					for _, txIndex := range queues[workerID] {
+						ws.keyCount[keys[txIndex]]++
+					}
+				}
 				for _, txIndex := range queues[workerID] {
 					run(txIndex)
 				}
@@ -611,6 +636,51 @@ func (e *Executor) executeParallel(txIndices []int) {
 	}
 	e.totalExecutions.Add(execs)
 	e.busyNanos.Add(busy)
+}
+
+// PrepareAffinity computes every transaction's affinity key now, on
+// GOMAXPROCS goroutines, instead of at the start of the first wave (the
+// key function may do per-transaction preparation the caller wants off
+// the wave). Call after SetAffinity and before Run.
+func (e *Executor) PrepareAffinity() {
+	if e.affinity == nil || e.numTxs <= 2 {
+		return
+	}
+	all := make([]int, e.numTxs)
+	for i := range all {
+		all[i] = i
+	}
+	e.preKeys = e.affinityKeys(all)
+}
+
+// presizeVersions is N42_MV_PRESIZE (default on; "0" disables): see
+// workerStat.keyCount.
+var presizeVersions = os.Getenv("N42_MV_PRESIZE") != "0"
+
+// incarnationsZero reports whether every transaction of q runs for the
+// first time (the first wave): only then do the key counts size lists.
+func (e *Executor) incarnationsZero(q []int) bool {
+	for _, i := range q {
+		if e.incarnation[i] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// versionHint is the capacity a version list of key should start with when
+// txIndex writes it first: the number of transactions of txIndex's
+// affinity chain on this worker when key is the chain's sender account
+// (its affinity key is the address's first 8 bytes), else 0.
+func (e *Executor) versionHint(ws *workerStat, txIndex int, key *LocationKey) int {
+	if ws == nil || ws.keyCount == nil || key.Field != FieldBalance || txIndex >= len(e.waveAffKeys) {
+		return 0
+	}
+	k := e.waveAffKeys[txIndex]
+	if binary.LittleEndian.Uint64(key.Address[:8]) != k {
+		return 0
+	}
+	return int(ws.keyCount[k])
 }
 
 // affinityKeysChunk is the number of transactions below which the
@@ -724,7 +794,7 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		default:
 			// The state writer encodes every other value fresh and nothing
 			// mutates a recorded write: the store adopts it.
-			e.writeEntry(rw, &wd.Key).writeOwned(txIndex, inc, wd.Value)
+			e.writeEntry(rw, &wd.Key).writeOwnedHint(txIndex, inc, wd.Value, e.versionHint(ws, txIndex, &wd.Key))
 		}
 	}
 	if ws != nil {
