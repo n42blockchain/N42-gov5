@@ -138,6 +138,7 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	nBlocks := benchEnvInt("N42_BENCH_BLOCKS", 8)
 	admitPct := benchEnvInt("N42_BENCH_ADMIT_SENDERS_PCT", 100)
 	afterParent := os.Getenv("N42_BENCH_ARRIVE_AFTER_PARENT") == "1"
+	gateLagReady := os.Getenv("N42_BENCH_GATE_LAGREADY") == "1"
 	const perFrame = 160
 
 	defer SetFrameBlocksForTest(true)()
@@ -355,7 +356,22 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 			}
 		}
 		// The leader gate: block n carries the result of n-2.
-		if n >= 3 {
+		// N42_BENCH_GATE_LAGREADY=1 asks the gate itself (LagReady, as the
+		// leader does) instead of waiting for n-2 to be reported durable.
+		if n >= 3 && gateLagReady {
+			deadline := time.Now().Add(10 * time.Minute)
+			for {
+				ready, _, err := bc.LagReady(parent.Hash())
+				require.NoError(t, err)
+				if ready {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("leader gate never opened for block %d", n)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		} else if n >= 3 {
 			waitLag(n - 2)
 		}
 		// N42_BENCH_ARRIVE_AFTER_PARENT=1: block n arrives only once n-1
@@ -373,7 +389,15 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		}
 		rtx, err := db.BeginRo(ctx)
 		require.NoError(t, err)
-		res, _, err := bc.LaggedExecutedResult(rtx, hdr, nil)
+		var res rawdb.ExecutedResult
+		if gateLagReady {
+			// The lag build's lookup (miner.laggedExecutedResult).
+			target, terr := bc.LaggedTarget(rtx, hdr, nil)
+			require.NoError(t, terr)
+			res, err = bc.ExecutedOrSeededResult(rtx, target)
+		} else {
+			res, _, err = bc.LaggedExecutedResult(rtx, hdr, nil)
+		}
 		rtx.Rollback()
 		require.NoError(t, err)
 		hdr.Root, hdr.ReceiptHash, hdr.Bloom, hdr.GasUsed = res.Root, res.ReceiptHash, res.Bloom, res.GasUsed
