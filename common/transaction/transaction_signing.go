@@ -769,3 +769,16 @@ func CountSenderRecoveriesForTest() func() uint64 {
 
 // SenderRecoveriesForTest returns the count so far (counting stays on).
 func SenderRecoveriesForTest() uint64 { return recoveries.Load() }
+
+// HasSenderMemo reports whether tx's memo already holds a sender derived
+// under signer (an atomic load and a signer comparison; no hashing).
+func (tx *Transaction) HasSenderMemo(signer Signer) bool {
+	if signer == nil {
+		return false
+	}
+	sc := tx.from.Load()
+	if sc == nil {
+		return false
+	}
+	return sc.(sigCache).signer.Equal(signer)
+}

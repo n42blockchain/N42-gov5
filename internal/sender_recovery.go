@@ -131,6 +131,12 @@ func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*
 		if tx == nil || tx.From() != nil {
 			return
 		}
+		// A memo under this signer (a frame's senders applied by the
+		// block's sender job) already answers Sender: no hash, no cache
+		// probe, no pool lock.
+		if tx.HasSenderMemo(signer) {
+			return
+		}
 		if addr, ok := transaction.CachedSender(signer, tx); ok {
 			tx.SetFrom(addr)
 			filled.Add(1)

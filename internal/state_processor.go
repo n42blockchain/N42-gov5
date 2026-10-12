@@ -220,7 +220,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// recovery workers burn alongside the executor is billed to exec by
 		// construction -- so recov cannot show this saving even in principle,
 		// and it does not. End-to-end total is the only honest reading of it.
-		hintFills := applySenderHints(p.bc.senderHints, signer, b.Transactions())
+		hintFills := 0
 		framed := false
 		if body, _ := b.Body().(*block.Body); body.IsFrameBody() {
 			// A frame block recovers frame by frame under the frame store's
@@ -228,7 +228,9 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 			// executes: a transaction the executor reached first would be
 			// recovered inline while admission or another block holds its
 			// frame, i.e. twice. Admission has usually recovered the frames
-			// already, so the barrier waits only for the rest.
+			// already, so the barrier waits only for the rest. Its senders
+			// come per frame in bulk, so the per-transaction hint pass is
+			// skipped (P9: it filled nothing on frame blocks).
 			txs := b.Transactions()
 			if spans := FrameSpansOf(body, len(txs)); spans != nil {
 				p.bc.recoverBlockSendersFor(b.Hash(), signer, txs, spans)
@@ -236,6 +238,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 			}
 		}
 		if !framed {
+			hintFills = applySenderHints(p.bc.senderHints, signer, b.Transactions())
 			joinRecover = recoverBlockSendersAsync(signer, b.Transactions())
 		}
 		if senderSourceTrace && len(b.Transactions()) > 0 {
