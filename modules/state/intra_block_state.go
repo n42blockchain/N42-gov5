@@ -1359,15 +1359,30 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 // FinalizeTx should be called after every transaction.
 func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter StateWriter) error {
 	policy := newAccountWritePolicy(chainRules)
-	// Sort addresses before iteration. getStateObject falls through to
-	// sdb.stateReader.ReadAccountData when the object isn't cached, and
-	// the reader here is the block-witness recorder (ethel). Map-order
-	// iteration would produce witness byte streams that differ between
-	// runs of the same block.
-	for _, addr := range sdb.pendingIncreaseAddrs() {
-		sdb.getStateObject(addr)
+	_, noop := stateWriter.(*NoopWriter)
+	// A block-end system call (no-op writer) on a state whose root takes
+	// its pending credits detached (P4b) leaves them pending: materialising
+	// the parallel run's ~23k credited accounts here, serially, was ~30 ms
+	// of every Prague block's root on the fleet (P10), and it left the root
+	// nothing to detach. Loading an account folds its credit, so the call
+	// itself reads every balance right; the root then detaches or
+	// materialises the rest, which yields the same accounts.
+	keepPending := noop && sdb.detachPending
+	if !keepPending {
+		// Sort addresses before iteration. getStateObject falls through to
+		// sdb.stateReader.ReadAccountData when the object isn't cached, and
+		// the reader here is the block-witness recorder (ethel). Map-order
+		// iteration would produce witness byte streams that differ between
+		// runs of the same block.
+		for _, addr := range sdb.pendingIncreaseAddrs() {
+			sdb.getStateObject(addr)
+		}
 	}
-	if _, noop := stateWriter.(*NoopWriter); noop {
+	// The credited accounts left pending stay dirty in the journal (the
+	// root and CommitBlock take an unloaded credit's account from there):
+	// the journal then drops only the other addresses (drop).
+	var drop []types.Address
+	if noop {
 		// With the no-op writer the only state updateAccount changes is the
 		// deleted flag; every writer call is a no-op and updateTrie only
 		// reads. The parallel processor leaves a whole block's dirty set in
@@ -1378,7 +1393,15 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 		for addr := range sdb.journal.dirties {
 			so, exist := sdb.stateObjects[addr]
 			if !exist {
+				if keepPending {
+					if bi := sdb.balanceInc[addr]; bi == nil || bi.transferred {
+						drop = append(drop, addr)
+					}
+				}
 				continue
+			}
+			if keepPending {
+				drop = append(drop, addr)
 			}
 			finalizeFlags(policy, addr, so)
 			sdb.stateObjectsDirty[addr] = struct{}{}
@@ -1405,7 +1428,17 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	}
 	sdb.promoteWipes()
 	sdb.clearCurrentTxFlags()
-	sdb.clearJournalAndRefund()
+	if keepPending {
+		dirties := sdb.journal.dirties
+		for _, addr := range drop {
+			delete(dirties, addr)
+		}
+		sdb.journal.dirties = nil // kept from the reset below
+		sdb.clearJournalAndRefund()
+		sdb.journal.dirties = dirties
+	} else {
+		sdb.clearJournalAndRefund()
+	}
 	// Every slot written in this transaction now reads as committed: the
 	// replacement for copying dirtyStorage into originStorage per object.
 	sdb.storageEpoch++

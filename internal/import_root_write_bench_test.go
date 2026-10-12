@@ -171,6 +171,12 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		StateScheme:           string(params.StateCommitmentPresetQMDB),
 		DeferredExecutionTime: big.NewInt(1),
 	}
+	// N42_BENCH_PRAGUE=1 runs the fleet's fork set: the Prague system calls
+	// at every block end (and their contracts in the genesis).
+	prague := os.Getenv("N42_BENCH_PRAGUE") == "1"
+	if prague {
+		cfg.ShanghaiTime, cfg.CancunTime, cfg.PragueTime = big.NewInt(0), big.NewInt(0), big.NewInt(0)
+	}
 	keys := frametest.Keys(t, nSenders+1, 97)
 	gw, senders := keys[0], keys[1:]
 	recipients := make([]types.Address, nRecipients)
@@ -183,6 +189,11 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	}
 	for _, a := range recipients {
 		alloc[a] = conf.GenesisAccount{Balance: "0x1"}
+	}
+	if prague {
+		for _, d := range PragueSystemContractDeployments() {
+			alloc[d.Address] = d.Account
+		}
 	}
 	for i := 0; i < nFiller; i++ {
 		a := types.BytesToAddress(crypto.Keccak256([]byte("p4-bench-filler"), []byte(strconv.Itoa(i))))
