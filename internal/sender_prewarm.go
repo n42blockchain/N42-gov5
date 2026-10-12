@@ -151,6 +151,11 @@ type senderJob struct {
 	// The background workers: bgDone closes when the last one exits.
 	bgLeft atomic.Int32
 	bgDone chan struct{}
+
+	// framesDone counts the spans settled (frame returned true): once it
+	// reaches len(spans) every transaction holds its sender, or failed to
+	// recover one, and the import has nothing left to do (P10).
+	framesDone atomic.Int64
 }
 
 func (j *senderJob) run() {
@@ -192,11 +197,19 @@ func (j *senderJob) runFrames() {
 		}
 		if !j.frame(int(i), false) {
 			later = append(later, int(i))
+			continue
 		}
+		j.framesDone.Add(1)
 	}
 	for _, i := range later {
 		j.frame(i, true)
+		j.framesDone.Add(1)
 	}
+}
+
+// complete reports whether every span of a frame job was settled.
+func (j *senderJob) complete() bool {
+	return j.spans != nil && j.framesDone.Load() == int64(len(j.spans))
 }
 
 // frame recovers the senders of span i, or takes them from the store or
@@ -208,7 +221,10 @@ func (j *senderJob) frame(i int, final bool) bool {
 		for {
 			t := j.st.BeginRecover(sp.H, false)
 			if t.Senders != nil {
-				frame.ApplySenders(txs, t.Senders)
+				if frame.ApplySenders(txs, t.Senders) == len(txs) {
+					// Every sender attached: nothing left to derive.
+					return true
+				}
 				break
 			}
 			if t.Wait != nil {
@@ -329,7 +345,89 @@ type senderJobs struct {
 	mu   sync.Mutex
 	m    map[types.Hash]*senderJob
 	hits atomic.Uint64
+
+	// done: blocks whose transactions all hold their senders already
+	// (block resolution applied every frame's cached senders, or the
+	// block's job settled every frame). The import's recovery step is
+	// then a lookup, not a walk over every frame and transaction (P10).
+	done     map[types.Hash]sendersDone
+	doneFIFO []types.Hash
+	doneHits atomic.Uint64
 }
+
+// sendersDone identifies the transaction list and signer a block's
+// senders were completed for.
+type sendersDone struct {
+	first  *transaction.Transaction
+	n      int
+	signer transaction.Signer
+	// declared: some transaction may declare its own sender (unknown
+	// counts as declared), so the import's sender gate still runs.
+	declared bool
+}
+
+// sendersDoneCap bounds the completed blocks remembered.
+const sendersDoneCap = 64
+
+// markSendersDone records that every transaction of block h (txs, under
+// signer) holds its sender; declared as in sendersDone. A record of the
+// same transaction list is kept (the first one knows at least as much).
+func (bc *BlockChain) markSendersDone(h types.Hash, txs []*transaction.Transaction, signer transaction.Signer, declared bool) {
+	if bc == nil || len(txs) == 0 || signer == nil {
+		return
+	}
+	js := &bc.senderJobs
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	if js.done == nil {
+		js.done = make(map[types.Hash]sendersDone, sendersDoneCap)
+	}
+	if d, ok := js.done[h]; ok {
+		if d.first == txs[0] && d.n == len(txs) {
+			return
+		}
+	} else {
+		js.doneFIFO = append(js.doneFIFO, h)
+		for len(js.doneFIFO) > sendersDoneCap {
+			delete(js.done, js.doneFIFO[0])
+			js.doneFIFO = js.doneFIFO[1:]
+		}
+	}
+	js.done[h] = sendersDone{first: txs[0], n: len(txs), signer: signer, declared: declared}
+}
+
+// sendersDoneFor reports whether block h's senders are recorded complete.
+func (bc *BlockChain) sendersDoneFor(h types.Hash) bool {
+	js := &bc.senderJobs
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	_, ok := js.done[h]
+	return ok
+}
+
+// takeSendersDone reports (and forgets) whether block h's senders were
+// completed for exactly txs under signer, and whether a transaction may
+// declare its own sender.
+func (bc *BlockChain) takeSendersDone(h types.Hash, signer transaction.Signer, txs []*transaction.Transaction) (done, declared bool) {
+	if bc == nil || len(txs) == 0 || signer == nil {
+		return false, true
+	}
+	js := &bc.senderJobs
+	js.mu.Lock()
+	d, ok := js.done[h]
+	if ok {
+		delete(js.done, h)
+	}
+	js.mu.Unlock()
+	if !ok || d.first != txs[0] || d.n != len(txs) || !d.signer.Equal(signer) {
+		return false, true
+	}
+	js.doneHits.Add(1)
+	return true, d.declared
+}
+
+// SendersDoneHits returns how many imports found their senders complete.
+func (bc *BlockChain) SendersDoneHits() uint64 { return bc.senderJobs.doneHits.Load() }
 
 // startSenderJob resolves blk's frames and starts recovering its senders in
 // the background (any goroutine). A block already resolved costs nothing to
@@ -360,7 +458,8 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 			return
 		}
 		txs := b.Transactions()
-		if len(txs) < senderRecoveryMinTxs {
+		if len(txs) < senderRecoveryMinTxs || bc.sendersDoneFor(h) {
+			// Resolution attached every sender: nothing to recover.
 			return
 		}
 		j := bc.newSenderJob(transaction.MakeSignerWithTimestamp(bc.chainConfig, hdr.Number.ToBig(), hdr.Time),
@@ -384,7 +483,12 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 		// Once the background workers are done the job holds nothing the
 		// import needs (the memos are on the transactions): forget it, so a
 		// block imported without joining it is not retained here.
-		j.spawn(workers, func() { bc.forgetSenderJob(h, j) })
+		j.spawn(workers, func() {
+			if j.complete() {
+				bc.markSendersDone(h, j.txs, j.signer, true)
+			}
+			bc.forgetSenderJob(h, j)
+		})
 	}()
 }
 
@@ -443,6 +547,11 @@ func (bc *BlockChain) newSenderJob(signer transaction.Signer, txs []*transaction
 // recovered twice.
 func (bc *BlockChain) recoverBlockSendersFor(h types.Hash, signer transaction.Signer, txs []*transaction.Transaction, spans []FrameSpan) {
 	if bc != nil {
+		if done, _ := bc.takeSendersDone(h, signer, txs); spans != nil && done {
+			// Resolution or the block's job already settled every frame.
+			bc.dropSenderJob(h)
+			return
+		}
 		if j := bc.takeSenderJob(h, signer, txs); j != nil {
 			workers := senderRecoveryFanout()
 			if workers > len(txs)/senderJobChunk+1 {

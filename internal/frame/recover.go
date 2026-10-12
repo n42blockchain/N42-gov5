@@ -264,12 +264,27 @@ func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int,
 // (txs must be that frame's DecodeTxs output) and returns how many it
 // attached. A nil or misaligned cache attaches nothing.
 func ApplySenders(txs []*transaction.Transaction, ss *store.Senders) int {
+	n, _ := ApplySendersDeclared(txs, ss)
+	return n
+}
+
+// ApplySendersDeclared is ApplySenders that also reports whether any of
+// txs declares a sender of its own (a From field in its encoding), which
+// the import's sender gate must then check against the signature.
+func ApplySendersDeclared(txs []*transaction.Transaction, ss *store.Senders) (int, bool) {
 	if ss == nil || ss.Signer == nil || len(ss.Addrs) != len(txs) {
-		return 0
+		return 0, true
 	}
 	n := 0
+	declared := false
 	for i, tx := range txs {
-		if tx == nil || ss.Addrs[i] == (types.Address{}) {
+		if tx == nil {
+			continue
+		}
+		if tx.From() != nil {
+			declared = true
+		}
+		if ss.Addrs[i] == (types.Address{}) {
 			continue
 		}
 		// Block resolution and the block's sender job both apply a frame's
@@ -282,5 +297,5 @@ func ApplySenders(txs []*transaction.Transaction, ss *store.Senders) int {
 		tx.SetSenderMemo(ss.Signer, ss.Addrs[i])
 		n++
 	}
-	return n
+	return n, declared
 }

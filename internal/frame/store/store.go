@@ -40,6 +40,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -136,6 +137,9 @@ type slot struct {
 	// frame; the others wait on recWait or take the result.
 	recov   uint8
 	recWait chan struct{}
+	// at is the admission time (unix nanoseconds), for the builder's
+	// readiness grace (ScanFillableReady).
+	at int64
 }
 
 // Sender recovery states of a stored frame.
@@ -404,7 +408,7 @@ func (s *Store) Admit(h types.Hash, e Entry, bypass bool) Result {
 		}
 		s.bypassed.Add(1)
 	}
-	s.m[h] = slot{Entry: e}
+	s.m[h] = slot{Entry: e, at: time.Now().UnixNano()}
 	s.ring = append(s.ring, h)
 	s.used += size
 	s.puts.Add(1)
@@ -623,6 +627,29 @@ func (s *Store) Scan(fn func(h types.Hash, e Entry) bool) {
 // frames a block builder may take, oldest first.
 func (s *Store) ScanFillable(fn func(h types.Hash, e Entry) bool) {
 	s.scan(true, fn)
+}
+
+// ScanFillableReady is ScanFillable that also tells fn whether the frame
+// is ready for a block (P10): its senders are cached (recovered here or
+// accepted from attestations), or no recoverer is attached (nothing would
+// ever cache them), or it was admitted at least grace ago (its senders
+// are late; the block recovers them). A block of ready frames executes
+// with no sender recovery left at block time.
+func (s *Store) ScanFillableReady(grace time.Duration, fn func(h types.Hash, e Entry, ready bool) bool) {
+	recovering := s.recoverer.Load() != nil
+	cutoff := time.Now().Add(-grace).UnixNano()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, h := range s.ring[s.head:] {
+		sl, ok := s.m[h]
+		if !ok || sl.included() {
+			continue
+		}
+		ready := !recovering || sl.senders != nil || sl.at <= cutoff
+		if !fn(h, sl.Entry, ready) {
+			return
+		}
+	}
 }
 
 func (s *Store) scan(fillable bool, fn func(h types.Hash, e Entry) bool) {

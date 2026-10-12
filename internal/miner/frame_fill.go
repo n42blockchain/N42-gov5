@@ -55,6 +55,29 @@ type framePick struct {
 	raws   [][]byte
 	gas    uint64 // sum of the frames' admission gas estimates
 	txs    int
+	held   int // gateways held back at a frame whose senders were not ready
+}
+
+// EnvFramePickReady (N42_FRAME_PICK_READY, default on; "0" disables) makes
+// the builder take only frames whose senders are cached; EnvFrameReadyGraceMs
+// (N42_FRAME_READY_GRACE_MS, default 1000) is how long after admission a
+// frame is taken anyway.
+const (
+	EnvFramePickReady    = "N42_FRAME_PICK_READY"
+	EnvFrameReadyGraceMs = "N42_FRAME_READY_GRACE_MS"
+	defaultFrameReadyMs  = 1000
+)
+
+var (
+	frameReadyPick  = os.Getenv(EnvFramePickReady) != "0"
+	frameReadyGrace = envFrameReadyGrace()
+)
+
+func envFrameReadyGrace() time.Duration {
+	if v, err := strconv.Atoi(os.Getenv(EnvFrameReadyGraceMs)); err == nil && v >= 0 {
+		return time.Duration(v) * time.Millisecond
+	}
+	return defaultFrameReadyMs * time.Millisecond
 }
 
 // pickFrames takes frames from the store in arrival order (the store's
@@ -65,15 +88,38 @@ type framePick struct {
 // and those signed by exclude (this node's own local frames; zero = none),
 // and stops at the first frame whose gas estimate does not fit the budget
 // or at maxFrames. Stopping rather than skipping keeps blocks in arrival
-// order.
+// order. A frame whose senders are not ready (store.ScanFillableReady)
+// holds back its gateway's frames from there on.
 func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
 	var p framePick
-	st.ScanFillable(func(h types.Hash, e store.Entry) bool {
+	// Frames whose senders are not cached yet are left for a later block
+	// (P10: no sender recovery at block time), and so is every later frame
+	// of the same gateway, which keeps each gateway's frames -- and its
+	// senders' nonces -- in arrival order.
+	var held []types.Address
+	isHeld := func(gw types.Address) bool {
+		for _, a := range held {
+			if a == gw {
+				return true
+			}
+		}
+		return false
+	}
+	st.ScanFillableReady(frameReadyGrace, func(h types.Hash, e store.Entry, ready bool) bool {
 		if inFlight != nil && inFlight(h) {
 			return true
 		}
-		if exclude != (types.Address{}) {
-			if gw, ok := frame.GatewayOf(e.Raw); ok && gw == exclude {
+		gw, gwOK := frame.GatewayOf(e.Raw)
+		if exclude != (types.Address{}) && gwOK && gw == exclude {
+			return true
+		}
+		if frameReadyPick && gwOK {
+			if isHeld(gw) {
+				return true
+			}
+			if !ready {
+				held = append(held, gw)
+				p.held++
 				return true
 			}
 		}

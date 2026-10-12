@@ -145,4 +145,9 @@ func testFrameSenderRecoveredOnce(t *testing.T, salt byte, admitAll bool, worker
 	require.Equal(t, uint64(frames*perFrame*21000), lc.result(parent.Hash()).GasUsed, "the last block did not execute every transfer")
 	t.Logf("sender recoveries %d for %d transactions (%.3f per tx); admission %+v", got, want, float64(got)/float64(want), rec.Stats())
 	require.Equal(t, want, got, "every transaction's sender must be recovered exactly once")
+	if admitAll {
+		// P10: every frame's senders were cached before its block was
+		// resolved, so each import found them complete and walked nothing.
+		require.Equal(t, uint64(blocks), lc.bc.SendersDoneHits(), "imports that found their senders complete")
+	}
 }
