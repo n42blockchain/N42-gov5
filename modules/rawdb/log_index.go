@@ -325,3 +325,12 @@ func WriteLogIndexFromLogs(tx kv.RwTx, blockNum uint64, logs []*block.Log) error
 	}
 	return writeLogIndexKeys(tx, blockNum, uint32(blockNum), logs)
 }
+
+// WriteLogIndexPrepared is WriteLogIndex over the logs PrepareLogs
+// collected.
+func WriteLogIndexPrepared(tx kv.RwTx, blockNum uint64, p *PreparedLogs) error {
+	if blockNum > math.MaxUint32 {
+		return fmt.Errorf("block number %d exceeds uint32 range for roaring bitmap", blockNum)
+	}
+	return writeLogIndexKeys(tx, blockNum, uint32(blockNum), p.logs)
+}

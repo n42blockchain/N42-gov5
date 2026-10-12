@@ -383,3 +383,54 @@ func ReceiptsAvailableFrom(tx kv.Tx) (uint64, error) {
 	}
 	return binary.BigEndian.Uint64(k), nil
 }
+
+// PreparedLogs is a block's Log rows and log-index input, built before the
+// block's write transaction (docs/QS_MULTI_MILLION_DESIGN.md P11): both
+// walks over the block's receipts leave the transaction.
+type PreparedLogs struct {
+	rows []preparedLogRow
+	logs []*block.Log
+}
+
+type preparedLogRow struct {
+	txID uint32
+	data []byte
+}
+
+// PrepareLogs encodes the Log rows of receipts and collects their logs, as
+// AppendReceiptsEncoded and WriteLogIndex would.
+func PrepareLogs(receipts block.Receipts) (*PreparedLogs, error) {
+	p := &PreparedLogs{}
+	for txID, receipt := range receipts {
+		if len(receipt.Logs) == 0 {
+			continue
+		}
+		data, err := marshalLogsForStorage(block.Logs(receipt.Logs))
+		if err != nil {
+			return nil, err
+		}
+		p.rows = append(p.rows, preparedLogRow{txID: uint32(txID), data: data})
+		p.logs = append(p.logs, receipt.Logs...)
+	}
+	return p, nil
+}
+
+// AppendReceiptsPrepared is AppendReceiptsEncoded with the Log rows from p.
+func AppendReceiptsPrepared(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.Receipts, encoded []byte, p *PreparedLogs) error {
+	for _, r := range p.rows {
+		if err := tx.Append(modules.Log, modules.LogKey(blockNumber, r.txID), r.data); err != nil {
+			return fmt.Errorf("writing logs for block %d: %w", blockNumber, err)
+		}
+	}
+	data := encoded
+	if data == nil {
+		var err error
+		if data, err = marshalReceiptsForStorage(receipts); err != nil {
+			return fmt.Errorf("encode block receipts for block %d: %w", blockNumber, err)
+		}
+	}
+	if err := tx.Append(modules.Receipts, modules.EncodeBlockNumber(blockNumber), data); err != nil {
+		return fmt.Errorf("writing receipts for block %d: %w", blockNumber, err)
+	}
+	return nil
+}
