@@ -3,6 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/lib/qmdb"
+	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -72,5 +78,55 @@ func TestDumpAccountUsesRethInitStateFields(t *testing.T) {
 		if _, ok := decoded[field]; !ok {
 			t.Fatalf("missing %q in %s", field, out.String())
 		}
+	}
+}
+
+func TestExportHeadReplayWithoutAppliedMarker(t *testing.T) {
+	previous := kv.ChaindataTablesCfg
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = previous })
+	db := memdb.NewTestDB(t)
+	tx, err := db.BeginRw(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, _, err := exportHead(tx); err == nil {
+		t.Fatal("missing head accepted")
+	}
+	var hash types.Hash
+	hash[31] = 7
+	rawdb.WriteHeadBlockHash(tx, hash)
+	if err := rawdb.WriteHeaderNumber(tx, hash, 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := exportHead(tx); err == nil {
+		t.Fatal("noncanonical head accepted")
+	}
+	if err := rawdb.WriteCanonicalHash(tx, hash, 42); err != nil {
+		t.Fatal(err)
+	}
+	number, got, err := exportHead(tx)
+	if err != nil || number != 42 || got != [32]byte(hash) {
+		t.Fatalf("fallback: %d %x %v", number, got, err)
+	}
+	if err := rawdb.WriteQMDBApplied(tx, 42, [32]byte(hash)); err != nil {
+		t.Fatal(err)
+	}
+	number, got, err = exportHead(tx)
+	if err != nil || number != 42 || got != [32]byte(hash) {
+		t.Fatalf("marker: %d %x %v", number, got, err)
+	}
+}
+
+func TestExportRootRejectsMismatch(t *testing.T) {
+	var root qmdb.Hash
+	root[31] = 1
+	if err := verifyExportRoot(root, types.Hash(root)); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyExportRoot(root, types.Hash{}); err == nil {
+		t.Fatal("root mismatch accepted")
 	}
 }
