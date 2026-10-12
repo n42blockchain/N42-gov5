@@ -365,11 +365,21 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		if p.bc != nil {
 			hints = p.bc.senderHints
 		}
-		hits, err := verifyBlockSendersHinted(signer, txs, hints)
-		if err != nil {
-			return nil, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+		// A frame block whose senders were all attached before it executes
+		// (frame resolution or its sender job, P10) has nothing to recover;
+		// unless a transaction declares its own sender, the gate below has
+		// nothing to check either.
+		sendersDone, declared := false, true
+		if spans != nil && p.bc != nil {
+			sendersDone, declared = p.bc.takeSendersDone(blockHash, signer, txs)
 		}
-		senderHintHits = hits
+		if declared {
+			hits, err := verifyBlockSendersHinted(signer, txs, hints)
+			if err != nil {
+				return nil, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+			}
+			senderHintHits = hits
+		}
 		// The pool already recovered the sender of every transaction it
 		// holds; copy those onto the wire copies first (the serial import
 		// path has done this since the hint source existed; the parallel
@@ -394,7 +404,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// failed its nonce check wave after wave until the 64-wave limit.
 		// P7: the block's sender job (sender_prewarm.go) started when it was
 		// queued; the import joins it and waits only for what is left.
-		p.bc.recoverBlockSendersFor(blockHash, signer, txs, spans)
+		if sendersDone {
+			p.bc.dropSenderJob(blockHash)
+		} else {
+			p.bc.recoverBlockSendersFor(blockHash, signer, txs, spans)
+		}
 	}
 	tRecovered := time.Now()
 

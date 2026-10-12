@@ -135,6 +135,33 @@ func TestApplySendersUsesTheMemoOnlyUnderItsSigner(t *testing.T) {
 	}
 }
 
+// TestApplySendersDeclared: a transaction carrying its own From is
+// reported, so the import's sender gate still checks it (P10).
+func TestApplySendersDeclared(t *testing.T) {
+	keys := frametest.Keys(t, 3, 12)
+	fb := frametest.NewBuilder(keys[0], recoverChainID, keys[1:])
+	raws, _, _ := fb.Frames(t, 1, 4)
+	signer := transaction.LatestSignerForChainID(recoverChainID)
+	ss, _, err := frame.RecoverSenders(signer, raws[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	txs, _, err := frame.DecodeTxs(raws[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, declared := frame.ApplySendersDeclared(txs, ss); n != 4 || declared {
+		t.Fatalf("plain frame: attached %d, declared %v", n, declared)
+	}
+	txs[2].SetFrom(types.HexToAddress("0x00000000000000000000000000000000000000bb"))
+	if n, declared := frame.ApplySendersDeclared(txs, ss); n != 4 || !declared {
+		t.Fatalf("declared sender: attached %d, declared %v", n, declared)
+	}
+	if _, declared := frame.ApplySendersDeclared(txs, nil); !declared {
+		t.Fatal("no cache must count as declared")
+	}
+}
+
 // TestSenderRecovererSkipsGoneFrames: a frame that leaves the store before
 // its turn is not recovered and the pool keeps going.
 func TestSenderRecovererSkipsGoneFrames(t *testing.T) {

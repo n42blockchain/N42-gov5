@@ -150,3 +150,72 @@ func TestPickFramesRate(t *testing.T) {
 	el := time.Since(t0)
 	t.Logf("pickFrames: %d frames in %v = %.0f frames/s", n, el, float64(n)/el.Seconds())
 }
+
+type noopRecoverer struct{}
+
+func (noopRecoverer) Submit(types.Hash, []byte) {}
+func (noopRecoverer) Pending() int64            { return 0 }
+func (noopRecoverer) Recovered() uint64         { return 0 }
+
+// TestPickFramesOnlyReady (P10): with a recoverer attached, a frame whose
+// senders are not cached is not taken, nor is any later frame of its
+// gateway (arrival order per gateway); another gateway's ready frames
+// are; once the grace has passed the frame is taken anyway.
+func TestPickFramesOnlyReady(t *testing.T) {
+	keysA := frametest.Keys(t, 9, 31)
+	keysB := frametest.Keys(t, 9, 32)
+	ra, ha, _ := frametest.NewBuilder(keysA[0], big.NewInt(94), keysA[1:]).Frames(t, 3, 10)
+	rb, hb, _ := frametest.NewBuilder(keysB[0], big.NewInt(94), keysB[1:]).Frames(t, 3, 10)
+	st := store.New(1 << 30)
+	st.SetRecoverer(noopRecoverer{})
+	// Arrival: a0 b0 a1 b1 a2 b2.
+	var arrival []types.Hash
+	for i := 0; i < 3; i++ {
+		for _, fr := range []struct {
+			raw []byte
+			h   types.Hash
+		}{{ra[i], ha[i]}, {rb[i], hb[i]}} {
+			f, err := frame.Decode(fr.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !st.PutEntry(fr.h, store.Entry{Raw: fr.raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}) {
+				t.Fatal("put")
+			}
+			arrival = append(arrival, fr.h)
+		}
+	}
+	ready := func(h types.Hash) {
+		if !st.SetSenders(h, &store.Senders{Addrs: make([]types.Address, 10)}) {
+			t.Fatal("set senders")
+		}
+	}
+	// a0, a2 and every b frame ready; a1 not.
+	for _, h := range []types.Hash{ha[0], ha[2], hb[0], hb[1], hb[2]} {
+		ready(h)
+	}
+	defer func(prev time.Duration) { frameReadyGrace = prev }(frameReadyGrace)
+	frameReadyGrace = time.Hour
+	p := pickFrames(st, nil, types.Address{}, 1<<62, 1024)
+	want := []types.Hash{ha[0], hb[0], hb[1], hb[2]}
+	if len(p.hashes) != len(want) || p.held != 1 {
+		t.Fatalf("picked %d frames (held %d), want %d", len(p.hashes), p.held, len(want))
+	}
+	for i := range want {
+		if p.hashes[i] != want[i] {
+			t.Fatalf("pick %d out of order", i)
+		}
+	}
+	// Past the grace every frame is taken, in arrival order.
+	frameReadyGrace = 0
+	if p = pickFrames(st, nil, types.Address{}, 1<<62, 1024); len(p.hashes) != len(arrival) || p.held != 0 {
+		t.Fatalf("after grace: %d frames, held %d", len(p.hashes), p.held)
+	}
+	// Disabled: as before P10.
+	frameReadyGrace = time.Hour
+	defer func(prev bool) { frameReadyPick = prev }(frameReadyPick)
+	frameReadyPick = false
+	if p = pickFrames(st, nil, types.Address{}, 1<<62, 1024); len(p.hashes) != len(arrival) {
+		t.Fatalf("disabled: %d frames", len(p.hashes))
+	}
+}

@@ -204,7 +204,7 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 	log.Info("miner: lag build", "n", number, "parent", parent.Hash().Hex()[:12], "frames", len(hashes),
 		"localFrames", len(local.hashes), "txs", local.txs+gw.txs, "gasEst", local.gas+gw.gas,
 		"reports", number-uint64(block.DeferredDepthAt(number)), "fill", dFill, "total", time.Since(start),
-		"storeFrames", st.Len(), "tMs", time.Now().UnixMilli())
+		"storeFrames", st.Len(), "heldGateways", gw.held, "tMs", time.Now().UnixMilli())
 
 	select {
 	case w.taskCh <- &task{block: iblock, createdAt: time.Now(), lagged: true, buildBeginAt: start, triggerAt: triggerAt}:

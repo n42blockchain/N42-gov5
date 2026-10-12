@@ -397,10 +397,27 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	// the import's recovery step recovers only the rest.
 	cached := 0
 	total := 0
+	// complete: every transaction got its sender here, all under one
+	// signer; the import then has no recovery left to do (P10).
+	complete := fs.store != nil && dropped == 0
+	declared := false
+	var signer transaction.Signer
 	for i, p := range per {
 		total += len(p)
 		if fs.store != nil {
-			cached += frame.ApplySenders(p, fs.store.Senders(hashes[i]))
+			ss := fs.store.Senders(hashes[i])
+			n, d := frame.ApplySendersDeclared(p, ss)
+			cached += n
+			declared = declared || d
+			if n != len(p) {
+				complete = false
+			} else if len(p) > 0 {
+				if signer == nil {
+					signer = ss.Signer
+				} else if !signer.Equal(ss.Signer) {
+					complete = false
+				}
+			}
 		}
 	}
 	txs := make([]*transaction.Transaction, 0, total)
@@ -409,6 +426,9 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	}
 	body.Txs = txs
 	body.FrameData = raws
+	if complete {
+		bc.markSendersDone(b.Hash(), txs, signer, declared)
+	}
 	bc.MarkFramesInFlight(hashes, b.Number64().Uint64())
 	if fs.store != nil {
 		// This block's import recovers the senders admission has not:
