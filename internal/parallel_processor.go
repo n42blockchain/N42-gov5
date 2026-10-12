@@ -377,7 +377,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// Round 35z4: recovery was 321 ms of a follower's 1.25 s import at
 		// 163k transactions, on the round's critical path (r2 waits for the
 		// import), with every one of those transactions sitting in the pool.
-		senderHintFills = applySenderHints(hints, signer, txs)
+		// A frame block (spans) takes its senders frame by frame from the
+		// frame store and the attestations below, in bulk; the per-
+		// transaction hint pass found nothing there (S101: 587 of 589
+		// imports filled 0) and cost 6.8% of a node (hash, cache probe and
+		// a pool read lock per transaction).
+		if spans == nil {
+			senderHintFills = applySenderHints(hints, signer, txs)
+		}
 		// A block off the wire carries RLP only: From() is nil until the
 		// signature is recovered. The affinity key below needs every sender
 		// before the first wave, so recover the rest here in parallel

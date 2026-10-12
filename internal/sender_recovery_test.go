@@ -18,6 +18,7 @@ package internal
 
 import (
 	"math/big"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -488,5 +489,90 @@ func TestVerifyBlockSendersRejectsForgedSender(t *testing.T) {
 	bad[3].SetFrom(victim)
 	if err := verifyBlockSenders(signer, bad); err == nil {
 		t.Fatal("declared From on an unrecoverable signature accepted")
+	}
+}
+
+// lockedHintSource is a pool-like SenderHintSource: an RWMutex-guarded map,
+// the shape of txspool's txLookup.
+type lockedHintSource struct {
+	mu sync.RWMutex
+	m  map[types.Hash]*transaction.Transaction
+}
+
+func (l *lockedHintSource) GetTx(h types.Hash) *transaction.Transaction {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.m[h]
+}
+
+// BenchmarkApplySenderHintsMiss is the hint pass over freshly decoded wire
+// transactions that neither the sender cache nor the pool knows: the frame
+// import's case under attestation (S101: 587 of 589 blocks filled 0).
+func BenchmarkApplySenderHintsMiss(b *testing.B) {
+	const n = 4096
+	txs, _ := buildSignedTxs(b, n)
+	encs := make([][]byte, n)
+	for i, tx := range txs {
+		enc, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		encs[i] = enc
+	}
+	signer := transaction.NewLondonSigner(senderRecoveryChainID)
+	src := &lockedHintSource{m: map[types.Hash]*transaction.Transaction{}}
+	fresh := make([]*transaction.Transaction, n)
+	b.ResetTimer()
+	for it := 0; it < b.N; it++ {
+		b.StopTimer()
+		for i, enc := range encs {
+			fresh[i], _ = transaction.DecodeEthereumTransaction(enc)
+		}
+		b.StartTimer()
+		if got := applySenderHints(src, signer, fresh); got != 0 {
+			b.Fatalf("filled %d", got)
+		}
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*n), "ns/tx")
+}
+
+// countingHintSource counts pool lookups.
+type countingHintSource struct{ calls atomic.Int64 }
+
+func (c *countingHintSource) GetTx(types.Hash) *transaction.Transaction {
+	c.calls.Add(1)
+	return nil
+}
+
+// TestApplySenderHintsSkipsMemoised pins the P9 skip: a transaction whose
+// memo already holds a sender under the block's signer costs no pool lookup
+// and is not counted as a fill; one memoised under another signer is still
+// looked up.
+func TestApplySenderHintsSkipsMemoised(t *testing.T) {
+	const n = 16
+	signer := transaction.NewLondonSigner(senderRecoveryChainID)
+	txs, want := buildSignedTxs(t, n)
+	other := &countingSigner{Signer: transaction.NewLondonSigner(senderRecoveryChainID)}
+	for i, tx := range txs {
+		if i == 0 {
+			tx.SetSenderMemo(other, want[i])
+			continue
+		}
+		tx.SetSenderMemo(signer, want[i])
+	}
+	if !txs[1].HasSenderMemo(signer) || txs[0].HasSenderMemo(signer) {
+		t.Fatal("HasSenderMemo does not honour the signer")
+	}
+	src := &countingHintSource{}
+	if filled := applySenderHints(src, signer, txs); filled != 0 {
+		t.Fatalf("filled %d, want 0", filled)
+	}
+	if got := src.calls.Load(); got != 1 {
+		t.Fatalf("pool looked up %d times, want 1 (the foreign-signer memo)", got)
+	}
+	for i, tx := range txs[1:] {
+		if a, err := transaction.Sender(signer, tx); err != nil || a != want[i+1] {
+			t.Fatalf("tx %d: sender %s err %v", i+1, a.Hex(), err)
+		}
 	}
 }
