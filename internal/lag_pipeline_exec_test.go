@@ -52,6 +52,7 @@ func TestLagPipelineExecutesAheadOfRootAndWrite(t *testing.T) {
 	t.Run("beforeSnapshot", func(t *testing.T) { testLagPipelineAhead(t, false, arrivalBeforeSnapshot) })
 	t.Run("sealed", func(t *testing.T) { testLagPipelineAhead(t, false, arrivalSealed) })
 	t.Run("pushPath", func(t *testing.T) { testLagPipelineAhead(t, false, arrivalPushPath) })
+	t.Run("afterParent", func(t *testing.T) { testLagPipelineAhead(t, false, arrivalAfterParent) })
 }
 
 type lagArrival int
@@ -73,6 +74,11 @@ const (
 	// discarded the child's ahead execution). Here the executor is paused
 	// so that every block is the push path's.
 	arrivalPushPath
+	// afterParent: each child is checked only once its parent's import was
+	// reported (P12: at deferred depth 2 the leader proposes N+1 when N-1 is
+	// done, and on the fleet one follower import in three found no child at
+	// its parent's settle). The child still runs on the parent's snapshot.
+	arrivalAfterParent
 )
 
 func testLagPipelineAhead(t *testing.T, await bool, arrival lagArrival) {
@@ -110,7 +116,7 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	defer commitment.SetQMDBStateReadModeForTest(commitment.QMDBReadOn)()
 	defer SetLagPipelineForTest(true)()
 	prevWait := lagPipeChildWaitForTest
-	if arrival != arrivalBeforeSnapshot {
+	if arrival != arrivalBeforeSnapshot && arrival != arrivalAfterParent {
 		lagPipeChildWaitForTest = 2 * time.Second
 	}
 	defer func() { lagPipeChildWaitForTest = prevWait }()
@@ -255,6 +261,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		if arrival == arrivalMidImport && n >= 2 {
 			waitPublished(parent.Hash())
 		}
+		if arrival == arrivalAfterParent && n >= 2 {
+			waitLag(piped, n-1)
+		}
 		if arrival == arrivalSealed {
 			piped.bc.RememberAvailable(sealed)
 			piped.bc.EnqueueLagImport(sealed)
@@ -351,15 +360,26 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		require.GreaterOrEqual(t, early, blocks-1, "children did not become available before the snapshot")
 		require.Zero(t, earlyStarted, "a child ran ahead before its parent's snapshot")
 		require.GreaterOrEqual(t, used, uint64(blocks-1), "a child available before the snapshot did not run ahead")
+	case arrivalAfterParent:
+		require.GreaterOrEqual(t, used, uint64(blocks-1), "a child available after its parent's import did not run ahead")
+		require.GreaterOrEqual(t, piped.bc.lagPipe.late.Load(), uint64(blocks-1), "children were not launched on a settled parent")
 	}
-	require.GreaterOrEqual(t, discarded, uint64(1), "the failed parent's child was not discarded")
+	if arrival != arrivalAfterParent {
+		// afterParent: the child comes only after the failed write was
+		// retried, so nothing ran ahead on the failed parent.
+		require.GreaterOrEqual(t, discarded, uint64(1), "the failed parent's child was not discarded")
+	}
 	require.Eventually(t, func() bool {
 		_, _, _, open := piped.bc.LagPipelineStats()
 		return open == 0
 	}, 5*time.Second, time.Millisecond, "ahead executions left read transactions open")
 	piped.bc.lagPipe.mu.Lock()
 	require.Nil(t, piped.bc.lagPipe.spec)
-	require.Nil(t, piped.bc.lagPipe.parent)
+	// The last block's snapshot stays published for a child (none comes).
+	if par := piped.bc.lagPipe.parent; par != nil {
+		require.True(t, par.written)
+		require.Equal(t, wire[len(wire)-1].Hash(), par.hash)
+	}
 	piped.bc.lagPipe.mu.Unlock()
 	_, _, queued := piped.bc.LagStats()
 	require.Zero(t, queued)
@@ -493,7 +513,11 @@ func TestLagPipelineOrphanedChildDiscardsAhead(t *testing.T) {
 	}, 5*time.Second, time.Millisecond, "ahead executions left read transactions open")
 	lc.bc.lagPipe.mu.Lock()
 	require.Nil(t, lc.bc.lagPipe.spec)
-	require.Nil(t, lc.bc.lagPipe.parent)
+	if par := lc.bc.lagPipe.parent; par != nil {
+		// The last block's snapshot stays published for a child.
+		require.True(t, par.written)
+		require.Equal(t, b4.Hash(), par.hash)
+	}
 	lc.bc.lagPipe.mu.Unlock()
 	_, _, queued := lc.bc.LagStats()
 	require.Zero(t, queued)

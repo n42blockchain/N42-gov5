@@ -64,6 +64,15 @@ import (
 // block executes on the serial path. A parent that fails, is forgotten or
 // orphaned discards it. N42_LAG_PIPELINE=0 disables the pipeline.
 //
+// A written parent's snapshot stays published until the next block
+// publishes its own (P12): a child that becomes available only after its
+// parent's import finished -- at deferred depth 2 the leader proposes N+1
+// once its N-1 is applied, so on the fleet one follower import in three
+// found its child missing at the parent's settle and ran the serial path,
+// +85 ms -- still runs on the ahead path, launched when it is queued or, at
+// the latest, by its own import (lagPipeTake), instead of the serial path
+// that joins the parent's write and materialises the pending credits.
+//
 // Header fields are untouched: under deferred execution depth k a header
 // carries the result of the block k levels below it, so N's root is first
 // needed by header N+k, built only after the leader gate (LagReady) sees N
@@ -138,6 +147,32 @@ type lagPipeline struct {
 	skipParent   atomic.Uint64 // a block at the child height on another parent
 	skipBusy     atomic.Uint64 // another ahead execution in flight
 	skipOff      atomic.Uint64 // pipeline disabled or unusable on this chain
+	// late: ahead executions launched on a parent whose import had already
+	// settled (the child came after it); takeLaunch: those of them launched
+	// by the child's own import.
+	late       atomic.Uint64
+	takeLaunch atomic.Uint64
+}
+
+// dropParentLocked unpublishes the snapshot (p.mu held), counting a written
+// parent no child ran ahead on by the reason the last attempt gave up.
+func (p *lagPipeline) dropParentLocked() {
+	par := p.parent
+	if par == nil {
+		return
+	}
+	p.parent = nil
+	if !par.written || par.launched {
+		return
+	}
+	switch par.skip {
+	case lagSkipParent:
+		p.skipParent.Add(1)
+	case lagSkipBusy:
+		p.skipBusy.Add(1)
+	default:
+		p.skipNotAvail.Add(1)
+	}
 }
 
 // Reasons a launch attempt for a published parent gave up.
@@ -153,9 +188,12 @@ type lagPipeParent struct {
 	header *block.Header
 	post   *state.PostState
 	// Under lagPipeline.mu: a child was launched on this snapshot, or the
-	// reason the last attempt did not launch one.
+	// reason the last attempt did not launch one; written: the publishing
+	// import wrote (or handed off) the block, the snapshot stays published
+	// for a child that comes later.
 	launched bool
 	skip     int
+	written  bool
 }
 
 // aheadExec is one block executed ahead of its parent's root and write.
@@ -222,6 +260,7 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 		"aheadAtt", p.launched.Load(), "aheadUsed", p.used.Load(), "aheadDisc", p.discarded.Load(),
 		"aheadSkipNotAvail", p.skipNotAvail.Load(), "aheadSkipParent", p.skipParent.Load(),
 		"aheadSkipBusy", p.skipBusy.Load(), "aheadSkipOff", p.skipOff.Load(),
+		"aheadLate", p.late.Load(), "aheadTakeLaunch", p.takeLaunch.Load(),
 	}
 }
 
@@ -276,6 +315,7 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
 		fn(h)
 	}
 	p.mu.Lock()
+	p.dropParentLocked()
 	p.parent = &lagPipeParent{hash: h, number: hdr.Number.Uint64(), header: hdr, post: post}
 	if s := p.spec; s != nil && s.parent != h {
 		// An ahead execution on another parent cannot be used any more.
@@ -376,14 +416,24 @@ func (bc *BlockChain) lagPipeLaunch() {
 		p.mu.Unlock()
 		return
 	}
-	a := &aheadExec{blk: child, parent: par.hash, done: make(chan struct{}), started: time.Now(), pipe: p}
+	a := p.newAheadLocked(child, par)
+	p.spec = a
+	p.mu.Unlock()
+	go bc.runAhead(a, par)
+}
+
+// newAheadLocked creates the ahead execution of child on par's snapshot
+// (p.mu held); the caller starts runAhead.
+func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent) *aheadExec {
+	a := &aheadExec{blk: child, parent: par.hash, parentOK: par.written, done: make(chan struct{}), started: time.Now(), pipe: p}
 	p.seq++
 	a.seq = p.seq
-	p.spec = a
 	par.launched = true
-	p.mu.Unlock()
 	p.launched.Add(1)
-	go bc.runAhead(a, par)
+	if par.written {
+		p.late.Add(1)
+	}
+	return a
 }
 
 // runAhead executes a.blk on par's post-state.
@@ -454,14 +504,32 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 	p := &bc.lagPipe
 	p.mu.Lock()
 	a := p.spec
+	if a == nil {
+		// Nothing ran ahead: the child came after its parent's import. On
+		// the parent's still-published snapshot it runs the ahead path now.
+		if par := p.parent; par != nil && par.hash == blk.ParentHash() && par.written && !par.launched && bc.lagPipeUsable() {
+			if child, ok := blk.(*block.Block); ok && bc.LagImportQueued(child.Hash()) {
+				a = p.newAheadLocked(child, par)
+				p.takeLaunch.Add(1)
+				go bc.runAhead(a, par)
+			}
+		}
+	}
 	if a == nil || a.blk.Hash() != blk.Hash() {
+		if par := p.parent; par != nil && par.hash == blk.ParentHash() {
+			// blk runs the serial path: nothing may launch it on this
+			// snapshot from now on.
+			p.dropParentLocked()
+		}
 		p.mu.Unlock()
 		// The serial path executes blk next: a discarded run of it must not
 		// still be filling its transactions' senders.
 		p.awaitDrained(blk.Hash(), nil)
 		return nil
 	}
-	p.spec = nil
+	if p.spec == a {
+		p.spec = nil
+	}
 	parentOK := a.parentOK
 	p.mu.Unlock()
 	<-a.done
@@ -538,24 +606,19 @@ func (p *lagPipeline) awaitDrained(hash types.Hash, self *aheadExec) {
 
 // lagPipeSettle settles the pipeline after an import of h that ran its
 // execution (insertChain, under the chain lock, on every path): written,
-// its child's ahead execution may be used; failed, the snapshot it
-// published and that execution are dropped. A parent written with no child
-// launched on its snapshot counts the reason the last attempt gave up.
+// its child's ahead execution may be used, and the snapshot stays published
+// for a child not launched yet; failed, the snapshot it published and that
+// execution are dropped. A parent dropped with no child launched on its
+// snapshot counts the reason the last attempt gave up (dropParentLocked).
 func (bc *BlockChain) lagPipeSettle(h types.Hash, written bool) {
 	p := &bc.lagPipe
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if par := p.parent; par != nil && par.hash == h {
-		p.parent = nil
-		if written && !par.launched {
-			switch par.skip {
-			case lagSkipParent:
-				p.skipParent.Add(1)
-			case lagSkipBusy:
-				p.skipBusy.Add(1)
-			default:
-				p.skipNotAvail.Add(1)
-			}
+		if written {
+			par.written = true
+		} else {
+			p.dropParentLocked()
 		}
 	}
 	if a := p.spec; a != nil && a.parent == h {
@@ -575,9 +638,23 @@ func (bc *BlockChain) lagPipeForget(hash types.Hash) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.parent != nil && p.parent.hash == hash {
-		p.parent = nil
+		p.dropParentLocked()
 	}
 	if a := p.spec; a != nil && (a.parent == hash || a.blk.Hash() == hash) {
+		p.spec = nil
+		p.discardLocked(a)
+	}
+}
+
+// lagPipeReset drops the published snapshot and the ahead execution (a
+// failed write reloaded the tree from the store: no snapshot above it
+// holds).
+func (bc *BlockChain) lagPipeReset() {
+	p := &bc.lagPipe
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dropParentLocked()
+	if a := p.spec; a != nil {
 		p.spec = nil
 		p.discardLocked(a)
 	}
