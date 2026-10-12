@@ -448,6 +448,7 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		add("w.post", ms(r.w.Post))
 		add("w.prep", ms(r.w.Prep))
 		add("w.prepWait", ms(r.w.PrepWait))
+		add("w.txn", ms(r.w.Total-r.w.PrepWait)) // the write's transaction, BeginRw to commit
 		add("w.frames", ms(r.w.Frames))
 		add("w.framesWait", ms(r.w.FramesWait))
 		add("root+write", ms(r.root+r.w.Total))

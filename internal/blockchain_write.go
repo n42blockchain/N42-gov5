@@ -155,7 +155,8 @@ type blockWritePhases struct {
 	QMDBFlush, QMDBMeta, Snapshot, Commit   time.Duration
 	Post, Total                             time.Duration
 	// Prep is the prepared state write's run off the transaction (P11),
-	// PrepWait the part of State that waited for it.
+	// PrepWait the write's wait for the preparations before its
+	// transaction opened (part of Total, not of any phase).
 	Prep, PrepWait time.Duration
 	PrepFast       bool // applied from prepared rows (not a replay)
 	// Frames is the frame store write's run (its own transaction),
@@ -279,7 +280,8 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		dSnapshot    time.Duration
 		dPost        time.Duration
 		// The prepared state write (P11): its own run, off the transaction,
-		// and the part of the state phase spent waiting for it.
+		// and the write's wait for it (and the Log rows) before the
+		// transaction opened.
 		dPrep, dPrepWait time.Duration
 		// The frame store write (P11): its own run and the commit's wait.
 		dFrames, dFramesWait time.Duration
@@ -289,6 +291,34 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		nAccts int
 		nSlots int
 	)
+
+	// The ordered writer's block arrives with its CommitBlock, changeset rows
+	// and Log rows prepared off this write (lag_writer.go). They are waited
+	// for before the transaction opens, so the MDBX writer lock -- which the
+	// history fold and the commit path also take -- is not held across the
+	// wait.
+	var (
+		prepared     *state.PreparedStateWrite
+		preparedLogs *rawdb.PreparedLogs
+	)
+	if job != nil {
+		tWait := time.Now()
+		if job.prep != nil && ibs != nil {
+			p, err := job.prep.wait()
+			if err != nil {
+				return NonStatTy, fmt.Errorf("preparing the state write of block %d: %w", blockNumber.Uint64(), err)
+			}
+			prepared, dPrep = p, job.prep.took
+		}
+		if job.logs != nil && len(receipts) > 0 {
+			l, err := job.logs.wait()
+			if err != nil {
+				return NonStatTy, fmt.Errorf("preparing the logs of block %d: %w", blockNumber.Uint64(), err)
+			}
+			preparedLogs = l
+		}
+		dPrepWait = time.Since(tWait)
+	}
 
 	if err := bc.ChainDB.Update(writeCtx, func(tx kv.RwTx) error {
 		tClosureStart = time.Now()
@@ -317,13 +347,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		if len(receipts) > 0 {
 			tPhase = time.Now()
 			encoded := future.encodedFor(blk.Hash(), receipts)
-			var logs *rawdb.PreparedLogs
-			if job != nil && job.logs != nil {
-				// Prepared from the hand-off on (lag_writer.go logsPrep).
-				if logs, err = job.logs.wait(); err != nil {
-					return fmt.Errorf("preparing the logs of block %d: %w", blockNumber.Uint64(), err)
-				}
-			}
+			logs := preparedLogs
 			if logs != nil {
 				err = rawdb.AppendReceiptsPrepared(tx, blockNumber.Uint64(), receipts, encoded, logs)
 			} else {
@@ -400,22 +424,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// the proven state root is trusted.
 		// The ordered writer's block arrives with its CommitBlock done off
 		// this transaction (lag_writer.go stateWritePrep); applying it is the
-		// state phase, including any wait for the preparation to finish.
-		var prepared *state.PreparedStateWrite
-		if ibs != nil && job != nil && job.prep != nil {
-			tPhase = time.Now()
-			p, err := job.prep.wait()
-			if err != nil {
-				return fmt.Errorf("preparing the state write of block %d: %w", blockNumber.Uint64(), err)
-			}
-			if diffCollector != nil || stateWriter != state.WriterWithChangeSets(plainWriter) {
-				// lagWriteUsable admits no snapshot tree or read-through
-				// cache, the writers prepared rows would bypass.
-				return fmt.Errorf("prepared state write of block %d under a wrapped state writer", blockNumber.Uint64())
-			}
-			prepared = p
-			dPrepWait = time.Since(tPhase)
-			dPrep = job.prep.took
+		// state phase.
+		if prepared != nil && (diffCollector != nil || stateWriter != state.WriterWithChangeSets(plainWriter)) {
+			// lagWriteUsable admits no snapshot tree or read-through cache,
+			// the writers prepared rows would bypass.
+			return fmt.Errorf("prepared state write of block %d under a wrapped state writer", blockNumber.Uint64())
 		}
 		if ibs != nil {
 			tPhase = time.Now()
@@ -427,7 +440,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			} else if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
 				return err
 			}
-			dState = time.Since(tPhase) + dPrepWait
+			dState = time.Since(tPhase)
 			if prepared != nil {
 				nAccts, nSlots = prepared.ChangedCounts(plainWriter)
 			} else {
@@ -766,8 +779,8 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			role = "leader"
 		}
 		dTotal := time.Since(tUpdateStart)
-		dBegin := tClosureStart.Sub(tUpdateStart)
-		dCommit := dUpdate - dBegin - dInClosure
+		dBegin := tClosureStart.Sub(tUpdateStart) - dPrepWait
+		dCommit := dUpdate - dPrepWait - dBegin - dInClosure
 		fields := []interface{}{
 			"n", blockNumber.Uint64(), "role", role, "txs", len(blk.Transactions()),
 			"begin", dBegin, "receipts", dReceipts, "block", dBlock, "ce", dEvidence,
