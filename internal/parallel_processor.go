@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -783,7 +784,19 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	if failed > 0 {
 		included = make([]*transaction.Transaction, 0, numTxs-failed)
 	}
-	for i := 0; i < numTxs; i++ {
+	// Nothing dropped: receipts, logs and the fee totals are assembled
+	// across goroutines (P10: the serial loops were ~20 ms of a 163k
+	// block's collect, mostly cache misses on every receipt).
+	var feeTotals map[types.Address]*uint256.Int
+	var feeOrder []types.Address
+	collected := false
+	if failed == 0 {
+		if c, ok := collectParallelResults(txs, txResults, skipped, concreteHeader); ok {
+			receipts, allLogs, usedGas, feeTotals, feeOrder = c.receipts, c.logs, c.usedGas, c.feeTotals, c.feeOrder
+			collected = true
+		}
+	}
+	for i := 0; i < numTxs && !collected; i++ {
 		if skipped != nil && skipped[i] {
 			// failed == 0 here (skip mode drops nothing), so the index is i.
 			receipts = append(receipts, SkippedTxReceipt(txs[i], concreteHeader, i, usedGas))
@@ -818,6 +831,12 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// This is critical: the caller (evmRecord) expects ibs to contain all state
 	// changes. writeBlockWithState later calls ibs.CommitBlock() to flush to DB.
 	tApplyStart := time.Now()
+	if pf := ibs.AccountPrefetch(); pf != nil {
+		// The workers read every account the block touched from the same
+		// base state the fold reads (the parent's post-state): the fold and
+		// the block end take them from that cache instead of the store.
+		pf.SetKnown(baseCache)
+	}
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
@@ -858,9 +877,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// zero total still goes through AddBalance: the serial path touches the
 	// recipient in every transaction, and the touch decides whether an empty
 	// account survives the block.
-	totals := make(map[types.Address]*uint256.Int, len(feeRecipients))
-	var order []types.Address
-	for i := 0; i < numTxs; i++ {
+	totals, order := feeTotals, feeOrder
+	if !collected {
+		totals = make(map[types.Address]*uint256.Int, len(feeRecipients))
+	}
+	for i := 0; i < numTxs && !collected; i++ {
 		for _, f := range txResults[i].fees {
 			t, ok := totals[f.recipient]
 			if !ok {
@@ -1129,35 +1150,92 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 		code []byte
 	}
 
+	type collected struct {
+		accounts []accountEntry
+		storages []storageEntry
+		codes    []codeEntry
+		wipes    []types.Address
+		err      error
+	}
+	collect := func(c *collected, lo, hi int) {
+		c.err = mvs.ApplyShards(numTxs, lo, hi, func(key parallel.LocationKey, value []byte, delta *uint256.Int) error {
+			switch key.Field {
+			case parallel.FieldBalance:
+				// FieldBalance stores the full encoded StateAccount (balance +
+				// nonce + codeHash + root), or only a balance delta.
+				c.accounts = append(c.accounts, accountEntry{addr: key.Address, value: value, delta: delta})
+			case parallel.FieldStorage:
+				c.storages = append(c.storages, storageEntry{addr: key.Address, slot: key.Slot, value: value})
+			case parallel.FieldCode:
+				if value != nil {
+					c.codes = append(c.codes, codeEntry{addr: key.Address, code: value})
+				}
+			case parallel.FieldStorageWipe:
+				if value != nil {
+					c.wipes = append(c.wipes, key.Address)
+				}
+			}
+			// Other fields (CodeHash, CodeSize, Suicide, Exist, Incarnation) are
+			// auxiliary — the IBS handles them internally via SetBalance/SetCode/etc.
+			return nil
+		})
+	}
+	// The final versions are read across goroutines over disjoint shard
+	// ranges (P10: the serial walk was ~11 ms of a 163k block's collect)
+	// and concatenated in shard order, the order of the serial walk.
+	parts := make([]collected, applyMVSWorkers(numTxs))
+	if len(parts) == 1 {
+		collect(&parts[0], 0, parallel.MVSShards)
+	} else {
+		var wg sync.WaitGroup
+		per := (parallel.MVSShards + len(parts) - 1) / len(parts)
+		for w := range parts {
+			lo, hi := w*per, (w+1)*per
+			if hi > parallel.MVSShards {
+				hi = parallel.MVSShards
+			}
+			wg.Add(1)
+			go func(c *collected, lo, hi int) {
+				defer wg.Done()
+				collect(c, lo, hi)
+			}(&parts[w], lo, hi)
+		}
+		wg.Wait()
+	}
 	var accounts []accountEntry
 	var storages []storageEntry
 	var codes []codeEntry
 	var wipes []types.Address
-
-	// Single pass to collect and categorize all MVS entries.
-	if err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte, delta *uint256.Int) error {
-		switch key.Field {
-		case parallel.FieldBalance:
-			// FieldBalance stores the full encoded StateAccount (balance +
-			// nonce + codeHash + root), or only a balance delta.
-			accounts = append(accounts, accountEntry{addr: key.Address, value: value, delta: delta})
-		case parallel.FieldStorage:
-			storages = append(storages, storageEntry{addr: key.Address, slot: key.Slot, value: value})
-		case parallel.FieldCode:
-			if value != nil {
-				codes = append(codes, codeEntry{addr: key.Address, code: value})
-			}
-		case parallel.FieldStorageWipe:
-			if value != nil {
-				wipes = append(wipes, key.Address)
-			}
+	if len(parts) == 1 {
+		accounts, storages, codes, wipes = parts[0].accounts, parts[0].storages, parts[0].codes, parts[0].wipes
+	} else {
+		na, ns := 0, 0
+		for i := range parts {
+			na += len(parts[i].accounts)
+			ns += len(parts[i].storages)
 		}
-		// Other fields (CodeHash, CodeSize, Suicide, Exist, Incarnation) are
-		// auxiliary — the IBS handles them internally via SetBalance/SetCode/etc.
-		return nil
-	}); err != nil {
-		return err
+		accounts = make([]accountEntry, 0, na)
+		storages = make([]storageEntry, 0, ns)
+		for i := range parts {
+			accounts = append(accounts, parts[i].accounts...)
+			storages = append(storages, parts[i].storages...)
+			codes = append(codes, parts[i].codes...)
+			wipes = append(wipes, parts[i].wipes...)
+		}
 	}
+	for i := range parts {
+		if parts[i].err != nil {
+			return parts[i].err
+		}
+	}
+
+	full := 0
+	for i := range accounts {
+		if accounts[i].delta == nil {
+			full++
+		}
+	}
+	ibs.Reserve(full+len(storages)+len(codes), len(accounts)-full)
 
 	// Track which accounts are deleted in the final state.
 	deletedAccounts := make(map[types.Address]bool)
@@ -1231,8 +1309,160 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	return nil
 }
 
+// collectedRun is collectParallelResults' outcome.
+type collectedRun struct {
+	receipts  block.Receipts
+	logs      []*block.Log
+	usedGas   uint64
+	feeTotals map[types.Address]*uint256.Int
+	feeOrder  []types.Address
+}
+
+// collectParallelMinTxs is the block size from which the receipts and fee
+// totals are assembled across goroutines.
+const collectParallelMinTxs = 8192
+
+// collectParallelResults assembles a run in which no transaction was
+// dropped (skipped ones keep a skip receipt): receipts with cumulative gas,
+// logs in order, the gas used, and the deferred fee totals per recipient
+// in order of first appearance -- exactly what the serial loops produce.
+// It works in two passes over contiguous chunks (sums, then placement after
+// a prefix over the chunk sums). ok is false when the block is small or a
+// kept transaction has no receipt; the caller then runs the serial loops.
+func collectParallelResults(txs []*transaction.Transaction, txResults []parallelTxResult, skipped []bool, header *block.Header) (collectedRun, bool) {
+	n := len(txs)
+	if n < collectParallelMinTxs {
+		return collectedRun{}, false
+	}
+	workers := n / collectParallelMinTxs
+	if p := runtime.GOMAXPROCS(0); workers > p {
+		workers = p
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	if workers < 2 {
+		workers = 2
+	}
+	per := (n + workers - 1) / workers
+	type chunk struct {
+		gas    uint64
+		nLogs  int
+		noRcpt bool
+		fees   []deferredFee // summed per recipient, first appearance order
+		gasOff uint64
+		logOff int
+		lo, hi int
+	}
+	chunks := make([]chunk, workers)
+	for w := range chunks {
+		lo, hi := w*per, (w+1)*per
+		if hi > n {
+			hi = n
+		}
+		if lo > hi {
+			lo = hi
+		}
+		chunks[w].lo, chunks[w].hi = lo, hi
+	}
+	isSkipped := func(i int) bool { return skipped != nil && skipped[i] }
+	run := func(fn func(c *chunk)) {
+		var wg sync.WaitGroup
+		for w := range chunks {
+			wg.Add(1)
+			go func(c *chunk) {
+				defer wg.Done()
+				fn(c)
+			}(&chunks[w])
+		}
+		wg.Wait()
+	}
+	run(func(c *chunk) {
+		for i := c.lo; i < c.hi; i++ {
+			tr := &txResults[i]
+			for _, f := range tr.fees {
+				k := 0
+				for k < len(c.fees) && c.fees[k].recipient != f.recipient {
+					k++
+				}
+				if k == len(c.fees) {
+					c.fees = append(c.fees, deferredFee{recipient: f.recipient})
+				}
+				c.fees[k].amount.Add(&c.fees[k].amount, &f.amount)
+			}
+			if isSkipped(i) {
+				continue
+			}
+			if tr.receipt == nil {
+				c.noRcpt = true
+				return
+			}
+			c.gas += tr.gasUsed
+			c.nLogs += len(tr.logs)
+		}
+	})
+	var out collectedRun
+	nLogs := 0
+	for w := range chunks {
+		if chunks[w].noRcpt {
+			return collectedRun{}, false
+		}
+		chunks[w].gasOff, chunks[w].logOff = out.usedGas, nLogs
+		out.usedGas += chunks[w].gas
+		nLogs += chunks[w].nLogs
+	}
+	out.receipts = make(block.Receipts, n)
+	if nLogs > 0 {
+		out.logs = make([]*block.Log, nLogs)
+	}
+	run(func(c *chunk) {
+		cum, li := c.gasOff, c.logOff
+		for i := c.lo; i < c.hi; i++ {
+			if isSkipped(i) {
+				out.receipts[i] = SkippedTxReceipt(txs[i], header, i, cum)
+				continue
+			}
+			tr := &txResults[i]
+			cum += tr.gasUsed
+			tr.receipt.CumulativeGasUsed = cum
+			out.receipts[i] = tr.receipt
+			li += copy(out.logs[li:], tr.logs)
+		}
+	})
+	out.feeTotals = make(map[types.Address]*uint256.Int, 2)
+	for w := range chunks {
+		for k := range chunks[w].fees {
+			f := &chunks[w].fees[k]
+			t, ok := out.feeTotals[f.recipient]
+			if !ok {
+				t = new(uint256.Int)
+				out.feeTotals[f.recipient] = t
+				out.feeOrder = append(out.feeOrder, f.recipient)
+			}
+			t.Add(t, &f.amount)
+		}
+	}
+	return out, true
+}
+
 // ParallelWorkers reports the configured Block-STM worker count (for logs).
 func ParallelWorkers() int { return parallelWorkers() }
+
+// applyMVSWorkers is how many goroutines read a block's final versions in
+// applyMVSToIBS: one for small blocks, up to 16 (and GOMAXPROCS).
+func applyMVSWorkers(numTxs int) int {
+	w := numTxs / 4096
+	if p := runtime.GOMAXPROCS(0); w > p {
+		w = p
+	}
+	if w > 16 {
+		w = 16
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
 
 // prefetchPendingCredits reads the state's pending balance-increase
 // addresses across goroutines, each on its own read transaction through the
@@ -1242,6 +1472,12 @@ func ParallelWorkers() int { return parallelWorkers() }
 // span is the caller's QMDB read span (nil: no QMDB reads); the workers'
 // transactions are opened under its permit.
 func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, span *commitment.ReadSpan, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
+	if pf.HasKnown() {
+		// The run's base-read cache answers the fold (SetKnown): every
+		// credited account was read by the transaction that credited it,
+		// so the cache holds them all, and a miss reads through as before.
+		return 0, nil
+	}
 	addrs := ibs.PendingBalanceIncreases()
 	if len(addrs) < 256 {
 		return 0, nil

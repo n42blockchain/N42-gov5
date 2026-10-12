@@ -454,7 +454,17 @@ func (e *mvEntry) removeLocked(txIndex int) {
 // deltas after it; an account with only deltas gets a nil value and their
 // sum as delta.
 func (m *MVS) ApplyAll(numTxs int, fn func(key LocationKey, value []byte, delta *uint256.Int) error) error {
-	for i := range m.shards {
+	return m.ApplyShards(numTxs, 0, MVSShards, fn)
+}
+
+// MVSShards is the number of index shards ApplyShards ranges over.
+const MVSShards = mvsShards
+
+// ApplyShards is ApplyAll over the shards [lo, hi): disjoint ranges visit
+// disjoint locations, so they can run concurrently (each with its own fn),
+// and the ranges in order visit every location in ApplyAll's order.
+func (m *MVS) ApplyShards(numTxs, lo, hi int, fn func(key LocationKey, value []byte, delta *uint256.Int) error) error {
+	for i := lo; i < hi; i++ {
 		t := m.shards[i].tab.Load()
 		for j := range t.slots {
 			e := t.slots[j].Load()

@@ -131,6 +131,22 @@ func (c *BaseCache) get(addr types.Address) (*account.StateAccount, bool) {
 	return &cp, true
 }
 
+// Get is get for callers outside the executor: the cached base account
+// (a copy; nil for "absent") and whether addr was cached.
+func (c *BaseCache) Get(addr types.Address) (*account.StateAccount, bool) {
+	return c.get(addr)
+}
+
+// Peek is Get without the copy: the cached account itself (nil for
+// "absent"), shared and read-only.
+func (c *BaseCache) Peek(addr types.Address) (*account.StateAccount, bool) {
+	e := c.lookup(addr)
+	if e == nil {
+		return nil, false
+	}
+	return e.acc, true
+}
+
 // lookup returns addr's entry, or nil when it is not cached. The entry is
 // shared: its account and encoding are read-only.
 func (c *BaseCache) lookup(addr types.Address) *baseEntry {

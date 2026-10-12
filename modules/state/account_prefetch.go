@@ -31,6 +31,19 @@ type AccountPrefetch struct {
 	base  StateReader
 	accts map[types.Address]*account.StateAccount
 	hits  int
+	// known (optional) answers from a cache of the same base state the
+	// caller already holds (P10: the parallel run's base-read cache), so
+	// the block-end fold reads neither the store nor a seeded copy.
+	known KnownAccounts
+}
+
+// KnownAccounts is a cache of a reader's base state, safe for concurrent
+// use: Get returns a copy the caller may keep (nil for "absent") and
+// whether the address is cached; Peek the cached value itself, which must
+// not be modified.
+type KnownAccounts interface {
+	Get(types.Address) (*account.StateAccount, bool)
+	Peek(types.Address) (*account.StateAccount, bool)
 }
 
 // NewAccountPrefetch wraps base. Until Seed is called every read falls
@@ -43,6 +56,29 @@ func NewAccountPrefetch(base StateReader) *AccountPrefetch {
 func (p *AccountPrefetch) Seed(accts map[types.Address]*account.StateAccount) {
 	p.accts = accts
 	p.hits = 0
+}
+
+// SetKnown installs a lookup into a cache of this layer's base state,
+// consulted after the seeded set (see AccountPrefetch.known). nil removes
+// it. It must answer exactly what base would.
+func (p *AccountPrefetch) SetKnown(k KnownAccounts) {
+	p.known = k
+}
+
+// HasKnown reports whether a known-accounts cache is installed.
+func (p *AccountPrefetch) HasKnown() bool { return p != nil && p.known != nil }
+
+// lookupSeeded returns address's account from the seeded set or the
+// known cache (a value shared with the set: read-only), and whether
+// either had it.
+func (p *AccountPrefetch) lookupSeeded(address types.Address) (*account.StateAccount, bool) {
+	if a, ok := p.accts[address]; ok {
+		return a, true
+	}
+	if p.known != nil {
+		return p.known.Peek(address)
+	}
+	return nil, false
 }
 
 // Hits reports how many reads the seeded set answered since the last Seed.
@@ -61,6 +97,12 @@ func (p *AccountPrefetch) ReadAccountData(address types.Address) (*account.State
 			c := new(account.StateAccount)
 			c.Copy(a)
 			return c, nil
+		}
+	}
+	if p.known != nil {
+		if a, ok := p.known.Get(address); ok {
+			p.hits++
+			return a, nil
 		}
 	}
 	return p.base.ReadAccountData(address)
