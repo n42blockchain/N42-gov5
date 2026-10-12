@@ -99,6 +99,12 @@ func SetLagWriteAsyncForTest(on bool) func() {
 // the write lands, or a failed write).
 var lagWriteBeforeCommitForTest func(number uint64) error
 
+// lagWriteJoinForTest, when set, runs when something starts waiting for the
+// write of block number to finish -- the next block's hand-off, or any other
+// join (benchmarks: holding each write until then makes the writes
+// back-to-back).
+var lagWriteJoinForTest func(number uint64)
+
 // lagWriter is the ordered writer's state on the chain.
 type lagWriter struct {
 	// inflight: the write handed off and not yet joined (under bc.lock).
@@ -325,6 +331,9 @@ func (bc *BlockChain) joinLagWrite() error {
 	j := bc.lagWrite.inflight
 	if j == nil {
 		return nil
+	}
+	if fn := lagWriteJoinForTest; fn != nil {
+		fn(j.number)
 	}
 	<-j.done
 	bc.lagWrite.inflight = nil
