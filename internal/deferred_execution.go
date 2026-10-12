@@ -83,8 +83,28 @@ func seededResult(tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, bool) {
 }
 
 // ExecutedOrSeededResult is executedOrSeededResult for the block builder.
+// A block applied here whose write is still in flight has its result in
+// memory (lag_gate_applied.go); one written after tx began is read again
+// in a fresh transaction.
 func (bc *BlockChain) ExecutedOrSeededResult(tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, error) {
-	return executedOrSeededResult(bc.chainConfig, tx, h)
+	r, err := executedOrSeededResult(bc.chainConfig, tx, h)
+	if err == nil || !errors.Is(err, ErrDeferredResultUnknown) || !lagGateApplied {
+		return r, err
+	}
+	if pr, ok := bc.pendingExecutedResult(h.Hash()); ok {
+		return pr, nil
+	}
+	if bc.ChainDB != nil {
+		var r2 rawdb.ExecutedResult
+		var err2 error
+		if verr := bc.ChainDB.View(bc.ctx, func(tx2 kv.Tx) error {
+			r2, err2 = executedOrSeededResult(bc.chainConfig, tx2, h)
+			return nil
+		}); verr == nil && err2 == nil {
+			return r2, nil
+		}
+	}
+	return r, err
 }
 
 // ErrDeferredResultUnknown: the parent's execution result is not on this

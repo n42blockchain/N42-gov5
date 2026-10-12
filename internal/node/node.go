@@ -1933,6 +1933,7 @@ func (n *Node) Start() error {
 			// retry deferred commits and resume a waiting leader view.
 			svc.SetAvailabilityProbe(realBC.HasAvailableBlock)
 			realBC.SetLagImportedHook(svc.NotifyBlockImported)
+			realBC.SetLagResultHook(svc.NotifyLagResultReady)
 			if block.LagMode() && internal.FrameBlocksEnabled() {
 				// Deferred depth k > 1 with frame blocks: the leader builds
 				// without executing and may propose height N once it has

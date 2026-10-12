@@ -89,6 +89,9 @@ type lagExecutor struct {
 	kick    chan struct{}
 	started atomic.Bool
 	hook    atomic.Pointer[func(hash, txHash types.Hash)]
+	// resultHook: told when a handed-off block's executed result is known
+	// in memory, before its write is durable (lag_gate_applied.go).
+	resultHook atomic.Pointer[func(hash types.Hash)]
 
 	imported atomic.Uint64
 	lastNum  atomic.Uint64
@@ -281,6 +284,12 @@ func (bc *BlockChain) LagReady(parent types.Hash) (ready bool, waitFor types.Has
 			return nil
 		}
 		if _, rerr := executedOrSeededResult(bc.chainConfig, tx, target); rerr != nil {
+			if _, ok := bc.pendingExecutedResult(target.Hash()); ok {
+				// Applied in memory, its write in flight: the result is
+				// final (lag_gate_applied.go).
+				ready = true
+				return nil
+			}
 			waitFor = target.Hash()
 			return nil
 		}

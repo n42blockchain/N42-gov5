@@ -1941,6 +1941,13 @@ func (s *Service) NotifyBlockHeaderKnown(hash types.Hash, parent types.Hash, num
 	}
 }
 
+// NotifyLagResultReady: hash's executed result is known on this node (its
+// write may still be in flight, P12 N42_LAG_GATE_APPLIED). A leader view the
+// lag gate parked on it re-runs the gate now instead of at durability.
+func (s *Service) NotifyLagResultReady(hash types.Hash) {
+	s.resumeDeferredProduction(hash, "applied")
+}
+
 // NotifyBlockImported implements sync.BlockImportNotifier.
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.
