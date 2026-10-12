@@ -143,7 +143,7 @@ func (bnh *BlockNumberOrHash) UnmarshalJSON(data []byte) error {
 	default:
 		if len(input) == 66 {
 			hash := types.Hash{}
-			if err := UnmarshalText(hash, []byte(input)); err != nil {
+			if err := UnmarshalText(&hash, []byte(input)); err != nil {
 				return err
 			}
 			bnh.BlockHash = &hash
