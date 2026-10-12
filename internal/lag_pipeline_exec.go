@@ -107,6 +107,11 @@ var lagPipeChildWaitForTest time.Duration
 // earlier must wait for it).
 var lagPipeBeforePublishForTest func(parent types.Hash)
 
+// lagPipeAfterPublishForTest runs at the snapshot point of a publishing
+// import after the child's launch (tests: the root's work after the
+// publication, which the child's ahead run overlaps).
+var lagPipeAfterPublishForTest func(parent types.Hash)
+
 // lagPipeAheadStartedForTest runs on an ahead execution's goroutine once
 // it holds its read transaction (tests: orphan the child mid-run).
 var lagPipeAheadStartedForTest func(child *block.Block)
@@ -330,6 +335,9 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
 		}
 	}
 	bc.lagPipeLaunch()
+	if fn := lagPipeAfterPublishForTest; fn != nil {
+		fn(h)
+	}
 	if lagPipeAwaitAheadForTest {
 		p.mu.Lock()
 		a := p.spec

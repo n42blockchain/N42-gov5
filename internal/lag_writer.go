@@ -134,7 +134,12 @@ type lagWriteJob struct {
 	flush    qmdbFlushRows
 	undo     *qmdb.BlockUndo
 	root     types.Hash // the live tree's root right after the block
-	ahead    *aheadExec // its read transaction is released once written
+	// execRoot: the block's computed state root (ibs.LastIntermediateRoot,
+	// what the write stores as the executed result's root), read on the
+	// import goroutine at the hand-off; execRootOK false when there is none.
+	execRoot   types.Hash
+	execRootOK bool
+	ahead      *aheadExec // its read transaction is released once written
 	// post: the block's published post-state (nil when it published none),
 	// layered under an ahead run whose reads would otherwise reach the store
 	// without this block.
@@ -423,6 +428,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
 	}
 	j.root = rc.Root()
+	j.execRoot, j.execRootOK = ibs.LastIntermediateRoot()
 	p := &bc.lagPipe
 	p.mu.Lock()
 	if par := p.parent; par != nil && par.hash == j.hash {
@@ -433,6 +439,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	bc.lagWrite.visible.Store(j)
 	bc.lagWrite.handed.Add(1)
 	go bc.runLagWrite(j)
+	bc.lagResultReadySoon(j)
 	return nil
 }
 
