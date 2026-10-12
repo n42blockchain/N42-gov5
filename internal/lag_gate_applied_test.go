@@ -62,7 +62,7 @@ func testLagGateApplied(t *testing.T, applied bool) {
 		}
 	}()
 
-	keys := frametest.Keys(t, 65, 92)
+	keys := frametest.Keys(t, 65, 131)
 	lc := newLagChainEngine(t, keys[1:], importBenchEngine{})
 	lc.bc.SetParallelEVM(true)
 	st := store.NewWithKeep(64<<20, 16)
@@ -206,7 +206,7 @@ func testLagCycleModel(t *testing.T, applied bool) time.Duration {
 		lagWriteBeforeCommitForTest, lagPipeAheadStartedForTest, lagPipeAfterPublishForTest = nil, nil, nil
 	}()
 
-	keys := frametest.Keys(t, 65, 93)
+	keys := frametest.Keys(t, 65, 132)
 	lc := newLagChainEngine(t, keys[1:], importBenchEngine{})
 	lc.bc.SetParallelEVM(true)
 	st := store.NewWithKeep(64<<20, 16)
