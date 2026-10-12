@@ -46,8 +46,15 @@ var slowBlockThreshold = slowBlockThresholdFromEnv()
 
 // importPhasesHook, when set (benchmarks), receives every imported block's
 // process phases (Finalize is the state root), process, validate and write
-// wall times, and whether it executed ahead, on the importing goroutine.
-var importPhasesHook func(number uint64, ph ProcessPhases, process, validate, write time.Duration, ahead bool)
+// wall times, and its ahead execution's preamble, whole run and the
+// import's wait for it (nil when it did not execute ahead), on the
+// importing goroutine.
+var importPhasesHook func(number uint64, ph ProcessPhases, process, validate, write time.Duration, ahead *AheadTimes)
+
+// AheadTimes is an ahead execution's timing for importPhasesHook.
+type AheadTimes struct {
+	Pre, Run, Wait time.Duration
+}
 
 func slowBlockThresholdFromEnv() time.Duration {
 	if v := os.Getenv("N42_SLOW_BLOCK_MS"); v != "" {
@@ -61,10 +68,10 @@ func slowBlockThresholdFromEnv() time.Duration {
 // insertIterator assists during chain import by providing validated blocks
 // one at a time from a contiguous chain.
 type insertIterator struct {
-	chain   []block.IBlock
-	results <-chan error
-	errors  []error
-	index   int
+	chain     []block.IBlock
+	results   <-chan error
+	errors    []error
+	index     int
 	validator Validator
 
 	// Per-block phase timings for the "blockimport phases" line — OBSERVABILITY

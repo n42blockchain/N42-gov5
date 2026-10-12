@@ -68,6 +68,8 @@ type importBenchRow struct {
 	publish                  time.Duration
 	wait                     time.Duration // the hand-off's wait for the previous write
 	recov, exec              time.Duration
+	ph                       ProcessPhases
+	at                       AheadTimes
 	cr                       commitment.ComputeRootPhases
 	w                        blockWritePhases
 }
@@ -248,10 +250,14 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		row(n).w = ph
 		mu.Unlock()
 	}
-	importPhasesHook = func(n uint64, ph ProcessPhases, process, validate, write time.Duration, ahead bool) {
+	importPhasesHook = func(n uint64, ph ProcessPhases, process, validate, write time.Duration, ahead *AheadTimes) {
 		mu.Lock()
 		r := row(n)
-		r.root, r.process, r.valid, r.wr, r.ahead = ph.Finalize, process, validate, write, ahead
+		r.root, r.process, r.valid, r.wr, r.ahead = ph.Finalize, process, validate, write, ahead != nil
+		r.ph = ph
+		if ahead != nil {
+			r.at = *ahead
+		}
 		r.recov, r.exec = ph.Recover, ph.Exec
 		r.publish = time.Duration(lagPublishNanos.Swap(0))
 		// This block's root: the next one has not started (the import
@@ -390,6 +396,21 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		add("w.commit", ms(r.w.Commit))
 		add("w.post", ms(r.w.Post))
 		add("root+write", ms(r.root+r.w.Total))
+		if r.ahead {
+			// The ahead run (P10): its preamble, recovery, setup, wave,
+			// collect (and its parts) and whatever the phases leave out.
+			ph := r.ph
+			add("a.run", ms(r.at.Run))
+			add("a.wait", ms(r.at.Wait))
+			add("a.pre", ms(r.at.Pre))
+			add("a.setup", ms(ph.Setup))
+			add("a.collect", ms(ph.Collect))
+			add("a.c.rcpt", ms(ph.CollectReceipts))
+			add("a.c.apply", ms(ph.CollectApply))
+			add("a.c.pref", ms(ph.CollectPrefetch))
+			add("a.c.fees", ms(ph.CollectFees))
+			add("a.gap", ms(r.at.Run-r.at.Pre-ph.Recover-ph.Setup-ph.Exec-ph.Collect))
+		}
 	}
 	names := make([]string, 0, len(cols))
 	for k := range cols {
