@@ -94,16 +94,18 @@ func requireSameTables(t *testing.T, want, got map[string]string, what string) {
 // prepared path must reproduce: transfers between funded accounts and to
 // fresh ones, a zero-value touch of an empty account (EIP-161 removal), a
 // contract creation with storage (CreateContract of an address without
-// stored slots: prepared rows), later calls that rewrite its slot (storage
-// rows and storage changesets) and its SELFDESTRUCT (a wipe of stored
-// slots: the replayed path).
+// stored slots: prepared rows), later calls that rewrite its slot and log
+// (storage rows, storage changesets, Log rows and the log index) and its
+// SELFDESTRUCT (a wipe of stored slots: the replayed path).
 func preparedWriteBlocks(t *testing.T, lc *lagChain, n int) (blks []*block.Block, dumps []map[string]string) {
 	t.Helper()
-	// runtime: SSTORE(0, CALLVALUE), or SELFDESTRUCT(CALLER) on a zero-value
-	// call; init: SSTORE(0, 1), return the runtime.
-	runtime := []byte{0x34, 0x80, 0x60, 0x08, 0x57, 0x50, 0x33, 0xff, 0x5b, 0x60, 0x00, 0x55, 0x00}
-	initCode := append([]byte{0x60, 0x01, 0x60, 0x00, 0x55, 0x6c}, runtime...)
-	initCode = append(initCode, 0x60, 0x00, 0x52, 0x60, 0x0d, 0x60, 0x13, 0xf3)
+	// runtime: SSTORE(0, CALLVALUE) and LOG1(topic CALLVALUE), or
+	// SELFDESTRUCT(CALLER) on a zero-value call; init: SSTORE(0, 1), return
+	// the runtime.
+	runtime := []byte{0x34, 0x80, 0x60, 0x08, 0x57, 0x50, 0x33, 0xff, 0x5b, 0x60, 0x00, 0x55,
+		0x34, 0x60, 0x00, 0x60, 0x00, 0xa1, 0x00}
+	initCode := append([]byte{0x60, 0x01, 0x60, 0x00, 0x55, 0x72}, runtime...)
+	initCode = append(initCode, 0x60, 0x00, 0x52, 0x60, 0x13, 0x60, 0x0d, 0xf3)
 	contract := crypto.CreateAddress(lc.addrs[2], 0)
 	nonces := make([]uint64, len(lc.keys))
 	send := func(from int, to *types.Address, value uint64, gas uint64, data []byte) *transaction.Transaction {
@@ -189,7 +191,8 @@ func testLagWriterPreparedWriteSameRows(t *testing.T, deferred bool) {
 	// The creation and the calls ran (the contract's slot, code and storage
 	// changesets after block 6) and the SELFDESTRUCT in block 7 wiped the
 	// slot.
-	for _, table := range []string{modules.Storage, modules.Code, modules.StorageChangeSet} {
+	for _, table := range []string{modules.Storage, modules.Code, modules.StorageChangeSet,
+		modules.Log, modules.LogAddressIndex, modules.LogTopicIndex} {
 		require.NotEmpty(t, want[5][table], "reference chain has no %s rows after block 6", table)
 	}
 	require.Empty(t, want[6][modules.Storage], "the SELFDESTRUCT left the contract's slot")

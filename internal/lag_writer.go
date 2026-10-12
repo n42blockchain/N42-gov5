@@ -146,6 +146,9 @@ type lagWriteJob struct {
 	// frames: the block's frames being written to the frame store
 	// (rawdb.FrameStore), from the hand-off on; nil without one.
 	frames *framesWrite
+	// logs: the block's Log rows and log-index input, prepared from the
+	// hand-off on (nil: the write walks the receipts itself).
+	logs *logsPrep
 
 	done chan struct{}
 	err  error
@@ -225,6 +228,27 @@ func startFramesWrite(blk *block.Block) *framesWrite {
 func (fw *framesWrite) wait() error {
 	<-fw.done
 	return fw.err
+}
+
+// logsPrep is one block's rawdb.PrepareLogs on its own goroutine.
+type logsPrep struct {
+	done chan struct{}
+	p    *rawdb.PreparedLogs
+	err  error
+}
+
+func startLogsPrep(receipts []*block.Receipt) *logsPrep {
+	lp := &logsPrep{done: make(chan struct{})}
+	go func() {
+		lp.p, lp.err = rawdb.PrepareLogs(receipts)
+		close(lp.done)
+	}()
+	return lp
+}
+
+func (lp *logsPrep) wait() (*rawdb.PreparedLogs, error) {
+	<-lp.done
+	return lp.p, lp.err
 }
 
 // qmdbFlushRows captures a FlushTo for replay into a later transaction. The
@@ -362,6 +386,10 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	// transaction (a block that ends up not written leaves them there, as
 	// content-addressed rows nothing names).
 	frames := startFramesWrite(blk)
+	var logs *logsPrep
+	if lagWritePrepare && len(receipts) > 0 {
+		logs = startLogsPrep(receipts)
+	}
 	failed := func(err error) error {
 		if prep != nil {
 			// Nothing writes this block now; let the preparation finish
@@ -370,6 +398,9 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		}
 		if frames != nil {
 			_ = frames.wait()
+		}
+		if logs != nil {
+			_, _ = logs.wait()
 		}
 		return err
 	}
@@ -381,7 +412,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
-		prep: prep, frames: frames, done: make(chan struct{})}
+		prep: prep, frames: frames, logs: logs, done: make(chan struct{})}
 	rc := bc.qmdbRootComputer
 	if _, err := rc.FlushTo(&j.flush); err != nil {
 		rc.AbortFlushed()

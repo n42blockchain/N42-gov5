@@ -317,11 +317,28 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		if len(receipts) > 0 {
 			tPhase = time.Now()
 			encoded := future.encodedFor(blk.Hash(), receipts)
-			if err := rawdb.AppendReceiptsEncoded(tx, blockNumber.Uint64(), receipts, encoded); err != nil {
+			var logs *rawdb.PreparedLogs
+			if job != nil && job.logs != nil {
+				// Prepared from the hand-off on (lag_writer.go logsPrep).
+				if logs, err = job.logs.wait(); err != nil {
+					return fmt.Errorf("preparing the logs of block %d: %w", blockNumber.Uint64(), err)
+				}
+			}
+			if logs != nil {
+				err = rawdb.AppendReceiptsPrepared(tx, blockNumber.Uint64(), receipts, encoded, logs)
+			} else {
+				err = rawdb.AppendReceiptsEncoded(tx, blockNumber.Uint64(), receipts, encoded)
+			}
+			if err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
 				return err
 			}
-			if err := rawdb.WriteLogIndex(tx, blockNumber.Uint64(), receipts); err != nil {
+			if logs != nil {
+				err = rawdb.WriteLogIndexPrepared(tx, blockNumber.Uint64(), logs)
+			} else {
+				err = rawdb.WriteLogIndex(tx, blockNumber.Uint64(), receipts)
+			}
+			if err != nil {
 				log.Errorf("rawdb.WriteLogIndex failed err= %v", err)
 				return err
 			}
