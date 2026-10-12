@@ -393,10 +393,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		a.err = err
 		return
 	}
-	if !bc.process.(*StateProcessor).ParallelApplicable(a.blk) {
-		a.err = ErrParallelNotApplicable
-		return
-	}
+	// Whether the block runs on Block-STM at all is decided once, by
+	// ExecuteParallelAhead (ErrParallelNotApplicable): the check walks
+	// every transaction.
 	layers := []*state.PostState{par.post}
 	if j := bc.lagWritePending(par.header.ParentHash); j != nil {
 		// The grandparent's write is in flight (lag_writer.go): the store

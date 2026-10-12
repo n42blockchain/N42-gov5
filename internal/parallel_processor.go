@@ -31,6 +31,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -106,16 +107,16 @@ func takeTxResults(n int) []parallelTxResult {
 	for i := len(txResultsFree.list) - 1; i >= 0; i-- {
 		if r := txResultsFree.list[i]; cap(r) >= n {
 			txResultsFree.list = append(txResultsFree.list[:i], txResultsFree.list[i+1:]...)
-			r = r[:n]
-			clear(r)
-			return r
+			// Zero up to its capacity already: giveTxResults cleared it,
+			// and what lies past its last length was never used since.
+			return r[:n]
 		}
 	}
 	return make([]parallelTxResult, n)
 }
 
 func giveTxResults(r []parallelTxResult) {
-	clear(r) // drop the receipt and log pointers now, not at the next take
+	clear(r) // drop the receipt and log pointers now; takeTxResults relies on it
 	txResultsFree.mu.Lock()
 	defer txResultsFree.mu.Unlock()
 	if len(txResultsFree.list) < 2 {
@@ -161,6 +162,46 @@ func deferredFeeRecipients(cfg *params.ChainConfig, header *block.Header) []type
 // addresses. Such a transaction would observe a coinbase balance that the
 // deferred credit has not yet reached, so the block must run sequentially.
 func touchesAny(txs []*transaction.Transaction, addrs []types.Address) bool {
+	if len(txs) >= touchesAnyParallelMin {
+		return touchesAnyParallel(txs, addrs)
+	}
+	return touchesAnyRange(txs, addrs)
+}
+
+// touchesAnyParallelMin is the list size from which touchesAny splits the
+// scan across goroutines (P10: the serial scan of a 163k block was ~6.6 ms
+// on the fleet, twice per ahead run, all cache misses on the transactions).
+const touchesAnyParallelMin = 8192
+
+func touchesAnyParallel(txs []*transaction.Transaction, addrs []types.Address) bool {
+	workers := len(txs) / touchesAnyParallelMin
+	if p := runtime.GOMAXPROCS(0); workers > p {
+		workers = p
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	if workers < 2 {
+		return touchesAnyRange(txs, addrs)
+	}
+	per := (len(txs) + workers - 1) / workers
+	var hit atomic.Bool
+	var wg sync.WaitGroup
+	for lo := 0; lo < len(txs); lo += per {
+		hi := min(lo+per, len(txs))
+		wg.Add(1)
+		go func(part []*transaction.Transaction) {
+			defer wg.Done()
+			if touchesAnyRange(part, addrs) {
+				hit.Store(true)
+			}
+		}(txs[lo:hi])
+	}
+	wg.Wait()
+	return hit.Load()
+}
+
+func touchesAnyRange(txs []*transaction.Transaction, addrs []types.Address) bool {
 	for _, tx := range txs {
 		for _, a := range addrs {
 			if from := tx.From(); from != nil && *from == a {
@@ -434,7 +475,10 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
 	tBlockStart := time.Now()
 	txResults := takeTxResults(numTxs)
-	defer giveTxResults(txResults)
+	// Cleared and put back off this goroutine: clearing a 163k block's
+	// results (~30 MB) was ~3 ms at the end of every run (P10). Nothing
+	// reads them after the run returns.
+	defer func() { go giveTxResults(txResults) }()
 
 	// Every worker owns its base reader. 3709ca6a proved the shared one was a
 	// shared MDBX cursor (a read transaction is bound to the OS thread that
