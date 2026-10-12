@@ -91,3 +91,12 @@ func HistoryIndexDeferred() bool {
 	})
 	return historyDeferred
 }
+
+// SetHistoryIndexDeferredForTest latches HistoryIndexDeferred to on and
+// returns the restore (tests in other packages).
+func SetHistoryIndexDeferredForTest(on bool) func() {
+	historyDeferredOnce.Do(func() {})
+	prev := historyDeferred
+	historyDeferred = on
+	return func() { historyDeferred = prev }
+}

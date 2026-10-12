@@ -437,6 +437,8 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		add("w.qmeta", ms(r.w.QMDBMeta))
 		add("w.commit", ms(r.w.Commit))
 		add("w.post", ms(r.w.Post))
+		add("w.prep", ms(r.w.Prep))
+		add("w.prepWait", ms(r.w.PrepWait))
 		add("root+write", ms(r.root+r.w.Total))
 		if r.ahead {
 			// The ahead run (P10): its preamble, recovery, setup, wave,
