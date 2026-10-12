@@ -158,6 +158,9 @@ type blockWritePhases struct {
 	// PrepWait the part of State that waited for it.
 	Prep, PrepWait time.Duration
 	PrepFast       bool // applied from prepared rows (not a replay)
+	// Frames is the frame store write's run (its own transaction),
+	// FramesWait the write's wait for it before committing.
+	Frames, FramesWait time.Duration
 }
 
 // blockWritePhasesHook, when set (benchmarks), receives every write's
@@ -278,7 +281,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// The prepared state write (P11): its own run, off the transaction,
 		// and the part of the state phase spent waiting for it.
 		dPrep, dPrepWait time.Duration
-		prepFast         bool
+		// The frame store write (P11): its own run and the commit's wait.
+		dFrames, dFramesWait time.Duration
+		prepFast             bool
 		// Distinct accounts and slots the block changed, captured inside the
 		// write closure so the log line outside it can report them.
 		nAccts int
@@ -323,7 +328,13 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			dReceipts = time.Since(tPhase)
 		}
 		tPhase = time.Now()
-		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
+		if job != nil && job.frames != nil {
+			// The frames are on their way to the frame store; the commit
+			// below waits for them.
+			if err := rawdb.WriteBlockFramesStored(tx, concreteBlock); err != nil {
+				return err
+			}
+		} else if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
 		// Frames named by the block are in this batch's Frames rows. Dropping
@@ -679,6 +690,14 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				}
 			}
 		}
+		if job != nil && job.frames != nil {
+			// Imported = durable: the block's frames commit before it does.
+			tPhase = time.Now()
+			if err := job.frames.wait(); err != nil {
+				return fmt.Errorf("writing the frames of block %d to the frame store: %w", blockNumber.Uint64(), err)
+			}
+			dFramesWait, dFrames = time.Since(tPhase), job.frames.took
+		}
 		dInClosure = time.Since(tClosureStart)
 		return nil
 	}); err != nil {
@@ -745,6 +764,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		if dPrep > 0 {
 			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
 		}
+		if dFrames > 0 {
+			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
+		}
 		// Distinct accounts and slots the block changed. The commit cost is set
 		// by this COUNT, not by the byte volume: every account update is keyed
 		// by address, so each one can land on its own B-tree leaf and each of
@@ -759,6 +781,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				State: dState, ChgTruncate: dChgTruncate, ChgSets: dChgSets, ChgHistory: dChgHistory,
 				Root2: dRoot2, QMDBFlush: dQMDBFlush, QMDBMeta: dQMDBMeta, Snapshot: dSnapshot,
 				Commit: dCommit, Post: dPost, Total: dTotal, Prep: dPrep, PrepWait: dPrepWait, PrepFast: prepFast,
+				Frames: dFrames, FramesWait: dFramesWait,
 			})
 		}
 		if dTotal >= slowBlockThreshold {

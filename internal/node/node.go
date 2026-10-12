@@ -210,6 +210,7 @@ type Node struct {
 	exexManager        *exex.Manager               // Execution Extensions manager
 	hotstuffService    *hotstuff.Service           // HotStuff BFT consensus service (nil if not using HotStuff)
 	hotstuffJournalDB  kv.RwDB                     // separate vote journal store (nil unless enabled)
+	frameDB            kv.RwDB                     // frame store (nil unless N42_FRAME_DB)
 	bundlerService     *bundler.BundlerService     // ERC-4337 bundler service (nil if disabled)
 	peerdasService     *peerdas.Service            // PeerDAS (EIP-7594) data availability service (nil if disabled)
 	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
@@ -591,6 +592,19 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	chainKv, err = OpenDatabase(ctx, cfg, nil, kv.ChainDB.String())
 	if err != nil {
 		return nil, err
+	}
+	frameKv, err := openFrameStoreDB(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if frameKv != nil {
+		rawdb.SetFrameStore(frameKv)
+		defer func() {
+			if !success {
+				rawdb.SetFrameStore(nil)
+				frameKv.Close()
+			}
+		}()
 	}
 
 	if err := chainKv.View(ctx, func(tx kv.Tx) error {
@@ -1379,6 +1393,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		txIndexer:       nodeTxIndexer,
 		eraStore:        nodeEraStore,
 		db:              chainKv,
+		frameDB:         frameKv,
 		shutDown:        make(chan struct{}),
 		txspool:         pool,
 		engine:          engine,
@@ -3764,6 +3779,10 @@ func (n *Node) doClose(errs []error) error {
 	if n.db != nil {
 		n.db.Close()
 	}
+	if n.frameDB != nil {
+		rawdb.SetFrameStore(nil)
+		n.frameDB.Close()
+	}
 	n.lock.Unlock()
 
 	if err := n.accman.Close(); err != nil {
@@ -3953,6 +3972,33 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return nil, err
 	}
 	return chainKv, nil
+}
+
+// frameStoreEnabled is N42_FRAME_DB=1: frames go to their own MDBX store
+// (<datadir>/frames) instead of the chaindata Frames table
+// (docs/QS_MULTI_MILLION_DESIGN.md P11). Frames already in the Frames
+// table stay readable there.
+func frameStoreEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("N42_FRAME_DB"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// openFrameStoreDB opens the frame store when enabled (nil otherwise), with
+// the chain database's map size and durability mode.
+func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
+	if !frameStoreEnabled() || cfg.NodeCfg.DataDir == "" {
+		return nil, nil
+	}
+	logger := log2.New()
+	path := filepath.Join(cfg.NodeCfg.DataDir, "frames")
+	log.Info("Opening the frame store (N42_FRAME_DB)", "path", path)
+	opts := mdbx.NewMDBX(logger).WriteMergeThreshold(4 * 8192).Path(path).Label(kv.ChainDB).
+		WithTableCfg(rawdb.FrameStoreTables).
+		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	return mdbxSyncModeOr(opts, logger).Open(ctx)
 }
 
 // openVoteJournalDB opens the separate HotStuff vote journal store
