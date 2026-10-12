@@ -28,9 +28,11 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
 type dumpAccount struct {
@@ -106,19 +108,26 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	}
 	defer tx.Rollback()
 
-	blockNumber, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+	blockNumber, appliedHash, err := exportHead(tx)
 	if err != nil {
-		return fmt.Errorf("read QMDB applied head: %w", err)
+		return err
 	}
-	if !ok {
-		return fmt.Errorf("QMDB applied-head marker is absent")
-	}
+
 	header := rawdb.ReadHeader(tx, types.Hash(appliedHash), blockNumber)
 	if header == nil {
 		return fmt.Errorf("applied header #%d %x is absent", blockNumber, appliedHash)
 	}
 	if got := header.Hash(); got != types.Hash(appliedHash) {
 		return fmt.Errorf("applied header hash mismatch: marker=%x header=%x", appliedHash, got)
+	}
+	// Replay v2 generations may predate QMDBApplied. Authenticate the fallback
+	// against the actual forest in the same read transaction before publishing files.
+	computer := commitment.NewQMDBRootComputer()
+	if err := computer.LoadFrom(tx); err != nil {
+		return fmt.Errorf("load QMDB forest: %w", err)
+	}
+	if err := verifyExportRoot(computer.Tree().Root(), header.Root); err != nil {
+		return err
 	}
 	headerRLP, err := rlp.EncodeToBytes(header)
 	if err != nil {
@@ -338,4 +347,36 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(partial, path)
+}
+
+// exportHead prefers the explicit applied marker. Older replay v2 databases
+// lack it; their canonical head is usable only with the forest root check above.
+func exportHead(tx kv.Getter) (uint64, [32]byte, error) {
+	number, hash, ok, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil {
+		return 0, [32]byte{}, fmt.Errorf("read QMDB applied head: %w", err)
+	}
+	if !ok {
+		hash = rawdb.ReadHeadBlockHash(tx)
+		n := rawdb.ReadHeaderNumber(tx, types.Hash(hash))
+		if hash == ([32]byte{}) || n == nil {
+			return 0, [32]byte{}, fmt.Errorf("database has neither a QMDB applied marker nor a readable head")
+		}
+		number = *n
+	}
+	canonical, err := rawdb.ReadCanonicalHash(tx, number)
+	if err != nil {
+		return 0, [32]byte{}, err
+	}
+	if canonical != types.Hash(hash) {
+		return 0, [32]byte{}, fmt.Errorf("export head %d/%x is not canonical", number, hash)
+	}
+	return number, hash, nil
+}
+
+func verifyExportRoot(root qmdb.Hash, expected types.Hash) error {
+	if root != qmdb.Hash(expected) {
+		return fmt.Errorf("QMDB root %x does not match export header root %x", root, expected)
+	}
+	return nil
 }
