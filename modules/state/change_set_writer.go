@@ -302,3 +302,55 @@ func (w *ChangeSetWriter) PrintChangedAccounts() {
 	}
 	fmt.Println("------------------------------------------")
 }
+
+// ChangeSetRow is one encoded changeset row: the key and value
+// WriteChangeSets appends.
+type ChangeSetRow struct{ K, V []byte }
+
+// EncodeChangeSets returns the rows WriteChangeSets appends, in its order,
+// without a transaction: the ordered writer encodes them before the block's
+// write transaction opens (docs/QS_MULTI_MILLION_DESIGN.md P11).
+func (w *ChangeSetWriter) EncodeChangeSets() (acct, stor []ChangeSetRow, err error) {
+	accountChanges, err := w.GetAccountChanges()
+	if err != nil {
+		return nil, nil, err
+	}
+	acct = make([]ChangeSetRow, 0, accountChanges.Len())
+	if err = changeset.Mapper[modules.AccountChangeSet].Encode(w.blockNumber, accountChanges, func(k, v []byte) error {
+		acct = append(acct, ChangeSetRow{K: k, V: v})
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	storageChanges, err := w.GetStorageChanges()
+	if err != nil {
+		return nil, nil, err
+	}
+	if storageChanges.Len() == 0 {
+		return acct, nil, nil
+	}
+	stor = make([]ChangeSetRow, 0, storageChanges.Len())
+	if err = changeset.Mapper[modules.StorageChangeSet].Encode(w.blockNumber, storageChanges, func(k, v []byte) error {
+		stor = append(stor, ChangeSetRow{K: k, V: v})
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	return acct, stor, nil
+}
+
+// AppendChangeSetRows appends rows from EncodeChangeSets, as WriteChangeSets
+// does.
+func AppendChangeSetRows(tx kv.RwTx, acct, stor []ChangeSetRow) error {
+	for _, r := range acct {
+		if err := tx.AppendDup(modules.AccountChangeSet, r.K, r.V); err != nil {
+			return err
+		}
+	}
+	for _, r := range stor {
+		if err := tx.AppendDup(modules.StorageChangeSet, r.K, r.V); err != nil {
+			return err
+		}
+	}
+	return nil
+}

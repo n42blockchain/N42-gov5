@@ -154,6 +154,10 @@ type blockWritePhases struct {
 	ChgTruncate, ChgSets, ChgHistory, Root2 time.Duration
 	QMDBFlush, QMDBMeta, Snapshot, Commit   time.Duration
 	Post, Total                             time.Duration
+	// Prep is the prepared state write's run off the transaction (P11),
+	// PrepWait the part of State that waited for it.
+	Prep, PrepWait time.Duration
+	PrepFast       bool // applied from prepared rows (not a replay)
 }
 
 // blockWritePhasesHook, when set (benchmarks), receives every write's
@@ -271,6 +275,10 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		dQMDBMeta    time.Duration
 		dSnapshot    time.Duration
 		dPost        time.Duration
+		// The prepared state write (P11): its own run, off the transaction,
+		// and the part of the state phase spent waiting for it.
+		dPrep, dPrepWait time.Duration
+		prepFast         bool
 		// Distinct accounts and slots the block changed, captured inside the
 		// write closure so the log line outside it can report them.
 		nAccts int
@@ -362,13 +370,41 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// ibs may be nil when the block was accepted via ZK proof fast path
 		// (EVM re-execution skipped). In that case, skip state commit since
 		// the proven state root is trusted.
+		// The ordered writer's block arrives with its CommitBlock done off
+		// this transaction (lag_writer.go stateWritePrep); applying it is the
+		// state phase, including any wait for the preparation to finish.
+		var prepared *state.PreparedStateWrite
+		if ibs != nil && job != nil && job.prep != nil {
+			tPhase = time.Now()
+			p, err := job.prep.wait()
+			if err != nil {
+				return fmt.Errorf("preparing the state write of block %d: %w", blockNumber.Uint64(), err)
+			}
+			if diffCollector != nil || stateWriter != state.WriterWithChangeSets(plainWriter) {
+				// lagWriteUsable admits no snapshot tree or read-through
+				// cache, the writers prepared rows would bypass.
+				return fmt.Errorf("prepared state write of block %d under a wrapped state writer", blockNumber.Uint64())
+			}
+			prepared = p
+			dPrepWait = time.Since(tPhase)
+			dPrep = job.prep.took
+		}
 		if ibs != nil {
 			tPhase = time.Now()
-			if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
+			if prepared != nil {
+				if err := prepared.WriteState(tx, stateWriter); err != nil {
+					return err
+				}
+				prepFast = prepared.Fast()
+			} else if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
 				return err
 			}
-			dState = time.Since(tPhase)
-			nAccts, nSlots = plainWriter.ChangedCounts()
+			dState = time.Since(tPhase) + dPrepWait
+			if prepared != nil {
+				nAccts, nSlots = prepared.ChangedCounts(plainWriter)
+			} else {
+				nAccts, nSlots = plainWriter.ChangedCounts()
+			}
 			tPhase = time.Now()
 			// A prior attempt at this height (hotstuff view-change re-production,
 			// a competing same-height proposal, or a reorg re-import) may have
@@ -383,12 +419,22 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			}
 			dChgTruncate = time.Since(tSub)
 			tSub = time.Now()
-			if err := stateWriter.WriteChangeSets(); err != nil {
+			if prepared != nil {
+				err = prepared.WriteChangeSets(tx, stateWriter)
+			} else {
+				err = stateWriter.WriteChangeSets()
+			}
+			if err != nil {
 				return fmt.Errorf("writing changesets for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			dChgSets = time.Since(tSub)
 			tSub = time.Now()
-			if err := stateWriter.WriteHistory(); err != nil {
+			if prepared != nil {
+				err = prepared.WriteHistory(stateWriter)
+			} else {
+				err = stateWriter.WriteHistory()
+			}
+			if err != nil {
 				return fmt.Errorf("writing history for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			dChgHistory = time.Since(tSub)
@@ -696,6 +742,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			"qflush", dQMDBFlush, "qmeta", dQMDBMeta, "snap", dSnapshot,
 			"commit", dCommit, "post", dPost, "total", dTotal,
 		}
+		if dPrep > 0 {
+			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
+		}
 		// Distinct accounts and slots the block changed. The commit cost is set
 		// by this COUNT, not by the byte volume: every account update is keyed
 		// by address, so each one can land on its own B-tree leaf and each of
@@ -709,7 +758,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				Begin: dBegin, Receipts: dReceipts, Block: dBlock, Evidence: dEvidence,
 				State: dState, ChgTruncate: dChgTruncate, ChgSets: dChgSets, ChgHistory: dChgHistory,
 				Root2: dRoot2, QMDBFlush: dQMDBFlush, QMDBMeta: dQMDBMeta, Snapshot: dSnapshot,
-				Commit: dCommit, Post: dPost, Total: dTotal,
+				Commit: dCommit, Post: dPost, Total: dTotal, Prep: dPrep, PrepWait: dPrepWait, PrepFast: prepFast,
 			})
 		}
 		if dTotal >= slowBlockThreshold {

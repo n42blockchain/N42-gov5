@@ -139,9 +139,55 @@ type lagWriteJob struct {
 	// layered under an ahead run whose reads would otherwise reach the store
 	// without this block.
 	post *state.PostState
+	// prep: the block's CommitBlock and changeset rows, built on their own
+	// goroutine from before the hand-off's wait for the previous write
+	// (nil: CommitBlock runs inside the write, N42_LAG_WRITE_PREPARE=0).
+	prep *stateWritePrep
 
 	done chan struct{}
 	err  error
+}
+
+// lagWritePrepare is N42_LAG_WRITE_PREPARE (default on): the ordered
+// writer's CommitBlock and changeset encoding run before the block's write
+// transaction, overlapping the previous block's write
+// (docs/QS_MULTI_MILLION_DESIGN.md P11).
+var lagWritePrepare = parseLagPipeline(os.Getenv("N42_LAG_WRITE_PREPARE"))
+
+// SetLagWritePrepareForTest switches the prepared state write and returns
+// the restore.
+func SetLagWritePrepareForTest(on bool) func() {
+	prev := lagWritePrepare
+	lagWritePrepare = on
+	return func() { lagWritePrepare = prev }
+}
+
+// stateWritePrep is one block's state write being prepared.
+type stateWritePrep struct {
+	done chan struct{}
+	p    *state.PreparedStateWrite
+	err  error
+	took time.Duration
+}
+
+// startStateWritePrep runs state.PrepareStateWrite on its own goroutine. It
+// owns ibs from here on, as the write would.
+func (bc *BlockChain) startStateWritePrep(ibs *state.IntraBlockState, number uint64) *stateWritePrep {
+	sp := &stateWritePrep{done: make(chan struct{})}
+	rules := bc.chainConfig.Rules(number)
+	go func() {
+		t0 := time.Now()
+		sp.p, sp.err = state.PrepareStateWrite(ibs, rules, number)
+		sp.took = time.Since(t0)
+		close(sp.done)
+	}()
+	return sp
+}
+
+// wait returns the prepared write once it is ready.
+func (sp *stateWritePrep) wait() (*state.PreparedStateWrite, error) {
+	<-sp.done
+	return sp.p, sp.err
 }
 
 // qmdbFlushRows captures a FlushTo for replay into a later transaction. The
@@ -269,19 +315,33 @@ func (bc *BlockChain) lagAppliedIs(hash types.Hash, number uint64) bool {
 // block's QMDB rows and undo record from the tree, and starts the write.
 func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receipt, ibs *state.IntraBlockState,
 	nopay map[types.Address]*uint256.Int, ahead *aheadExec) error {
+	// The block's CommitBlock needs nothing of the previous write: it starts
+	// now and overlaps the wait below.
+	var prep *stateWritePrep
+	if lagWritePrepare && bc.chainConfig != nil {
+		prep = bc.startStateWritePrep(ibs, blk.Number64().Uint64())
+	}
+	failed := func(err error) error {
+		if prep != nil {
+			// Nothing writes this block now; let the preparation finish
+			// with the block state it owns.
+			_, _ = prep.wait()
+		}
+		return err
+	}
 	tWait := time.Now()
 	if err := bc.joinLagWrite(); err != nil {
-		return err
+		return failed(err)
 	}
 	bc.lagWrite.lastWait.Store(int64(time.Since(tWait)))
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
-		done: make(chan struct{})}
+		prep: prep, done: make(chan struct{})}
 	rc := bc.qmdbRootComputer
 	if _, err := rc.FlushTo(&j.flush); err != nil {
 		rc.AbortFlushed()
-		return fmt.Errorf("capturing QMDB rows of block %d: %w", j.number, err)
+		return failed(fmt.Errorf("capturing QMDB rows of block %d: %w", j.number, err))
 	}
 	j.undo = rc.TakeUndo()
 	if j.undo == nil {
