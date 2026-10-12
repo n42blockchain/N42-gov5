@@ -283,6 +283,37 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	}
 	defer func() { blockWritePhasesHook, importPhasesHook = nil, nil }()
 
+	if os.Getenv("N42_BENCH_WRITE_BACK_TO_BACK") == "1" {
+		var hmu sync.Mutex
+		joined := map[uint64]chan struct{}{}
+		ch := func(n uint64) chan struct{} {
+			hmu.Lock()
+			defer hmu.Unlock()
+			c := joined[n]
+			if c == nil {
+				c = make(chan struct{})
+				joined[n] = c
+			}
+			return c
+		}
+		var once sync.Map
+		lagWriteJoinForTest = func(n uint64) {
+			if _, dup := once.LoadOrStore(n, true); !dup {
+				close(ch(n))
+			}
+		}
+		lagWriteBeforeCommitForTest = func(n uint64) error {
+			if n < uint64(nBlocks) {
+				select {
+				case <-ch(n):
+				case <-time.After(10 * time.Second):
+				}
+			}
+			return nil
+		}
+		defer func() { lagWriteJoinForTest, lagWriteBeforeCommitForTest = nil, nil }()
+	}
+
 	waitLag := func(n uint64) {
 		deadline := time.Now().Add(10 * time.Minute)
 		for {
