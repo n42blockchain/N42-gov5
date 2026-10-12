@@ -342,13 +342,24 @@ func (w *ChangeSetWriter) EncodeChangeSets() (acct, stor []ChangeSetRow, err err
 // AppendChangeSetRows appends rows from EncodeChangeSets, as WriteChangeSets
 // does.
 func AppendChangeSetRows(tx kv.RwTx, acct, stor []ChangeSetRow) error {
-	for _, r := range acct {
-		if err := tx.AppendDup(modules.AccountChangeSet, r.K, r.V); err != nil {
-			return err
-		}
+	if err := appendDupRows(tx, modules.AccountChangeSet, acct); err != nil {
+		return err
 	}
-	for _, r := range stor {
-		if err := tx.AppendDup(modules.StorageChangeSet, r.K, r.V); err != nil {
+	return appendDupRows(tx, modules.StorageChangeSet, stor)
+}
+
+// appendDupRows appends rows to a DupSort table through one cursor.
+func appendDupRows(tx kv.RwTx, table string, rows []ChangeSetRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	c, err := tx.RwCursorDupSort(table)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	for _, r := range rows {
+		if err := c.AppendDup(r.K, r.V); err != nil {
 			return err
 		}
 	}
