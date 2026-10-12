@@ -682,6 +682,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// just before its ComputeRoot), so the preparation overlaps that wait
 	// instead of following it (P10).
 	executor.PrepareAffinity()
+	tAffinity := time.Now()
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		executor.Release()
 		return nil, err
@@ -961,9 +962,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		aheadPhases = ProcessPhases{
 			Recover: tRecovered.Sub(tStart),
 			Setup:   tRunStart.Sub(tRecovered),
-			Exec:    tRunEnd.Sub(tRunStart),
-			Collect: time.Since(tRunEnd),
-			Skipped: nSkipped,
+			// Setup's parts: up to the affinity pass, the pass, the
+			// block-start system calls.
+			SetupBefore:     tBlockStart.Sub(tRecovered),
+			SetupAffinity:   tAffinity.Sub(tBlockStart),
+			SetupBlockStart: tExecutorMade.Sub(tAffinity),
+			Exec:            tRunEnd.Sub(tRunStart),
+			Collect:         time.Since(tRunEnd),
+			Skipped:         nSkipped,
 			// Collect's parts.
 			CollectReceipts: tApplyStart.Sub(tRunEnd),
 			CollectApply:    tApplied.Sub(tApplyStart),
@@ -991,7 +997,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)

@@ -70,6 +70,10 @@ type ProcessPhases struct {
 	// validate waves) and Finalize covers applyMVSToIBS through Finalize.
 	Setup   time.Duration
 	Collect time.Duration
+	// Setup's parts on an ahead run (P12): before the affinity pass, the
+	// pass (keys, messages, hashes) and the block-start system calls (their
+	// first tree read waits for a parent root holding the tree).
+	SetupBefore, SetupAffinity, SetupBlockStart time.Duration
 	// Collect's parts on an ahead run (P10): the receipts assembly, the MVS
 	// fold into the state, the pending-credit prefetch and the deferred fee
 	// credit.
