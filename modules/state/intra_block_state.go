@@ -182,6 +182,9 @@ type IntraBlockState struct {
 	trace          bool
 	accessList     *accessList
 	balanceInc     map[types.Address]*BalanceIncrease // Map of balance increases (without first reading the account)
+	// biSlab hands out balanceInc entries reserved in one allocation
+	// (Reserve).
+	biSlab []BalanceIncrease
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
@@ -586,6 +589,7 @@ func (sdb *IntraBlockState) Reset() {
 		sdb.accessList.Reset()
 	}
 	sdb.balanceInc = reuseMap(sdb.balanceInc)
+	sdb.biSlab = nil
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -914,6 +918,52 @@ func (sdb *IntraBlockState) HasSuicided(addr types.Address) bool {
 
 // --- Setters ---
 
+// Reserve sizes the state for a block that is about to set about
+// accounts objects and credit about credits accounts without reading them
+// (the parallel run's fold, P10): the maps and the journal grow once
+// instead of rehashing their way up, and the credits' records come from
+// one allocation. Entries already present are kept.
+func (sdb *IntraBlockState) Reserve(accounts, credits int) {
+	if accounts < 0 || credits < 0 {
+		return
+	}
+	grow := func(m map[types.Address]struct{}, n int) map[types.Address]struct{} {
+		g := make(map[types.Address]struct{}, len(m)+n)
+		for k, v := range m {
+			g[k] = v
+		}
+		return g
+	}
+	if len(sdb.stateObjects) < 1024 {
+		objs := make(map[types.Address]*stateObject, len(sdb.stateObjects)+accounts)
+		for k, v := range sdb.stateObjects {
+			objs[k] = v
+		}
+		sdb.stateObjects = objs
+		sdb.stateObjectsDirty = grow(sdb.stateObjectsDirty, accounts)
+	}
+	if len(sdb.balanceInc) < 1024 {
+		inc := make(map[types.Address]*BalanceIncrease, len(sdb.balanceInc)+credits)
+		for k, v := range sdb.balanceInc {
+			inc[k] = v
+		}
+		sdb.balanceInc = inc
+		sdb.biSlab = make([]BalanceIncrease, credits)
+	}
+	if j := sdb.journal; j != nil && len(j.dirties) < 1024 {
+		d := make(map[types.Address]int, len(j.dirties)+accounts+credits)
+		for k, v := range j.dirties {
+			d[k] = v
+		}
+		j.dirties = d
+		if need := len(j.entries) + 2*accounts + credits; cap(j.entries) < need {
+			e := make([]journalRecord, len(j.entries), need)
+			copy(e, j.entries)
+			j.entries = e
+		}
+	}
+}
+
 // AddBalance adds amount to the account associated with addr.
 func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) {
 	if sdb.trace {
@@ -932,7 +982,12 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 		}.record())
 		bi, ok := sdb.balanceInc[addr]
 		if !ok {
-			bi = &BalanceIncrease{}
+			if len(sdb.biSlab) > 0 {
+				bi = &sdb.biSlab[0]
+				sdb.biSlab = sdb.biSlab[1:]
+			} else {
+				bi = &BalanceIncrease{}
+			}
 			sdb.balanceInc[addr] = bi
 		}
 		bi.increase.Add(&bi.increase, amount)

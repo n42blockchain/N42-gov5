@@ -86,12 +86,12 @@ func (d pendingCredits) release() {
 // the caller materialises as before. Both keep pending's order.
 func (s *IntraBlockState) detachPendingCredits(pending []types.Address) (pendingCredits, []types.Address) {
 	if !s.detachPending || len(pending) < detachMinPending || s.accountPrefetch == nil ||
-		s.accountPrefetch.accts == nil || s.stateReader != StateReader(s.accountPrefetch) ||
+		(s.accountPrefetch.accts == nil && s.accountPrefetch.known == nil) || s.stateReader != StateReader(s.accountPrefetch) ||
 		(s.snap != nil && s.snap.CanWrite()) {
 		return pendingCredits{}, pending
 	}
 	out := make([]*account.StateAccount, len(pending))
-	seeded := s.accountPrefetch.accts
+	seeded := s.accountPrefetch
 	workers := runtime.GOMAXPROCS(0)
 	if workers > 8 {
 		workers = 8
@@ -137,7 +137,7 @@ func (s *IntraBlockState) detachPendingCredits(pending []types.Address) (pending
 // folding its pending credit (newObject's normalisation, then the credit;
 // createObject's fresh account for an absent one), or nil when addr must be
 // materialised instead.
-func (s *IntraBlockState) detachedCredit(addr types.Address, seeded map[types.Address]*account.StateAccount) *account.StateAccount {
+func (s *IntraBlockState) detachedCredit(addr types.Address, seeded *AccountPrefetch) *account.StateAccount {
 	if s.lastObj != nil && s.lastAddr == addr {
 		return nil
 	}
@@ -154,7 +154,7 @@ func (s *IntraBlockState) detachedCredit(addr types.Address, seeded map[types.Ad
 	if !ok || bi == nil || bi.transferred {
 		return nil
 	}
-	base, ok := seeded[addr]
+	base, ok := seeded.lookupSeeded(addr)
 	if !ok {
 		return nil
 	}
