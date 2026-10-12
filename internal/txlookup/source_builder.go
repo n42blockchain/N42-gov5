@@ -273,6 +273,10 @@ func SealedEnd(dir string) uint64 {
 	return end
 }
 
-
-// sourceLeafSize is the RecSplit leaf size of sealer-built segments.
-var sourceLeafSize = uint16(8)
+// sourceLeafSize is the RecSplit leaf size of sealer-built segments. The
+// leaf bijection search grows as m^m/m!: 8 -> 5 builds a 1.14M-key segment
+// at 672 instead of 2,190 ns/key (P9 BenchmarkBuildSegmentFileLeaf) for
+// +0.2 bits/key on ~36 (the per-key ordinal and existence byte dominate).
+// The leaf size is in each index's header, so segments of either size are
+// read side by side.
+var sourceLeafSize = uint16(5)
