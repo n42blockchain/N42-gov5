@@ -158,7 +158,7 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
 		KeyCount:   totalTx,
 		BucketSize: 2000,
-		LeafSize:   8,
+		LeafSize:   sourceLeafSize,
 		// Enums halves the index: the per-key ordinal becomes an Elias-Fano
 		// enumeration instead of a fixed-width field. LessFalsePositives keeps
 		// the 8-bit existence fingerprint, which multi-segment lookup needs --
@@ -170,6 +170,10 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 		IndexFile:          idxPath,
 		BaseDataID:         startBlock,
 		TmpDir:             etlTmpDir(),
+		// The hashes are already in memory (perBlock); a sealer segment is
+		// ~1M keys, ~50 MB to sort in memory. The etl collectors' stable
+		// sort and spill merge were 30% of a seal (P9).
+		InMemory: true,
 	}, log2.New())
 	if err != nil {
 		return nil, err
@@ -268,3 +272,7 @@ func SealedEnd(dir string) uint64 {
 	}
 	return end
 }
+
+
+// sourceLeafSize is the RecSplit leaf size of sealer-built segments.
+var sourceLeafSize = uint16(8)
