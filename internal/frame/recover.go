@@ -272,6 +272,13 @@ func ApplySenders(txs []*transaction.Transaction, ss *store.Senders) int {
 		if tx == nil || ss.Addrs[i] == (types.Address{}) {
 			continue
 		}
+		// Block resolution and the block's sender job both apply a frame's
+		// senders; the second store would only box the same sigCache again
+		// (1.5 GB of 47 allocated per 20 s in S101).
+		if tx.HasSenderMemo(ss.Signer) {
+			n++
+			continue
+		}
 		tx.SetSenderMemo(ss.Signer, ss.Addrs[i])
 		n++
 	}

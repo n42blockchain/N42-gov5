@@ -108,6 +108,15 @@ func TestApplySendersUsesTheMemoOnlyUnderItsSigner(t *testing.T) {
 	if got, _ := transaction.Sender(signer, txs[0]); got != marker {
 		t.Fatalf("memo not used under its own signer: %s", got)
 	}
+	// Applying the same senders again (block resolution, then the block's
+	// sender job) keeps the memos and allocates nothing.
+	if allocs := testing.AllocsPerRun(10, func() {
+		if n := frame.ApplySenders(txs, planted); n != 3 {
+			t.Fatalf("re-attached %d, want 3", n)
+		}
+	}); allocs != 0 {
+		t.Fatalf("re-applying senders allocated %.0f times", allocs)
+	}
 	if got, _ := transaction.Sender(signer, txs[1]); got != ss.Addrs[1] {
 		t.Fatalf("missing entry not recovered: %s", got)
 	}
