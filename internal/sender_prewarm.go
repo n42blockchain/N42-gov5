@@ -458,6 +458,12 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 			return
 		}
 		txs := b.Transactions()
+		if len(txs) >= senderRecoveryMinTxs {
+			// The execution's first pass hashes every transaction (its
+			// message and receipt); hashed now, off the import, that pass
+			// reads the memo (P10).
+			prewarmTxHashes(txs, workers)
+		}
 		if len(txs) < senderRecoveryMinTxs || bc.sendersDoneFor(h) {
 			// Resolution attached every sender: nothing to recover.
 			return
@@ -490,6 +496,39 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 			bc.forgetSenderJob(h, j)
 		})
 	}()
+}
+
+// txHashChunk is how many transactions a hash prewarm worker takes at a
+// time.
+const txHashChunk = 512
+
+// prewarmTxHashes computes (memoises) every transaction's hash on workers
+// background goroutines and returns at once.
+func prewarmTxHashes(txs []*transaction.Transaction, workers int) {
+	if workers < 1 {
+		workers = 1
+	}
+	var next atomic.Int64
+	n := int64(len(txs))
+	for i := 0; i < workers; i++ {
+		go func() {
+			for {
+				s := next.Add(txHashChunk) - txHashChunk
+				if s >= n {
+					return
+				}
+				e := s + txHashChunk
+				if e > n {
+					e = n
+				}
+				for _, tx := range txs[s:e] {
+					if tx != nil {
+						tx.Hash()
+					}
+				}
+			}
+		}()
+	}
 }
 
 // takeSenderJob removes and returns blk's job when it recovers txs under

@@ -275,8 +275,17 @@ func (m *MVS) writeOwned(key LocationKey, txIndex int, incarnation uint32, value
 
 // writeOwned is MVS.writeOwned on the location's entry.
 func (e *mvEntry) writeOwned(txIndex int, incarnation uint32, value []byte) {
+	e.writeOwnedHint(txIndex, incarnation, value, 0)
+}
+
+// writeOwnedHint is writeOwned that sizes an empty version list for hint
+// versions (the writes the caller expects at this location in the block).
+func (e *mvEntry) writeOwnedHint(txIndex int, incarnation uint32, value []byte, hint int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if hint > 1 && cap(e.versions) == 0 {
+		e.versions = make([]versionedValue, 0, hint)
+	}
 
 	idx := e.slot(txIndex)
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
