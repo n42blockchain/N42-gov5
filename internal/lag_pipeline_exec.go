@@ -396,8 +396,10 @@ func (bc *BlockChain) lagPipeLaunch() {
 	p := &bc.lagPipe
 	p.mu.Lock()
 	par := p.parent
-	if par == nil || (p.spec != nil && p.spec.parent == par.hash) {
-		// Nothing published, or this snapshot's child already runs.
+	if par == nil || par.launched || (p.spec != nil && p.spec.parent == par.hash) {
+		// Nothing published, or this snapshot's child already ran or runs:
+		// a written snapshot stays published while its child imports, and
+		// that import may already hold the ahead run (taken) or run serially.
 		p.mu.Unlock()
 		return
 	}
@@ -643,6 +645,10 @@ func (bc *BlockChain) lagPipeForget(hash types.Hash) {
 	if a := p.spec; a != nil && (a.parent == hash || a.blk.Hash() == hash) {
 		p.spec = nil
 		p.discardLocked(a)
+		if par := p.parent; par != nil && par.hash == a.parent && a.blk.Hash() == hash {
+			// The orphan's sibling may still run ahead on this snapshot.
+			par.launched = false
+		}
 	}
 }
 
