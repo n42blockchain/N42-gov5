@@ -501,7 +501,7 @@ func (bc *BlockChain) recoverLagWrite(j *lagWriteJob) {
 		log.Warn("lag writer: QMDB tree reloaded from the store after a failed write", "number", j.number)
 	}
 	bc.clearReadThroughCache()
-	bc.lagPipeForget(j.hash)
+	bc.lagPipeReset()
 	bc.EnqueueLagImport(j.blk)
 }
 
