@@ -27,6 +27,7 @@ import (
 	"math/bits"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/spaolacci/murmur3"
@@ -119,13 +120,24 @@ type RecSplit struct {
 	logger             log.Logger
 
 	noFsync bool // fsync is enabled by default, but tests can manually disable
+
+	// inMemory replaces both etl collectors with slices (RecSplitArgs.InMemory).
+	inMemory   bool
+	memKeys    []memBucketKey
+	memOffsets []uint64
+}
+
+// memBucketKey is one bucket collector entry held in memory: the etl key
+// (bucket, fingerprint) and its value.
+type memBucketKey struct {
+	bucket, fp, val uint64
 }
 
 type RecSplitArgs struct {
 	// Whether two level index needs to be built, where perfect hash map points to an enumeration, and enumeration points to offsets
 	// if Enum=false: can have unsorted and duplicated values
 	// if Enum=true:  must have sorted values (can have duplicates) - monotonically growing sequence
-	Enums              bool
+	Enums bool
 	// NoValues: pure MPHF mode. Don't write per-key value records.
 	// Lookup returns the hash slot number directly (0..KeyCount-1).
 	// Caller is responsible for mapping slot → data externally (e.g., via Elias-Fano).
@@ -142,6 +154,13 @@ type RecSplitArgs struct {
 	EtlBufLimit datasize.ByteSize
 	Salt        uint32 // Hash seed (salt) for the hash function used for allocating the initial buckets - need to be generated randomly
 	LeafSize    uint16
+	// InMemory keeps the keys in memory instead of two etl collectors and
+	// orders them by a counting sort on the bucket number (24 bytes a key,
+	// plus as much again while sorting, plus 8 a key for Enums). The index is
+	// byte-identical to the etl path's. For callers whose KeyCount fits in
+	// memory: the etl path spends ~30% of a 1M-key build sorting (a stable
+	// sort through an interface) and merging spilled files.
+	InMemory bool
 }
 
 // NewRecSplit creates a new RecSplit instance with given number of keys and given bucket size
@@ -179,14 +198,22 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 		//   - `rescplit` building is cpu-intencive and bottleneck is not in etl loading
 		rs.etlBufLimit = etl.BufferOptimalSize / 8
 	}
-	rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
-	rs.bucketCollector.LogLvl(log.LvlDebug)
+	rs.inMemory = args.InMemory
+	if rs.inMemory {
+		rs.memKeys = make([]memBucketKey, 0, args.KeyCount)
+		if args.Enums {
+			rs.memOffsets = make([]uint64, 0, args.KeyCount)
+		}
+	} else {
+		rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
+		rs.bucketCollector.LogLvl(log.LvlDebug)
+	}
 	rs.enums = args.Enums
 	rs.noValues = args.NoValues
 	if args.Enums && args.NoValues {
 		return nil, fmt.Errorf("NoValues is incompatible with Enums")
 	}
-	if args.Enums {
+	if args.Enums && !rs.inMemory {
 		rs.offsetCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
 		rs.offsetCollector.LogLvl(log.LvlDebug)
 	}
@@ -270,10 +297,15 @@ func (rs *RecSplit) ResetNextSalt() {
 	rs.keysAdded = 0
 	rs.salt++
 	rs.hasher = murmur3.New128WithSeed(rs.salt)
-	if rs.bucketCollector != nil {
-		rs.bucketCollector.Close()
+	if rs.inMemory {
+		rs.memKeys = rs.memKeys[:0]
+		rs.memOffsets = rs.memOffsets[:0]
+	} else {
+		if rs.bucketCollector != nil {
+			rs.bucketCollector.Close()
+		}
+		rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+rs.indexFileName, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), rs.logger)
 	}
-	rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+rs.indexFileName, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), rs.logger)
 	if rs.offsetCollector != nil {
 		rs.offsetCollector.Close()
 		rs.offsetCollector = etl.NewCollector(RecSplitLogPrefix+" "+rs.indexFileName, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), rs.logger)
@@ -377,6 +409,23 @@ func (rs *RecSplit) AddKey(key []byte, offset uint64) error {
 		}
 	}
 
+	if rs.inMemory {
+		bucket := remap(hi, rs.bucketCount)
+		if rs.enums {
+			rs.memOffsets = append(rs.memOffsets, offset)
+			rs.memKeys = append(rs.memKeys, memBucketKey{bucket: bucket, fp: lo, val: rs.keysAdded})
+			if rs.lessFalsePositives {
+				if err := rs.existenceW.WriteByte(byte(hi)); err != nil {
+					return err
+				}
+			}
+		} else {
+			rs.memKeys = append(rs.memKeys, memBucketKey{bucket: bucket, fp: lo, val: offset})
+		}
+		rs.keysAdded++
+		rs.prevOffset = offset
+		return nil
+	}
 	if rs.enums {
 		if err := rs.offsetCollector.Collect(rs.numBuf[:], nil); err != nil {
 			return err
@@ -402,6 +451,10 @@ func (rs *RecSplit) AddKey(key []byte, offset uint64) error {
 }
 
 func (rs *RecSplit) AddOffset(offset uint64) error {
+	if rs.enums && rs.inMemory {
+		rs.memOffsets = append(rs.memOffsets, offset)
+		return nil
+	}
 	if rs.enums {
 		binary.BigEndian.PutUint64(rs.numBuf[:], offset)
 		if err := rs.offsetCollector.Collect(rs.numBuf[:], nil); err != nil {
@@ -584,6 +637,73 @@ func (rs *RecSplit) loadFuncBucket(k, v []byte, _ etl.CurrentTableReader, _ etl.
 	return nil
 }
 
+// loadMemBuckets feeds the in-memory keys to recsplitCurrentBucket in the
+// order the etl bucket collector would: by bucket, then fingerprint (the
+// big-endian etl key), and by insertion among equal keys (the etl sort is
+// stable; equal keys are a collision either way, and val is the insertion
+// index under Enums). A counting sort places each key in its bucket, then
+// each bucket (~BucketSize keys) is sorted on its own.
+func (rs *RecSplit) loadMemBuckets(ctx context.Context) error {
+	keys := rs.memKeys
+	rs.memKeys = nil
+	if len(keys) == 0 {
+		return nil
+	}
+	starts := make([]uint32, rs.bucketCount+1)
+	for i := range keys {
+		starts[keys[i].bucket+1]++
+	}
+	for b := uint64(1); b <= rs.bucketCount; b++ {
+		starts[b] += starts[b-1]
+	}
+	sorted := make([]memBucketKey, len(keys))
+	next := make([]uint32, rs.bucketCount)
+	copy(next, starts[:rs.bucketCount])
+	for i := range keys {
+		b := keys[i].bucket
+		sorted[next[b]] = keys[i]
+		next[b]++
+	}
+	keys = nil
+	cmp := func(a, b memBucketKey) int {
+		if a.fp != b.fp {
+			if a.fp < b.fp {
+				return -1
+			}
+			return 1
+		}
+		if a.val < b.val {
+			return -1
+		}
+		if a.val > b.val {
+			return 1
+		}
+		return 0
+	}
+	for b := uint64(0); b < rs.bucketCount; b++ {
+		lo, hi := starts[b], starts[b+1]
+		if lo == hi {
+			continue
+		}
+		if b&1023 == 0 && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		part := sorted[lo:hi]
+		slices.SortFunc(part, cmp)
+		if rs.currentBucketIdx != math.MaxUint64 {
+			if err := rs.recsplitCurrentBucket(); err != nil {
+				return err
+			}
+		}
+		rs.currentBucketIdx = b
+		for _, k := range part {
+			rs.currentBucket = append(rs.currentBucket, k.fp)
+			rs.currentBucketOffs = append(rs.currentBucketOffs, k.val)
+		}
+	}
+	return nil
+}
+
 func (rs *RecSplit) loadFuncOffset(k, _ []byte, _ etl.CurrentTableReader, _ etl.LoadNextFunc) error {
 	offset := binary.BigEndian.Uint64(k)
 	rs.offsetEf.AddOffset(offset)
@@ -633,12 +753,18 @@ func (rs *RecSplit) Build(ctx context.Context) error {
 	}
 
 	rs.currentBucketIdx = math.MaxUint64 // To make sure 0 bucket is detected
-	defer rs.bucketCollector.Close()
 	if rs.lvl < log.LvlTrace {
 		log.Log(rs.lvl, "[index] calculating", "file", rs.indexFileName)
 	}
-	if err := rs.bucketCollector.Load(nil, "", rs.loadFuncBucket, etl.TransformArgs{Quit: ctx.Done()}); err != nil {
-		return err
+	if rs.inMemory {
+		if err := rs.loadMemBuckets(ctx); err != nil {
+			return err
+		}
+	} else {
+		defer rs.bucketCollector.Close()
+		if err := rs.bucketCollector.Load(nil, "", rs.loadFuncBucket, etl.TransformArgs{Quit: ctx.Done()}); err != nil {
+			return err
+		}
 	}
 	if len(rs.currentBucket) > 0 {
 		if err := rs.recsplitCurrentBucket(); err != nil {
@@ -659,9 +785,20 @@ func (rs *RecSplit) Build(ctx context.Context) error {
 	}
 	if rs.enums && rs.keysAdded > 0 {
 		rs.offsetEf = eliasfano32.NewEliasFano(rs.keysAdded, rs.maxOffset)
-		defer rs.offsetCollector.Close()
-		if err := rs.offsetCollector.Load(nil, "", rs.loadFuncOffset, etl.TransformArgs{}); err != nil {
-			return err
+		if rs.inMemory {
+			// The etl collector yields the offsets in ascending order.
+			if !slices.IsSorted(rs.memOffsets) {
+				slices.Sort(rs.memOffsets)
+			}
+			for _, off := range rs.memOffsets {
+				rs.offsetEf.AddOffset(off)
+			}
+			rs.memOffsets = nil
+		} else {
+			defer rs.offsetCollector.Close()
+			if err := rs.offsetCollector.Load(nil, "", rs.loadFuncOffset, etl.TransformArgs{}); err != nil {
+				return err
+			}
 		}
 		rs.offsetEf.Build()
 	}
