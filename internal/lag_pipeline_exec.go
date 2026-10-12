@@ -126,6 +126,7 @@ type lagPipeline struct {
 	// other execution of the same block starts until they finish.
 	draining []*aheadExec
 
+	seq       uint64 // ahead executions launched (under mu)
 	launched  atomic.Uint64
 	used      atomic.Uint64
 	discarded atomic.Uint64
@@ -164,6 +165,7 @@ type aheadExec struct {
 	parentOK bool // the parent's publishing import wrote it (under lagPipeline.mu)
 	done     chan struct{}
 	started  time.Time
+	seq      uint64        // launch order (drainingLocked)
 	pre      time.Duration // from launch to the start of the Block-STM run
 
 	// Set by the executing goroutine before done closes.
@@ -375,6 +377,8 @@ func (bc *BlockChain) lagPipeLaunch() {
 		return
 	}
 	a := &aheadExec{blk: child, parent: par.hash, done: make(chan struct{}), started: time.Now(), pipe: p}
+	p.seq++
+	a.seq = p.seq
 	p.spec = a
 	par.launched = true
 	p.mu.Unlock()
@@ -388,7 +392,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	defer func() { a.took = time.Since(a.started) }()
 	// A discarded run of the same block may still be filling its
 	// transactions' senders.
-	a.pipe.awaitDrained(a.blk.Hash())
+	a.pipe.awaitDrained(a.blk.Hash(), a)
 	if err := bc.ResolveFrames(a.blk); err != nil {
 		a.err = err
 		return
@@ -454,7 +458,7 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		p.mu.Unlock()
 		// The serial path executes blk next: a discarded run of it must not
 		// still be filling its transactions' senders.
-		p.awaitDrained(blk.Hash())
+		p.awaitDrained(blk.Hash(), nil)
 		return nil
 	}
 	p.spec = nil
@@ -476,7 +480,7 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		log.Debug("lag pipeline: ahead execution discarded", "number", number, "hash", blk.Hash().Hex()[:12], "reason", reason)
 		p.discarded.Add(1)
 		a.release()
-		p.awaitDrained(blk.Hash())
+		p.awaitDrained(blk.Hash(), nil)
 		return nil
 	}
 	p.used.Add(1)
@@ -493,7 +497,11 @@ func (p *lagPipeline) discardLocked(a *aheadExec) {
 
 // drainingLocked returns a discarded execution of hash still running, and
 // forgets the finished ones (p.mu held).
-func (p *lagPipeline) drainingLocked(hash types.Hash) *aheadExec {
+// With self set (an ahead execution about to start), only executions
+// launched before self count: a discarded execution that has not started
+// yet would otherwise wait for itself, or two of them for each other (a
+// deadlock the race detector's slower goroutine starts exposed).
+func (p *lagPipeline) drainingLocked(hash types.Hash, self *aheadExec) *aheadExec {
 	var running *aheadExec
 	keep := p.draining[:0]
 	for _, a := range p.draining {
@@ -503,7 +511,7 @@ func (p *lagPipeline) drainingLocked(hash types.Hash) *aheadExec {
 		default:
 		}
 		keep = append(keep, a)
-		if a.blk.Hash() == hash {
+		if a.blk.Hash() == hash && (self == nil || a.seq < self.seq) {
 			running = a
 		}
 	}
@@ -514,11 +522,12 @@ func (p *lagPipeline) drainingLocked(hash types.Hash) *aheadExec {
 	return running
 }
 
-// awaitDrained waits until no discarded execution of hash runs.
-func (p *lagPipeline) awaitDrained(hash types.Hash) {
+// awaitDrained waits until no discarded execution of hash runs (with self,
+// none launched before self).
+func (p *lagPipeline) awaitDrained(hash types.Hash, self *aheadExec) {
 	for {
 		p.mu.Lock()
-		a := p.drainingLocked(hash)
+		a := p.drainingLocked(hash, self)
 		p.mu.Unlock()
 		if a == nil {
 			return
