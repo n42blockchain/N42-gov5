@@ -111,6 +111,9 @@ func decodeEthereumTransaction(data []byte) (*Transaction, error) {
 		return nil, fmt.Errorf("empty transaction payload")
 	}
 	if data[0] >= 0xc0 {
+		if tx, ok := fastDecodeLegacy(data); ok && !reflectDecodeOnly {
+			return tx, nil
+		}
 		var dec legacyTxRLP
 		if err := rlp.DecodeBytes(data, &dec); err != nil {
 			return nil, err
@@ -149,6 +152,9 @@ func decodeEthereumTransaction(data []byte) (*Transaction, error) {
 			S:          dec.S,
 		}), nil
 	case DynamicFeeTxType:
+		if tx, ok := fastDecodeDynamicFee(payload); ok && !reflectDecodeOnly {
+			return tx, nil
+		}
 		var dec dynamicFeeTxRLP
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
 			return nil, err
