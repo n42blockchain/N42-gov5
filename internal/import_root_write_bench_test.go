@@ -137,6 +137,7 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 	nFiller := benchEnvInt("N42_BENCH_FILLER", 200000)
 	nBlocks := benchEnvInt("N42_BENCH_BLOCKS", 8)
 	admitPct := benchEnvInt("N42_BENCH_ADMIT_SENDERS_PCT", 100)
+	afterParent := os.Getenv("N42_BENCH_ARRIVE_AFTER_PARENT") == "1"
 	const perFrame = 160
 
 	defer SetFrameBlocksForTest(true)()
@@ -356,6 +357,12 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 		// The leader gate: block n carries the result of n-2.
 		if n >= 3 {
 			waitLag(n - 2)
+		}
+		// N42_BENCH_ARRIVE_AFTER_PARENT=1: block n arrives only once n-1
+		// is imported and written (S103: one follower import in three
+		// found no child at its parent's settle).
+		if afterParent && n >= 2 {
+			waitLag(n - 1)
 		}
 		hdr := &block.Header{ParentHash: parent.Hash(), Number: parent.Number.Clone(), GasLimit: parent.GasLimit,
 			Time: parent.Time + 10, BaseFee: parent.BaseFee.Clone(), Difficulty: parentDifficulty(parent),
