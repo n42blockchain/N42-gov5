@@ -873,12 +873,17 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	var aheadPhases ProcessPhases
 	if ahead {
 		aheadPhases = ProcessPhases{
-			Recover:     tRecovered.Sub(tStart),
-			Setup:       tRunStart.Sub(tRecovered),
-			Exec:        tRunEnd.Sub(tRunStart),
-			Collect:     time.Since(tRunEnd),
-			Skipped:     nSkipped,
-			SkipReasons: skipReasons,
+			Recover: tRecovered.Sub(tStart),
+			Setup:   tRunStart.Sub(tRecovered),
+			Exec:    tRunEnd.Sub(tRunStart),
+			Collect: time.Since(tRunEnd),
+			Skipped: nSkipped,
+			// Collect's parts.
+			CollectReceipts: tApplyStart.Sub(tRunEnd),
+			CollectApply:    tApplied.Sub(tApplyStart),
+			CollectPrefetch: tPrefetched.Sub(tApplied),
+			CollectFees:     time.Since(tPrefetched),
+			SkipReasons:     skipReasons,
 		}
 	} else if !lenient {
 		// Publish this block's breakdown for the "blockimport phases" line,

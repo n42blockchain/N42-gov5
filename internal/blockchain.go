@@ -2761,7 +2761,11 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		//	valid ValidateState: receipt bloom + receipt root.
 		//	write writeBlockWithState in full; "blockwrite phases" breaks it down.
 		if fn := importPhasesHook; fn != nil {
-			fn(blockNumber.Uint64(), procPhases, dProcess, dValidate, dWrite, ahead != nil)
+			var at *AheadTimes
+			if ahead != nil {
+				at = &AheadTimes{Pre: ahead.pre, Run: ahead.took, Wait: dAheadWait}
+			}
+			fn(blockNumber.Uint64(), procPhases, dProcess, dValidate, dWrite, at)
 		}
 		{
 			dTotal := dHdr + dBody + time.Since(tIter)
