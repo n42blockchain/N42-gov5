@@ -192,3 +192,134 @@ func TestDetachedPendingCreditsMatchMaterialised(t *testing.T) {
 		}
 	}
 }
+
+// TestDetachedCreditsSurviveSystemCallFinalize (P10): the block-end system
+// calls finalize with a no-op writer. On a state whose root detaches its
+// pending credits they stay pending, and the root, the post-state and
+// CommitBlock's rows equal those of a state that materialised every credit
+// at the system call (EIP-161 removal of a zero credit to an absent account
+// included: an empty account and a deletion are the same root op). The
+// credits' base also comes from a known-accounts cache instead of a seeded
+// set.
+func TestDetachedCreditsSurviveSystemCallFinalize(t *testing.T) {
+	const nRecipients = 3000
+	store := map[types.Address]*account.StateAccount{}
+	var senders, recipients []types.Address
+	for i := 0; i < 40; i++ {
+		a := testAddr("sc-sender", i)
+		acc := account.NewAccount()
+		acc.Nonce = uint64(i)
+		acc.Balance.SetUint64(1_000_000)
+		store[a] = &acc
+		senders = append(senders, a)
+	}
+	for i := 0; i < nRecipients; i++ {
+		a := testAddr("sc-recipient", i)
+		if i%7 != 0 {
+			acc := account.NewAccount()
+			acc.Balance.SetUint64(uint64(i + 1))
+			store[a] = &acc
+		}
+		recipients = append(recipients, a)
+	}
+	rules := &params.Rules{IsSpuriousDragon: true, IsByzantium: true}
+	run := func(detach, known bool) (*capturingRootComputer, *PostState, []string) {
+		pf := NewAccountPrefetch(mapStateReader{accts: store})
+		ibs := New(pf)
+		ibs.SetAccountPrefetch(pf)
+		ibs.SetDetachedPendingCredits(detach)
+		for i, s := range senders {
+			ibs.SetNonce(s, uint64(i)+1)
+			ibs.SubBalance(s, uint256.NewInt(21000))
+		}
+		for i, r := range recipients {
+			amt := uint64(1 + i%1000)
+			if i == 11 || i == 14 { // 14 is absent: a zero credit touches an empty account
+				amt = 0
+			}
+			ibs.AddBalance(r, uint256.NewInt(amt))
+		}
+		if known {
+			pf.SetKnown(mapKnown{accts: store})
+		} else {
+			seed := map[types.Address]*account.StateAccount{}
+			for _, addr := range ibs.PendingBalanceIncreases() {
+				v, _ := mapStateReader{accts: store}.ReadAccountData(addr)
+				seed[addr] = v
+			}
+			pf.Seed(seed)
+		}
+		// The two Prague system calls' finalization.
+		for k := 0; k < 2; k++ {
+			if err := ibs.FinalizeTx(rules, NewNoopWriter()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if pending := len(ibs.pendingIncreaseAddrs()); detach && pending < nRecipients-2 {
+			t.Fatalf("system call materialised the credits (%d pending)", pending)
+		}
+		rc := &capturingRootComputer{}
+		ibs.SetRootComputer(rc)
+		var post *PostState
+		ibs.SetRootPostStateHook(func(p *PostState) { post = p })
+		ibs.IntermediateRoot()
+		w := &recordingWriter{}
+		if err := ibs.CommitBlock(rules, w); err != nil {
+			t.Fatal(err)
+		}
+		return rc, post, w.log
+	}
+	empty := func(a *account.StateAccount) bool { return a == nil || accountIsEmpty(a) }
+	ref, refPost, refLog := run(false, false)
+	for _, known := range []bool{false, true} {
+		got, gotPost, gotLog := run(true, known)
+		if len(got.accts) != len(ref.accts) {
+			t.Fatalf("known=%v: dirty accounts %d, want %d", known, len(got.accts), len(ref.accts))
+		}
+		for addr, want := range ref.accts {
+			have, ok := got.accts[addr]
+			if !ok {
+				t.Fatalf("known=%v: account %x missing", known, addr)
+			}
+			if empty(want) != empty(have) || (!empty(want) && !want.Equals(have)) {
+				t.Fatalf("known=%v: account %x: %+v, want %+v", known, addr, have, want)
+			}
+		}
+		if len(gotLog) != len(refLog) {
+			t.Fatalf("known=%v: CommitBlock wrote %d rows, want %d", known, len(gotLog), len(refLog))
+		}
+		for i := range refLog {
+			if gotLog[i] != refLog[i] {
+				t.Fatalf("known=%v: CommitBlock row %d: %s, want %s", known, i, gotLog[i], refLog[i])
+			}
+		}
+		base := mapStateReader{accts: store}
+		refR, gotR := NewPostStateReader(refPost, base), NewPostStateReader(gotPost, base)
+		for _, addr := range append(append([]types.Address{}, senders...), recipients...) {
+			w, _ := refR.ReadAccountData(addr)
+			h, _ := gotR.ReadAccountData(addr)
+			if empty(w) != empty(h) || (!empty(w) && !w.Equals(h)) {
+				t.Fatalf("known=%v: post-state read of %x: %+v, want %+v", known, addr, h, w)
+			}
+		}
+	}
+}
+
+// mapKnown is a KnownAccounts over a map.
+type mapKnown struct {
+	accts map[types.Address]*account.StateAccount
+}
+
+func (k mapKnown) Peek(a types.Address) (*account.StateAccount, bool) {
+	return k.accts[a], true
+}
+
+func (k mapKnown) Get(a types.Address) (*account.StateAccount, bool) {
+	v, ok := k.Peek(a)
+	if v == nil {
+		return nil, ok
+	}
+	c := new(account.StateAccount)
+	c.Copy(v)
+	return c, ok
+}
