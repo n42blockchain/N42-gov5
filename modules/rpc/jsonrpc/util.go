@@ -150,7 +150,7 @@ func decodeNibble(in byte) uint64 {
 		return badNibble
 	}
 }
-func UnmarshalText(h types.Hash, input []byte) error {
+func UnmarshalText(h *types.Hash, input []byte) error {
 	return UnmarshalFixedText("Hash", input, h[:])
 }
 
