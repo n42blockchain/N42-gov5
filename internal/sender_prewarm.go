@@ -52,6 +52,19 @@ const senderJobChunk = 128
 // by the import's own recovery).
 const senderJobCap = 64
 
+// frameAttestWait bounds how long a frame sender job gives an in-flight
+// committee attestation before recovering locally. The deadline is shared
+// by the whole block, measured from enqueue, never renewed per frame.
+// N42_FRAME_ATTEST_WAIT_MS=0 retains immediate fallback for A/B measurements.
+var frameAttestWait = frameAttestWaitFromEnv()
+
+func frameAttestWaitFromEnv() time.Duration {
+	if n, err := strconv.Atoi(os.Getenv("N42_FRAME_ATTEST_WAIT_MS")); err == nil && n >= 0 {
+		return time.Duration(min(n, 1000)) * time.Millisecond
+	}
+	return 50 * time.Millisecond
+}
+
 // senderPrewarmWorkers is N42_SENDER_PREWARM_WORKERS: the background
 // workers per block job (0 disables the job; default half the import's
 // recovery fan-out).
@@ -238,14 +251,21 @@ func (j *senderJob) frame(i int, final bool) bool {
 				// Not stored (pulled past the budget and evicted, or read
 				// from the Frames table): attested senders still apply.
 				if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
-					frame.ApplySenders(txs, ss)
+					if frame.ApplySenders(txs, ss) == len(txs) {
+						return true
+					}
 				}
 				break
 			}
 			return j.owned(t, txs, final)
 		}
 	} else if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
-		frame.ApplySenders(txs, ss)
+		if frame.ApplySenders(txs, ss) == len(txs) {
+			return true
+		}
+	}
+	if !final && j.src != nil && j.src.Pending(sp.H) {
+		return false
 	}
 	// Senders taken from elsewhere leave only failed entries (zero
 	// addresses) to derive; with no store this recovers the frame.
@@ -279,11 +299,22 @@ func (j *senderJob) fromSource(h types.Hash, n int, final bool) *store.Senders {
 	if j.src == nil {
 		return nil
 	}
-	addrs := j.src.Senders(h, n)
-	if addrs == nil {
-		return nil
+	deadline := j.start.Add(frameAttestWait)
+	for {
+		if addrs := j.src.Senders(h, n); addrs != nil {
+			return &store.Senders{Signer: j.signer, Addrs: addrs}
+		}
+		remaining := time.Until(deadline)
+		if !final || remaining <= 0 || !j.src.Pending(h) {
+			return nil
+		}
+		// Poll only in the final pass. Admission recovery and non-committee
+		// work remain free to finish; every worker shares this deadline.
+		if remaining > 2*time.Millisecond {
+			remaining = 2 * time.Millisecond
+		}
+		time.Sleep(remaining)
 	}
-	return &store.Senders{Signer: j.signer, Addrs: addrs}
 }
 
 // recoverTxs recovers txs (an owned frame h) and returns its senders for
