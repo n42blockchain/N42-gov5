@@ -31,3 +31,23 @@ func TestSubmissionPacerDoesNotRoundTwoTPSUpToHundred(t *testing.T) {
 		t.Fatal("missing half-second permit")
 	}
 }
+
+func TestSubmissionPermitsBoundStalledWorkerCredit(t *testing.T) {
+	for _, tc := range []struct{ rate, batch, capacity int }{
+		{2, 1, 1}, {2, 200, 1}, {400000, 200, 20}, {4000001, 200, 201},
+	} {
+		pacer := submissionPacer{rate: tc.rate, batch: tc.batch}
+		permits := make(chan struct{}, submissionPermitCapacity(tc.rate, tc.batch))
+		for tick := 0; tick < 20000; tick++ {
+			for n := pacer.tick(); n > 0; n-- {
+				select {
+				case permits <- struct{}{}:
+				default:
+				}
+			}
+		}
+		if len(permits) != tc.capacity {
+			t.Fatalf("rate=%d batch=%d accumulated %d permits, want %d", tc.rate, tc.batch, len(permits), tc.capacity)
+		}
+	}
+}

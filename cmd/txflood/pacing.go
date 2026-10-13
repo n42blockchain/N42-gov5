@@ -22,7 +22,9 @@ func (p *submissionPacer) tick() int {
 }
 
 func pacedSubmissionPermits(rate, batch int) chan struct{} {
-	permits := make(chan struct{}, rate)
+	// Permits release batches, not individual transactions. Retain at most
+	// one tick of credit so a slow RPC cannot bank seconds of burst traffic.
+	permits := make(chan struct{}, submissionPermitCapacity(rate, batch))
 	go func() {
 		budget := submissionPacer{rate: rate, batch: batch}
 		ticker := time.NewTicker(10 * time.Millisecond)
@@ -37,4 +39,16 @@ func pacedSubmissionPermits(rate, batch int) chan struct{} {
 		}
 	}()
 	return permits
+}
+
+func submissionPermitCapacity(rate, batch int) int {
+	transactions := rate / 100
+	if rate%100 != 0 {
+		transactions++
+	}
+	capacity := transactions / batch
+	if transactions%batch != 0 {
+		capacity++
+	}
+	return max(capacity, 1)
 }
