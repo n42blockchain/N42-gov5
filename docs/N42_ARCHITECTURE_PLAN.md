@@ -4,6 +4,17 @@
 > Module: `github.com/n42blockchain/N42` | Go 1.25+ | MDBX Backend
 > Positioning: High-performance EVM-compatible L1 with post-quantum security, AI-native infrastructure, and full distributed stack
 
+## 2026-10-13 工作方向更新
+
+以 [ARCHITECTURE.md](ARCHITECTURE.md) 的三条链划分为当前推进依据：
+自研链保留现有 7 独立节点；以太坊兼容链（含周更新、minimal/full/archive、
+Pro + DATC）已完成并转维护；主要开发投入性能链，采用 Ed25519 交易签名和
+验证者/执行层分离，按接口与向量复用自研能力。下文历史功能规划不表示要
+重新研发已完成的 Ethereum 兼容侧。
+
+当前硬件安排：S105 最后一腿完成后让出硬件；另一会话完成测试后恢复性能链
+验证。独立链 ID、genesis、端口、数据目录与 V/E 配置是首个落地项。
+
 ---
 
 ## Table of Contents

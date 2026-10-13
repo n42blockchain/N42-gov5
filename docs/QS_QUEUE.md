@@ -228,3 +228,12 @@ The launcher waits for the existing foreign Codex claim to release, quiet
 load and MemAvailable >=90 GiB. It preserves the prior fleet generation,
 never deletes other rounds' replay copies, and does not retry an aborted
 round. S105 results are pending; check the live chain log before resuming.
+
+### 工作重点与硬件交接（2026-10-13）
+
+项目分为自研 7 独立节点链、性能链、已完成的 EL+CL 兼容链。兼容链已完成
+周更新、minimal/full/archive 及 Pro+DATC，不再安排其研发；主要开发投入性能链，
+复用自研模块规范与向量，引入 Ed25519 和 shared execution。S105 的 A2 已于
+19:34 EDT 启动，本腿收尾后释放 claim，暂停新的重编译和舰队压测，等待另一
+会话测试完成后恢复。恢复点：先读取 S105 完整结果；性能链从独立 V=7、E=1
+严格 Ed25519 批验证配置开始，再对照 E=4/7。完整边界见 ARCHITECTURE.md。
