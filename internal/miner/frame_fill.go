@@ -123,7 +123,7 @@ func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.A
 				return true
 			}
 		}
-		if len(p.hashes) >= maxFrames || p.gas+e.Gas > budget {
+		if len(p.hashes) >= maxFrames || e.Gas > budget-p.gas {
 			return false
 		}
 		p.hashes = append(p.hashes, h)

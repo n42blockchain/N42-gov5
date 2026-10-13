@@ -330,10 +330,10 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	}
 	var gas uint64
 	for _, t := range body.Txs {
-		gas += t.Gas()
-		if gas > hdr.GasLimit {
+		if t.Gas() > hdr.GasLimit-gas {
 			return false, fmt.Errorf("availability: frame block %d exceeds its gas limit", number)
 		}
+		gas += t.Gas()
 	}
 	// The lagged result: checked now when this node has it (an honest
 	// follower one block behind usually has), otherwise at import, where a

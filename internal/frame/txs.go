@@ -151,15 +151,22 @@ func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transactio
 // drops it.
 func GasEstimate(f *Frame) uint64 {
 	var gas uint64
+	add := func(g uint64) {
+		if g > ^uint64(0)-gas {
+			gas = ^uint64(0)
+		} else {
+			gas += g
+		}
+	}
 	_ = walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
 		if f.TxType == TxTypeEthereum {
 			if g, ok := ethGasLimit(b); ok {
-				gas += g
+				add(g)
 				return
 			}
 		}
 		if tx, err := decodeTx(f.TxType, b); err == nil {
-			gas += tx.Gas()
+			add(tx.Gas())
 		}
 	})
 	return gas
