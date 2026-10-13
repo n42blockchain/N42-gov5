@@ -1084,20 +1084,18 @@ func (it *oldSegIter) ensure() (bool, error) {
 			if _, err := it.sf.f.ReadAt(comp, fm.off); err != nil {
 				return false, err
 			}
-			raw, err := it.zr.DecodeAll(comp, make([]byte, 0, fm.raw))
+			raw, err := it.zr.DecodeAll(comp, make([]byte, 0, min(fm.raw, leafFrameRaw)))
 			if err != nil {
 				return false, err
 			}
-			it.raw = raw
-			it.offs = it.offs[:0]
-			pos := uint32(0)
-			for pos < uint32(len(raw)) {
-				it.offs = append(it.offs, pos)
-				kl, m := binary.Uvarint(raw[pos:])
-				pos += uint32(m) + uint32(kl)
-				vl, m2 := binary.Uvarint(raw[pos:])
-				pos += uint32(m2) + uint32(vl)
+			if len(raw) != fm.raw {
+				return false, fmt.Errorf("decoded frame length differs from footer")
 			}
+			offs, err := decodeFrameOffsets(raw)
+			if err != nil {
+				return false, err
+			}
+			it.raw, it.offs = raw, offs
 			it.ri = 0
 		}
 		if it.ri < len(it.offs) {
@@ -1413,6 +1411,16 @@ func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	if st.Size() < int64(len(leafSegMagic)+17) {
+		return nil, fmt.Errorf("segment too short")
+	}
+	var leading [len(leafSegMagic)]byte
+	if _, err := f.ReadAt(leading[:], 0); err != nil {
+		return nil, err
+	}
+	if string(leading[:]) != leafSegMagic {
+		return nil, fmt.Errorf("bad leading magic")
+	}
 	var tail [16]byte
 	if _, err := f.ReadAt(tail[:], st.Size()-16); err != nil {
 		return nil, err
@@ -1420,25 +1428,53 @@ func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
 	if string(tail[8:]) != leafSegMagic {
 		return nil, fmt.Errorf("bad trailing magic")
 	}
-	footLen := int64(binary.BigEndian.Uint64(tail[:8]))
-	foot := make([]byte, footLen)
-	if _, err := f.ReadAt(foot, st.Size()-16-footLen); err != nil {
+	footLen := binary.BigEndian.Uint64(tail[:8])
+	maxInt := uint64(^uint(0) >> 1)
+	if footLen == 0 || footLen > uint64(st.Size()-16-int64(len(leafSegMagic))) || footLen > maxInt {
+		return nil, fmt.Errorf("footer length exceeds segment")
+	}
+	footerStart := st.Size() - 16 - int64(footLen)
+	foot := make([]byte, int(footLen))
+	if _, err := f.ReadAt(foot, footerStart); err != nil {
 		return nil, err
 	}
 	n, m := binary.Uvarint(foot)
-	if m <= 0 {
-		return nil, fmt.Errorf("bad footer")
+	if m <= 0 || n > uint64(len(foot)-m)/4 {
+		return nil, fmt.Errorf("invalid footer frame count")
 	}
 	p := m
-	sf := &leafSegFile{f: f, offs: make([]int64, 0, n+1), raws: make([]uint32, 0, n), kOff: make([]uint32, 0, n+1)}
+	read := func() (uint64, error) {
+		v, size := binary.Uvarint(foot[p:])
+		if size <= 0 {
+			return 0, fmt.Errorf("truncated or overflowing footer varint")
+		}
+		p += size
+		return v, nil
+	}
+	sf := &leafSegFile{f: f, offs: make([]int64, 0, int(n)+1), raws: make([]uint32, 0, int(n)), kOff: make([]uint32, 0, int(n)+1)}
 	off := int64(len(leafSegMagic))
 	for i := uint64(0); i < n; i++ {
-		comp, m1 := binary.Uvarint(foot[p:])
-		p += m1
-		rawLen, m2 := binary.Uvarint(foot[p:])
-		p += m2
-		kl, m3 := binary.Uvarint(foot[p:])
-		p += m3
+		comp, err := read()
+		if err != nil {
+			return nil, err
+		}
+		rawLen, err := read()
+		if err != nil {
+			return nil, err
+		}
+		kl, err := read()
+		if err != nil {
+			return nil, err
+		}
+		if comp == 0 || comp > maxInt || comp > uint64(footerStart-off) {
+			return nil, fmt.Errorf("compressed frame exceeds segment")
+		}
+		if rawLen == 0 || rawLen > uint64(^uint32(0)) || rawLen > maxInt {
+			return nil, fmt.Errorf("invalid raw frame length")
+		}
+		if kl == 0 || kl > uint64(len(foot)-p) || kl > uint64(^uint32(0))-uint64(len(sf.keys)) {
+			return nil, fmt.Errorf("invalid footer key length")
+		}
 		sf.offs = append(sf.offs, off)
 		sf.raws = append(sf.raws, uint32(rawLen))
 		sf.kOff = append(sf.kOff, uint32(len(sf.keys)))
@@ -1446,9 +1482,44 @@ func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
 		p += int(kl)
 		off += int64(comp)
 	}
+	if p != len(foot) || off != footerStart {
+		return nil, fmt.Errorf("footer does not describe complete segment")
+	}
 	sf.offs = append(sf.offs, off)
 	sf.kOff = append(sf.kOff, uint32(len(sf.keys)))
 	return sf, nil
+}
+
+// decodeFrameOffsets checks each length before advancing, including tombstone
+// values. Corrupt lengths must not cause a panic or leave a zero-progress loop.
+func decodeFrameOffsets(raw []byte) ([]uint32, error) {
+	if uint64(len(raw)) > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("decoded frame exceeds offset range")
+	}
+	var offsets []uint32
+	for pos := 0; pos < len(raw); {
+		start := pos
+		kl, m := binary.Uvarint(raw[pos:])
+		if m <= 0 {
+			return nil, fmt.Errorf("invalid frame key length")
+		}
+		pos += m
+		if kl == 0 || kl > uint64(len(raw)-pos) {
+			return nil, fmt.Errorf("truncated frame key")
+		}
+		pos += int(kl)
+		vl, m := binary.Uvarint(raw[pos:])
+		if m <= 0 {
+			return nil, fmt.Errorf("invalid frame value length")
+		}
+		pos += m
+		if vl > uint64(len(raw)-pos) {
+			return nil, fmt.Errorf("truncated frame value")
+		}
+		pos += int(vl)
+		offsets = append(offsets, uint32(start))
+	}
+	return offsets, nil
 }
 
 func (s *leafSegSet) frameKey(bucket, fi int) uint64 {
@@ -1469,19 +1540,18 @@ func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	if _, err := sf.f.ReadAt(comp, fm.off); err != nil {
 		return nil, err
 	}
-	raw, err := sharedSegDecoder().DecodeAll(comp, make([]byte, 0, fm.raw))
+	raw, err := sharedSegDecoder().DecodeAll(comp, make([]byte, 0, min(fm.raw, leafFrameRaw)))
 	if err != nil {
 		return nil, err
 	}
-	d := &decodedFrame{raw: raw}
-	pos := uint32(0)
-	for pos < uint32(len(raw)) {
-		d.offs = append(d.offs, pos)
-		kl, m := binary.Uvarint(raw[pos:])
-		pos += uint32(m) + uint32(kl)
-		vl, m2 := binary.Uvarint(raw[pos:])
-		pos += uint32(m2) + uint32(vl)
+	if len(raw) != fm.raw {
+		return nil, fmt.Errorf("decoded frame length differs from footer")
 	}
+	offs, err := decodeFrameOffsets(raw)
+	if err != nil {
+		return nil, err
+	}
+	d := &decodedFrame{raw: raw, offs: offs}
 	s.cache.put(ck, d)
 	return d, nil
 }
