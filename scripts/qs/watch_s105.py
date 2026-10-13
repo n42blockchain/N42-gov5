@@ -10,7 +10,7 @@ import time
 ROOT = pathlib.Path('/data/blockchain/wr-analysis/s105-20261013')
 LOG = pathlib.Path('/data/blockchain/wr-logs/r35zzzce.log')
 ROOT.mkdir(parents=True, exist_ok=True)
-terminal = re.compile(r'^\d\d:\d\d:\d\d ROUND (DONE|.*ABORTED)', re.M)
+terminal = re.compile(r'^\d\d:\d\d:\d\d ROUND (DONE[^\n]*|[^\n]*ABORTED[^\n]*)', re.M)
 deadline = time.monotonic() + 12 * 3600
 while time.monotonic() < deadline:
     text = LOG.read_text() if LOG.exists() else ''
