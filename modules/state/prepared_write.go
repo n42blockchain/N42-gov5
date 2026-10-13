@@ -120,7 +120,7 @@ func (l *StateWriteLog) DeleteAccount(address types.Address, original *account.S
 
 func (l *StateWriteLog) UpdateAccountCode(address types.Address, codeHash types.Hash, code []byte) error {
 	l.ops = append(l.ops, stateWriteOp{kind: opUpdateCode, idx: int32(len(l.codes))})
-	l.codes = append(l.codes, stateWriteCode{addr: address, hash: codeHash, code: code})
+	l.codes = append(l.codes, stateWriteCode{addr: address, hash: codeHash, code: types.CopyBytes(code)})
 	return nil
 }
 
