@@ -55,3 +55,43 @@ func TestBlockNumberOrHashRejectsMalformedHashString(t *testing.T) {
 		t.Fatal("invalid hexadecimal accepted")
 	}
 }
+
+func TestBlockNumberOrHashReusedDestination(t *testing.T) {
+	hash := "0x" + strings.Repeat("ab", 32)
+	var value BlockNumberOrHash
+	for _, input := range []string{`{"blockHash":"` + hash + `","requireCanonical":true}`, `"latest"`, `"` + hash + `"`, `"0x2a"`} {
+		if err := json.Unmarshal([]byte(input), &value); err != nil {
+			t.Fatal(err)
+		}
+		if (value.BlockHash == nil) == (value.BlockNumber == nil) {
+			t.Fatalf("selector retains both alternatives after %s", input)
+		}
+		if input[0] == '"' && value.RequireCanonical {
+			t.Fatalf("scalar %s retains requireCanonical", input)
+		}
+	}
+}
+
+func TestBlockNumberOrHashFinalityTags(t *testing.T) {
+	for input, want := range map[string]BlockNumber{"safe": SafeBlockNumber, "finalized": FinalizedBlockNumber} {
+		var value BlockNumberOrHash
+		if err := json.Unmarshal([]byte(`"`+input+`"`), &value); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := value.Number(); !ok || got != want {
+			t.Fatalf("%s = %d, %v", input, got, ok)
+		}
+	}
+}
+
+func TestBlockNumberOrHashEscapedScalars(t *testing.T) {
+	for input, want := range map[string]BlockNumber{`"la\u0074est"`: LatestBlockNumber, `"0\u00782a"`: 42} {
+		var value BlockNumberOrHash
+		if err := json.Unmarshal([]byte(input), &value); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := value.Number(); !ok || got != want {
+			t.Fatalf("%s = %d, %v", input, got, ok)
+		}
+	}
+}
