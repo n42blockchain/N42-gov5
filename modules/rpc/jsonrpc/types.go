@@ -127,39 +127,22 @@ func (bnh *BlockNumberOrHash) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	switch input {
-	case "earliest":
-		bn := EarliestBlockNumber
-		bnh.BlockNumber = &bn
-		return nil
-	case "latest":
-		bn := LatestBlockNumber
-		bnh.BlockNumber = &bn
-		return nil
-	case "pending":
-		bn := PendingBlockNumber
-		bnh.BlockNumber = &bn
-		return nil
-	default:
-		if len(input) == 66 {
-			hash := types.Hash{}
-			if err := UnmarshalText(hash, []byte(input)); err != nil {
-				return err
-			}
-			bnh.BlockHash = &hash
-			return nil
-		}
-		blckNum, err := DecodeUint64(input)
-		if err != nil {
+	if len(input) == 66 {
+		var hash types.Hash
+		if err := UnmarshalText(&hash, []byte(input)); err != nil {
 			return err
 		}
-		if blckNum > math.MaxInt64 {
-			return fmt.Errorf("blocknumber too high")
-		}
-		bn := BlockNumber(blckNum)
-		bnh.BlockNumber = &bn
+		*bnh = BlockNumberOrHashWithHash(hash, false)
 		return nil
 	}
+	var bn BlockNumber
+	if err := bn.UnmarshalJSON([]byte(strconv.Quote(input))); err != nil {
+		return err
+	}
+	// Replace the whole selector: a reused destination must not retain the
+	// previous hash, number or requireCanonical flag.
+	*bnh = BlockNumberOrHashWithNumber(bn)
+	return nil
 }
 
 func (bnh *BlockNumberOrHash) Number() (BlockNumber, bool) {
