@@ -40,6 +40,39 @@ f+1 验证者发送者证明是不同机制。该结果用于架构参考，**�
 不启用 claimed-sender/shard 或 gateway-attested 的跳过验签路径；以后若加入
 证明认证网关，须单独记录验证者、网关和执行层各自的信任模型。
 
+### 性能链开发入口（P0 配置原型）
+
+代码与文档工作分支：`perf/rs-architecture-port-20261013`。
+已有 n42-rs 运行底座作为首个验证原型；后续复用工作按协议/测试向量接入，
+不以整套 Rust 原型替代“自研模块已集成”的验收。
+
+```bash
+python3 scripts/performance-chain/prepare.py \
+  --rs-repo /home/n42/src/n42/n42-rs --topology e1
+bash scripts/performance-chain/plan.sh \
+  /data/blockchain/n42-performance-chain/e1/profile.env
+```
+
+`prepare.py` 和 `plan.sh` 只生成并打印配置，**不启动或停止节点**。已验证生成
+E=1/4/7 配置，V 均为 7。各配置有独立目录和端口；实验链 ID 暂用 1144，
+genesis vanity 同时修改，确保与现有模板的网络身份不同。genesis 文件的
+SHA256 是产物校验值，不把它误称为链的 genesis block hash。
+
+初始配置启用 0x50/Ed25519 严格批验证、depth=2、QMDB、ImportOnce 和共享执行。
+帧块、gateway 证明跳过验签与 claimed-sender 路径关闭；后续逐项单独验证。
+已有 release 二进制只用于打印计划，尚未作为此独立链的测量二进制验收。
+
+| 阶段 | 交付 | 通过条件 |
+| --- | --- | --- |
+| P0 | 独立 genesis、Ed25519、V/E 映射、独立数据与端口、配置计划 | V=7，E=1/4/7 映射正确；不覆盖自研/兼容链目录；完整验签路径明确 |
+| P1 | 二进制来源固定、独立链首次启动与交易闭环 | 同一块在同一 EL 只执行一次；有效交易落链，非法签名拒绝，重启/写入失败可恢复 |
+| P2 | Shared execution 与 Ed25519 批验性能基线 | 固定供给与工作负载，报告 sealed/executed/persisted 吞吐和积压；区分 E 与 V |
+| P3 | 自研协议、状态/证明、快照恢复、移动验证/归档模块接入 | 对应输入输出向量一致；代码路径真实接入；不靠文档宣称完成 |
+| P4 | 更快状态视图、root/收据/持久化流水线 | 同口径重复 A/B 有收益；资源有界；异常与回滚语义不变 |
+
+当前 P0 的配置产物在 `/data/blockchain/n42-performance-chain/e{1,4,7}/`，
+P1 起的高占用验证在另一会话测试完成后继续，不自动抢占硬件。
+
 ### 硬件使用与恢复点
 
 按本次要求，当前 S105 的 A2 测量腿结束后暂停新的舰队压测、release 编译等
