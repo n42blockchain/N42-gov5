@@ -150,15 +150,24 @@ func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64
 	}
 	pos := make(map[uint64]int)
 	var chains []chain
+	// Frames commonly contain runs from one sender. As in the Rust
+	// sender partition, a repeated key reuses the last map lookup; keys
+	// seen again later still resolve through pos to their original chain.
+	var lastKey uint64
+	lastChain := 0
+	haveLast := false
 	for _, idx := range txIndices {
 		k := affinity(idx)
-		i, ok := pos[k]
-		if !ok {
-			i = len(chains)
-			pos[k] = i
-			chains = append(chains, chain{key: k})
+		if !haveLast || k != lastKey {
+			i, ok := pos[k]
+			if !ok {
+				i = len(chains)
+				pos[k] = i
+				chains = append(chains, chain{key: k})
+			}
+			lastKey, lastChain, haveLast = k, i, true
 		}
-		chains[i].count++
+		chains[lastChain].count++
 	}
 	order := make([]int, len(chains))
 	for i := range order {
@@ -180,9 +189,21 @@ func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64
 			topChain = chains[ci].count
 		}
 	}
+	// LPT already computed the exact queue lengths. Allocate once instead
+	// of copying progressively larger slices while assigning transactions.
+	for w, n := range load {
+		if n > 0 {
+			queues[w] = make([]int, 0, n)
+		}
+	}
+	haveLast = false
+	lastWorker := 0
 	for _, idx := range txIndices {
-		w := assigned[affinity(idx)]
-		queues[w] = append(queues[w], idx)
+		k := affinity(idx)
+		if !haveLast || k != lastKey {
+			lastKey, lastWorker, haveLast = k, assigned[k], true
+		}
+		queues[lastWorker] = append(queues[lastWorker], idx)
 	}
 	return queues, len(chains), topChain
 }
