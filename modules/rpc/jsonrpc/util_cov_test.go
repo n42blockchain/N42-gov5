@@ -133,7 +133,7 @@ func TestUnmarshalFixedTextAndHash(t *testing.T) {
 	for i := 2; i < len(input); i++ {
 		input[i] = '0'
 	}
-	if err := UnmarshalText(h, input); err != nil {
+	if err := UnmarshalText(&h, input); err != nil {
 		t.Errorf("UnmarshalText unexpected err %v", err)
 	}
 }
