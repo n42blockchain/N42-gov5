@@ -1077,34 +1077,7 @@ func main() {
 			}
 		}()
 	} else if *rate > 0 {
-		permits = make(chan struct{}, *rate)
-		per10ms := *rate / 100
-		// A permit releases a WHOLE batch on the batched path below, so issuing
-		// rate/100 of them per 10 ms offers rate*rpcBatch transactions a second
-		// -- at the rig's -rpcbatch 200 that is a 200x ceiling, i.e. none at
-		// all. The closed-loop branch above already divides its shortfall by
-		// rpcBatch for exactly this reason; -rate has to as well, or the flag
-		// silently does nothing and the round reports a supply collapse
-		// (12M transactions offered in 80 s, then three windows draining a
-		// 300k-slot pool) as though it were the chain slowing down.
-		if *rpcBatch > 1 {
-			per10ms = (per10ms + *rpcBatch - 1) / *rpcBatch
-		}
-		if per10ms < 1 {
-			per10ms = 1
-		}
-		go func() {
-			t := time.NewTicker(10 * time.Millisecond)
-			defer t.Stop()
-			for range t.C {
-				for i := 0; i < per10ms; i++ {
-					select {
-					case permits <- struct{}{}:
-					default: // submitters are behind; do not let credit pile up
-					}
-				}
-			}
-		}()
+		permits = pacedSubmissionPermits(*rate, max(*rpcBatch, 1))
 	} else {
 		// Flat-out (S49 PART 2(iii)): rate<=0 and targetDepth<=0 means
 		// permits stays nil and nothing above throttles submission at all --
@@ -1143,9 +1116,6 @@ func main() {
 			go func() {
 				defer wg.Done()
 				for {
-					if permits != nil {
-						<-permits
-					}
 					// idx starts at -1 and holds the LAST claimed index (the
 					// single-tx path does AddInt64(+1) then uses the result), so
 					// a bn-sized claim owns [last-bn+1, last].
@@ -1153,6 +1123,9 @@ func main() {
 					start := last - bn + 1
 					if start >= totalTxs {
 						return
+					}
+					if permits != nil {
+						<-permits
 					}
 					end := last + 1
 					if end > totalTxs {
@@ -1209,12 +1182,12 @@ func main() {
 		go func(wid int) {
 			defer wg.Done()
 			for {
-				if permits != nil {
-					<-permits
-				}
 				i := atomic.AddInt64(&idx, 1)
 				if i >= totalTxs {
 					return
+				}
+				if permits != nil {
+					<-permits
 				}
 				if *broadcast {
 					ok := false
