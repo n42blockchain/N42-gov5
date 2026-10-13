@@ -536,7 +536,7 @@ func (s *Service) Start() error {
 	// Try to recover persisted state.
 	if s.db != nil {
 		if err := s.recoverState(); err != nil {
-			log.Warn("hotstuff: failed to recover persisted state", "err", err)
+			return fmt.Errorf("recover durable consensus state: %w", err)
 		}
 	}
 
@@ -1397,13 +1397,13 @@ func (s *Service) persistStateCtx(ctx context.Context) {
 // stalls the chain (a "signers bitmap length mismatch" livelock, reproducible by
 // crashing a node after a validator add/remove). Restores the ACTIVE set, and any
 // committed-but-unactivated STAGED set, before consensus resumes.
-func (s *Service) recoverEpochState() {
+func (s *Service) recoverEpochState() error {
 	if s.db == nil {
-		return
+		return nil
 	}
 	ce := s.engine.Engine()
 	if ce == nil {
-		return
+		return nil
 	}
 	var (
 		aEpoch uint64
@@ -1419,11 +1419,10 @@ func (s *Service) recoverEpochState() {
 		if e1 != nil {
 			return e1
 		}
-		_, sVals, sF, _ = LoadStagedEpoch(tx)
-		return nil
+		_, sVals, sF, e1 = LoadStagedEpoch(tx)
+		return e1
 	}); err != nil {
-		log.Warn("hotstuff: failed to load persisted epoch state", "err", err)
-		return
+		return fmt.Errorf("load persisted epoch state: %w", err)
 	}
 	if aOk && len(aVals) > 0 {
 		ce.RestoreValidatorSet(aEpoch, aVals, aF)
@@ -1431,11 +1430,14 @@ func (s *Service) recoverEpochState() {
 	if len(sVals) > 0 {
 		ce.RestoreStagedSet(sVals, sF)
 	}
+	return nil
 }
 
 // recoverState loads persisted consensus state and reinitializes the engine.
 func (s *Service) recoverState() error {
-	s.recoverEpochState()
+	if err := s.recoverEpochState(); err != nil {
+		return err
+	}
 
 	var state *ConsensusState
 	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
@@ -1447,6 +1449,10 @@ func (s *Service) recoverState() error {
 	}
 	if state == nil {
 		return nil // no persisted state
+	}
+
+	if state.LockedQC.View > state.View || state.LastCommittedQC.View > state.View {
+		return fmt.Errorf("corrupted consensus state: QC view exceeds state view %d", state.View)
 	}
 
 	log.Info("hotstuff: recovering persisted state",
@@ -1462,11 +1468,7 @@ func (s *Service) recoverState() error {
 	}
 	currentView := ce.CurrentView()
 	if state.View > currentView {
-		// Sanity check: QC views must not exceed state view.
-		if state.LockedQC.View > state.View || state.LastCommittedQC.View > state.View {
-			log.Warn("hotstuff: corrupted persisted state — QC view exceeds state view, ignoring")
-			return nil
-		}
+
 		ce.RestoreState(state.View, state.LockedQC, state.LastCommittedQC, state.ConsecutiveTimeouts)
 		log.Info("hotstuff: engine restored to persisted state", "view", state.View)
 	}
