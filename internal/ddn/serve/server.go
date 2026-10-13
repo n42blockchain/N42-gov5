@@ -108,12 +108,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request binding or input rejected", http.StatusBadRequest)
 		return
 	}
+	if validator, ok := s.backend.(provider.RequestValidator); ok {
+		if err := validator.ValidateRequest(req); err != nil {
+			http.Error(w, "provider rejected request", http.StatusBadRequest)
+			return
+		}
+	} else if req.Quorum != 1 {
+		http.Error(w, "provider cannot satisfy quorum", http.StatusBadRequest)
+		return
+	}
 	id := s.backend.Identity()
 	if !contains(id.Tasks, req.Task) || !contains(id.Schemas, req.SchemaID) {
 		http.Error(w, "unsupported task/schema", http.StatusBadRequest)
 		return
 	}
-	if req.Quorum == 1 && ((req.ModelRequirements.ModelHash != ([32]byte{}) && req.ModelRequirements.ModelHash != id.ModelHash) || (req.ModelRequirements.Family != "" && req.ModelRequirements.Family != id.Family)) {
+	if (req.ModelRequirements.ModelHash != ([32]byte{}) && req.ModelRequirements.ModelHash != id.ModelHash) || (req.ModelRequirements.Family != "" && req.ModelRequirements.Family != id.Family) {
 		http.Error(w, "model requirement mismatch", http.StatusBadRequest)
 		return
 	}
