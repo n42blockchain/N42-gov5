@@ -670,3 +670,77 @@ P12 result (2026-10-12, commits c3ce4a2a bench, 88aeef57 item A1, 75033472 bench
   the one to publish as chain throughput.
 - Loopback hides 156 MB/block of body egress; frames-by-reference fix that
   only if frames are disseminated once and referenced thereafter.
+
+### S104 resumed analysis and P13 attestation timing (2026-10-13)
+
+Work branch: `perf/s104-regression-20261013`, based on `qs/replan`
+`dbc829a6` plus the eight audited repair commits through `99265693`.
+S103/r139 remains the standing best (776,967 executed TPS); S104 is a
+regression, and no fleet result has yet established a P13 improvement.
+The stopped S104 node0/node6 logs, including rotations, are preserved under
+`/data/blockchain/wr-analysis/s104-resume-20261013/`. Reproduce their phase
+summary with `python3 scripts/qs/analyze_s104.py`. The windows use the
+runner's observed barrier-release times, at second resolution, followed by
++15..+75 and +75..+135 seconds; phase counts can therefore differ slightly
+from the RPC boundary counts. Durations below are medians in milliseconds.
+
+| node0 phase | B1 win1 | B1 win2 | B2 win1 | B2 win2 |
+| --- | ---: | ---: | ---: | ---: |
+| import | 238.0 | 248.6 | 239.8 | 255.8 |
+| ahead run | 206.0 | 217.8 | 211.5 | 217.3 |
+| sender recovery before execution | 61.29 | 35.82 | 54.95 | 40.12 |
+| execution | 87.4 | 102.0 | 87.3 | 98.6 |
+| collect | 26.9 | 31.6 | 29.5 | 32.6 |
+| root | 52.9 | 62.1 | 55.6 | 69.4 |
+| handWait | 0.63 | 0.80 | 0.62 | 0.79 |
+| durable write, including prep wait | 92.5 | 99.9 | 101.0 | 109.9 |
+| state preparation | 39.6 | 51.9 | 46.2 | 63.0 |
+| separate frame write | 76.0 | 86.9 | 92.1 | 94.4 |
+
+Every sampled 163k import used its ahead run on node0 and node6. Discards
+and parent/busy skips did not increase in the measured floods; the large
+cumulative discard counts come from the preceding empty-block decay.
+P12 achieved the ahead-hit target. P11 shortened the writer versus S103's
+137..167 ms, with handWait still below 1 ms. The slow phase is the ahead
+execution, including sender recovery, rather than a hand-off stall.
+
+B1 win1 node0's 20-second CPU profile records 607.06 CPU-seconds and 81
+163k imports: approximately 46.0 us/tx/node, versus S103's 34..35. The
+sender job accounts for 111.8 CPU-seconds (18.4%) and admission recovery
+for 281.1 (46.3%). S103's corresponding top stacks were almost entirely
+admission recovery. S104's attestation fallback counter rises by about
+600 frames per 10 seconds in this span, even though attestations are
+accepted without signature/digest rejections. This is additional local
+signature work, not evidence that the attestations became invalid.
+
+The sender job's first pass deferred non-committee frames, but its final
+pass consulted the source once and immediately recovered signatures when
+proofs were still in transit. The earlier P12 proposal exposes this race.
+A delayed-source regression reproduces it. P13 gives the whole block a
+shared 50 ms deadline from sender-job enqueue; only the final pass waits,
+only while the source expects a committee answer. Each frame does not
+renew the deadline. Missing proofs still fall back to signature recovery.
+`N42_FRAME_ATTEST_WAIT_MS=0` preserves immediate fallback; the value is
+bounded at 1000 ms. Source acceptance, signer rules, import durability and
+consensus commitment are unchanged.
+
+Win2 also increases execution, collection, preparation, frame writing and
+root cost. Reduced premature recovery may ease CPU contention, but the
+frame-store/root growth has not been attributed independently. Do not
+claim that the whole win2 regression, or the 1M target, is fixed yet.
+
+S105/35zzzce uses one r142 binary and an A-B-B-A comparison: warm-up/A1/A2
+wait 0 ms; B1/B2 wait 50 ms. All measured legs use identical 163k block
+budgets, 125 ms interval, 15M/gen corpus, attestation ON, P11 frame DB ON,
+P12 applied gate ON, 32 execution workers and QS_MAXCPU=36. Unlike S104,
+A legs also use the large-block workload, so the controls bookend the
+same workload. The 90 GiB launch gate, 20 GiB watchdog, claim protocol,
+funding barrier, two distinct windows and consensus checks remain.
+Environment values are checked in node processes; r142 is checksum-bound.
+Previous fleet directories and replay snapshots are retained for rollback.
+
+Validation: delayed proofs are consumed with and without a stored frame;
+missing proofs fall back with one block-wide budget; zero disables waiting.
+Sender-job, frame attestation and recovery-once tests pass under race
+(14.7 s); lag gate/prepared-write regressions pass (17.4 s); `make -o
+version-build build n42` passes. Fleet attribution remains pending S105.
