@@ -1,4 +1,6 @@
 import pathlib,json,gzip,statistics,collections,re,argparse
+from datetime import datetime
+from zoneinfo import ZoneInfo
 parser=argparse.ArgumentParser(description="Summarize S104 phase rows from preserved node0/node6 JSON logs")
 parser.add_argument("--log-root",default="/data/blockchain/wr-analysis/s104-resume-20261013")
 parser.add_argument("--runner-log",default="/data/blockchain/wr-logs/r35zzzcd.log")
@@ -6,8 +8,12 @@ args=parser.parse_args()
 out=pathlib.Path(args.log_root)
 log=pathlib.Path(args.runner_log).read_text();starts={}
 for line in log.splitlines():
- m=re.match(r'(\d\d:\d\d:\d\d) S101 capture (warmup|B1|B2): barrier release seen',line)
+ m=re.match(r'(\d\d:\d\d:\d\d) S101 capture (warmup|A1|B1|B2|A2): barrier release seen',line)
  if m:starts[m[2]]=m[1]
+for leg in ['warmup','A1','B1','B2','A2']:
+ if leg not in starts:
+  barrier=pathlib.Path(args.runner_log).with_suffix('').with_name(pathlib.Path(args.runner_log).stem+'-barrier-'+leg)
+  if barrier.exists():starts[leg]=datetime.fromtimestamp(barrier.stat().st_mtime,ZoneInfo('America/New_York')).strftime('%H:%M:%S')
 print('release times',starts)
 def secs(v):a=list(map(int,v.split(':')));return a[0]*3600+a[1]*60+a[2]
 results={}
