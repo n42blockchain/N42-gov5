@@ -129,13 +129,13 @@ func TestService_RecoverState(t *testing.T) {
 
 	// Persist a state ahead of the engine's current view and recover it.
 	ahead := &ConsensusState{
-		View:                 h.Engine().CurrentView() + 5,
-		LockedQC:             QuorumCertificate{View: h.Engine().CurrentView() + 1},
-		LastCommittedQC:      QuorumCertificate{View: h.Engine().CurrentView()},
-		LastVotedView:        h.Engine().CurrentView() + 1,
-		LastVotedHash:        types.Hash{0x01},
-		LastCommitVotedView:  h.Engine().CurrentView(),
-		LastCommitVotedHash:  types.Hash{0x02},
+		View:                h.Engine().CurrentView() + 5,
+		LockedQC:            QuorumCertificate{View: h.Engine().CurrentView() + 1},
+		LastCommittedQC:     QuorumCertificate{View: h.Engine().CurrentView()},
+		LastVotedView:       h.Engine().CurrentView() + 1,
+		LastVotedHash:       types.Hash{0x01},
+		LastCommitVotedView: h.Engine().CurrentView(),
+		LastCommitVotedHash: types.Hash{0x02},
 	}
 	if err := s.db.Update(context.Background(), func(tx kv.RwTx) error {
 		return SaveConsensusState(tx, ahead)
@@ -149,8 +149,8 @@ func TestService_RecoverState(t *testing.T) {
 		t.Fatalf("expected engine view restored to %d, got %d", ahead.View, h.Engine().CurrentView())
 	}
 
-	// Corrupted: LockedQC.View > state.View must be rejected (logged, not
-	// applied) rather than panicking.
+	// Corrupted: LockedQC.View > state.View must stop recovery with an error
+	// rather than enabling voting or panicking.
 	s2, h2 := newTestServiceWithDB(t, setup)
 	corrupted := &ConsensusState{
 		View:     1,
@@ -162,8 +162,8 @@ func TestService_RecoverState(t *testing.T) {
 		t.Fatalf("seed corrupted state: %v", err)
 	}
 	beforeView := h2.Engine().CurrentView()
-	if err := s2.recoverState(); err != nil {
-		t.Fatalf("recoverState(corrupted): %v", err)
+	if err := s2.recoverState(); err == nil {
+		t.Fatal("recoverState accepted corrupted consensus state")
 	}
 	if h2.Engine().CurrentView() != beforeView {
 		t.Fatalf("expected view unchanged after rejecting corrupted state, got %d want %d",
