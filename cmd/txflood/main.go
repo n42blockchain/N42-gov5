@@ -521,9 +521,6 @@ func main() {
 			go func() {
 				defer wg.Done()
 				for {
-					if permits != nil {
-						<-permits
-					}
 					// idx starts at -1 and holds the LAST claimed index (the
 					// single-tx path does AddInt64(+1) then uses the result), so
 					// a bn-sized claim owns [last-bn+1, last].
@@ -531,6 +528,9 @@ func main() {
 					start := last - bn + 1
 					if start >= int64(len(raws)) {
 						return
+					}
+					if permits != nil {
+						<-permits
 					}
 					end := last + 1
 					if end > int64(len(raws)) {
@@ -567,12 +567,12 @@ func main() {
 		go func(wid int) {
 			defer wg.Done()
 			for {
-				if permits != nil {
-					<-permits
-				}
 				i := atomic.AddInt64(&idx, 1)
 				if i >= int64(len(raws)) {
 					return
+				}
+				if permits != nil {
+					<-permits
 				}
 				if *broadcast {
 					ok := false
