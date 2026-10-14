@@ -670,3 +670,31 @@ original P20 48 measured receipt samples before and after whole-fleet SIGKILL.
 No reconstructed data is reset. The runner acquires hardware only after a clean
 source build and absence of other claims. Full high-load recovery remains open
 until P25's runtime evidence passes.
+
+### P25 exposed Engine RPC readiness race; P26 scheduled
+
+P25's first cold start advanced beyond the reconstructed journal, and the
+ordinary smoke checks completed before SIGKILL at height 324 (durable 293).
+Its second startup failed: Engine auth RPC opened at 11:56:35.202 UTC, validators
+submitted recovery payload 294 at 11:56:36, and the deferred parent result at
+height 292 was restored only at 11:56:39.163. QMDB initialization finished at
+11:56:40.349. The early payload was permanently rejected as an unknown deferred
+parent result, followed by cached-invalid-ancestor rejections. All seven CLs
+exited. Evidence: P25 recovery logs and `before-forced-stop.json`.
+
+The remaining owned harness was interrupted after these terminal CL errors;
+cleanup stopped the EL and released hardware. P25 is not a recovery pass. Its
+reconstructed data, original P20 data, and consensus watermarks remain retained.
+
+Rust `961fb0f1f` moves the existing QMDB restoration, deferred-result restoration,
+historical lookup registration, and canonical subscription into the component
+initialization hook. Reth executes that hook before launching Engine/RPC, so
+the endpoint cannot accept a payload while the restored state is incomplete.
+Main `cargo check --locked -p n42 --bin n42 -j4` passed. This fixes node startup
+ordering rather than relying on a sleep in the fleet script.
+
+The recovery harness now records and requires QMDB-ready before Engine-auth-open
+for every EL on both starts, using each rotated startup log. P26's joint release
+build and retained-data recovery waiter are active; its original 48 benchmark
+samples and whole-fleet crash checks remain required. No high-load recovery
+success or new TPS result is claimed yet.
