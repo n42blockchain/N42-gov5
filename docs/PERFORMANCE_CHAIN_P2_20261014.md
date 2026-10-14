@@ -436,3 +436,21 @@ binaries; evidence is under
 `/data/blockchain/wr-analysis/performance-chain-p18-20261014`.
 The P17 processes had already loaded the previous harness version, so these
 additional all-EL receipt checks remain pending until P18 completes.
+
+### P18 all-EL receipt recovery passed; P19 repeat and raw-body comparison
+
+The optimized retained-data recovery cases passed the stronger harness:
+E4 head 404 / durable 386 -> 408, with 256 old-receipt checks and 128 new-receipt
+checks across four ELs; E7 head 268 / durable 234 -> 269, with 448 old-receipt
+checks and 224 new-receipt checks across seven ELs. Each check verifies successful
+status and the original canonical block hash. Both fleets stopped and released
+hardware. Combined with P17 E1, optimized configuration recovery is now verified
+for all three topologies; these remain process-kill tests, not power-cut tests.
+
+P19 repeats P16 direct/run-64 as a fresh-state control and then adds only
+`N42_BODY_ONCE=1` to compare raw-body handoff, with the same strict signatures,
+ordinary roots, journal durability, measured receipts and post-window rejection
+smoke. P14 binaries are verified against their recorded hashes before each leg.
+Evidence: `/data/blockchain/wr-analysis/performance-chain-p19-20261014`.
+Both P19 results are pending. Data from previous rounds remains retained;
+approximately 147 GiB filesystem space was free before these two new legs.
