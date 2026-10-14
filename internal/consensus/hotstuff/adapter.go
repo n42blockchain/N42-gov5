@@ -189,10 +189,17 @@ func (h *HotStuff) SignerKey() (types.Address, blscommon.SecretKey) {
 // InitEngine initializes the core consensus engine with the given validator set.
 // Must be called after Authorize and before participating in consensus.
 func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32) error {
+	return h.initEngine(validators, faultTolerance, false)
+}
+
+func (h *HotStuff) initEngine(validators []ValidatorInfo, faultTolerance uint32, verifierOnly bool) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	if h.secretKey == nil {
+	if verifierOnly && h.secretKey != nil {
+		return errors.New("hotstuff: public verifier must not hold a signing key")
+	}
+	if !verifierOnly && h.secretKey == nil {
 		return errors.New("hotstuff: secret key not set, call Authorize first")
 	}
 
@@ -204,17 +211,18 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 	// epoch boundary and its engine activates. This is what lets a brand-new
 	// validator bootstrap — without it, InitEngine hard-failed and the node could
 	// never join. Requires epochs enabled for the add to ever take effect.
-	observer := myIndex < 0
+	observer := verifierOnly || myIndex < 0
 	if observer {
 		// Observer mode only makes sense with epochs enabled: without an epoch
 		// boundary there is no reconfig activation, so an outsider signer could
 		// never join. In that case fail fast (almost always a misconfigured
 		// etherbase) instead of starting a permanently-silent node.
-		if h.config == nil || h.config.EpochLength == 0 {
+		if !verifierOnly && (h.config == nil || h.config.EpochLength == 0) {
 			return fmt.Errorf("hotstuff: signer %s not found in validator set (epochs disabled — cannot join via reconfig)", h.signer.Hex())
 		}
-		log.Warn("hotstuff: signer not in genesis validator set — starting as PENDING OBSERVER (joins via reconfig at an epoch boundary)",
-			"signer", h.signer.Hex())
+		if !verifierOnly {
+			log.Warn("hotstuff: signer not in genesis validator set — starting as PENDING OBSERVER (joins via reconfig at an epoch boundary)", "signer", h.signer.Hex())
+		}
 	}
 
 	// Wire the chainspec's epochLength into the EpochManager. Previously this
@@ -259,9 +267,11 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		log.Info("HotStuff vote on availability ENABLED (N42_VOTE_ON_AVAILABILITY=1): frame blocks are voted on once every frame is held, without execution")
 	}
 
-	log.Info("HotStuff consensus engine initialized",
-		"signer", h.signer, "index", myIndex,
-		"validators", vs.Len(), "quorum", vs.QuorumSize())
+	if verifierOnly {
+		log.Info("HotStuff public verifier initialized", "validators", vs.Len(), "quorum", vs.QuorumSize())
+	} else {
+		log.Info("HotStuff consensus engine initialized", "signer", h.signer, "index", myIndex, "validators", vs.Len(), "quorum", vs.QuorumSize())
+	}
 
 	return nil
 }
@@ -270,6 +280,17 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 // initializes the consensus engine. This is the production entry point called
 // from node.go after Authorize.
 func (h *HotStuff) InitEngineFromConfig() error {
+	return h.initEngineFromConfig(false)
+}
+
+// InitVerifierFromConfig initializes only public QC verification. It requires
+// no signing key and uses a non-member engine; callers must not start a voting
+// service. The shared executor can verify headers without owning validator keys.
+func (h *HotStuff) InitVerifierFromConfig() error {
+	return h.initEngineFromConfig(true)
+}
+
+func (h *HotStuff) initEngineFromConfig(verifierOnly bool) error {
 	cfg := h.config
 	if cfg == nil || len(cfg.Validators) == 0 {
 		return fmt.Errorf("hotstuff: no validators configured in chain config")
@@ -312,7 +333,7 @@ func (h *HotStuff) InitEngineFromConfig() error {
 	}
 	faultTolerance := (n - 1) / 3
 
-	return h.InitEngine(validators, faultTolerance)
+	return h.initEngine(validators, faultTolerance, verifierOnly)
 }
 
 // Engine returns the inner consensus state machine (may be nil if not initialized).

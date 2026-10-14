@@ -185,3 +185,55 @@ External ingest/shared-execution transports, dedicated validator provisioning,
 resource ownership and shared execution remain to be implemented. Another
 session was building Rust during this slice, so only restricted Go tests/vet
 were run; no heavy Make build or fleet was started.
+
+## Stage 3: real standalone Go execution and Unix import-once transport
+
+`internal/sharedexec` owns an actual `*internal.BlockChain` and a Unix HTTP
+import RPC; this is implemented execution, not a cache backed by a stub.
+`cmd/n42-execution-service` opens an already initialized execution datadir under
+the dedicated performance runtime, verifies genesis and complete stored config,
+takes the existing `LOCK`, initializes public HotStuff verification/rewards and
+loads QMDB. It starts no miner/P2P/voting service, calls no Authorize/Seal and
+loads no validator private keys. Explicit public validator provisioning and
+`n42 init` are required; the checked-in empty template remains not launch ready.
+Inherited N42_/QS_/HIVE_ overrides are rejected in this prototype.
+
+Requests contain full chain identity (version, namespace, chain ID, genesis),
+block hash and original RLP block bytes. Unknown JSON fields, sender claims,
+bad RLP, header/hash/body-root mismatches and frame bodies are rejected. Bounds
+are 64MiB raw block, 200k transactions, bounded JSON/header/response sizes and
+read/client deadlines. The Unix socket uses a private directory and mode 0600;
+existing paths and symlinked/public directories are refused. Unix permissions
+authorize local clients; there is no public TCP execution endpoint.
+
+The registry key includes full identity and block hash. Capacity is bounded;
+active owners are never evicted. A requester cancel does not release ownership
+while the real import continues, so another client cannot duplicate that work.
+Missing-parent responses are **accepted**, not executed, and are not cached.
+Import errors are not retained. A **durable** response requires actual applied
+lineage, the QMDB applied marker, persisted header and matching receipts/root/
+bloom/gas. Checked/executed/durable flags become true only at that evidence
+level. This prototype deliberately rejects all deferred execution configuration
+and frame transport: nil from InsertChain or held availability is never treated
+as an execution proof. It does not yet stream checked/executed progress before
+durability, perform authorized branch switching or build remote candidates.
+
+The small Unix RPC test sends one signed secp transfer block from seven separate
+clients. All seven obtain matching durable results, the actual import call and
+executed hook each occur once, and the recipient balance changes from 1 to 24.
+Real Go StateProcessor/EVM/QMDB/receipts run; the fixture uses a test-only header
+engine, so this is not a HotStuff quorum test. Other tests exercise wrong chain/
+hash/body roots, malformed payloads, sender-claim rejection, unavailable-parent
+retry, canceled requester ownership, non-eviction of active jobs, deferred/frame
+rejection, and socket/path permissions. Restricted package tests and vet pass.
+No heavy build, race campaign, fleet or new TPS measurement was run while the
+Rust claim/load/memory gates block the hardware.
+
+Seven full validator nodes are **not wired to this service yet**. Shared roles
+remain rejected by ChainConfig. Next: wire availability/import gates and result
+delivery into validator-only runtime, preserve each validator's BLS/WAL/locks,
+and add owner-side unsigned candidate building for a leader to sign/propose.
+The executor must never acquire the seven consensus signing keys. Deferred
+results, canonical commit/reorg handling, single-copy payload delivery and E7
+comparison must be implemented and tested before claiming a complete E1 fleet
+or a throughput improvement. Ed25519 remains a later explicit protocol slice.
