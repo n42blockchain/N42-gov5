@@ -867,3 +867,27 @@ is now running. Stopped-control dedup found no remaining duplicate allocations
 and no mismatches; normal node pruning had already retired persisted recovery
 bodies, while canonical database history remains intact. No manual data deletion
 was performed.
+
+### Prefault comparison regressed; retained startup liveness still open
+
+Prefault online windows were 320,000 / 293,333 / 306,667 TPS, versus the control's
+three 320,000 windows. Online receipt, signature and consensus checks passed.
+Across 74 full builds, median graft was 68 ms (control 71), fold 109 ms (108),
+and total build 330 ms (311). It is not selected as the improved configuration.
+Evidence: P28 `graft-prefault/result.json`, bench log and `phase-summary.json`.
+
+Its P30 retained recovery failed before the intended SIGKILL: saved QC replay
+completed and its boundary file was recorded, but fresh funding did not mine
+within 120 seconds. Recovery logs show saved views 277–279 replayed and validators
+repeatedly timing out at views 278/280. This differs from the control's earlier
+premature nonce injection: the new funding remained unmined rather than its
+nonce being consumed by old canonical funding. Exact liveness cause remains
+unproven. The runner stopped and released hardware, preserving the datadir.
+Evidence: P30 `prefault-recovery/result.json`, replay boundary, CL logs and smoke
+flood log. No prefault cold/crash recovery pass is claimed.
+
+Source review also found prepared graft memory is installed only when the
+destination bundle is empty with zero capacity (`install_target`); its benefit
+on actual pre-execution state needs investigation. This is a hypothesis for the
+performance result, not a measured explanation. Priority is the retained startup
+liveness failure, then further bottleneck optimization from the verified control.
