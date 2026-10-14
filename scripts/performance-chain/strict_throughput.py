@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import urllib.request
 
 
@@ -72,6 +73,7 @@ def run(args):
         if not match:
             raise RuntimeError('missing measurement start')
         start = float(match[1])
+        sys.dont_write_bytecode = True
         spec = importlib.util.spec_from_file_location('measure', scripts/'fleet7-measure.py')
         measure = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(measure)
@@ -113,10 +115,15 @@ def run(args):
                 pass
             except FileNotFoundError:
                 pass
-        with (args.output/'down.log').open('w') as stream:
-            subprocess.run(['bash', str(scripts/'fleet7.sh'), 'down'], env=env,
-                           stdout=stream, stderr=subprocess.STDOUT, timeout=60, check=True)
-        (args.output/'result.json').write_text(json.dumps(report, indent=2)+'\n')
+        try:
+            with (args.output/'down.log').open('w') as stream:
+                subprocess.run(['bash', str(scripts/'fleet7.sh'), 'down'], env=env,
+                               stdout=stream, stderr=subprocess.STDOUT, timeout=60, check=True)
+        except Exception as error:
+            report.update(status='failed', cleanup_error=str(error))
+            raise
+        finally:
+            (args.output/'result.json').write_text(json.dumps(report, indent=2)+'\n')
 
 
 if __name__ == '__main__':
