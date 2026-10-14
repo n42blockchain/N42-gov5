@@ -9,6 +9,7 @@ import (
 
 	"github.com/n42blockchain/N42/lib/kv"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -34,7 +35,7 @@ func (tx exportCursorTx) Cursor(bucket string) (kv.Cursor, error) {
 
 func TestAccountCursorFailureWithNoKeyIsNotEndOfExport(t *testing.T) {
 	want := errors.New("cursor I/O failure")
-	_, _, err := exportAccounts(exportCursorTx{err: want}, json.NewEncoder(io.Discard), 0, log.New(), time.Now())
+	_, _, err := exportAccounts(exportCursorTx{err: want}, qmdb.New(), json.NewEncoder(io.Discard), 0, log.New(), time.Now())
 	if !errors.Is(err, want) {
 		t.Fatalf("got %v, want cursor failure", err)
 	}
