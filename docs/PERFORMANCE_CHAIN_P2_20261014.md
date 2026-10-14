@@ -545,3 +545,19 @@ missing checkpoint/log history retroactively. Its canonical prefix and durable
 proposal-body coverage still need inspection and a validated replay repair.
 No high-load recovery success is claimed; release/runtime validation and the
 retained P20 repair remain required work. Keep throughput expansion deferred.
+
+### Rollback archive review follow-up
+
+Rust `cc86e7bcf` copies and fsyncs the mutable current log when archiving a
+rollback. Hard links remain restricted to immutable checkpoints and sealed
+logs. Each publication has a unique directory, so repeated rollback attempts
+at the same height retain their separate histories. The new regression changes
+the live log after two archives and verifies both earlier byte sequences remain
+intact. All 23 node-state tests passed (51.96 seconds). This is source-level
+evidence; release/runtime recovery validation remains pending.
+
+The standing self-developed seven-node reference remains S103/r139 at
+776,967 TPS. The Rust strict-verification online result of approximately
+333,333 TPS uses a different workload and shared-execution configuration;
+its unresolved high-load cold-recovery failure prevents treating it as a
+durable performance baseline.
