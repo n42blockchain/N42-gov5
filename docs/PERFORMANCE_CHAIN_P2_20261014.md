@@ -1029,3 +1029,9 @@ logs belong to the prior prefault repair, not tests rerun for metrics-only chang
 Runtime root is `/data/blockchain/n42-performance-chain/p33-20261014/fold-timing/data`
 as recorded in the manifest; the new sibling directory preserved all prior data.
 Keep the verified 320k control and return to timeout/message replay investigation.
+
+### P36：重复 timeout 对晚加入节点重传（验证中）
+
+Rust `769e2c833` 已提交推送。在 gossip 返回 Duplicate 时，已签名 timeout 经现有直连 RPC 向连接节点重传；使用完整链身份绑定的 v4 envelope，接收端仍执行原有签名及共识校验。真实三节点回归测试覆盖晚加入节点：仅移除重传实现的对照版本失败，修复后完整 h2-node 服务测试 155 项通过。
+
+P36 已启动联合 release 构建和两轮恢复等待器，保留 P35 的失败数据与共识状态，不重置数据库、不启用额外 tracing。数据目录为 `/data/blockchain/n42-performance-chain/p33-20261014/fold-timing/data`，证据目录为 `/data/blockchain/wr-analysis/performance-chain-p36-20261014`。每轮计划验证 P35 原有 48 个样本两次、启动顺序及全节点 SIGKILL 后恢复。当前尚无运行验证结论；此回归测试不能单独证明 P35 的冷启动停滞已修复。严格验签 V7/E1 已验证持久恢复基线仍为 320,000 TPS；自研 Go 七节点历史最佳仍为 S103 776,967 TPS。
