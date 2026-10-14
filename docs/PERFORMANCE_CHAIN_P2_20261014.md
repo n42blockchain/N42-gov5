@@ -220,3 +220,26 @@ Parallel comparison is running; no higher score is established yet.
 The P7 archived post-restart commit streams also agree at every observed view:
 29 common views for E1, 29 for E4, and 27 for E7, with no conflicting views.
 These checks are recorded as `commit-consistency.json` in each P7 case.
+
+### P8 parallel result and next bottleneck
+
+Parallel windows: **227,616 / 240,000 / 226,667 TPS**, with full blocks in
+windows 2–3 and cycles 0.833 / 0.882 s. All 48 sampled measured transactions
+have successful canonical receipts. Seven validators agree across 240 common
+commit views; ImportOnce reports 241 imports / 241 blocks, 1,435 served requests,
+zero takeovers and zero own-block re-execution. The round stopped and released
+its hardware claim. This improves the strict serial baseline but remains below
+S103's separate 776,967 TPS benchmark.
+
+Full-block phase medians across the leg (including blocks outside the three
+windows): serial pool 217 ms, execution 493 ms, build total 1,034 ms; parallel
+pull 101.5 ms, execution 24 ms, graft 76 ms, fold 118 ms, finish 79 ms, build
+total 514 ms. Fold includes graft and related work; these overlapping timers
+must not be added as independent phases. Evidence: P8 `phase-comparison.json`.
+
+P9 compares the existing address-sharded output path by adding only
+`N42_OUTPUT_SHARDS=16` to the P8 parallel configuration. The harness preserves
+strict signature verification, ordinary block bodies, journal durability and
+receipt/consensus checks. Output-shard semantic tests run before the benchmark;
+large child-process layout-equivalence checks are still running, so P9 has no
+throughput result yet. Evidence: `/data/blockchain/wr-analysis/performance-chain-p9-20261014`.
