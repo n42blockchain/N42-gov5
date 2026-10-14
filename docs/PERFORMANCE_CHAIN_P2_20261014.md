@@ -402,3 +402,37 @@ late-refusal regression checks cross-parent nonce preservation. P16 retains
 strict signature smoke, measured receipt samples and matching commit checks.
 Evidence: `/data/blockchain/wr-analysis/performance-chain-p16-20261014`.
 Optimized-mode restart and E4/E7 validation remain to be repeated before adoption.
+
+### P16 contiguous sender runs and P17 optimized recovery passed
+
+Run-64 windows: **320,000 / 306,667 / 293,333 TPS**, with full blocks in windows
+2–3, all 48 measured receipt samples successful, and RPC/binary bad-signature
+rejection plus new execution smoke passed. Seven validators agree across 277
+common views; 278 imports / 278 blocks, 1,659 served requests, zero takeovers or
+own-block re-execution. The late-window decline remains; this is not a stable
+320k claim or a result above the earlier Go S103 benchmark. Fleet stopped and
+hardware released.
+
+The same optimized flags (parallel transfers/build, 4096-entry puller, strict
+direct queue and run 64; ordinary block roots) passed retained-data whole-fleet
+SIGKILL recovery in P17:
+
+| Topology | Before | Durable | Recovered | Common post-restart views |
+| --- | ---: | ---: | ---: | ---: |
+| V7/E1 | 408 | 380 | 412 | 28 |
+| V7/E4 | 355 | 330 | 360 | 27 |
+| V7/E7 | 207 | 175 | 211 | 27 |
+
+Each case preserved 64 old successful receipts on the primary EL, checked 96
+new successful receipts across its smoke phases, and verified the crash-head
+canonical hash on every EL. Archived seven-validator commits have zero
+conflicting views. Hardware released after all three cases stopped.
+
+P18 strengthens E4/E7 recovery evidence by verifying every old receipt and each
+post-recovery smoke receipt on every EL, rather than relying only on primary
+receipts and all-EL canonical hashes. The updated recovery harness checks both
+canonical inclusion and receipt status. P18 retains P3 genesis/data and P14
+binaries; evidence is under
+`/data/blockchain/wr-analysis/performance-chain-p18-20261014`.
+The P17 processes had already loaded the previous harness version, so these
+additional all-EL receipt checks remain pending until P18 completes.
