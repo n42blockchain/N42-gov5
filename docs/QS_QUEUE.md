@@ -1,5 +1,22 @@
 # QS queue (commander's board, 2026-09-20)
 
+## 2026-10-13 S105 completion and hardware pause
+
+S105 (n42-r142) completed at 19:51:21 EDT; seven test nodes stopped and the fleet claim was released by 19:51:25. High-load work is paused at the user's request until the other session finishes its hardware test. No performance-chain fleet has been started.
+
+| Leg | Attestation wait | win1 executed TPS | win2 executed TPS |
+| --- | --- | ---: | ---: |
+| warmup | 0 ms | 717200 | 641133 |
+| A1 | 0 ms | 681883 | 643850 |
+| B1 | 50 ms | 695467 | 646567 |
+| B2 | 50 ms | 690033 | 652000 |
+| A2 | 0 ms | 703617 | 641133 |
+
+The B windows do not establish a consistent gain over the bracketing controls; S103's 776967 remains the prior best. Phase/CPU and safety review remains pending. Evidence is preserved under `/data/blockchain/wr-analysis/s105-20261013/`. The watcher previously reset measured windows on each leg's cleanup message; it now retains them, and result.json has been repaired from the original runner log.
+
+Performance-chain P0 has E1/E4/E7 profiles ready with strict Ed25519 transaction verification and shared execution. Ethereum EL+CL, weekly updates, minimal/full/archive and Pro+DATC are recorded as completed per the user's update. Resume at P1: build with verified source provenance, then signature rejection, recovery and ImportOnce smoke checks after the hardware pause ends.
+
+
 Standing goal: the seven-node qs fleet's TPS. Scored metric: the B mean.
 Standing best on the SAFE lineage (S26 vote rule and later): **B 146.5k** (35zzzba B2, 2026-10-03, n42-r109, standing config + N42_QMDB_EVICT_LAG_BLOCKS=4; win1/win2 150.1k/142.9k; box: tmpfs cleared, MemAvailable 116 GB at start, nothing else running). Before: 140.8k (35zzzau B1, 2026-10-02, n42-r106, same config as 35zzzas: sender cache 16M, block cache 16, catch-up grace 2000 ms, GOMEMLIMIT 11GiB; win1/win2 145.4k / 136.1k, the best B leg ever); 138.0k (35zzzas, 2026-10-02), 134.7k (35zzzad, 2026-09-26), 129.7k (35zzzac), 124.3k (35zzzm). Pre-safety reference only: 132.8k (35zzzc). **Box-state precondition**: 35zzzba's jump over the same-config 35zzzaz-B2 leg (137.8k) is NOT explained by measured page-cache/fault state (pgmajfault and refault counts were statistically equal between the two legs' B2 windows) and the binary change (n42-r109) is logging-only -- treat 146.5k as box-state dependent until a same-config rerun on a verified-quiet box (tmpfs cleared, MemAvailable >= 115 GB and Shmem < 10 GB at leg start, no other tenant for the whole leg) reproduces it; see docs/QS_TIMELINE_35zzzba.md.
 Same-config B-leg readings at the standing config (n42-r106, 16M, cache 16, grace 2000, 11GiB): 131.4, 135.4, 138.4, 140.8, 133.2k over five rounds -> mean 135.8k, spread +-3.5%; the standing score is the max, the mean is the honest expectation.
