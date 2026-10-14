@@ -561,3 +561,22 @@ The standing self-developed seven-node reference remains S103/r139 at
 333,333 TPS uses a different workload and shared-execution configuration;
 its unresolved high-load cold-recovery failure prevents treating it as a
 durable performance baseline.
+
+### Retained P20 journal coverage and P22 validation started
+
+A read-only prefix inventory of every retained recovery body found contiguous
+header heights 117–287 on node0 and 117–293 on nodes1–6. Parent references whose
+filename was present had consistent consecutive heights. Evidence:
+`performance-chain-p21-20261014/journal-header-inventory.json`. This structural
+scan reads RLP header prefixes and checks the outer length against file size;
+it does not verify Keccak header hashes, transaction roots, certificates, or
+execution. It identifies candidate history for repairing the durable database
+head at 177, rather than proving recovery.
+
+P22 is building the joint release from `cc86e7bcf` and will run the existing
+retained-data E1/E4/E7 recovery matrix with strict verification and direct
+sender queues. Its runner acquires the hardware claim only after successful
+build and clean-source checks, stops on failure, and retains all data. The
+matrix uses small transaction samples and cannot prove the unresolved P20
+high-load recovery requirement. Evidence and binary SHA256 provenance are
+written under `performance-chain-p22-20261014`.
