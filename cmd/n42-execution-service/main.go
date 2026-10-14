@@ -44,6 +44,7 @@ func run(ctx context.Context, args []string) error {
 	genesisFile := flags.String("genesis", "", "Absolute explicitly provisioned performance genesis file")
 	datadir := flags.String("data-dir", "", "Already initialized dedicated performance execution datadir")
 	capacity := flags.Int("capacity", 64, "Bounded import-once registry capacity (1..256)")
+	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -55,6 +56,14 @@ func run(ctx context.Context, args []string) error {
 	}
 	if flags.NArg() != 0 || !filepath.IsAbs(*genesisFile) || !filepath.IsAbs(*datadir) || *capacity < 1 || *capacity > 256 {
 		return errors.New("absolute --genesis/--data-dir and capacity 1..256 required")
+	}
+	var commitOwner [32]byte
+	if *commitOwnerFile != "" {
+		var err error
+		commitOwner, err = loadCommitOwner(*commitOwnerFile)
+		if err != nil {
+			return err
+		}
 	}
 	canonicalDir, err := filepath.EvalSymlinks(*datadir)
 	if err != nil || canonicalDir != *datadir || !strings.HasPrefix(canonicalDir, "/data/blockchain/gov5-performance-5m/runtime/") {
@@ -160,7 +169,12 @@ func run(ctx context.Context, args []string) error {
 	root.SetCold(nil)
 	root.EnableUndoRecording()
 	bc.SetQMDBRootComputer(root)
-	server, err := sharedexec.New(bc, *capacity)
+	var server *sharedexec.Server
+	if *commitOwnerFile != "" {
+		server, err = sharedexec.NewWithTrustedCommitOwner(bc, *capacity, commitOwner)
+	} else {
+		server, err = sharedexec.New(bc, *capacity)
+	}
 	if err != nil {
 		return err
 	}

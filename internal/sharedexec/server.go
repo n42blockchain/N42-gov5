@@ -64,18 +64,19 @@ type importJob struct {
 }
 
 type Server struct {
-	chain     *internal.BlockChain
-	identity  Identity
-	capacity  int
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mu        sync.Mutex
-	jobs      map[importKey]*importJob
-	completed []importKey
-	wg        sync.WaitGroup
-	imports   atomic.Uint64
-	closed    bool
-	execute   sync.Mutex
+	chain       *internal.BlockChain
+	identity    Identity
+	capacity    int
+	ctx         context.Context
+	cancel      context.CancelFunc
+	mu          sync.Mutex
+	jobs        map[importKey]*importJob
+	completed   []importKey
+	wg          sync.WaitGroup
+	imports     atomic.Uint64
+	closed      bool
+	execute     sync.Mutex
+	commitOwner [32]byte
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -256,6 +257,10 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/commit" {
+		s.serveCommit(w, r)
+		return
+	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/import" {
 		http.NotFound(w, r)
 		return

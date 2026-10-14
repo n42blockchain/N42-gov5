@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -28,17 +29,27 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
+	"github.com/n42blockchain/N42/params"
 )
 
 // Test-only header engine. Real BlockChain, StateProcessor, EVM, signatures,
 // QMDB and receipts execute; this is not a seven-validator consensus test.
 type executionTestEngine struct{ consensus.Engine }
 
-func (executionTestEngine) Finalize(consensus.ChainHeaderReader, block.IHeader, *state.IntraBlockState, []*transaction.Transaction, []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+type commitOnlyTestEngine struct{ executionTestEngine }
+
+func (commitOnlyTestEngine) Type() params.ConsensusType { return params.HotStuffConsensus }
+
+func (executionTestEngine) Finalize(_ consensus.ChainHeaderReader, ih block.IHeader, ibs *state.IntraBlockState, _ []*transaction.Transaction, _ []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+	root := ibs.IntermediateRoot()
+	header := ih.(*block.Header)
+	if header.Root != (types.Hash{}) && header.Root != root {
+		return nil, nil, fmt.Errorf("test execution root mismatch: header %s local %s", header.Root, root)
+	}
 	return nil, nil, nil
 }
 
-func executionChain(t *testing.T, genesis *conf.Genesis) (*internal.BlockChain, *commitment.QMDBRootComputer) {
+func executionChain(t *testing.T, genesis *conf.Genesis, commitOnly ...bool) (*internal.BlockChain, *commitment.QMDBRootComputer) {
 	t.Helper()
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -52,7 +63,11 @@ func executionChain(t *testing.T, genesis *conf.Genesis) (*internal.BlockChain, 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	chain, err := internal.NewBlockChain(context.Background(), gb, executionTestEngine{apos.NewFaker()}, db, nil, genesis.Config)
+	var engine consensus.Engine = executionTestEngine{apos.NewFaker()}
+	if len(commitOnly) > 0 && commitOnly[0] {
+		engine = commitOnlyTestEngine{executionTestEngine{apos.NewFaker()}}
+	}
+	chain, err := internal.NewBlockChain(context.Background(), gb, engine, db, nil, genesis.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +83,7 @@ func executionChain(t *testing.T, genesis *conf.Genesis) (*internal.BlockChain, 
 	return bc, root
 }
 
-func executionFixture(t *testing.T) (*internal.BlockChain, *block.Block, types.Address) {
+func executionFixture(t *testing.T, commitOnly ...bool) (*internal.BlockChain, *block.Block, types.Address) {
 	t.Helper()
 	raw, err := os.ReadFile("../../scripts/gov5-perf/isolated-chain.json")
 	if err != nil {
@@ -85,7 +100,7 @@ func executionFixture(t *testing.T) (*internal.BlockChain, *block.Block, types.A
 	from := crypto.PubkeyToAddress(key.PublicKey)
 	to := types.HexToAddress("0x1000")
 	genesis.Alloc = conf.GenesisAlloc{from: {Balance: "0x56bc75e2d63100000"}, to: {Balance: "0x1"}}
-	owner, _ := executionChain(t, &genesis)
+	owner, _ := executionChain(t, &genesis, commitOnly...)
 	builder, root := executionChain(t, &genesis)
 	txn, err := transaction.SignNewTx(key, transaction.NewLondonSigner(genesis.Config.ChainID), &transaction.LegacyTx{
 		Nonce: 0, To: &to, Value: uint256.NewInt(23), Gas: 21000, GasPrice: uint256.NewInt(1),
@@ -100,6 +115,7 @@ func executionFixture(t *testing.T) (*internal.BlockChain, *block.Block, types.A
 	if err := builder.DB().View(context.Background(), func(tx kv.Tx) error {
 		reader := state.NewPlainStateReader(tx)
 		ibs := state.New(reader)
+		ibs.SetDetachedPendingCredits(true)
 		ibs.SetRootComputer(root)
 		processor := internal.NewStateProcessor(genesis.Config, builder, executionTestEngine{apos.NewFaker()})
 		var err error
@@ -107,7 +123,7 @@ func executionFixture(t *testing.T) (*internal.BlockChain, *block.Block, types.A
 		if err != nil {
 			return err
 		}
-		header.Root = ibs.IntermediateRoot()
+		header.Root, _ = ibs.LastIntermediateRoot()
 		result := internal.ExecutedResultFor(genesis.Config, 1, header.Root, receipts)
 		header.ReceiptHash, header.Bloom = result.ReceiptHash, result.Bloom
 		return nil
