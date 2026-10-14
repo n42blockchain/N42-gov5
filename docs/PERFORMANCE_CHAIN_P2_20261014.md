@@ -261,3 +261,26 @@ throughput comparison is now running. Evidence:
 `/data/blockchain/wr-analysis/performance-chain-p10-20261014`.
 The harness also suppresses helper bytecode writes to the source checkout and
 preserves result evidence if fleet cleanup fails.
+
+### P10 ahead build and P11 durability profiling
+
+Ahead-build windows: 241,394 / 226,667 / 213,333 TPS, with 48 successful measured
+receipt samples and 243 matching common validator commit views. No ImportOnce
+takeovers or own-block re-execution. The late windows decline, so the warm-up
+peak alone does not establish a pipeline improvement. P8 parallel remains the
+control; ahead building is not selected as a new default.
+
+P11 returns to P8 parallel and enables `N42_RECOVERY_PHASES=1`. Rust
+`20c77a414` adds opt-in timings for header decode, journal lock, body write,
+file fsync and atomic publication/directory fsync, retaining the same durability
+operations before voting. Six recovery tests passed. The release build and
+strict load profiling are queued under
+`/data/blockchain/wr-analysis/performance-chain-p11-20261014`.
+
+Inspection of the existing frame-block architecture found a separate recovery
+requirement before reuse: `frame_blocks::root_for_body_counted` checks frame
+roots from process-local layout records or the ingest queue. Those records are
+absent on a cold restart, while an ordinary RLP body does not encode frame
+boundaries. A frame-mode performance profile must persist and replay validated
+layout metadata, including historical peer serving, before claiming the same
+crash-recovery guarantees. No frame/gateway bypass was enabled in P8–P11.
