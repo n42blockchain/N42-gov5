@@ -206,3 +206,17 @@ window after measurement. Parallel mode adds only fast eligible transfers,
 parallel build and the required 4096-entry pool puller. All seven commit streams
 and ImportOnce counters are checked. P8 evidence is under
 `/data/blockchain/wr-analysis/performance-chain-p8-20261014`; results pending.
+
+### P8 serial baseline verified
+
+Serial windows: 133,333 / 146,667 / 146,667 TPS; full blocks in windows 2–3,
+1.364 s cycle. All 48 sampled transactions drawn from the three measured
+windows have successful canonical receipts. Seven validators agree across 214
+common commit views. Runtime ImportOnce counters: 215 imports / 215 blocks,
+1,280 served requests, zero takeovers and zero own-block re-execution. This
+repeats the earlier approximately 147k serial baseline with receipt validation.
+Parallel comparison is running; no higher score is established yet.
+
+The P7 archived post-restart commit streams also agree at every observed view:
+29 common views for E1, 29 for E4, and 27 for E7, with no conflicting views.
+These checks are recorded as `commit-consistency.json` in each P7 case.
