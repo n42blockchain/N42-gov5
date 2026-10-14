@@ -284,3 +284,24 @@ absent on a cold restart, while an ordinary RLP body does not encode frame
 boundaries. A frame-mode performance profile must persist and replay validated
 layout metadata, including historical peer serving, before claiming the same
 crash-recovery guarantees. No frame/gateway bypass was enabled in P8–P11.
+
+### P11 measured journal cost and P12 decode-once control
+
+P11 windows: 235,171 / 226,667 / 240,000 TPS; 48 successful measured receipts,
+242 common matching commit views, zero ImportOnce takeovers or own-block
+re-execution. The seven validators each wrote 56 bodies of approximately 32 MB.
+Their journal total medians were 35.8–39.6 ms; write medians 8.6–9.7 ms, file
+fsync 23.3–29.2 ms, directory publication approximately 0.7–1.3 ms. Header decode
+was 8–9 microseconds and the local journal lock had no measurable wait. These
+per-validator writes overlap; summing all seven medians would misrepresent the
+vote delay. Journal durability is a cost, but cannot explain the entire roughly
+300 ms gap between build time and block cycle. Evidence: P11
+`journal-phase-summary.json`. Fleet stopped and hardware claim released.
+
+P12 adds only `N42_BODY_ONCE=1` to the P8 parallel control, using the P11 binary
+bundle with phase logging off. The existing execution-body tests passed 16
+cases across unit/integration suites, covering raw-frame bounds, normal decode,
+refusal fallback, no re-encoding after acceptance, recovery of an own commit,
+and rejection without retry when an accepted body fails. Throughput and receipt
+checks are now running under
+`/data/blockchain/wr-analysis/performance-chain-p12-20261014`.
