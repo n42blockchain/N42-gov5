@@ -289,3 +289,16 @@ separate validator runtime integration. Shared roles remain fail-closed until
 that runtime is wired; current capability authority is not automatically given
 to seven import clients. Deferred results, authorized branch switching, payload
 copy reduction and E7 comparison remain outstanding.
+
+Stage 4 follow-up: BlockChain's background future-block retry uses its own
+import path, outside the RPC registry lock. The performance-only
+`CommitExecutedExtension` now holds the chain mutation lock, joins an in-flight
+ordered writer, and rechecks actual applied lineage and direct canonical parent
+before invoking existing canonicalization. Native/ETH canonicalization entrypoints
+are unchanged. The targeted mutation-lock test changes the applied branch while
+the committer waits and proves it rejects stale execution evidence without writing
+head/finality. The real two-block Unix RPC test also passes through this guard.
+Old canonical duplicates still require execution evidence within HasAppliedBlock's
+256-header lineage window; older requests fail closed until historical execution
+proof transport is implemented. Restricted internal targeted tests, the two RPC
+package regressions and vet pass; no fleet or throughput measurement was run.
