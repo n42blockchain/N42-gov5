@@ -85,6 +85,9 @@ func main() {
 }
 
 func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64) error {
+	if err := validateExportPaths(dbPath, outPath, headerPath, manifestPath); err != nil {
+		return err
+	}
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
 	logger := log.New()
@@ -142,9 +145,14 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	}
 
 	started := time.Now()
-	partial := outPath + ".partial"
-	out, err := os.OpenFile(partial, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	out, err := os.CreateTemp(filepath.Dir(outPath), "."+filepath.Base(outPath)+".partial-*")
 	if err != nil {
+		return err
+	}
+	partial := out.Name()
+	if err := out.Chmod(0o644); err != nil {
+		_ = out.Close()
+		_ = os.Remove(partial)
 		return err
 	}
 	committed := false
