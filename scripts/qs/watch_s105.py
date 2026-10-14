@@ -28,7 +28,7 @@ while time.monotonic() < deadline:
             found = re.match(r'^\d\d:\d\d:\d\d LEG (warmup|A1|B1|B2|A2):', line)
             if found:
                 leg = found[1]
-                result['windows'][leg] = {}
+                result['windows'].setdefault(leg, {})
             window = re.match(r'^(win[12]): .*?execTPS=(\d+)', line)
             if leg and window:
                 result['windows'][leg][window[1]] = int(window[2])
