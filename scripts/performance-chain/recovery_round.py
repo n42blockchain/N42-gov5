@@ -56,6 +56,17 @@ def run(args):
             raise RuntimeError(answer['error'])
         return answer['result']
 
+    expected_samples = []
+    if args.expected_receipts:
+        expected_samples = json.loads(args.expected_receipts.read_text())['receipt_samples']
+
+    def check_expected_receipts():
+        for layer in range(manifest['execution_layers']):
+            for sample in expected_samples:
+                receipt = rpc('eth_getTransactionReceipt', [sample['transaction_hash']], layer=layer)
+                if not receipt or receipt['blockHash'] != sample['block_hash'] or int(receipt['status'], 16) != 1:
+                    raise RuntimeError(f'EL{layer} changed a retained benchmark receipt')
+
     def head():
         return int(rpc('eth_blockNumber'), 16)
 
@@ -116,6 +127,7 @@ def run(args):
         started = True
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'first-up.log')
         wait_above(120)
+        check_expected_receipts()
         if int(rpc('eth_chainId'), 16) != manifest['chain_id']:
             raise RuntimeError('wrong chain ID')
         common = ['--rpc', rpc_url, '--flood', str(args.bundle / 'examples/tx_flood'),
@@ -151,6 +163,7 @@ def run(args):
         stop_owned_processes()
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'second-up.log')
         after = wait_above(before)
+        check_expected_receipts()
         for tx_hash, receipt in receipts.items():
             now = rpc('eth_getTransactionReceipt', [tx_hash])
             if not now or now['blockHash'] != receipt['blockHash'] or int(now['status'], 16) != 1:
@@ -204,7 +217,8 @@ def run(args):
                        head_after=after, preserved_successful_receipts=len(receipts),
                        new_successful_receipts=96, canonical_hash_preserved=True,
                        old_receipt_checks_all_layers=len(receipts) * manifest['execution_layers'],
-                       new_receipt_checks_all_layers=len(new_hashes) * manifest['execution_layers'])
+                       new_receipt_checks_all_layers=len(new_hashes) * manifest['execution_layers'],
+                       retained_benchmark_receipt_checks=2 * len(expected_samples) * manifest['execution_layers'])
     except BaseException as error:
         summary.update(status='failed', error=str(error))
         raise
@@ -231,4 +245,5 @@ if __name__ == '__main__':
     parser.add_argument('--rs-repo', type=pathlib.Path, required=True)
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--offset', type=int, required=True)
+    parser.add_argument('--expected-receipts', type=pathlib.Path, help='earlier benchmark result to verify before/after crash')
     run(parser.parse_args())
