@@ -93,13 +93,15 @@ def run(args):
             report['windows'].append(dict(window=index+1, txs=sum(r[2] for r in window),
                 tps=sum(r[2] for r in window)/15, blocks=len(window), cycle_s=15/len(window),
                 occupancy_pct=sum(r[3] for r in window)/len(window)))
-            chosen = next(r for r in window if r[2] >= 10000)
+            # Low occupancy is a performance result, not a harness exception.
+            # Sample a nonempty measured block even when none reaches 10k txs.
+            chosen = max(window, key=lambda row: row[2])
             block = rpc('eth_getBlockByNumber', [hex(chosen[1]), False])
             if len(block['transactions']) != chosen[2]:
                 raise RuntimeError('canonical transaction count disagrees with log')
             txs = block['transactions']
-            for sample in range(16):
-                tx_hash = txs[sample*(len(txs)-1)//15]
+            for index in sorted({sample*(len(txs)-1)//15 for sample in range(16)}):
+                tx_hash = txs[index]
                 receipt = rpc('eth_getTransactionReceipt', [tx_hash])
                 if not receipt or int(receipt['status'], 16) != 1 or receipt['blockHash'] != block['hash']:
                     raise RuntimeError('measured transaction receipt failed')
