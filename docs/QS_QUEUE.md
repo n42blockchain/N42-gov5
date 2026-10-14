@@ -1,5 +1,12 @@
 # QS queue (commander's board, 2026-09-20)
 
+## 2026-10-13 performance-chain P1 handoff
+
+P1 V=7/E=1 strict Ed25519 admission and 32 successful transaction receipts passed. Seven-validator commit agreement and one-import-per-hash counters passed. Whole-fleet restart restored storage but failed to resume block production at height 258: depth-2 startup seeds only the head execution result, missing head-1. P1 remains incomplete; see [the evidence and repair entry points](PERFORMANCE_CHAIN_P1_20261013.md).
+
+The user requested another hardware pause while a separate session needs approximately 30 minutes. Finish evidence capture, stop this isolated fleet, release the claim, and launch no further build or benchmark until continuation/release. Next task is durable deferred-execution frontier recovery, followed by strict binary-ingest and restart checks; no peak-TPS claim is warranted.
+
+
 ## 2026-10-13 S105 completion and hardware pause
 
 S105 (n42-r142) completed at 19:51:21 EDT; seven test nodes stopped and the fleet claim was released by 19:51:25. High-load work is paused at the user's request until the other session finishes its hardware test. No performance-chain fleet has been started.
