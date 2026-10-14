@@ -55,6 +55,9 @@ def prepare(args):
         'N42_BUILD_CHAIN': '1', 'N42_FOLLOWER_PARALLEL': '1',
         'F7_BLOCK_INTERVAL_MS': '125', 'F7_BENCH_GASCEIL': '4200000000',
         'F7_BENCH_POOL_SLOTS': '600000',
+        # Current Engine defaults: masking 30 + memory buffer 6 < threshold.
+        # fleet7's historical bench default of 8 fails startup validation.
+        'F7_PERSIST_THRESHOLD': '64',
         'F7_AUTH_BASE': str(base), 'F7_HTTP_BASE': str(base + 100),
         'F7_INGEST_BASE': str(base + 200), 'F7_PAYLOAD_BASE': str(base + 300),
         'F7_DEVP2P_BASE': str(base + 400), 'F7_P2P_BASE': str(base + 500),
