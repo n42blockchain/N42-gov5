@@ -823,3 +823,32 @@ The stopped legacy P20 direct-raw journals were byte-checked and deduplicated:
 mismatches. Every body pathname and byte remains; database/QMDB files were
 excluded. Evidence: P28 `legacy-control-dedup.json`. Disk free was approximately
 75 GiB at the new control's startup; no chain data was deleted.
+
+### P28 repaired-release control and replay-boundary correction
+
+The fresh strict V7/E1 direct-raw control passed its online checks at
+320,000 / 320,000 / 320,000 TPS, with 24 blocks per 15-second window and
+0.625-second cycle. Windows 2–3 were fully occupied. All 48 measured receipts,
+signature rejection/execution smoke and consensus checks passed. Full-block
+medians over 79 builds: pull 63 ms, execution 26 ms, graft 71 ms, fold 108 ms,
+finish 71 ms, assemble 25 ms, total 311 ms. Evidence: P28 direct-raw result,
+bench log and `phase-summary.json`.
+
+Cold startup restored the database at 177 despite heap compaction having reached
+199, then normally replayed 107 blocks for a saved QC. Thus the archived heap
+rollback path worked on this fresh large workload. The following smoke failed
+before the intended SIGKILL: it injected faucet funding while saved history was
+still replaying. Both the earlier benchmark smoke and the premature recovery
+smoke reported funding through faucet nonce 6008, but the latter's new address
+had zero balance. The earlier canonical funding consumed those nonces; waiting
+only past measured receipt heights was insufficient. No root mismatch was
+reported. Evidence: first recovery EL/CL logs and both smoke flood logs.
+
+The runner stopped and released hardware; prefault was not launched. The 320k
+score remains an online result until its full retained cold/crash gate passes.
+Go `4f2c7e70` now freezes each validator's saved committed/locked QC hashes before
+startup, waits for those blocks to be known and for each EL head to cover their
+heights, and records replay-boundary evidence before injecting smoke traffic.
+It repeats this wait after SIGKILL. The existing execution and receipt gates
+are unchanged. P30 is retrying the same retained control, then conditionally
+running the previously unlaunched prefault leg. No data is reset.
