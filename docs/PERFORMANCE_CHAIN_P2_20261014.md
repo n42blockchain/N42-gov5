@@ -639,3 +639,34 @@ the P24 retained-receipt crash test. The recovery harness waits beyond the entir
 600-second startup wait. Success requires all 48 original measured receipts
 before and after SIGKILL (96 checks), plus its ordinary canonical-head and
 transaction checks. P24 is running; no reconstruction success is claimed yet.
+
+### P24 startup bottleneck; P25 continuation scheduled
+
+P24 normally validated and committed history through height 287; node0 logged
+`recovery: replayed 287 blocks for durable QC view 287`. Startup then spent more
+than four minutes traversing recovery snapshots. Inspection found `snapshot`
+requested every full block over RPC before checking whether its durable body
+already existed. Thus the large transaction workload was repeatedly serialized
+and decoded merely to discover parent headers, twice per validator's QCs.
+Perf sampling was unavailable (`perf_event_paranoid=4`); no system setting was
+changed. This diagnosis is based on startup logs, process CPU observations, and
+the RPC-first source path, not a successful perf recording.
+
+The owned P24 harness was interrupted with SIGINT before the intended crash
+test. Its cleanup stopped the fleet and released hardware. All original P20
+data and the reconstructed P24 datadir are retained. P24 is an interrupted
+validation attempt, not a completed cold/crash recovery pass.
+
+Rust `5113da198` makes snapshot traversal reuse existing durable body headers,
+checking the requested hash and consecutive ancestry. Missing bodies retain the
+normal EL RPC/bootstrap path; execution validation still precedes snapshotting.
+The regression uses a complete journal and an empty mock EL, which fails with
+the old RPC-first implementation, and separately rejects a mismatched stored
+header. All seven recovery-body tests passed. Code is committed and pushed.
+
+P25's joint release build and waiting runner are active. It will cold-start the
+retained P24 reconstruction, finish replay beyond height 293, and verify the
+original P20 48 measured receipt samples before and after whole-fleet SIGKILL.
+No reconstructed data is reset. The runner acquires hardware only after a clean
+source build and absence of other claims. Full high-load recovery remains open
+until P25's runtime evidence passes.
