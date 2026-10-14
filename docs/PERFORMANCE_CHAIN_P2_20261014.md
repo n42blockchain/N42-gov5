@@ -243,3 +243,21 @@ strict signature verification, ordinary block bodies, journal durability and
 receipt/consensus checks. Output-shard semantic tests run before the benchmark;
 large child-process layout-equivalence checks are still running, so P9 has no
 throughput result yet. Evidence: `/data/blockchain/wr-analysis/performance-chain-p9-20261014`.
+
+### P9 sharded output: valid, no throughput improvement
+
+All 17 output-shard tests passed (one ignored), including child-process layout
+equivalence across fold/index/live modes. Sharded-output windows were
+226,965 / 213,333 / 226,667 TPS; 48 successful measured receipts and matching
+seven-validator commits verified. The full-block build median increased from
+P8 parallel 514 ms to 569 ms, despite graft falling from 76 ms to 27 ms.
+Additional shard preparation/folding work offsets the cheaper graft. This
+single leg does not justify adopting shards as the performance profile default.
+Its fleet stopped and hardware was released; source data remains intact.
+
+P10 returns to the P8 parallel configuration and adds only `N42_BUILD_AHEAD=1`
+to test pipeline overlap. Three ahead-build service tests passed; the strict
+throughput comparison is now running. Evidence:
+`/data/blockchain/wr-analysis/performance-chain-p10-20261014`.
+The harness also suppresses helper bytecode writes to the source checkout and
+preserves result evidence if fleet cleanup fails.
