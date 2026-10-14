@@ -56,6 +56,15 @@ def run(args):
                   root=str(args.root), offset=args.offset, receipt_samples=[], windows=[])
     report['binaries'] = {rel: hashlib.sha256((args.bundle / rel).read_bytes()).hexdigest()
                           for rel in ('n42', 'examples/h2_validator', 'examples/tx_flood')}
+    bundle_manifest = json.loads((args.bundle.parent/'run-manifest.json').read_text())
+    for rel, actual in report['binaries'].items():
+        if bundle_manifest['binaries'].get(rel) != actual:
+            raise RuntimeError(f'binary hash differs from bundle provenance: {rel}')
+    genesis_hash = hashlib.sha256(Path(env['F7_GENESIS']).read_bytes()).hexdigest()
+    if genesis_hash != manifest['genesis_sha256']:
+        raise RuntimeError('genesis differs from prepared profile')
+    report.update(source_commit=bundle_manifest['source_commit'], genesis_sha256=genesis_hash,
+                  transaction_signature=manifest['transaction_signature'], durable_pre_vote_bodies=True)
     (args.output / 'run-manifest.json').write_text(json.dumps(dict(report, environment=env), indent=2)+'\n')
     benchlog = args.output / 'bench.log'
     scripts = args.rs_repo / 'scripts'
