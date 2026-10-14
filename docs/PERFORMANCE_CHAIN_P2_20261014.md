@@ -323,3 +323,29 @@ including prune/push/selection/untake races, then the same fresh-state three-win
 throughput and receipt checks. Evidence:
 `/data/blockchain/wr-analysis/performance-chain-p13-20261014`.
 Queue tests are still running; no P13 throughput result is established.
+
+### P13 sender-queue failure and late-refusal regression fix
+
+Queue suite: 88 passed, 11 ignored. Runtime queue control regressed sharply:
+11,212 / 1,752 / 253 TPS, almost all blocks empty or partial. Logs report
+skipped sender runs and nonce holes (e.g. queue head 200 while account nonce 0).
+The round stopped and released hardware. Only the first window's 16 sampled
+receipts were verified before the old harness threw `StopIteration` when a later
+window had no block above its 10k sampling threshold; this is not a passing
+three-window correctness result. The harness now samples the largest nonempty
+measured block and avoids duplicate samples on very small blocks, preserving
+low-occupancy evidence rather than throwing an empty exception.
+
+Source inspection found a concrete late-refusal bug in `payload::Puller`:
+exhausting candidates dropped its iterator and refusal receiver before execution
+finished, so later rejected candidates could not be returned. The deterministic
+regression fails on the old code (late refusal count zero), and passes after
+Rust `6c1617382`. An exhausted puller now closes the candidate stream but keeps
+its iterator alive until build completion, drains final refusals, and then joins
+and drops the iterator. Thirteen payload tests passed. This fixes a confirmed
+loss condition; it does not yet prove all observed nonce holes are resolved.
+
+P14 rebuilds and compares the repaired ordinary-pool parallel path with the
+repaired sender queue using fresh roots and the same strict load/receipt gates.
+Evidence: `/data/blockchain/wr-analysis/performance-chain-p14-20261014`.
+The main release build is running; no P14 score is established.
