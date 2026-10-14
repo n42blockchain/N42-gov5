@@ -1035,3 +1035,5 @@ Keep the verified 320k control and return to timeout/message replay investigatio
 Rust `769e2c833` 已提交推送。在 gossip 返回 Duplicate 时，已签名 timeout 经现有直连 RPC 向连接节点重传；使用完整链身份绑定的 v4 envelope，接收端仍执行原有签名及共识校验。真实三节点回归测试覆盖晚加入节点：仅移除重传实现的对照版本失败，修复后完整 h2-node 服务测试 155 项通过。
 
 P36 已启动联合 release 构建和两轮恢复等待器，保留 P35 的失败数据与共识状态，不重置数据库、不启用额外 tracing。数据目录为 `/data/blockchain/n42-performance-chain/p33-20261014/fold-timing/data`，证据目录为 `/data/blockchain/wr-analysis/performance-chain-p36-20261014`。每轮计划验证 P35 原有 48 个样本两次、启动顺序及全节点 SIGKILL 后恢复。当前尚无运行验证结论；此回归测试不能单独证明 P35 的冷启动停滞已修复。严格验签 V7/E1 已验证持久恢复基线仍为 320,000 TPS；自研 Go 七节点历史最佳仍为 S103 776,967 TPS。
+
+P36 结果：两轮保留数据冷启动及全节点 SIGKILL 恢复均通过，硬件已释放。第一轮 head 324 / durable 299 → 327；第二轮 372 / 354 → 376。每轮两次启动顺序检查通过，原测量样本 96 次回执检查通过，64 个旧成功回执保留、96 个新交易成功、canonical hash 保留。证据为 P36 `recovery-1/result.json`、`recovery-2/result.json` 和 `unattended-status.json`。这是修复后的两次恢复通过证据；因历史停滞间歇出现，不能宣称已完全消除，也没有新的吞吐测量分数。
