@@ -698,3 +698,18 @@ for every EL on both starts, using each rotated startup log. P26's joint release
 build and retained-data recovery waiter are active; its original 48 benchmark
 samples and whole-fleet crash checks remain required. No high-load recovery
 success or new TPS result is claimed yet.
+
+### P20 phase reanalysis while P26 builds
+
+Read-only reanalysis of retained node0 EL logs selected only builds with exactly
+200,000 transactions: 71 raw-control blocks and 79 dedicated-root-pool blocks.
+Both have median total build time 308 ms. Raw/pool medians respectively:
+pull 64/63 ms, execution 24/26 ms, graft 70/72 ms, fold 106/109 ms,
+finish 72/70 ms, and assemble 26/25 ms. These separately calculated medians
+are not an additive critical-path decomposition; phases can overlap.
+Evidence: P20 `phase-reanalysis.json` and retained `node0/el.log*` files.
+
+This reinforces keeping transaction-root worker isolation opt-in: this pair
+shows no median build improvement. After the retained recovery gate passes,
+investigate state graft/fold and finish costs before expanding root-pool tuning.
+No code or runtime configuration was changed by this analysis.
