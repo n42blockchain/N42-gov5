@@ -155,12 +155,9 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 		_ = os.Remove(partial)
 		return err
 	}
-	committed := false
 	defer func() {
 		_ = out.Close()
-		if committed {
-			_ = os.Remove(partial)
-		}
+		_ = os.Remove(partial)
 	}()
 
 	digest := sha256.New()
@@ -187,7 +184,6 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	if err := os.Rename(partial, outPath); err != nil {
 		return err
 	}
-	committed = true
 
 	m := manifest{
 		Version:       1,
@@ -237,9 +233,12 @@ func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Lo
 
 	storageKey, storageValue, storageErr := storageCursor.First()
 	var accounts, slots uint64
-	for address, encoded, err := accountCursor.First(); address != nil; address, encoded, err = accountCursor.Next() {
+	for address, encoded, err := accountCursor.First(); ; address, encoded, err = accountCursor.Next() {
 		if err != nil {
 			return accounts, slots, fmt.Errorf("iterate Account: %w", err)
+		}
+		if address == nil {
+			break
 		}
 		if limit > 0 && accounts >= limit {
 			break
