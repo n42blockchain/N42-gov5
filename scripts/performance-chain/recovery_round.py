@@ -37,7 +37,7 @@ def run(args):
     def write(name, result):
         (args.output / name).write_text(json.dumps(result, indent=2) + '\n')
 
-    def rpc(method, params=(), authenticated=False):
+    def rpc(method, params=(), authenticated=False, layer=0):
         headers = {'Content-Type': 'application/json'}
         if authenticated:
             def b64(value):
@@ -47,7 +47,8 @@ def run(args):
             secret = bytes.fromhex((root / 'jwt.hex').read_text().strip().removeprefix('0x'))
             token = message + b'.' + b64(hmac.new(secret, message, hashlib.sha256).digest())
             headers['Authorization'] = 'Bearer ' + token.decode()
-        request = urllib.request.Request(auth_url if authenticated else rpc_url,
+        url = f"http://127.0.0.1:{int(env['F7_AUTH_BASE'] if authenticated else env['F7_HTTP_BASE']) + layer}"
+        request = urllib.request.Request(url,
             json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': list(params)}).encode(), headers)
         with urllib.request.urlopen(request, timeout=10) as response:
             answer = json.load(response)
@@ -85,7 +86,8 @@ def run(args):
             raise RuntimeError('performance session hardware claim is absent')
 
     def stop_owned_processes():
-        files = [root / f'node{i}/el.pid' for i in range(manifest['execution_layers'])]
+        mapping = manifest['validator_to_execution_layer']
+        files = [root / f'node{mapping.index(i)}/el.pid' for i in range(manifest['execution_layers'])]
         files += [root / f'node{i}/v.pid' for i in range(7)]
         processes = []
         for path in files:
@@ -134,6 +136,17 @@ def run(args):
         if not isinstance(persisted, int) or persisted >= before:
             raise RuntimeError('test did not capture an unpersisted execution tail')
         write('before-forced-stop.json', {'block': baseline, 'persisted': persisted, 'receipts': receipts})
+        deadline = time.monotonic() + 90
+        for layer in range(manifest['execution_layers']):
+            while time.monotonic() < deadline:
+                block = rpc('eth_getBlockByNumber', [hex(before), False], layer=layer)
+                if block:
+                    if block['hash'] != baseline['hash']:
+                        raise RuntimeError(f'EL{layer} canonical hash differs')
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError(f'EL{layer} did not catch up before forced termination')
         check_other_claims()
         stop_owned_processes()
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'second-up.log')
@@ -145,6 +158,17 @@ def run(args):
         block = rpc('eth_getBlockByNumber', [hex(before), False])
         if block['hash'] != baseline['hash']:
             raise RuntimeError('canonical head before crash was not retained')
+        for layer in range(manifest['execution_layers']):
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                block = rpc('eth_getBlockByNumber', [hex(before), False], layer=layer)
+                if block:
+                    if block['hash'] != baseline['hash']:
+                        raise RuntimeError(f'EL{layer} lost the canonical crash head')
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError(f'EL{layer} did not recover the crash head')
         command(['python3', str(scripts / 'transaction_smoke.py'), *common,
                  '--ingest', f"127.0.0.1:{env['F7_INGEST_BASE']}", '--offset', str(args.offset + 200),
                  '--output', str(args.output / 'after-rpc')], 'after-rpc.log')
