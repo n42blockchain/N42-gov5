@@ -976,3 +976,20 @@ retained failing P33 datadir twice, without message diagnostics or resets and
 with original vote watermarks intact. Each pass requires the original measured
 receipt samples before/after SIGKILL, canonical preservation and startup/replay
 boundaries. Runtime results remain pending.
+
+P34 subsequently passed both retained-data repetitions: 306 / durable 278 /
+restarted 310, then 362 / durable 340 / restarted 366. Each passed both startup
+order checks and 96 checks of the original measured receipt samples, preserved
+the crash-head canonical hash, and accepted subsequent smoke transactions.
+The first start retained the failing case's consensus views 278 versus 280,
+without message diagnostics or lowered vote watermarks. The runner stopped
+and released hardware. Evidence: both P34 recovery results and saved consensus
+directories. The EL datadir had already advanced during the failed P33 attempt;
+this is not a byte-identical reproduction of its pre-cold-start database.
+
+Native outbox readiness now has a failing-before/passing-after real-network
+regression and successful retained startup evidence. Continue observing
+staggered startup rather than claiming all intermittent networking stalls are
+eliminated. Prefault remains unselected: the materialization repair is correct
+but its measured leg did not beat the verified 320k control. Transaction-root
+preparation and the remaining build/import critical path require further work.
