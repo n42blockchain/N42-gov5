@@ -613,3 +613,29 @@ ancestry and transaction roots, fails on unsupported access lists, and leaves
 execution validation to replay into a separate EL. The completion manifest is
 written only after the entire prefix succeeds. The original P20 datadir and
 consensus watermarks remain the source of record.
+
+### P23 canonical prefix exported; P24 reconstruction running
+
+P23 exported all 177 durable canonical blocks from P20 into a separate directory,
+1,823,412,524 bytes in total. Exported height 177 ends at the same canonical hash
+read earlier from static files. The tool validates header hashes, ancestry,
+transaction roots, and gov5 reward commitments; it preserves reward withdrawals
+with their checked metadata. Source `d750e8bb8`; executable SHA256
+`07ac624498b5f8b06cbde7ae85c89cc724fd9a81d8cbb2848af6aafcbc3be630`.
+Evidence: P23 `canonical-prefix/manifest.json`, `export.log`, and terminal status.
+The export completed and released hardware. Execution validation remains required.
+
+P24 assembles a separate execution datadir from genesis, the exported prefix,
+and node1's immutable original journals. All seven validators retain byte-identical
+copies of their own original consensus checkpoints and vote logs; no locks or
+vote watermarks are reset. Each gets body files for heights 1–293 through hard
+links to immutable files, with original journals taking precedence where present.
+The original P20 databases and consensus state remain untouched. Evidence:
+P24 `history-assembly.json` includes consensus-file hashes and the two root paths.
+
+The P22 release is executing those bodies through normal EL validation before
+the P24 retained-receipt crash test. The recovery harness waits beyond the entire
+293-block replay boundary before injecting smoke transactions, with a bounded
+600-second startup wait. Success requires all 48 original measured receipts
+before and after SIGKILL (96 checks), plus its ordinary canonical-head and
+transaction checks. P24 is running; no reconstruction success is claimed yet.
