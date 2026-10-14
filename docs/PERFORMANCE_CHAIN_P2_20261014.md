@@ -852,3 +852,18 @@ heights, and records replay-boundary evidence before injecting smoke traffic.
 It repeats this wait after SIGKILL. The existing execution and receipt gates
 are unchanged. P30 is retrying the same retained control, then conditionally
 running the previously unlaunched prefault leg. No data is reset.
+
+P30's retained control retry passed: head 307, durable 286, restarted head 311;
+two startup-order checks, canonical crash hash retained, 64 additional older
+receipts and 96 subsequent smoke transactions successful, and all 48 measured
+benchmark receipts retained before/after SIGKILL (96 checks). Its frozen replay
+boundary covers saved QCs at heights 284 and 286 before funding. Evidence:
+P30 `control-recovery/result.json` and both replay-boundary files.
+
+Together with the P28 online result, this establishes the repaired release's
+strict V7/E1 320k-per-window control with retained-data cold/crash evidence.
+It is not a power-cut or an active-flood interruption test. Prefault comparison
+is now running. Stopped-control dedup found no remaining duplicate allocations
+and no mismatches; normal node pruning had already retired persisted recovery
+bodies, while canonical database history remains intact. No manual data deletion
+was performed.
