@@ -40,7 +40,7 @@ def run(args):
                 'N42_VOTE_BEFORE_IMPORT', 'N42_TAKE_COMPACT', 'N42_COMPACT_BODY',
                 'N42_FAST_TRANSFER', 'N42_PARALLEL_BUILD', 'N42_BUILDER_PULLER'):
         env.pop(key, None)
-    if args.mode in ('parallel', 'output-shards', 'ahead', 'journal-timing', 'body-once', 'sender-queue'):
+    if args.mode in ('parallel', 'output-shards', 'ahead', 'journal-timing', 'body-once', 'sender-queue', 'direct-queue'):
         env.update(N42_FAST_TRANSFER='1', N42_PARALLEL_BUILD='1', N42_BUILDER_PULLER='4096')
     if args.mode == 'output-shards':
         env.update(N42_OUTPUT_SHARDS='16')
@@ -50,8 +50,10 @@ def run(args):
         env.update(N42_RECOVERY_PHASES='1')
     if args.mode == 'body-once':
         env.update(N42_BODY_ONCE='1')
-    if args.mode == 'sender-queue':
+    if args.mode in ('sender-queue', 'direct-queue'):
         env.update(N42_TX_QUEUE='1')
+    if args.mode == 'direct-queue':
+        env.update(N42_TX_INGEST_DIRECT='1')
     report = dict(status='running', mode=args.mode, strict_ed25519=True, gateway_bypass=False,
                   root=str(args.root), offset=args.offset, receipt_samples=[], windows=[])
     report['binaries'] = {rel: hashlib.sha256((args.bundle / rel).read_bytes()).hexdigest()
@@ -116,6 +118,16 @@ def run(args):
                     raise RuntimeError('measured transaction receipt failed')
                 report['receipt_samples'].append(dict(transaction_hash=tx_hash, block_hash=block['hash'],
                     block_number=chosen[1], status=1))
+        if args.mode == 'direct-queue':
+            with (args.output/'signature-smoke.log').open('w') as stream:
+                subprocess.run(['python3', str(Path(__file__).parent/'transaction_smoke.py'),
+                    '--rpc', f"http://127.0.0.1:{env['F7_HTTP_BASE']}",
+                    '--ingest', f"127.0.0.1:{env['F7_INGEST_BASE']}",
+                    '--flood', str(args.bundle/'examples/tx_flood'),
+                    '--chain-id', str(manifest['chain_id']), '--offset', str(args.offset+7000),
+                    '--output', str(args.output/'signature-smoke')],
+                    stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=240)
+            report['signature_smoke'] = 'passed: RPC and binary ingest rejection; new execution receipts'
         with (args.output/'consensus-check.log').open('w') as stream:
             subprocess.run(['python3', str(Path(__file__).parent/'check_shared_execution.py'),
                 '--root', str(args.root), '--output', str(args.output/'consensus.json')],
@@ -149,6 +161,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('profile', 'bundle', 'rs-repo', 'root', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
-    parser.add_argument('--mode', choices=('serial', 'parallel', 'output-shards', 'ahead', 'journal-timing', 'body-once', 'sender-queue'), required=True)
+    parser.add_argument('--mode', choices=('serial', 'parallel', 'output-shards', 'ahead', 'journal-timing', 'body-once', 'sender-queue', 'direct-queue'), required=True)
     parser.add_argument('--offset', type=int, required=True)
     run(parser.parse_args())
