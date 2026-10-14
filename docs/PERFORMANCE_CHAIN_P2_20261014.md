@@ -739,3 +739,24 @@ agreement checks. Existing graft fixture tests compare final account values,
 reverts and beneficiary credits with prefault both off/on, including growth of
 an undersized prepared map. Latest-release E4/E7 startup recovery checks precede
 fresh throughput expansion; no prefault performance gain is claimed yet.
+
+### P27/P28 unattended gates launched
+
+The release graft fixture passed (one selected test, 0.03 seconds), comparing
+direct/indexed/range folds with prefault on/off and an undersized prepared map.
+P27 is running latest-release retained E4/E7 recovery, requiring state-ready
+before auth RPC on every EL and preserving old/new receipts on every layer.
+If both pass, P28 runs fresh direct-raw and graft-prefault legs with the P26
+joint binary bundle, followed by retained cold/SIGKILL recovery for each leg's
+48 measured receipt samples. Each recovery must complete 96 sample checks and
+both startup-order checks before the next leg starts.
+
+Runner: `/tmp/n42-p27-p28-unattended.py`; live phase and evidence are under
+`performance-chain-p27-20261014`, with throughput/recovery artifacts under
+`performance-chain-p28-20261014`. It stops on any failed gate. Disk is checked
+before each fresh leg (35 GiB minimum). To retain all history within the shared
+disk budget, it deduplicates byte-identical immutable bodies in the stopped
+legacy P20 direct-raw case and each completed new case; every pathname and byte
+is preserved, and database/QMDB files are excluded. An owned hardware claim
+covers runtime phases and is released only after owned fleet processes stop.
+No latest-release E4/E7 result or prefault throughput improvement is claimed yet.
