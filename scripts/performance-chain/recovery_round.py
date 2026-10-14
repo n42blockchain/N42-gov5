@@ -87,13 +87,22 @@ def run(args):
             subprocess.run(command, env=env, stdout=output, stderr=subprocess.STDOUT,
                            timeout=timeout, check=True)
 
-    def saved_replay_targets():
+    def saved_replay_targets(evidence_name):
         targets = set()
+        evidence = args.output / evidence_name
+        evidence.mkdir()
         for validator, layer in enumerate(manifest['validator_to_execution_layer']):
             checkpoint = root / f'node{validator}/consensus/consensus-checkpoint.json'
             if not checkpoint.exists():
                 continue
-            saved = json.loads(checkpoint.read_text())
+            frozen = checkpoint.read_bytes()
+            saved = json.loads(frozen)
+            destination = evidence / f'node{validator}'
+            destination.mkdir()
+            (destination / checkpoint.name).write_bytes(frozen)
+            vote_log = checkpoint.with_name('vote-log.bin')
+            if vote_log.exists():
+                (destination / vote_log.name).write_bytes(vote_log.read_bytes())
             for field in ('last_committed_qc', 'locked_qc'):
                 qc = saved[field]
                 if qc['view']:
@@ -178,7 +187,7 @@ def run(args):
             except ProcessLookupError:
                 continue
             raise RuntimeError('profile already has a live process')
-        replay_targets = saved_replay_targets()
+        replay_targets = saved_replay_targets('before-first-start-consensus')
         started = True
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'first-up.log')
         check_startup_order('first-startup-order.json')
@@ -220,7 +229,7 @@ def run(args):
                 raise RuntimeError(f'EL{layer} did not catch up before forced termination')
         check_other_claims()
         stop_owned_processes()
-        replay_targets = saved_replay_targets()
+        replay_targets = saved_replay_targets('after-kill-consensus')
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'second-up.log')
         check_startup_order('second-startup-order.json')
         wait_for_saved_replay(replay_targets, 'second-replay-boundary.json')
