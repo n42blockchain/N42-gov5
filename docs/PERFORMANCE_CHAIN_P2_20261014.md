@@ -480,3 +480,42 @@ binary with 16 dedicated root workers. The harness requires the worker-pool
 activation log before accepting the result. Evidence:
 `/data/blockchain/wr-analysis/performance-chain-p20-20261014`.
 The build is live; exhaustive test and performance results remain pending.
+
+### P20 results and P21 high-load cold-recovery failure
+
+The exhaustive four-byte-key comparison passed all 320 roots in release mode
+(12.57 s). P20 raw control: 333,333 / 333,333 / 253,333 TPS; dedicated-root pool:
+333,333 / 320,000 / 320,000 TPS. Both legs checked 48 measured receipts, signature
+rejection and matching commits. Runtime activation of the 16-worker pool was
+observed. The control's late regression differs from P19, so this pair does not
+establish a consistent worker-isolation gain; the setting remains opt-in.
+
+Retaining every test datadir left roughly 58 GiB free. The new offline utility
+checks completed V7/E1 provenance, no live PIDs, regular same-owner files and
+exact byte equality before atomically replacing a duplicate with a hard link.
+It verifies the linked SHA-256 and fsyncs the directory, retaining every original
+path and body byte. P20 root-pool dry run found no mismatches. P21 applied this
+only to that stopped case: 480 duplicate paths, 15,291,961,344 allocated bytes
+released. Mutation is limited to recovery-body files; DB and QMDB files are not
+part of deduplication. Evidence: P21 `dedup-apply.json`.
+
+The subsequent cold-start check exposed an unresolved high-load recovery gap.
+Reth storage consistency healing rolled static-file heads from 293 to database
+stage 177; QMDB's compacted heap checkpoint is at 199. Startup asks for the root
+of canonical parent 176 and fails before QMDB initialization:
+`checkpoint 199 ... has no matching parent result for 176 ...`.
+Read-only `db stage-checkpoints get` confirms every stage, including Execution
+and Finish, at 177. The bounded frontier file contains checkpoints 132, 143,
+163 and 199; its debug-only inspection is not used as trusted recovery input.
+The recovery round failed before its intended SIGKILL, stopped owned processes,
+and released hardware. The original datadir and all deduplicated bodies remain.
+
+This demonstrates that small-transaction recovery passes in P17/P18 do not prove
+cold recovery after the 15M-transaction throughput workload. Online 333k remains
+a measured score, not a completed high-load durability result. Current priority:
+retain checkpoint/log history until the EL's durable database frontier covers
+it, inspect the existing canonical-prefix/body coverage, and restore the retained
+P20 case through validated history without inventing roots or resetting data.
+Do not expand fresh throughput legs or adopt the optimized profile as complete
+until this failure is repaired and the 48 earlier measured receipts survive
+cold start and process-kill recovery.
