@@ -126,7 +126,8 @@ def run(args):
             raise RuntimeError('profile already has a live process')
         started = True
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'first-up.log')
-        wait_above(120)
+        required_height = max([120] + [sample['block_number'] for sample in expected_samples])
+        wait_above(required_height, args.startup_timeout)
         check_expected_receipts()
         if int(rpc('eth_chainId'), 16) != manifest['chain_id']:
             raise RuntimeError('wrong chain ID')
@@ -246,4 +247,6 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--offset', type=int, required=True)
     parser.add_argument('--expected-receipts', type=pathlib.Path, help='earlier benchmark result to verify before/after crash')
+    parser.add_argument('--startup-timeout', type=int, default=150,
+                        help='seconds allowed to reach retained receipt heights during initial replay')
     run(parser.parse_args())
