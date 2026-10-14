@@ -1,5 +1,7 @@
 # N42 Blockchain
 
+**Code audit:** [三工程近一个月审计与修复](docs/monthly-audit-20261014.md)。
+
 [![Go](https://img.shields.io/badge/go-1.25%2B-blue.svg)](https://golang.org)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/n42blockchain/n42/ci.yml?branch=main)](https://github.com/n42blockchain/n42/actions)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
