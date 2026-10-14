@@ -87,6 +87,46 @@ def run(args):
             subprocess.run(command, env=env, stdout=output, stderr=subprocess.STDOUT,
                            timeout=timeout, check=True)
 
+    def saved_replay_targets():
+        targets = set()
+        for validator, layer in enumerate(manifest['validator_to_execution_layer']):
+            checkpoint = root / f'node{validator}/consensus/consensus-checkpoint.json'
+            if not checkpoint.exists():
+                continue
+            saved = json.loads(checkpoint.read_text())
+            for field in ('last_committed_qc', 'locked_qc'):
+                qc = saved[field]
+                if qc['view']:
+                    targets.add((layer, qc['block_hash']))
+        return sorted(targets)
+
+    def wait_for_saved_replay(targets, name):
+        deadline = time.monotonic() + args.startup_timeout
+        known = {}
+        while time.monotonic() < deadline:
+            try:
+                for layer, block_hash in targets:
+                    key = (layer, block_hash)
+                    if key not in known:
+                        block = rpc('eth_getBlockByHash', [block_hash, False], layer=layer)
+                        if block:
+                            if block['hash'] != block_hash:
+                                raise RuntimeError('saved replay block hash mismatch')
+                            known[key] = int(block['number'], 16)
+                if len(known) == len(targets):
+                    floors = {layer: max(number for (owner, _), number in known.items()
+                                        if owner == layer) for layer, _ in targets}
+                    if all(int(rpc('eth_blockNumber', layer=layer), 16) >= number
+                           for layer, number in floors.items()):
+                        write(name, [{'execution_layer': layer, 'hash': block_hash,
+                                      'number': known[(layer, block_hash)]}
+                                     for layer, block_hash in targets])
+                        return
+            except OSError:
+                pass
+            time.sleep(0.5)
+        raise RuntimeError('saved certified replay did not finish before smoke traffic')
+
     def check_other_claims():
         other = [p for folder in ('/data/blockchain', '/data/blockchain/wr-logs')
                  for p in pathlib.Path(folder).glob('.box-claim*')
@@ -138,9 +178,11 @@ def run(args):
             except ProcessLookupError:
                 continue
             raise RuntimeError('profile already has a live process')
+        replay_targets = saved_replay_targets()
         started = True
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'first-up.log')
         check_startup_order('first-startup-order.json')
+        wait_for_saved_replay(replay_targets, 'first-replay-boundary.json')
         required_height = max([120, args.minimum_start_height] +
                               [sample['block_number'] for sample in expected_samples])
         wait_above(required_height, args.startup_timeout)
@@ -178,8 +220,10 @@ def run(args):
                 raise RuntimeError(f'EL{layer} did not catch up before forced termination')
         check_other_claims()
         stop_owned_processes()
+        replay_targets = saved_replay_targets()
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'second-up.log')
         check_startup_order('second-startup-order.json')
+        wait_for_saved_replay(replay_targets, 'second-replay-boundary.json')
         after = wait_above(before)
         check_expected_receipts()
         for tx_hash, receipt in receipts.items():
