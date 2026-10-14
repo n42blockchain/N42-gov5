@@ -760,3 +760,18 @@ legacy P20 direct-raw case and each completed new case; every pathname and byte
 is preserved, and database/QMDB files are excluded. An owned hardware claim
 covers runtime phases and is released only after owned fleet processes stop.
 No latest-release E4/E7 result or prefault throughput improvement is claimed yet.
+
+### P27 E4 catch-up failure stopped expansion
+
+Latest-release E4 completed all eight startup-order checks but failed its
+all-EL post-restart new-transaction gate: `EL3 did not catch up to new
+transactions`. EL3 (node6) remained at height 515, with height-517 and later
+bodies held waiting for ancestry; logs report a held body lasting over 120
+seconds and no imports progressing its tip. Other layers continued accepting
+blocks. Evidence: P27 `e4/result.json`, `node6/v.log`, and `node6/el.log`.
+
+The harness stopped its fleet and the runner released hardware. E7 and both
+P28 throughput legs were not launched; no legacy-body deduplication ran.
+Original and test datadirs remain retained. Priority returns to the missing
+ancestor/range-pull path on the lagging layer; the E1 P26 pass and eight correct
+startup-order checks do not prove E4 liveness after recovery.
