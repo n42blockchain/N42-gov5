@@ -45,6 +45,7 @@ func GossipMaxSize() uint64 { return encoder.MaxGossipWireSize() }
 
 // JoinTopic joins a PubSub topic, returning the existing handle if already joined.
 func (s *Service) JoinTopic(topic string, opts ...pubsub.TopicOpt) (*pubsub.Topic, error) {
+	topic = s.WireTopic(topic)
 	s.joinedTopicsLock.Lock()
 	defer s.joinedTopicsLock.Unlock()
 
@@ -62,6 +63,7 @@ func (s *Service) JoinTopic(topic string, opts ...pubsub.TopicOpt) (*pubsub.Topi
 // LeaveTopic closes a topic and removes it from the joined topics map.
 // Returns an error if there are outstanding event handlers or subscriptions.
 func (s *Service) LeaveTopic(topic string) error {
+	topic = s.WireTopic(topic)
 	s.joinedTopicsLock.Lock()
 	defer s.joinedTopicsLock.Unlock()
 

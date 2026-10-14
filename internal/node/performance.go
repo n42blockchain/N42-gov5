@@ -10,6 +10,7 @@ import (
 
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -38,6 +39,9 @@ func ValidatePerformanceGenesis(cfg *conf.Config, genesis *conf.Genesis) error {
 	}
 	if cfg.P2PCfg != nil && cfg.P2PCfg.GenesisHashOverride != "" {
 		return errors.New("performance genesis cannot override the P2P genesis identity")
+	}
+	if err := p2p.ValidatePerformanceP2PConfig(cfg.P2PCfg); err != nil {
+		return err
 	}
 	if genesis.Timestamp != params.PerformanceGenesisTime ||
 		!bytes.Equal(genesis.ExtraData, []byte(params.PerformanceGenesisMarker)) || genesis.Number != 0 {

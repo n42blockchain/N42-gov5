@@ -38,6 +38,9 @@ func (s *Service) isProtectedPeer(pid peer.ID) bool {
 
 // InterceptPeerDial tests whether we're permitted to Dial the specified peer.
 func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
+	if !s.performancePeerAllowed(pid) {
+		return false
+	}
 	if s.peers.IsBad(pid) && !s.isProtectedPeer(pid) {
 		log.Debug("Rejecting dial to bad peer", "peer", pid)
 		return false
@@ -48,6 +51,9 @@ func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
 // InterceptAddrDial tests whether we're permitted to dial the specified
 // multiaddr for the given peer.
 func (s *Service) InterceptAddrDial(pid peer.ID, m multiaddr.Multiaddr) (allow bool) {
+	if !s.performancePeerAllowed(pid) || (s.performance != nil && !loopbackAddress(m)) {
+		return false
+	}
 	if s.peers.IsBad(pid) && !s.isProtectedPeer(pid) {
 		return false
 	}
@@ -56,6 +62,9 @@ func (s *Service) InterceptAddrDial(pid peer.ID, m multiaddr.Multiaddr) (allow b
 
 // InterceptAccept checks whether the incidental inbound connection is allowed.
 func (s *Service) InterceptAccept(n network.ConnMultiaddrs) (allow bool) {
+	if s.performance != nil && !loopbackAddress(n.RemoteMultiaddr()) {
+		return false
+	}
 	// Deny all incoming connections before we are ready
 	if !s.started.Load() {
 		return false
@@ -76,7 +85,10 @@ func (s *Service) InterceptAccept(n network.ConnMultiaddrs) (allow bool) {
 
 // InterceptSecured tests whether a given connection, now authenticated,
 // is allowed. Rejects bad peers and inbound connections at peer limit.
-func (s *Service) InterceptSecured(dir network.Direction, pid peer.ID, _ network.ConnMultiaddrs) (allow bool) {
+func (s *Service) InterceptSecured(dir network.Direction, pid peer.ID, addresses network.ConnMultiaddrs) (allow bool) {
+	if !s.performancePeerAllowed(pid) || (s.performance != nil && !loopbackAddress(addresses.RemoteMultiaddr())) {
+		return false
+	}
 	if s.peers.IsBad(pid) && !s.isProtectedPeer(pid) {
 		log.Debug("Rejecting secured connection from bad peer", "peer", pid, "direction", dir)
 		return false
@@ -89,7 +101,10 @@ func (s *Service) InterceptSecured(dir network.Direction, pid peer.ID, _ network
 }
 
 // InterceptUpgraded tests whether a fully capable connection is allowed.
-func (_ *Service) InterceptUpgraded(_ network.Conn) (allow bool, reason control.DisconnectReason) {
+func (s *Service) InterceptUpgraded(conn network.Conn) (allow bool, reason control.DisconnectReason) {
+	if s.performance != nil && (!s.performancePeerAllowed(conn.RemotePeer()) || string(conn.ConnState().Security) != s.performance.prefix+"/noise") {
+		return false, 0
+	}
 	return true, 0
 }
 

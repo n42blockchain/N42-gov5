@@ -59,8 +59,8 @@ Inherited N42_/QS_/HIVE_ variables are refused instead of silently altering the
 profile. No environment file from `scripts/qs` is sourced. No chain data,
 validator private keys, network private keys or JWT secrets belong in Git.
 
-`network_namespace` is a planned protocol identity, not an implemented P2P
-topic override. Existing generic `/rpc` transport, HotStuff topics, frame
+At stage 0, `network_namespace` was a planned protocol identity, not a P2P
+topic override (stage 2 below implements the runtime boundary). Generic `/rpc` transport, HotStuff topics, frame
 transport and genesis/status handshakes require explicit cross-network rejection
 tests before any fleet launch. Shared execution must bind Unix sockets or
 loopback and authenticate/bind every request/result to chain identity. Neither
@@ -153,3 +153,35 @@ lifecycle; targeted `cmd/n42` init tests; `go vet` for these four packages; the
 `GOFLAGS=-p=1` and automatic version bump skipped. `make lint` was attempted
 and exited 2 because `golangci-lint` is not installed. No fleet, benchmark,
 full repository test/race campaign or new TPS measurement was run.
+
+## Stage 2: runtime P2P isolation
+
+An explicit performance ChainConfig now reaches `p2p.NewService` through
+`WithPerformanceChain`. Nil retains the existing native/ETH service behavior.
+Performance configuration is cloned, discovery and QUIC are disabled, and
+listen/advertise addresses default to IPv4 loopback. Bootnodes, public/DNS/
+IPv6 peers, relay, UPnP and genesis overrides are rejected before node storage
+opens. Only explicitly configured static peer IDs are allowed on outbound
+dials and authenticated inbound connections; score protection cannot bypass
+the allowlist. IPv6 support remains outside this slice.
+
+The Noise protocol ID contains namespace, chain ID and the full genesis hash;
+the same identity is also set as Noise's authenticated prologue. Performance
+hosts do not register the legacy Noise protocol or QUIC transport. Actual
+application RPC protocol IDs and gossip topics carry that scope. The host
+adapter covers NewStream and Set/Match/RemoveStreamHandler, including direct
+block push/fetch and Rotor callers. Logical stream IDs remain available to
+existing rate limiters/decoders. Sync validator registration, duplicate topic
+detection, decode and unsubscribe use matching wire/logical names.
+
+Bounded loopback tests exercise same-chain connection and rejection of legacy,
+non-explicit and different-full-genesis peers (including identical first four
+genesis bytes), scoped RPC negotiation and removal, and real gossip delivery.
+A sync topic lifecycle test checks validator removal/re-registration and
+scoped decoding; default nil/profile/gater regressions remain unchanged.
+These tests are not a seven-node fleet, execution benchmark, exhaustive
+adversarial P2P review or a separately isolated proof of Noise prologue behavior.
+External ingest/shared-execution transports, dedicated validator provisioning,
+resource ownership and shared execution remain to be implemented. Another
+session was building Rust during this slice, so only restricted Go tests/vet
+were run; no heavy Make build or fleet was started.
