@@ -76,13 +76,14 @@ type Service struct {
 	ctx              context.Context
 	host             host.Host
 	genesisHash      types.Hash
+	performance      *performanceNetwork
 	ping             *sync_pb.Ping
 	wg               sync.WaitGroup
 }
 
 // NewService initializes a new p2p service. No connections are made until
 // Start is called during the service registry startup.
-func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig, nodeCfg conf.NodeConfig) (*Service, error) {
+func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig, nodeCfg conf.NodeConfig, options ...ServiceOption) (*Service, error) {
 	var err error
 	ctx, cancel := context.WithCancel(ctx)
 	_ = cancel // govet fix for lost cancel. Cancel is handled in service.Stop().
@@ -96,6 +97,13 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		protectedPeers: make(map[peer.ID]struct{}),
 	}
 	s.isPreGenesis.Store(true)
+	for _, option := range options {
+		if err := option(s, nodeCfg); err != nil {
+			cancel()
+			return nil, err
+		}
+	}
+	cfg = s.cfg
 
 	// Static peers form the permanent mesh of a fixed validator set: protect
 	// them from the connection gater's bad-score rejection so a transient
@@ -120,7 +128,9 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		return nil, err
 	}
 
-	cfg.Discv5BootStrapAddr = parseBootStrapAddrs(cfg.BootstrapNodeAddr, nodeCfg)
+	if s.performance == nil {
+		cfg.Discv5BootStrapAddr = parseBootStrapAddrs(cfg.BootstrapNodeAddr, nodeCfg)
+	}
 
 	ipAddr := utils.IPAddr()
 	s.privKey, err = privKey(s.cfg)
@@ -143,6 +153,9 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 	}
 
 	s.host = h
+	if s.performance != nil {
+		s.host = &scopedHost{Host: h, service: s}
+	}
 	// Gossipsub must be initialized before adding peers, as libp2p's
 	// implementation ignores previously added peers.
 	psOpts := s.pubsubOptions()

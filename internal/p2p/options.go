@@ -6,15 +6,18 @@ import (
 	"net"
 
 	"github.com/libp2p/go-libp2p"
+	libcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	tptu "github.com/libp2p/go-libp2p/p2p/net/upgrader"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/params"
 )
 
 // MultiAddressBuilder takes in an ip address string and port to produce a go multiaddr format.
@@ -73,10 +76,23 @@ func (s *Service) buildOptions(ip net.IP, priKey *ecdsa.PrivateKey) []libp2p.Opt
 		libp2p.UserAgent(params.Version),
 		libp2p.ConnectionGater(s),
 		libp2p.Transport(tcp.NewTCPTransport),
-		libp2p.Transport(libp2pquic.NewTransport),
 		libp2p.DefaultMuxers,
-		libp2p.Security(noise.ID, noise.New),
 		libp2p.Ping(false),
+	}
+	if s.performance != nil {
+		// Bind identity into Noise's authenticated handshake transcript as well
+		// as protocol negotiation; relabeling a multistream ID cannot erase it.
+		prefix := s.performance.prefix
+		constructor := func(id protocol.ID, key libcrypto.PrivKey, muxers []tptu.StreamMuxer) (*noise.SessionTransport, error) {
+			transport, err := noise.New(id, key, muxers)
+			if err != nil {
+				return nil, err
+			}
+			return transport.WithSessionOptions(noise.Prologue([]byte(prefix)))
+		}
+		options = append(options, libp2p.Security(prefix+noise.ID, constructor))
+	} else {
+		options = append(options, libp2p.Transport(libp2pquic.NewTransport), libp2p.Security(noise.ID, noise.New))
 	}
 
 	if cfg.EnableUPnP {

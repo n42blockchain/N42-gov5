@@ -778,7 +778,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			"configured", p2pGenesisHash.Hex())
 		p2pGenesisHash = overrideHash
 	}
-	p2p, err := p2p.NewService(ctx, p2pGenesisHash, cfg.P2PCfg, cfg.NodeCfg)
+	p2p, err := p2p.NewService(ctx, p2pGenesisHash, cfg.P2PCfg, cfg.NodeCfg, p2p.WithPerformanceChain(chainConfig))
 	if err != nil {
 		return nil, err
 	}

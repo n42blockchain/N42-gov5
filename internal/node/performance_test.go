@@ -122,6 +122,18 @@ func TestPerformanceStartupRequiresExplicitInitBeforeOpeningDatabase(t *testing.
 	}
 }
 
+func TestPerformancePublicP2PRejectedBeforeOpeningDatabase(t *testing.T) {
+	cfg := performanceNodeConfig(t, performanceGenesisFixture(t))
+	cfg.P2PCfg = &conf.P2PConfig{BootstrapNodeAddr: []string{"enode://public"}}
+	node, err := NewNode(nodeTNewContext(), cfg)
+	if node != nil || err == nil || !strings.Contains(err.Error(), "forbids bootnodes") {
+		t.Fatalf("public discovery configuration accepted: %v", err)
+	}
+	if _, err := os.Stat(cfg.NodeCfg.DataDir); !os.IsNotExist(err) {
+		t.Fatalf("opened database before rejecting public discovery: %v", err)
+	}
+}
+
 func TestPerformanceGenesisRejectsEthereumAndInitMetadata(t *testing.T) {
 	g := performanceGenesisFixture(t)
 	cfg := performanceNodeConfig(t, g)

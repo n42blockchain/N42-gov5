@@ -16,10 +16,10 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
 )
 
 const pubsubMessageTimeout = 30 * time.Second
@@ -98,13 +98,15 @@ func (s *Service) subscribe(topic string, validator wrappedVal, handle subHandle
 
 func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle subHandler) *pubsub.Subscription {
 	topic += s.cfg.p2p.Encoding().ProtocolSuffix()
+	wireTopic := p2p.WireTopic(s.cfg.p2p, topic)
 
-	if ok := s.subHandler.topicExists(topic); ok {
+	if ok := s.subHandler.topicExists(wireTopic); ok {
 		log.Debug(fmt.Sprintf("Provided topic already has an active subscription running: %s", topic), "topic", topic)
 		return nil
 	}
 
-	if err := s.cfg.p2p.PubSub().RegisterTopicValidator(s.wrapAndReportValidation(topic, validator)); err != nil {
+	_, wrappedValidator := s.wrapAndReportValidation(topic, validator)
+	if err := s.cfg.p2p.PubSub().RegisterTopicValidator(wireTopic, wrappedValidator); err != nil {
 		log.Error("Could not register validator for topic", "topic", topic)
 		return nil
 	}
@@ -288,6 +290,7 @@ func (s *Service) reValidateSubscriptions(subscriptions map[uint64]*pubsub.Subsc
 }
 
 func (s *Service) unSubscribeFromTopic(topic string) {
+	topic = p2p.WireTopic(s.cfg.p2p, topic)
 	log.Debug("Unsubscribing from topic", "topic", topic)
 	if err := s.cfg.p2p.PubSub().UnregisterTopicValidator(topic); err != nil {
 		log.Error("Could not unregister topic validator", "err", err)

@@ -19,6 +19,12 @@ const pubsubSubscriptionRequestLimit = 200
 
 // CanSubscribe returns true if the topic is of interest and we could subscribe to it.
 func (s *Service) CanSubscribe(topic string) bool {
+	if s.performance != nil {
+		if !strings.HasPrefix(topic, s.performance.prefix+"/") {
+			return false
+		}
+		topic = s.LogicalTopic(topic)
+	}
 	// Allow messaging relay topics: /n42/msg/shard/{N}
 	if strings.HasPrefix(topic, "/n42/msg/") {
 		return true
@@ -40,7 +46,10 @@ func (s *Service) CanSubscribe(topic string) bool {
 
 // FilterIncomingSubscriptions filters subscription RPCs, rejecting requests
 // with too many topics and keeping only topics of interest.
-func (s *Service) FilterIncomingSubscriptions(_ peer.ID, subs []*pubsubpb.RPC_SubOpts) ([]*pubsubpb.RPC_SubOpts, error) {
+func (s *Service) FilterIncomingSubscriptions(id peer.ID, subs []*pubsubpb.RPC_SubOpts) ([]*pubsubpb.RPC_SubOpts, error) {
+	if !s.performancePeerAllowed(id) {
+		return nil, nil
+	}
 	if len(subs) > pubsubSubscriptionRequestLimit {
 		return nil, pubsub.ErrTooManySubscriptions
 	}
