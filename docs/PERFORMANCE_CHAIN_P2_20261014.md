@@ -948,3 +948,31 @@ and whole-fleet SIGKILL. This is a re-test of a previously ineffective optional
 optimization, not a default change or a claimed gain. It does not resolve the
 earlier intermittent startup stall. Original and subsequent chain data remain
 retained; the runner requires sufficient disk and absence of other claims.
+
+### P33 prefault still regressed; native outbox readiness defect reproduced
+
+Corrected-prefault windows were 293,333 / 306,667 / 306,667 TPS. Online receipt,
+signature and consensus checks passed, but the retained startup again stalled
+with node0 at view 278 and nodes1–6 at 280; funding remained unmined for 120
+seconds. Exact pre-start consensus checkpoints and vote logs are now preserved.
+The runner stopped and released hardware. Across 74 full builds, median graft
+was 68 ms, fold 113 ms and total 332.5 ms, versus control total 311 ms. Prepared
+memory remains opt-in; no performance improvement is selected. Evidence: P33
+result, phase summary, recovery logs and saved consensus-state directories.
+
+Source review found native consensus publication and outbox retries checked
+different meshes: publication used the native topic, while queued retries were
+blocked by an empty v4 observer-topic mesh. A real libp2p peer subscribing only
+to native consensus reproduced the old failure: a native mesh formed, v4 stayed
+empty, and queued consensus remained unsent. Rust `c164f4d02` gates consensus
+retries on the matching topic; body retry behavior is retained. The same test
+now proves the queued message reaches the native-only peer. All 154 service
+library tests passed (1.66 seconds). Old/new regression logs and the suite log
+are copied into P34 evidence. This proves that specific queue defect, not yet
+its causal role in the seven-validator retained startup stall.
+
+P34's joint release built in 53.87 seconds. Its runner is retrying the exact
+retained failing P33 datadir twice, without message diagnostics or resets and
+with original vote watermarks intact. Each pass requires the original measured
+receipt samples before/after SIGKILL, canonical preservation and startup/replay
+boundaries. Runtime results remain pending.
