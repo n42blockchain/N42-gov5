@@ -67,6 +67,18 @@ passed, including branch rewinds, same-height replacement and interrupted
 compaction. P4 will retry the retained E4 data and then run E7; no reset is
 required or scheduled.
 
+P4 restored the formerly failed EL1 data (head 118, parent result 117), and
+replayed 34 durable bodies to 152. E1 again passed a whole-fleet SIGKILL check
+(198/180 -> 203, 64 successful old receipts preserved). E4 exposed a second
+catch-up issue: already persisted ELs only cached head/head-1 execution fields.
+Re-submitting block 153 from the lagging EL therefore rejected it for missing
+result(151), although canonical header 153 already commits that result.
+Rust `c15390d57` installs a cold canonical-header reader: one consistent read-only
+database transaction verifies ancestor identity, fork/depth and every intervening
+parent link. It returns exactly the ancestor fields from its depth-D descendant,
+and never inserts cold history into the live cache. Four registry/history tests
+and the node build check passed. P5 will retry retained E4 and then E7.
+
 Recovery requires full block bodies. Compact-only voting is explicitly refused
 when a needed body is absent. A live upgrade cannot reconstruct an Amsterdam
 access-list body solely from a header/transaction RPC response. Unsupported or
@@ -105,6 +117,13 @@ existing parallel transfer path is not enabled in this baseline. Next controlled
 comparison: enable eligible plain transfers and parallel build with the required
 pool puller, verify receipts and signature rejection, then separately compare
 ahead building. No strict Ed25519 4M result has been demonstrated.
+
+The user reiterated the prior approximately 770k score on 2026-10-14. Preserve
+the exact S103 standing best, **776,967 TPS**, as the earlier Go seven-node
+benchmark. The performance-chain optimization target is to exceed that figure
+and then establish a million-level result under its own documented strict
+signature and durability conditions. These workloads/signature paths must stay
+labeled separately; the serial Rust E1 baseline does not replace S103.
 
 ## Unattended sequence
 
