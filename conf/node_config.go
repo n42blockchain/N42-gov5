@@ -47,7 +47,10 @@ type NodeConfig struct {
 	DataDir          string `json:"data_dir" yaml:"data_dir"`
 	MinFreeDiskSpace int    `json:"min_free_disk_space" yaml:"min_free_disk_space"`
 	Chain            string `json:"chain" yaml:"chain"`
-	Miner            bool   `json:"miner" yaml:"miner"`
+	// PerformanceGenesis is explicit and empty by default. It is never used
+	// as a generic override for native or Ethereum genesis selection.
+	PerformanceGenesis string `json:"performance_genesis,omitempty" yaml:"performance_genesis,omitempty"`
+	Miner              bool   `json:"miner" yaml:"miner"`
 
 	AuthRPC          bool     `json:"auth_rpc" yaml:"auth_rpc"`
 	AuthAddr         string   `json:"auth_addr" yaml:"auth_addr"`

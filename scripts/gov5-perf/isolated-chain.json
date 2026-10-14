@@ -1,6 +1,13 @@
 {
   "config": {
     "chainId": 4205001,
+    "performance": {
+      "version": 1,
+      "mode": "independent",
+      "role": "local",
+      "transactions": "ethereum-secp256k1",
+      "networkNamespace": "gov5-performance-5m-v1"
+    },
     "homesteadBlock": 0,
     "eip150Block": 0,
     "eip155Block": 0,

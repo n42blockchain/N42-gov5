@@ -19,14 +19,15 @@ const (
 )
 
 type dataDirNetworkManifest struct {
-	Version             int    `json:"version"`
-	Chain               string `json:"chain"`
-	Profile             string `json:"profile"`
-	Commitment          string `json:"commitment"`
-	ChainID             string `json:"chain_id,omitempty"`
-	Consensus           string `json:"consensus,omitempty"`
-	GenesisHash         string `json:"genesis_hash,omitempty"`
-	EthereumGenesisHash string `json:"ethereum_genesis_hash,omitempty"`
+	Version             int                            `json:"version"`
+	Chain               string                         `json:"chain"`
+	Profile             string                         `json:"profile"`
+	Commitment          string                         `json:"commitment"`
+	ChainID             string                         `json:"chain_id,omitempty"`
+	Consensus           string                         `json:"consensus,omitempty"`
+	GenesisHash         string                         `json:"genesis_hash,omitempty"`
+	EthereumGenesisHash string                         `json:"ethereum_genesis_hash,omitempty"`
+	Performance         *params.PerformanceChainConfig `json:"performance,omitempty"`
 }
 
 func ValidateDataDirNetworkBinding(cfg *conf.Config, chainCfg *params.ChainConfig, genesisHash *types.Hash) error {
@@ -110,11 +111,12 @@ func buildNetworkManifestFromPreset(preset params.NetworkPreset, chainCfg *param
 		return dataDirNetworkManifest{}, errors.New("missing chain config")
 	}
 	manifest := dataDirNetworkManifest{
-		Version:    dataDirNetworkManifestVersion,
-		Chain:      preset.Chain,
-		Profile:    preset.Profile.String(),
-		Commitment: string(preset.Commitment),
-		Consensus:  string(chainCfg.Consensus),
+		Version:     dataDirNetworkManifestVersion,
+		Chain:       preset.Chain,
+		Profile:     preset.Profile.String(),
+		Commitment:  string(preset.Commitment),
+		Consensus:   string(chainCfg.Consensus),
+		Performance: chainCfg.Performance,
 	}
 	if chainCfg.ChainID != nil {
 		manifest.ChainID = chainCfg.ChainID.String()
@@ -134,6 +136,7 @@ func compareDataDirNetworkManifest(dataDir string, stored, requested dataDirNetw
 		stored.Commitment != requested.Commitment ||
 		stored.ChainID != requested.ChainID ||
 		stored.Consensus != requested.Consensus ||
+		!params.PerformanceConfigsEqual(stored.Performance, requested.Performance) ||
 		(stored.GenesisHash != "" && requested.GenesisHash != "" && stored.GenesisHash != requested.GenesisHash) {
 		return fmt.Errorf(
 			"%w: datadir %q is bound to %s, requested %s",
