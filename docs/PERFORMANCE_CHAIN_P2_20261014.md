@@ -349,3 +349,31 @@ P14 rebuilds and compares the repaired ordinary-pool parallel path with the
 repaired sender queue using fresh roots and the same strict load/receipt gates.
 Evidence: `/data/blockchain/wr-analysis/performance-chain-p14-20261014`.
 The main release build is running; no P14 score is established.
+
+### P14 repair validated; listener-backed queue still stalls
+
+Release build completed in 5m57s at production source `6c1617382`. The additional
+real-queue regression in test-only commit `199259ff2` passed: late rejected nonces
+0–3 remain available when a subsequent build uses a different parent. This
+checks transaction preservation as well as the earlier notification-level test.
+
+Repaired ordinary-pool windows: 235,383 / 226,667 / 240,000 TPS, with 48 successful
+measured receipts and 235 common matching commit views; zero ImportOnce takeovers
+and own-block re-execution. The sender queue still regressed: 11,200 / 1,526 TPS
+in the first two windows, then an empty measured window. Thirty-two measured
+receipt samples passed before the empty-window gate stopped the round. Both
+fleets stopped and the hardware claim was released. Fixing late refusals does
+not fix the listener-backed queue's remaining nonce gaps.
+
+P15 tests the existing direct queue admission (`N42_TX_INGEST_DIRECT=1`) against
+P14 sender queue: transactions are cryptographically verified in strict `all`
+mode before entering the queue, avoiding the lossy pool-arrival notification
+feed. Frame blocks and gateway bypass remain off. All 65 transaction-ingest
+unit/coverage tests passed. The fresh-state comparison adds post-window RPC and
+binary-ingest bad-signature rejection checks alongside successful receipt checks.
+Evidence: `/data/blockchain/wr-analysis/performance-chain-p15-20261014`.
+
+The throughput harness now verifies bundle binary hashes and the prepared
+genesis hash before starting, and records actual binary source provenance in
+each result. P14 uses its recorded production commit, not the later test-only
+HEAD. P15 runtime results are pending.
