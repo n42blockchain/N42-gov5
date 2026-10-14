@@ -63,6 +63,19 @@ func TestValidateGenesisMatchesPresetRejectsCanonicalMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateGenesisMatchesPresetRejectsPerformanceOnEthereum(t *testing.T) {
+	cfg := &params.ChainConfig{
+		ChainID: big.NewInt(params.PerformanceChainID), Consensus: params.Faker,
+		Performance: &params.PerformanceChainConfig{},
+	}
+	err := validateGenesisMatchesPreset(cfg, params.NetworkPreset{
+		Chain: "private", Profile: mustResolveExecutionProfile(t, "eth"),
+	})
+	if err == nil {
+		t.Fatal("Ethereum init accepted explicit performance configuration")
+	}
+}
+
 func newInitTestContext(t *testing.T) *cli.Context {
 	t.Helper()
 

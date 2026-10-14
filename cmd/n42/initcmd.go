@@ -81,6 +81,9 @@ func initGenesis(cliCtx *cli.Context) error {
 	DefaultConfig.NodeCfg.JMTCommitment = preset.Commitment == params.StateCommitmentPresetJMT
 	params.ApplyStateCommitmentPreset(genesis.Config, preset.Commitment)
 	DefaultConfig.ChainCfg = genesis.Config
+	if err := node.ValidatePerformanceGenesis(&DefaultConfig, genesis); err != nil {
+		return err
+	}
 
 	if err := node.ValidateDataDirNetworkBinding(&DefaultConfig, genesis.Config, nil); err != nil {
 		utils.Fatalf("Failed to validate datadir network binding: %v", err)
@@ -164,6 +167,9 @@ func resolveInitNetworkPreset(cliCtx *cli.Context, chainCfg *params.ChainConfig)
 func validateGenesisMatchesPreset(chainCfg *params.ChainConfig, preset params.NetworkPreset) error {
 	if chainCfg == nil {
 		return errors.New("missing genesis chain config")
+	}
+	if err := chainCfg.ValidatePerformanceSelection(preset.Chain, preset.Profile); err != nil {
+		return err
 	}
 	if !preset.Profile.SupportsConsensus(chainCfg.Consensus) {
 		return fmt.Errorf("genesis consensus %q is incompatible with profile %q", chainCfg.Consensus, preset.Profile.String())

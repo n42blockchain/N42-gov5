@@ -81,6 +81,12 @@ def validate_profile(profile_path, isolated_root=ISOLATED_ROOT):
     genesis_bytes = genesis_path.read_bytes()
     g = json.loads(genesis_bytes)
     c = g.get("config", {})
+    if c.get("performance") != {
+        "version": 1, "mode": "independent", "role": "local",
+        "transactions": "ethereum-secp256k1",
+        "networkNamespace": "gov5-performance-5m-v1",
+    }:
+        raise ValueError("genesis requires explicit independent/local performance configuration")
     if (c.get("chainId") != CHAIN_ID or c.get("consensus") != "hotstuff"
             or c.get("stateScheme") != "qmdb"
             or g.get("timestamp") != GENESIS_TIMESTAMP

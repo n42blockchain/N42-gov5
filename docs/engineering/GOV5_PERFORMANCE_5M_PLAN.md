@@ -118,3 +118,38 @@ remain required before a subsequent Go-code PR. On initial inspection, another
 session was running cargo tests without a claim; no fleet or heavy build was
 started here. Hardware snapshots must be refreshed rather than treated as
 permanent permission.
+
+## Stage 1: explicit configuration and startup rejection
+
+`params.ChainConfig.Performance` is optional (nil in every existing preset).
+Version 1 permits only `independent` execution, `local` role and
+`ethereum-secp256k1` transactions on private+n42, chain ID 4205001, HotStuff,
+QMDB and the dedicated namespace. Shared execution, validator-only roles and
+Ed25519 remain rejected as unimplemented. This field does not modify signer
+selection, transaction decoding, consensus voting or the executor.
+
+The node flag `--performance.genesis /absolute/path/to/chain.json` selects the
+actual explicit genesis. Startup verifies the configuration, timestamp and
+extraData before opening the chain database; the performance flag cannot turn
+a nil-performance genesis into a performance chain. No ordinary devnet genesis
+is synthesized for this selection, and an empty database requires explicit
+`n42 init` rather than automatic initialization. Init validates the actual
+genesis before `OpenDatabase`, and P2P genesis overrides are forbidden.
+
+The existing `network.json` binding records the optional performance
+configuration and rejects changes or removal before startup opens chain MDBX.
+Stored chain configuration and genesis hash are checked again when read from
+the database. `CheckCompatible` rejects any addition/removal/change to
+performance configuration at every height, including genesis; rewinding does
+not make such a change valid. Existing manifests and serialized chain configs
+omit this field when nil. The template is still not launch ready because keys,
+validator identities, allocations, protocol isolation and resource acquisition
+are not provisioned by this slice.
+
+Validation for this slice: complete `params` and `conf` package tests; targeted
+node startup/profile/genesis/manifest tests including the default nil node
+lifecycle; targeted `cmd/n42` init tests; `go vet` for these four packages; the
+11 Python preflight tests; and the Make build target with `GOMAXPROCS=2`,
+`GOFLAGS=-p=1` and automatic version bump skipped. `make lint` was attempted
+and exited 2 because `golangci-lint` is not installed. No fleet, benchmark,
+full repository test/race campaign or new TPS measurement was run.

@@ -195,6 +195,10 @@ type ChainConfig struct {
 	ChainName string
 	ChainID   *big.Int `json:"chainId"` // chainId identifies the current chain and is used for replay protection
 
+	// Performance is opt-in and immutable from genesis. Nil preserves all
+	// existing native and Ethereum rules; it does not select a new signer.
+	Performance *PerformanceChainConfig `json:"performance,omitempty" yaml:"performance,omitempty"`
+
 	Consensus ConsensusType `json:"consensus,omitempty"` // aura, ethash or clique
 
 	// Block-based fork fields
@@ -858,6 +862,9 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 }
 
 func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigCompatError {
+	if !PerformanceConfigsEqual(c.Performance, newcfg.Performance) {
+		return newCompatError("immutable performance configuration (new genesis required)", big.NewInt(0), big.NewInt(0))
+	}
 	if isForkIncompatible(c.HomesteadBlock, newcfg.HomesteadBlock, head) {
 		return newCompatError("Homestead fork block", c.HomesteadBlock, newcfg.HomesteadBlock)
 	}

@@ -28,11 +28,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"math/big"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math/big"
 	"net"
 	"os"
 	"path"
@@ -580,6 +580,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validatePerformanceNetworkBinding(cfg, configuredGenesis); err != nil {
+		return nil, err
+	}
 
 	// Apply storage tier configuration before opening any databases.
 	if cfg.StorageTierCfg.Enabled {
@@ -625,6 +628,17 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if err != nil {
 			return err
 		}
+		if chainConfig != nil && (chainConfig.Performance != nil || configuredGenesis.chainConfig.Performance != nil) {
+			if err := chainConfig.ValidatePerformanceSelection(cfg.NodeCfg.Chain, profile); err != nil {
+				return err
+			}
+			if err := chainConfig.CheckCompatible(configuredGenesis.chainConfig, 0); err != nil {
+				return err
+			}
+			if configuredGenesis.genesisHash == nil || genesisHash != *configuredGenesis.genesisHash {
+				return errors.New("stored performance genesis does not match explicitly configured genesis")
+			}
+		}
 
 		if genesisBlock, err = rawdb.ReadBlockByHash(tx, genesisHash); genesisBlock == nil {
 			return fmt.Errorf("genesisBlock is missing err:%w", err)
@@ -658,6 +672,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			return nil, err
 		}
 		if configuredGenesis.requiresExplicitInit {
+			if configuredGenesis.chainConfig.Performance != nil {
+				return nil, performanceInitRequiredError(cfg)
+			}
 			return nil, explicitInitRequiredError(cfg.NodeCfg.Chain, cfg.NodeCfg.DataDir)
 		}
 
@@ -1562,6 +1579,15 @@ func (n *Node) Profile() params.ProfileDescriptor {
 
 func resolveConfiguredGenesis(cfg *conf.Config, profile params.ProfileDescriptor) (configuredGenesis, error) {
 	chainName := strings.TrimSpace(cfg.NodeCfg.Chain)
+	if err := cfg.ChainCfg.ValidatePerformanceSelection(chainName, profile); err != nil {
+		return configuredGenesis{}, err
+	}
+	if cfg.NodeCfg.PerformanceGenesis != "" {
+		return resolvePerformanceGenesis(cfg, profile)
+	}
+	if cfg.ChainCfg != nil && cfg.ChainCfg.Performance != nil {
+		return configuredGenesis{}, errors.New("performance configuration requires explicit --performance.genesis")
+	}
 	if !profile.SupportsConfiguredChain(chainName) {
 		return configuredGenesis{}, fmt.Errorf("execution profile %q does not support chain %q", profile.String(), chainName)
 	}

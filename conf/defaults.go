@@ -69,6 +69,12 @@ func NormalizeNetworkSelection(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	if err := cfg.ChainCfg.ValidatePerformanceSelection(preset.Chain, preset.Profile); err != nil {
+		return err
+	}
+	if cfg.NodeCfg.PerformanceGenesis != "" && (preset.Chain != "private" || !preset.Profile.IsN42()) {
+		return errors.New("performance genesis requires private chain and n42 profile")
+	}
 	cfg.NodeCfg.Chain = preset.Chain
 	cfg.NodeCfg.Profile = preset.Profile.String()
 	cfg.NodeCfg.JMTCommitment = preset.Commitment == params.StateCommitmentPresetJMT

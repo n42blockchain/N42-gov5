@@ -600,6 +600,12 @@ var (
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.Profile,
 	}
+	PerformanceGenesisFlag = &cli.StringFlag{
+		Name:        "performance.genesis",
+		Usage:       "Explicit isolated performance genesis (private+n42 only; independent local execution)",
+		Category:    "DEVELOPMENT",
+		Destination: &DefaultConfig.NodeCfg.PerformanceGenesis,
+	}
 )
 
 var (
@@ -704,6 +710,7 @@ var (
 		DataDirFlag,
 		ChainFlag,
 		ProfileFlag,
+		PerformanceGenesisFlag,
 		MinFreeDiskSpaceFlag,
 		CSWarmDirFlag,
 	}
