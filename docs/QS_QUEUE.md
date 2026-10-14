@@ -1,5 +1,12 @@
 # QS queue (commander's board, 2026-09-20)
 
+## 2026-10-14 performance-chain restart fix verified
+
+The known P1 V=7/E=1 depth-two restart failure is fixed on Rust branch `perf/deferred-frontier-recovery-20261013`, tested source `e3d4c984b`. Nine regression tests and a locked release build passed. Original data advanced from 258; a second normal restart after actual compaction advanced from 2616 to 2941 and retained all prior 96 receipts/canonical hashes. There were 96 fresh successful Ed25519 receipts across RPC and ordinary binary ingest; both transports rejected tampered signatures. Seven validator commit streams agree and ImportOnce counters show no repeated own execution.
+
+[Evidence and limits](PERFORMANCE_CHAIN_P1_20261013.md): power-loss/live persistence-failure and E4/E7 checks remain before controlled throughput work. No new TPS score. Fleet stopped, data/vote logs retained, hardware claim released at 00:32 EDT. Ethereum EL+CL and client modes remain the completed maintenance track; development focus remains the performance chain.
+
+
 ## 2026-10-13 performance-chain P1 handoff
 
 P1 V=7/E=1 strict Ed25519 admission and 32 successful transaction receipts passed. Seven-validator commit agreement and one-import-per-hash counters passed. Whole-fleet restart restored storage but failed to resume block production at height 258: depth-2 startup seeds only the head execution result, missing head-1. P1 remains incomplete; see [the evidence and repair entry points](PERFORMANCE_CHAIN_P1_20261013.md).
