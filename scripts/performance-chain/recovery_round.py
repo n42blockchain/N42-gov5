@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Run a retained-data SIGKILL recovery check on an isolated performance profile.
+
+No data reset, no host-wide process matching, and no secret-bearing command lines
+are collected. A failed phase stops the fleet and leaves all evidence in place.
+"""
+import argparse
+import base64
+import hashlib
+import hmac
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import time
+import urllib.request
+
+
+def run(args):
+    manifest = json.loads(args.profile.read_text())
+    env = os.environ.copy()
+    for key in ('N42_FRAME_GATEWAYS', 'N42_FRAME_ATTEST_MIN', 'N42_INGEST_SHARD',
+                'F7_FLOOD_REPLAY', 'F7_FLOOD_GATEWAY_KEY', 'F7_FLOOD_CLAIM',
+                'N42_VOTE_BEFORE_IMPORT', 'N42_TAKE_COMPACT', 'N42_COMPACT_BODY'):
+        env.pop(key, None)
+    env.update(manifest['environment'])
+    env.update(F7_BIN=str(args.bundle.resolve()), N42_RS_REPO=str(args.rs_repo.resolve()),
+               RAYON_NUM_THREADS='8')
+    root = pathlib.Path(env['F7_ROOT'])
+    args.output.mkdir(parents=True, exist_ok=False)
+    rpc_url = f"http://127.0.0.1:{env['F7_HTTP_BASE']}"
+    auth_url = f"http://127.0.0.1:{env['F7_AUTH_BASE']}"
+    fleet = args.rs_repo / 'scripts/fleet7.sh'
+    scripts = pathlib.Path(__file__).resolve().parent
+
+    def write(name, result):
+        (args.output / name).write_text(json.dumps(result, indent=2) + '\n')
+
+    def rpc(method, params=(), authenticated=False):
+        headers = {'Content-Type': 'application/json'}
+        if authenticated:
+            def b64(value):
+                return base64.urlsafe_b64encode(value).rstrip(b'=')
+            message = b64(b'{"alg":"HS256","typ":"JWT"}') + b'.' + b64(
+                json.dumps({'iat': int(time.time())}).encode())
+            secret = bytes.fromhex((root / 'jwt.hex').read_text().strip().removeprefix('0x'))
+            token = message + b'.' + b64(hmac.new(secret, message, hashlib.sha256).digest())
+            headers['Authorization'] = 'Bearer ' + token.decode()
+        request = urllib.request.Request(auth_url if authenticated else rpc_url,
+            json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': list(params)}).encode(), headers)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            answer = json.load(response)
+        if 'error' in answer:
+            raise RuntimeError(answer['error'])
+        return answer['result']
+
+    def head():
+        return int(rpc('eth_blockNumber'), 16)
+
+    def wait_above(height, seconds=150):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                value = head()
+                if value > height:
+                    return value
+            except (OSError, RuntimeError):
+                pass
+            time.sleep(0.5)
+        raise RuntimeError(f'head did not advance beyond {height}')
+
+    def command(command, name, timeout=240):
+        with (args.output / name).open('w') as output:
+            subprocess.run(command, env=env, stdout=output, stderr=subprocess.STDOUT,
+                           timeout=timeout, check=True)
+
+    def check_other_claims():
+        other = [p for folder in ('/data/blockchain', '/data/blockchain/wr-logs')
+                 for p in pathlib.Path(folder).glob('.box-claim*')
+                 if p.name != '.box-claim-gov5']
+        if other:
+            raise RuntimeError('another hardware claim is present')
+        if not pathlib.Path('/data/blockchain/.box-claim-gov5').exists():
+            raise RuntimeError('performance session hardware claim is absent')
+
+    def stop_owned_processes():
+        files = [root / f'node{i}/el.pid' for i in range(manifest['execution_layers'])]
+        files += [root / f'node{i}/v.pid' for i in range(7)]
+        processes = []
+        for path in files:
+            pid = int(path.read_text())
+            executable = pathlib.Path(f'/proc/{pid}/exe').resolve(strict=True)
+            if not executable.is_relative_to(args.bundle.resolve()):
+                raise RuntimeError('owned fleet PID points at an unexpected executable')
+            processes.append(pid)
+        for pid in processes:
+            os.kill(pid, signal.SIGKILL)
+
+    summary = {'topology': manifest['topology'], 'validators': 7,
+               'execution_layers': manifest['execution_layers'], 'test': 'whole-fleet SIGKILL; retained data',
+               'power_cut_test': False, 'strict_ed25519': True, 'status': 'running'}
+    write('result.json', summary)
+    started = False
+    try:
+        check_other_claims()
+        # Refuse to take over a live profile belonging to another launcher.
+        for path in root.glob('node*/*.pid'):
+            try:
+                os.kill(int(path.read_text()), 0)
+            except ProcessLookupError:
+                continue
+            raise RuntimeError('profile already has a live process')
+        started = True
+        command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'first-up.log')
+        wait_above(120)
+        if int(rpc('eth_chainId'), 16) != manifest['chain_id']:
+            raise RuntimeError('wrong chain ID')
+        common = ['--rpc', rpc_url, '--flood', str(args.bundle / 'examples/tx_flood'),
+                  '--chain-id', str(manifest['chain_id'])]
+        command(['python3', str(scripts / 'transaction_smoke.py'), *common,
+                 '--ingest', f"127.0.0.1:{env['F7_INGEST_BASE']}", '--offset', str(args.offset),
+                 '--output', str(args.output / 'before-rpc')], 'before-rpc.log')
+        command(['python3', str(scripts / 'ingest_smoke.py'), *common,
+                 '--ingest', f"127.0.0.1:{env['F7_INGEST_BASE']}", '--offset', str(args.offset + 100),
+                 '--output', str(args.output / 'before-ingest')], 'before-ingest.log')
+        hashes = []
+        for phase, file in (('before-rpc', 'transaction-smoke.json'), ('before-ingest', 'ingest-smoke.json')):
+            hashes.extend(json.loads((args.output / phase / file).read_text())['transaction_hashes'])
+        receipts = {h: rpc('eth_getTransactionReceipt', [h]) for h in hashes}
+        baseline = rpc('eth_getBlockByNumber', ['latest', False])
+        before = int(baseline['number'], 16)
+        persisted = rpc('n42Engine_persistedBlock', authenticated=True)
+        if not isinstance(persisted, int) or persisted >= before:
+            raise RuntimeError('test did not capture an unpersisted execution tail')
+        write('before-forced-stop.json', {'block': baseline, 'persisted': persisted, 'receipts': receipts})
+        check_other_claims()
+        stop_owned_processes()
+        command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'second-up.log')
+        after = wait_above(before)
+        for tx_hash, receipt in receipts.items():
+            now = rpc('eth_getTransactionReceipt', [tx_hash])
+            if not now or now['blockHash'] != receipt['blockHash'] or int(now['status'], 16) != 1:
+                raise RuntimeError('previous successful receipt changed after recovery')
+        block = rpc('eth_getBlockByNumber', [hex(before), False])
+        if block['hash'] != baseline['hash']:
+            raise RuntimeError('canonical head before crash was not retained')
+        command(['python3', str(scripts / 'transaction_smoke.py'), *common,
+                 '--ingest', f"127.0.0.1:{env['F7_INGEST_BASE']}", '--offset', str(args.offset + 200),
+                 '--output', str(args.output / 'after-rpc')], 'after-rpc.log')
+        wait_above(after + 20)
+        if manifest['execution_layers'] == 1:
+            command(['python3', str(scripts / 'check_shared_execution.py'), '--root', str(root),
+                     '--output', str(args.output / 'shared-execution.json')], 'shared-execution.log')
+        summary.update(status='passed', head_before=before, persisted_before=persisted,
+                       head_after=after, preserved_successful_receipts=len(receipts),
+                       new_successful_receipts=96, canonical_hash_preserved=True)
+    except BaseException as error:
+        summary.update(status='failed', error=str(error))
+        raise
+    finally:
+        if started:
+            try:
+                command(['bash', str(fleet), 'down'], 'final-down.log')
+            except Exception as error:
+                summary.update(cleanup_error=str(error), status='failed')
+            for node in root.glob('node*'):
+                target = args.output / node.name
+                target.mkdir(exist_ok=True)
+                for log in node.glob('*.log*'):
+                    import shutil
+                    shutil.copyfile(log, target / log.name)
+        write('result.json', summary)
+        print(json.dumps(summary))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--profile', type=pathlib.Path, required=True, help='generated manifest.json')
+    parser.add_argument('--bundle', type=pathlib.Path, required=True)
+    parser.add_argument('--rs-repo', type=pathlib.Path, required=True)
+    parser.add_argument('--output', type=pathlib.Path, required=True)
+    parser.add_argument('--offset', type=int, required=True)
+    run(parser.parse_args())
