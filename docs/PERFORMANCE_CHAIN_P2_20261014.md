@@ -713,3 +713,29 @@ This reinforces keeping transaction-root worker isolation opt-in: this pair
 shows no median build improvement. After the retained recovery gate passes,
 investigate state graft/fold and finish costs before expanding root-pool tuning.
 No code or runtime configuration was changed by this analysis.
+
+### P26 reconstructed large-state cold/crash recovery passed
+
+Joint source `961fb0f1f` built in 4m47s. The retained P24 reconstruction passed
+initial cold startup and whole-fleet SIGKILL recovery: head 353, durable height
+293, restarted head 357. All 48 original P20 measured receipt samples retained
+their successful status and block hashes before and after the kill (96 checks).
+The crash-head canonical hash, 64 additional earlier receipts, and subsequent
+96 smoke transactions also passed. Both startups recorded QMDB-ready at line
+44 before Engine-auth-open at line 52. The fleet stopped and released hardware.
+Evidence: P26 `recovery/result.json`, both startup-order JSON files, logs,
+profiles, and joint binary SHA256 manifest.
+
+This validates a large-state reconstructed copy of P20; the original stranded
+datadir remains retained for forensics. The kill followed small smoke traffic,
+not an actively running 200k-transaction flood. A fresh full-workload benchmark
+and retained-data cold/crash checks with the repaired release remain necessary
+to establish its throughput/durability baseline.
+
+The next throughput comparison adds only `N42_GRAFT_PREFAULT=1` to direct-raw.
+Harness `7d9c2486` clears prefault/index/range flags in controls and preserves
+strict verification, bad-signature smoke, measured receipt checks, and consensus
+agreement checks. Existing graft fixture tests compare final account values,
+reverts and beneficiary credits with prefault both off/on, including growth of
+an undersized prepared map. Latest-release E4/E7 startup recovery checks precede
+fresh throughput expansion; no prefault performance gain is claimed yet.
