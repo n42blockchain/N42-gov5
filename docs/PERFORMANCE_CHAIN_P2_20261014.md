@@ -775,3 +775,27 @@ P28 throughput legs were not launched; no legacy-body deduplication ran.
 Original and test datadirs remain retained. Priority returns to the missing
 ancestor/range-pull path on the lagging layer; the E1 P26 pass and eight correct
 startup-order checks do not prove E4 liveness after recovery.
+
+### Missing-parent fallback implemented; P29 retry scheduled
+
+A read-only canonical header query on the stopped healthy E4 layer identifies
+height 516 as `0x7a4dab2bef006f2185abda41fc4b3c76b9ad4474e42f9ecff5d5c575121f4c99`.
+Node6's log contains its Decide but no corresponding body receipt or import;
+its EL log contains no payload submission for that hash. No range-catchup
+message appears in node6's startup log. Evidence: P27
+`header-516-readonly.log` and the retained node6 logs. The missing-body gap is
+confirmed; absence of a usable peer-height hint is an inference from the
+range scheduler and logs, not a captured transport trace.
+
+Rust `ca08d27eb` requests the earliest held child's absent parent by exact hash
+from connected peers even when peer-height status does not start a range pull.
+Existing bounded request timers throttle retries; known, cached, and importing
+parents are skipped. Fetched bodies retain hash checks and normal execution
+validation. A real two-node transport regression sends an unnamed child with
+no peer-height hint and verifies fetching its parent and importing the child.
+All 153 h2-node library tests passed (1.66 seconds). Source is committed/pushed.
+
+P29's joint release build and waiting runner are active. It will retry retained
+E4 then E7 with this fix; only successful startup, canonical, and all-EL receipt
+checks allow P28's previously unlaunched throughput comparisons to proceed.
+No E4 repair success is claimed before the runtime retry passes.
