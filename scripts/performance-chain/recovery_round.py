@@ -96,6 +96,20 @@ def run(args):
         if not pathlib.Path('/data/blockchain/.box-claim-gov5').exists():
             raise RuntimeError('performance session hardware claim is absent')
 
+    def check_startup_order(name):
+        checks = []
+        for layer in range(manifest['execution_layers']):
+            validator = manifest['validator_to_execution_layer'].index(layer)
+            lines = (root / f'node{validator}' / 'el.log').read_text().splitlines()
+            ready = next((i for i, line in enumerate(lines) if 'QMDB state ready' in line), None)
+            rpc_open = next((i for i, line in enumerate(lines) if 'RPC auth server started' in line), None)
+            if ready is None or rpc_open is None or ready >= rpc_open:
+                raise RuntimeError(f'EL{layer} exposed Engine RPC before QMDB recovery was ready')
+            checks.append({'execution_layer': layer, 'state_ready_line': ready + 1,
+                           'auth_rpc_line': rpc_open + 1})
+        write(name, checks)
+        summary['startup_order_checks'] = summary.get('startup_order_checks', 0) + len(checks)
+
     def stop_owned_processes():
         mapping = manifest['validator_to_execution_layer']
         files = [root / f'node{mapping.index(i)}/el.pid' for i in range(manifest['execution_layers'])]
@@ -126,6 +140,7 @@ def run(args):
             raise RuntimeError('profile already has a live process')
         started = True
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'first-up.log')
+        check_startup_order('first-startup-order.json')
         required_height = max([120, args.minimum_start_height] +
                               [sample['block_number'] for sample in expected_samples])
         wait_above(required_height, args.startup_timeout)
@@ -164,6 +179,7 @@ def run(args):
         check_other_claims()
         stop_owned_processes()
         command(['taskset', '-c', '0-15', 'bash', str(fleet), 'up'], 'second-up.log')
+        check_startup_order('second-startup-order.json')
         after = wait_above(before)
         check_expected_receipts()
         for tx_hash, receipt in receipts.items():
