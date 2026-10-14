@@ -799,3 +799,15 @@ P29's joint release build and waiting runner are active. It will retry retained
 E4 then E7 with this fix; only successful startup, canonical, and all-EL receipt
 checks allow P28's previously unlaunched throughput comparisons to proceed.
 No E4 repair success is claimed before the runtime retry passes.
+
+### P29 E4 retained-data retry passed
+
+Joint source `ca08d27eb` built in 53.87 seconds. The previously lagging retained
+E4 case passed: crash head 644, durable 619, restarted head 648; eight startup
+order checks, 256 old and 128 new receipt checks across four ELs, and preserved
+canonical crash hash. Runtime node6 logs show the new parent-by-hash fallback
+at tip 515, followed by a range pull from 515 to 619. Evidence: P29
+`e4/result.json` and its startup logs (current run timestamp 12:23 UTC).
+
+This is one successful retry of the retained failing case, not proof against
+all future network gaps. P29 continues to E7; P28 remains gated on that result.
