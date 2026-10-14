@@ -454,3 +454,29 @@ smoke. P14 binaries are verified against their recorded hashes before each leg.
 Evidence: `/data/blockchain/wr-analysis/performance-chain-p19-20261014`.
 Both P19 results are pending. Data from previous rounds remains retained;
 approximately 147 GiB filesystem space was free before these two new legs.
+
+### P19 control reproduced; raw body handoff reached 333k
+
+Repeated run-64 control: 320,000 / 306,667 / 306,667 TPS. Raw-body handoff:
+**333,333 / 320,000 / 333,333 TPS**, full blocks in the late windows and
+0.600 / 0.625 s cycles. Each leg verified 48 measured receipt samples plus
+post-window signature rejection/new execution smoke. Matching common validator
+views: 292 control, 286 raw; zero ImportOnce takeovers or own-block re-execution.
+Both fleets stopped and released hardware. This supports a modest handoff gain;
+it remains below S103 and has not demonstrated strict-signature 4M throughput.
+
+P20 Rust `a4b8dfab4` adds opt-in transaction-root worker isolation through
+`N42_TX_ROOT_THREADS=<1..128>`. Absent/invalid values retain the global Rayon
+pool. The same encoding and ordered-MPT implementation runs inside the optional
+pool; consensus roots and header rules are unchanged. Worker tasks share the
+EL CPU affinity with other work, but have a separate task queue from signature
+verification. Four existing root/encoding equality tests passed with 16 workers,
+including every key-shape boundary and residue sweeps (one exhaustive test
+ignored in that first run).
+
+After the main release build, the P20 runner executes the exhaustive four-byte
+key sweep in release mode, then compares raw-body control against the same
+binary with 16 dedicated root workers. The harness requires the worker-pool
+activation log before accepting the result. Evidence:
+`/data/blockchain/wr-analysis/performance-chain-p20-20261014`.
+The build is live; exhaustive test and performance results remain pending.
