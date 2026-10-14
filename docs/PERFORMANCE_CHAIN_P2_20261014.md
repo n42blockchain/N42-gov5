@@ -377,3 +377,28 @@ The throughput harness now verifies bundle binary hashes and the prepared
 genesis hash before starting, and records actual binary source provenance in
 each result. P14 uses its recorded production commit, not the later test-only
 HEAD. P15 runtime results are pending.
+
+### P15 strict direct queue verified: 267–293k late windows
+
+Direct admission passed: **280,000 / 266,667 / 293,333 TPS**, full blocks in
+windows 2–3 (0.750 / 0.682 s cycles). All 48 sampled measured receipts succeeded;
+post-window signature smoke verified bad-signature rejection at RPC and binary
+ingest and new successful execution. Seven validators agree across 276 common
+commit views; 277 imports / 277 blocks, 1,651 served requests, zero takeovers or
+own-block re-execution. Source is the recorded P14 production bundle. The fleet
+stopped and released hardware. This is a single verified V7/E1 leg, not a
+seven-execution-domain score or proof of exceeding S103's 776,967 TPS.
+
+Direct admission bypasses normal pool admission/storage, not individual
+cryptographic signature verification or block execution validation. The result
+supports the pool-arrival feed as a remaining queue problem; it does not make
+the failing listener-backed mode safe to select as a default.
+
+Full-block medians (68 builds across the leg): pull 100 ms, execution 25 ms,
+graft 73 ms, fold 143 ms, overall build 390.5 ms. P16 changes only the sender
+rotation run from 1 to 64 (`N42_TX_QUEUE_RUN=64`) on top of P15 direct admission.
+The prior 88 queue tests cover multiple run lengths, and the repaired real-queue
+late-refusal regression checks cross-parent nonce preservation. P16 retains
+strict signature smoke, measured receipt samples and matching commit checks.
+Evidence: `/data/blockchain/wr-analysis/performance-chain-p16-20261014`.
+Optimized-mode restart and E4/E7 validation remain to be repeated before adoption.
