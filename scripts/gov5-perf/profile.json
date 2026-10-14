@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "gov5-performance-5m",
+  "status": "planned-not-runnable",
+  "runtime_root": "/data/blockchain/gov5-performance-5m/runtime",
+  "node_count": 7,
+  "node_profile": "n42",
+  "chain": "private",
+  "chain_id": 4205001,
+  "genesis": "isolated-chain.json",
+  "listen_address": "127.0.0.1",
+  "network_namespace": "gov5-performance-5m-v1",
+  "p2p": {
+    "discovery": false,
+    "bootnodes": [],
+    "public_peers": false,
+    "genesis_override": false
+  },
+  "execution": {
+    "baseline": "independent",
+    "candidate": "shared-go-E1",
+    "candidate_status": "planned-not-implemented"
+  },
+  "transactions": {
+    "baseline": "ethereum-secp256k1",
+    "candidate": "performance-ed25519",
+    "candidate_status": "planned-not-implemented"
+  },
+  "ports": {
+    "p2p_tcp": 25000,
+    "p2p_udp": 25100,
+    "http": 25200,
+    "mobileverify": 25300,
+    "pprof": 25400,
+    "ingest": 25500,
+    "attestation": 25600,
+    "shared_execution": 25700
+  },
+  "resources": {
+    "min_available_gib": 90,
+    "max_load1": 8,
+    "claim_roots": ["/data/blockchain", "/data/blockchain/wr-logs"]
+  }
+}
