@@ -141,9 +141,10 @@ func (s *Server) Commit(ctx context.Context, request CommitRequest, owner [32]by
 	}
 	if !duplicate {
 		// Do not use CommitToCanonicalWith's bookkeeping hook for authorization:
-		// hook errors are swallowed. Exclusive ownership and execute serialize
-		// the checks above with every importer and committer in this service.
-		if err := s.chain.CommitToCanonical(request.BlockHash); err != nil {
+		// hook errors are swallowed. The service owns canonical decisions;
+		// CommitExecutedExtension also rechecks applied state under bc.lock,
+		// covering the chain's background future-block importer.
+		if err := s.chain.CommitExecutedExtension(request.BlockHash); err != nil {
 			return CommitResult{}, err
 		}
 	}
