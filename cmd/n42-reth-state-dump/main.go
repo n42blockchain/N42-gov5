@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
@@ -123,6 +125,20 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	if got := header.Hash(); got != types.Hash(appliedHash) {
 		return fmt.Errorf("applied header hash mismatch: marker=%x header=%x", appliedHash, got)
 	}
+	if header.Number == nil || !header.Number.IsUint64() || header.Number.Uint64() != blockNumber {
+		return fmt.Errorf("applied header number does not match export height %d", blockNumber)
+	}
+	genesis, err := rawdb.ReadCanonicalHash(tx, 0)
+	if err != nil {
+		return err
+	}
+	cfg, err := rawdb.ReadChainConfig(tx, genesis)
+	if err != nil {
+		return err
+	}
+	if cfg == nil || cfg.ChainID == nil || !cfg.ChainID.IsUint64() || cfg.ChainID.Uint64() != chainID {
+		return fmt.Errorf("manifest chain ID %d does not match source chain config", chainID)
+	}
 	// Replay v2 generations may predate QMDBApplied. Authenticate the fallback
 	// against the actual forest in the same read transaction before publishing files.
 	computer := commitment.NewQMDBRootComputer()
@@ -132,6 +148,9 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	if err := verifyExportRoot(computer.Tree().Root(), header.Root); err != nil {
 		return err
 	}
+	if err := computer.Tree().VerifyPersistedValues(tx); err != nil {
+		return fmt.Errorf("authenticate QMDB live entries: %w", err)
+	}
 	headerRLP, err := rlp.EncodeToBytes(header)
 	if err != nil {
 		return fmt.Errorf("encode anchor header RLP: %w", err)
@@ -139,9 +158,6 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 
 	if err := mkdirParents(outPath, headerPath, manifestPath); err != nil {
 		return err
-	}
-	if err := writeAtomic(headerPath, headerRLP, 0o644); err != nil {
-		return fmt.Errorf("write anchor header: %w", err)
 	}
 
 	started := time.Now()
@@ -168,7 +184,7 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 		return err
 	}
 
-	accounts, slots, err := exportAccounts(tx, encoder, limit, logger, started)
+	accounts, slots, err := exportAccounts(tx, computer.Tree(), encoder, limit, logger, started)
 	if err != nil {
 		return err
 	}
@@ -180,6 +196,9 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	}
 	if err := out.Close(); err != nil {
 		return err
+	}
+	if err := writeAtomic(headerPath, headerRLP, 0o644); err != nil {
+		return fmt.Errorf("write anchor header: %w", err)
 	}
 	if err := os.Rename(partial, outPath); err != nil {
 		return err
@@ -219,7 +238,7 @@ func run(dbPath, outPath, headerPath, manifestPath string, chainID, limit uint64
 	return nil
 }
 
-func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Logger, started time.Time) (uint64, uint64, error) {
+func exportAccounts(tx kv.Tx, tree *qmdb.Tree, encoder *json.Encoder, limit uint64, logger log.Logger, started time.Time) (uint64, uint64, error) {
 	accountCursor, err := tx.Cursor(modules.Account)
 	if err != nil {
 		return 0, 0, fmt.Errorf("open Account cursor: %w", err)
@@ -233,6 +252,7 @@ func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Lo
 
 	storageKey, storageValue, storageErr := storageCursor.First()
 	var accounts, slots uint64
+	var exportedEmptyAccounts uint64
 	for address, encoded, err := accountCursor.First(); ; address, encoded, err = accountCursor.Next() {
 		if err != nil {
 			return accounts, slots, fmt.Errorf("iterate Account: %w", err)
@@ -249,6 +269,14 @@ func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Lo
 		var stateAccount account.StateAccount
 		if err := stateAccount.DecodeForStorage(encoded); err != nil {
 			return accounts, slots, fmt.Errorf("decode account %x: %w", address, err)
+		}
+		addr := types.BytesToAddress(address)
+		accountValue := commitment.EncodeAccountValue(&stateAccount)
+		if err := verifyExportValue(tree, qmdb.Hash(commitment.AccountKeyHash(addr)), accountValue); err != nil {
+			return accounts, slots, fmt.Errorf("authenticate account %x: %w", address, err)
+		}
+		if bytes.Equal(accountValue, []byte{0}) {
+			exportedEmptyAccounts++
 		}
 
 		if storageErr != nil {
@@ -267,6 +295,10 @@ func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Lo
 			}
 			var value [types.HashLength]byte
 			copy(value[len(value)-len(storageValue):], storageValue)
+			key := types.BytesToHash(storageKey[types.AddressLength:])
+			if err := verifyExportValue(tree, qmdb.Hash(commitment.StorageKeyHash(addr, key)), value[:]); err != nil {
+				return accounts, slots, fmt.Errorf("authenticate storage %x: %w", storageKey, err)
+			}
 			storage["0x"+hex.EncodeToString(storageKey[types.AddressLength:])] = "0x" + hex.EncodeToString(value[:])
 			slots++
 			storageKey, storageValue, storageErr = storageCursor.Next()
@@ -294,6 +326,9 @@ func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Lo
 			if len(code) == 0 {
 				return accounts, slots, fmt.Errorf("missing bytecode %x for account %x", stateAccount.CodeHash, address)
 			}
+			if crypto.Keccak256Hash(code) != stateAccount.CodeHash {
+				return accounts, slots, fmt.Errorf("bytecode hash mismatch for account %x", address)
+			}
 			item.Code = "0x" + hex.EncodeToString(code)
 		}
 		if err := encoder.Encode(&item); err != nil {
@@ -310,7 +345,50 @@ func exportAccounts(tx kv.Tx, encoder *json.Encoder, limit uint64, logger log.Lo
 	if storageErr != nil {
 		return accounts, slots, fmt.Errorf("iterate Storage: %w", storageErr)
 	}
+	if limit == 0 {
+		if err := verifyExportCoverage(tx, tree, accounts+slots, exportedEmptyAccounts); err != nil {
+			return accounts, slots, err
+		}
+	}
 	return accounts, slots, nil
+}
+
+func verifyExportCoverage(tx kv.Tx, tree *qmdb.Tree, exported, exportedEmpty uint64) error {
+	// QMDB retains EIP-161 empty accounts that the plain table removes. Their
+	// canonical account value is one zero byte; storage values are 32 bytes.
+	// All other live keys must appear exactly once among the authenticated rows.
+	var retainedEmpty uint64
+	err := tx.ForEach(qmdb.EntryTable, nil, func(k, v []byte) error {
+		if len(k) != 8 {
+			return fmt.Errorf("malformed QMDB entry key length %d", len(k))
+		}
+		active, ok := tree.SlotActive(binary.BigEndian.Uint64(k))
+		if ok && active && len(v) == 33 && v[32] == 0 {
+			retainedEmpty++
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("check export coverage: %w", err)
+	}
+	live := uint64(tree.LiveCount())
+	if retainedEmpty < exportedEmpty || retainedEmpty > live || exported != live-retainedEmpty+exportedEmpty {
+		return fmt.Errorf("plain state is incomplete: exported %d rows for %d QMDB live keys (%d retained empty accounts)", exported, live, retainedEmpty)
+	}
+	return nil
+}
+
+// A matching forest root alone does not authenticate plain-table data. Bind
+// every exported value to a live leaf, including its persisted entry bytes.
+func verifyExportValue(tree *qmdb.Tree, key qmdb.Hash, value []byte) error {
+	committed, ok, err := tree.GetChecked(key)
+	if err != nil {
+		return err
+	}
+	if !ok || !bytes.Equal(committed, value) {
+		return fmt.Errorf("value is not authenticated by the QMDB root")
+	}
+	return nil
 }
 
 func quantity(value []byte) string {
