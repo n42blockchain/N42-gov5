@@ -1,0 +1,31 @@
+{
+  "config": {
+    "chainId": 4205001,
+    "homesteadBlock": 0,
+    "eip150Block": 0,
+    "eip155Block": 0,
+    "eip158Block": 0,
+    "byzantiumBlock": 0,
+    "constantinopleBlock": 0,
+    "petersburgBlock": 0,
+    "istanbulBlock": 0,
+    "berlinBlock": 0,
+    "londonBlock": 0,
+    "stateScheme": "qmdb",
+    "consensus": "hotstuff",
+    "hotstuff": {
+      "period": 3,
+      "baseTimeout": 6000,
+      "maxTimeout": 30000,
+      "epochLength": 1000000,
+      "validators": []
+    }
+  },
+  "nonce": 0,
+  "timestamp": 1791936001,
+  "extraData": "0x676f76352d706572666f726d616e63652d356d2d7631",
+  "gasLimit": 6846000000,
+  "difficulty": "0x0",
+  "number": 0,
+  "alloc": {}
+}
