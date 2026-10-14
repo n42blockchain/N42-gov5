@@ -234,6 +234,58 @@ remain rejected by ChainConfig. Next: wire availability/import gates and result
 delivery into validator-only runtime, preserve each validator's BLS/WAL/locks,
 and add owner-side unsigned candidate building for a leader to sign/propose.
 The executor must never acquire the seven consensus signing keys. Deferred
-results, canonical commit/reorg handling, single-copy payload delivery and E7
+results, authorized reorg handling, single-copy payload delivery and E7
 comparison must be implemented and tested before claiming a complete E1 fleet
 or a throughput improvement. Ed25519 remains a later explicit protocol slice.
+
+## Stage 4: trusted-owner canonical commit RPC
+
+`POST /v1/commit` and the Unix client's `Commit` method now bind full chain
+identity, block hash, height and parent. Commit is disabled by default. The
+standalone service can explicitly opt in using `--commit-owner-file`, an existing
+absolute nonsymlink regular file owned by the current user, mode 0600, containing
+exactly 32 nonzero random bytes. Provision this capability outside the repository
+and give it only to the trusted finality owner, never to ordinary import clients.
+No validator BLS/private keys enter this process. Local users with access to the
+service account are within this trust boundary; a capability does not sandbox
+malicious processes running as that same user.
+
+This slice accepts a **trusted single owner deciding finality**, not a client QC
+proof. The owner must decide finality before invoking the RPC. It is not wired to
+seven independent validators yet. `HotStuffCommittedHead`, written by the reused
+canonicalization path, records this trusted-owner decision in this service; its
+presence here must not be represented as independent verification of a commit QC.
+A later validator integration must restrict owner calls to authenticated consensus
+commit events or replace this capability boundary with actual public QC validation.
+
+The standalone service exclusively owns the database through the existing datadir
+LOCK and serializes import and commit. It reads the stored block, checks request
+identity and current canonical prefix, and rechecks actual applied lineage,
+persisted execution result commitments and receipts before calling the real
+`BlockChain.CommitToCanonical`. Only a direct child of the current canonical head
+can advance it; an already canonical block is idempotent without rolling the head
+back. Missing blocks, missing parent commits, wrong heights/parents, stored-only
+blocks and conflicting forks below the canonical head are rejected. Arbitrary
+reorgs are deliberately unavailable in this slice. After the transaction returns,
+the RPC independently reads canonical/head/finality rows before reporting committed.
+A canceled/lost reply can be retried idempotently. The existing transaction hook
+cannot enforce authorization because its errors are swallowed, so this service
+does not use it as an authorization gate.
+
+The real BC/StateProcessor/EVM/QMDB fixture now computes and checks state roots
+in its test header engine and matches the importer's detached credit setting.
+The Unix test imports two real blocks without advancing canonical, rejects
+unauthorized/wrong-chain/height/parent and skipped-parent commits, commits both
+sequentially, repeats older and current commits, and rejects a stored-only child
+and a conflicting finalized fork while checking durable finality rows. This is
+still a test header engine, not a seven-validator QC proof. Capability file tests
+reject public permissions, symlinks, empty/zero/oversized values. Validation:
+`GOMAXPROCS=2 go test -p 1 ./internal/sharedexec ./cmd/n42-execution-service -count=1`
+and restricted vet for these packages. Rust ownership still prohibits a fleet,
+heavy build or throughput run. No new TPS is claimed.
+
+Next independent slice: unsigned owner-side candidate building, followed by a
+separate validator runtime integration. Shared roles remain fail-closed until
+that runtime is wired; current capability authority is not automatically given
+to seven import clients. Deferred results, authorized branch switching, payload
+copy reduction and E7 comparison remain outstanding.
