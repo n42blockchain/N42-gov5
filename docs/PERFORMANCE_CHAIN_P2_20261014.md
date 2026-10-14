@@ -519,3 +519,29 @@ P20 case through validated history without inventing roots or resetting data.
 Do not expand fresh throughput legs or adopt the optimized profile as complete
 until this failure is repaired and the 48 earlier measured receipts survive
 cold start and process-kill recovery.
+
+### Heap rollback-history preservation implemented
+
+Rust `f18b4c60a` preserves the overwritten heap checkpoint and sealed delta log
+as an immutable, durably published pair before compaction removes the originals.
+Historical-root reads can replay these pairs to an exact requested number/hash.
+Startup with a newer heap checkpoint can reconstruct the database's older head,
+archive the displaced checkpoint/current/sealed logs, and atomically normalize
+the active checkpoint before validated body replay resumes. No root is guessed
+and consensus vote/lock watermarks are unchanged.
+
+Archive retirement reads the actual MDBX `Finish` stage through a registered
+read-only callback. Unknown durability retains history. Folded archives remain
+until the durable boundary covers their parent frontier; rollback forensic
+archives are retained. The regression uses different account nonces/balances:
+checkpoint 4, database rollback to 2, historical parent root 1, then a second
+restart at 2, plus archive-retirement boundary checks. All 22 node-state tests
+passed; the main binary passed cargo check.
+
+This first repair covers heap checkpoints used by the performance profiles.
+Entry-file rollback archiving is not implemented by this patch. The already
+stranded P20 case predates these archives, so this code cannot recreate its
+missing checkpoint/log history retroactively. Its canonical prefix and durable
+proposal-body coverage still need inspection and a validated replay repair.
+No high-load recovery success is claimed; release/runtime validation and the
+retained P20 repair remain required work. Keep throughput expansion deferred.
