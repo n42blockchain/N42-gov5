@@ -22,6 +22,11 @@ def prepare(args):
     repo = args.rs_repo.resolve()
     template = repo / 'crates/chainspec/res/genesis/n42_fleet7_bench_d2.json'
     genesis = json.loads(template.read_text())
+    if args.gas_ceiling <= 0:
+        raise ValueError('gas ceiling must be positive')
+    # A builder ceiling cannot lift the genesis limit instantly: headers change
+    # their parent's limit by at most 1/1024 per block. Match both for measurement.
+    genesis['gasLimit'] = hex(args.gas_ceiling)
     config = genesis['config']
     if len(config['hotstuff']['validators']) != 7:
         raise ValueError('expected the seven-validator template')
@@ -53,7 +58,8 @@ def prepare(args):
         'N42_INGEST_VERIFY': 'all', 'N42_FRAME_BLOCKS': '0',
         'N42_IMPORT_ONCE': '1', 'N42_BUILD_ON_SEAL': '1',
         'N42_BUILD_CHAIN': '1', 'N42_FOLLOWER_PARALLEL': '1',
-        'F7_BLOCK_INTERVAL_MS': '125', 'F7_BENCH_GASCEIL': '4200000000',
+        'F7_BLOCK_INTERVAL_MS': '125', 'F7_BENCH_GASCEIL': str(args.gas_ceiling),
+        'N42_MAX_GOSSIP_MB': str(max(8, (args.gas_ceiling + 59999999) // 60000000)),
         'F7_BENCH_POOL_SLOTS': '600000',
         # Current Engine defaults: masking 30 + memory buffer 6 < threshold.
         # fleet7's historical bench default of 8 fails startup validation.
@@ -70,6 +76,7 @@ def prepare(args):
         'transaction_signature': 'Ed25519 / 0x50 / strict batch verification',
         'consensus_signature': 'existing HotStuff BLS',
         'gateway_signature_bypass': False, 'frame_blocks': False,
+        'genesis_gas_limit': args.gas_ceiling,
         'shared_execution_fault_domain': max(mapping) + 1,
         'genesis_sha256': hashlib.sha256(genesis_text.encode()).hexdigest(),
         'rs_source_commit': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
@@ -91,4 +98,5 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=pathlib.Path, default=pathlib.Path('/data/blockchain/n42-performance-chain'))
     parser.add_argument('--topology', choices=TOPOLOGIES, default='e1')
     parser.add_argument('--chain-id', type=int, default=1144, help='local experimental ID, not a published network ID')
+    parser.add_argument('--gas-ceiling', type=int, default=4200000000)
     prepare(parser.parse_args())
