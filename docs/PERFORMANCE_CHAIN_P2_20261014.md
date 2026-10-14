@@ -891,3 +891,26 @@ destination bundle is empty with zero capacity (`install_target`); its benefit
 on actual pre-execution state needs investigation. This is a hypothesis for the
 performance result, not a measured explanation. Priority is the retained startup
 liveness failure, then further bottleneck optimization from the verified control.
+
+### P31 diagnostic retry passed; P32 untraced repetitions started
+
+Before P31, retained node0 was at view 278 with voted/committed/locked view 277;
+nodes1–6 were at view 280 with view-279 locks and vote watermarks. P31 enabled
+message send/receive and timeout diagnostics on the same retained data. It
+passed cold/crash recovery: head 307, durable 279, restarted 311, two startup
+order checks and 96 checks of the original 48 benchmark receipts. Timeout
+messages were received and views progressed. Evidence: P31 trace recovery
+result and logs. No consensus code change explains this pass, so the earlier
+stall remains intermittent and unresolved; diagnostic timing may matter.
+
+Go `5f8dd77b` now retains exact startup consensus checkpoints and vote-log bytes
+before the first launch and after SIGKILL, alongside replay boundaries. Only
+those two public consensus-state files are copied; network keys, validator
+keys, and JWT secrets are excluded. This allows a subsequent failing startup
+state to be reproduced rather than lost to later successful commits.
+
+P32 runs two retained-data recovery repetitions without message diagnostics,
+with prefault disabled (the selected control configuration). It keeps the
+existing canonical history and verifies the same measured receipt samples.
+The runner stops on failure and preserves all state. Evidence is under
+`performance-chain-p32-20261014`; no untraced repetition result is claimed yet.
