@@ -580,3 +580,36 @@ build and clean-source checks, stops on failure, and retains all data. The
 matrix uses small transaction samples and cannot prove the unresolved P20
 high-load recovery requirement. Evidence and binary SHA256 provenance are
 written under `performance-chain-p22-20261014`.
+
+### P22 retained-data recovery results
+
+Joint release `cc86e7bcf` completed in 6m25s; all three strict Ed25519 recovery
+cases passed. Each case killed its whole owned fleet with SIGKILL, restarted
+the retained datadir, preserved the crash-head canonical hash and 64 earlier
+successful receipts, and accepted 96 subsequent transactions.
+
+| Configuration | Before / durable / after height | Old receipt checks across ELs | New receipt checks across ELs |
+| --- | --- | --- | --- |
+| V7/E1 | 462 / 441 / 466 | 64 | 32 |
+| V7/E4 | 460 / 435 / 464 | 256 | 128 |
+| V7/E7 | 323 / 293 / 327 | 448 | 224 |
+
+Evidence: each P22 topology's `result.json`, logs, profiles, and the joint binary
+SHA256 manifest. The runner completed and released its hardware claim. These
+are process-kill tests with small transaction samples, not power-cut tests or
+a repair of P20's 48 retained throughput receipt samples. High-load recovery
+and validated reconstruction of P20 remain open.
+
+A separate read-only storage query confirmed P20's canonical height-177 hash
+matches the corresponding journal filename. Node1's candidate height-293 body
+links back to it over 116 consecutive parent references. Evidence:
+P21 `header-177-readonly.log` and `journal-durable-head-link.json`. Hash and
+execution validation of that candidate journal chain remain pending.
+
+Rust adds `bin/n42/examples/export_recovery_prefix.rs` to open source storage
+read-only and export heights 1 through a requested durable `Finish` boundary
+into a new directory outside the datadir. It checks canonical header hashes,
+ancestry and transaction roots, fails on unsupported access lists, and leaves
+execution validation to replay into a separate EL. The completion manifest is
+written only after the entire prefix succeeds. The original P20 datadir and
+consensus watermarks remain the source of record.
