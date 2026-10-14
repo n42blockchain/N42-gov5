@@ -993,3 +993,39 @@ staggered startup rather than claiming all intermittent networking stalls are
 eliminated. Prefault remains unselected: the materialization repair is correct
 but its measured leg did not beat the verified 320k control. Transaction-root
 preparation and the remaining build/import critical path require further work.
+
+### P35 fold-phase diagnosis; fresh retained startup still stalled
+
+Release microbenchmark on 163k preencoded synthetic values, 16 Rayon threads,
+gave parallel roots 12.21 / 10.81 / 11.23 ms versus Alloy sequential approximately
+69.5 ms; every root matched. This excludes transaction encoding, node allocator
+behavior and concurrent workload, so it cannot replace live phase measurements.
+The production key path already avoids sorting; the microbenchmark's separate
+sort timing is a historical comparison, not a current production cost.
+
+Rust `ae7bf2a35` exposes already measured receipt/graft subphases and adds root/
+receipt join-wait timing to the ordinary build log. Cargo check passed. Go
+`1dcfa2a0` adds a direct-raw-based fold-timing mode with `N42_PHASE_TIMERS=1`;
+other modes clear that flag. Joint release built in 4m56s. P35 online windows
+were 320,000 / 320,000 / 333,333 TPS with online receipt/signature/consensus
+checks passing. The timing-mode score is diagnostic, not a selected improvement.
+
+Across 80 full builds: median pre-graft commit 43 ms, graft 71.5 ms, fold 108.5
+ms, graft insert 60 ms, graft revert processing 11 ms, finish 71 ms, total 310
+ms. Root and receipt join waits were zero. Those timers also read zero when no
+overlapped job was started, so zero alone does not prove the root was hidden.
+Phase medians are not additive. Receipt commits and account insertion now have
+measured costs to target instead of attributing all fold time to the trie.
+
+Retained recovery again failed before SIGKILL: funding remained unmined for
+120 seconds; node0 stayed at view 297 while nodes1–6 stayed at 301. Startup
+ordering and saved replay-boundary checks completed. This proves the native
+outbox fix did not eliminate all startup stalls. Exact pre-start checkpoint and
+vote-log evidence is retained. The runner stopped and released hardware.
+
+Evidence: P35 phase summary, results, logs, `metrics-cargo-check.log`, microbench
+log and `validation-provenance.json`. The copied execution-suite/old-regression
+logs belong to the prior prefault repair, not tests rerun for metrics-only changes.
+Runtime root is `/data/blockchain/n42-performance-chain/p33-20261014/fold-timing/data`
+as recorded in the manifest; the new sibling directory preserved all prior data.
+Keep the verified 320k control and return to timeout/message replay investigation.
