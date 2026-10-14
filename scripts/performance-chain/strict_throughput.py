@@ -38,7 +38,10 @@ def run(args):
     for key in ('N42_FRAME_GATEWAYS', 'N42_FRAME_ATTEST_MIN', 'N42_INGEST_SHARD',
                 'F7_FLOOD_REPLAY', 'F7_FLOOD_GATEWAY_KEY', 'F7_FLOOD_CLAIM',
                 'N42_VOTE_BEFORE_IMPORT', 'N42_TAKE_COMPACT', 'N42_COMPACT_BODY',
-                'N42_FAST_TRANSFER', 'N42_PARALLEL_BUILD', 'N42_BUILDER_PULLER'):
+                'N42_FAST_TRANSFER', 'N42_PARALLEL_BUILD', 'N42_BUILDER_PULLER',
+                'N42_OUTPUT_SHARDS', 'N42_BUILD_AHEAD', 'N42_RECOVERY_PHASES',
+                'N42_BODY_ONCE', 'N42_TX_QUEUE', 'N42_TX_INGEST_DIRECT',
+                'N42_TX_QUEUE_RUN', 'N42_TX_ROOT_THREADS'):
         env.pop(key, None)
     if args.mode in ('parallel', 'output-shards', 'ahead', 'journal-timing', 'body-once', 'sender-queue', 'direct-queue', 'direct-runs', 'direct-raw', 'root-pool'):
         env.update(N42_FAST_TRANSFER='1', N42_PARALLEL_BUILD='1', N42_BUILDER_PULLER='4096')
