@@ -160,3 +160,23 @@ Evidence: `/data/blockchain/wr-analysis/performance-chain-p6-20261014`.
 The unattended runner releases its own hardware claim after cleanup and stops
 on a failed case. E4/E7 recovery remains unverified until those rounds finish;
 parallel-transfer throughput comparison follows recovery validation.
+
+### P6 evidence and fetched/pushed ancestry fix
+
+P6 E1 passed again on retained data: head 305, durable frontier 283, recovered
+head 309; 64 prior and 96 new successful receipts verified. P6 E4 now starts
+all validators, but its EL1 remains at height 152, so the pre-crash all-EL
+canonical gate correctly fails. Logs show the certified child being fetched
+without triggering a range pull: fetched and libp2p-pushed bodies did not update
+peer height hints, unlike gossip and the named direct TCP channel.
+
+Rust `4fe847d6c` updates these hints only after decoding valid matching bodies.
+101 service tests passed, including a real loopback peer serving the missing
+ancestry of a fetched certified child; pushed-body height bookkeeping is also
+checked. The commit is pushed. P7 retries retained E1/E4/E7 after P6 cleanup;
+artifacts are under `/data/blockchain/wr-analysis/performance-chain-p7-20261014`.
+
+Before enabling throughput optimizations, the existing parallel-transfer suite
+passed 34 tests (5 timing/large-workload tests ignored), and fast-transfer passed
+10 semantic differential tests. These prove the covered execution cases, not a
+new throughput score or completed E4/E7 recovery.
