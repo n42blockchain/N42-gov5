@@ -914,3 +914,13 @@ with prefault disabled (the selected control configuration). It keeps the
 existing canonical history and verifies the same measured receipt samples.
 The runner stops on failure and preserves all state. Evidence is under
 `performance-chain-p32-20261014`; no untraced repetition result is claimed yet.
+
+P32 subsequently completed both untraced control-config repetitions:
+363 / durable 341 / restarted 367, then 414 / durable 396 / restarted 418.
+Each passed two startup-order checks, canonical crash hash preservation and
+96 checks of the original 48 measured receipts. Each retained 28 checkpoint/
+vote-log evidence files across the two startup snapshots. The runner stopped
+and released hardware. Evidence: both P32 repeat results and saved consensus
+directories. These use states advanced by P31 and therefore do not reproduce
+the exact initial P30 view-gap state; the original intermittent stall remains
+unexplained. No new throughput gain or consensus-protocol repair is claimed.
