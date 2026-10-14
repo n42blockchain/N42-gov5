@@ -305,3 +305,21 @@ refusal fallback, no re-encoding after acceptance, recovery of an own commit,
 and rejection without retry when an accepted body fails. Throughput and receipt
 checks are now running under
 `/data/blockchain/wr-analysis/performance-chain-p12-20261014`.
+
+### P12 decode once verified; P13 sender queue control
+
+Decode-once windows: 247,741 / 240,000 / 240,000 TPS, with 48 successful measured
+receipts, 244 common matching commit views, zero ImportOnce takeovers and zero
+own-block re-execution. The warm-up peak is not a steady-state score; late
+windows hold 240k. The fleet stopped and released the hardware claim.
+
+P13 tests `N42_TX_QUEUE=1` against P8 parallel, with body-once and ahead-build
+off, keeping ordinary block roots and strict signature checks. The builder's
+existing sender/nonce queue is fed from accepted pool transactions across RPC,
+binary ingest and gossip. It tracks canonical mined nonce watermarks and is
+intended to avoid repeated stale-nonce candidates (millions of refusals appear
+in the pool-based phase counters). The full queue correctness suite runs first,
+including prune/push/selection/untake races, then the same fresh-state three-window
+throughput and receipt checks. Evidence:
+`/data/blockchain/wr-analysis/performance-chain-p13-20261014`.
+Queue tests are still running; no P13 throughput result is established.
