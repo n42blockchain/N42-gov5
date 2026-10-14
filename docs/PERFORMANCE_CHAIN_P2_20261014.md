@@ -811,3 +811,15 @@ at tip 515, followed by a range pull from 515 to 619. Evidence: P29
 
 This is one successful retry of the retained failing case, not proof against
 all future network gaps. P29 continues to E7; P28 remains gated on that result.
+
+P29 E7 subsequently passed: head 384, durable 351, restarted 387; fourteen
+startup-order checks, 448 old and 224 new all-layer receipt checks, and retained
+canonical crash hash. Evidence: P29 `e7/result.json`. The gated P28 direct-raw
+full-workload control has now started with the repaired joint release; its
+throughput and retained recovery results are pending.
+
+The stopped legacy P20 direct-raw journals were byte-checked and deduplicated:
+432 duplicate paths linked, 13,756,227,584 allocated bytes reclaimed, zero
+mismatches. Every body pathname and byte remains; database/QMDB files were
+excluded. Evidence: P28 `legacy-control-dedup.json`. Disk free was approximately
+75 GiB at the new control's startup; no chain data was deleted.
