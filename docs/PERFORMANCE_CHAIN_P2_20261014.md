@@ -924,3 +924,27 @@ and released hardware. Evidence: both P32 repeat results and saved consensus
 directories. These use states advanced by P31 and therefore do not reproduce
 the exact initial P30 view-gap state; the original intermittent stall remains
 unexplained. No new throughput gain or consensus-protocol repair is claimed.
+
+### Populated-bundle prefault repair implemented; P33 queued
+
+Rust `d4db75f58` fixes prepared graft memory being discarded when pre-execution
+has already populated the destination map. When prepared capacity exceeds the
+existing capacity, existing entries move into the prepared map; account/storage
+values and bundle accounting remain intact. An already larger map is kept.
+This affects explicitly enabled prefault only; the selected control remains off.
+
+The regression folds a second batch into an already populated bundle, checks
+that prepared capacity is used, and compares accounts, original values, cache,
+reverts, counts and beneficiary delta across direct/indexed/range folds. A second
+regression preserves changed pre-execution storage and complete bundle metadata.
+Both fail with the previous installation rule. The repaired full execution-library
+suite passed: 279 passed, 11 ignored, zero failures (145.13 seconds). Evidence:
+`/tmp/n42-prefault-full-tests.log` and `/tmp/n42-prefault-old-regression.log`;
+the P33 runner copies these into its permanent evidence directory after build.
+
+P33's joint build and waiting runner are active. It will run a fresh strict
+V7/E1 corrected-prefault leg and retain its measured receipts through cold start
+and whole-fleet SIGKILL. This is a re-test of a previously ineffective optional
+optimization, not a default change or a claimed gain. It does not resolve the
+earlier intermittent startup stall. Original and subsequent chain data remain
+retained; the runner requires sufficient disk and absence of other claims.
