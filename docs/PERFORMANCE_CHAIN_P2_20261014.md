@@ -180,3 +180,29 @@ Before enabling throughput optimizations, the existing parallel-transfer suite
 passed 34 tests (5 timing/large-workload tests ignored), and fast-transfer passed
 10 semantic differential tests. These prove the covered execution cases, not a
 new throughput score or completed E4/E7 recovery.
+
+## P7 retained-data recovery matrix passed
+
+Source `4fe847d6c`; all cases use strict Ed25519 and complete-fleet SIGKILL,
+not a machine power cut. Each case preserves 64 previous successful receipts,
+checks 96 new successful receipts, and checks the pre-crash canonical hash on
+every configured EL. The retained E4 data from the failed rounds was repaired
+through normal validation and peer synchronization, without resetting it.
+
+| Topology | Before | Durable frontier | After recovery | Result |
+| --- | ---: | ---: | ---: | --- |
+| V7/E1 | 349 | 331 | 354 | passed |
+| V7/E4 | 299 | 270 | 304 | passed |
+| V7/E7 | 147 | 118 | 151 | passed |
+
+Evidence: `/data/blockchain/wr-analysis/performance-chain-p7-20261014`.
+The hardware claim was released after all three fleets stopped.
+
+P8 starts a fresh serial/parallel V7/E1 throughput comparison using the same
+P7 binary bundle, genesis, strict signature checks, CPU allocation and workload.
+The checked-in `scripts/performance-chain/strict_throughput.py` collects three
+15-second committed-log windows and samples 16 successful receipts from each
+window after measurement. Parallel mode adds only fast eligible transfers,
+parallel build and the required 4096-entry pool puller. All seven commit streams
+and ImportOnce counters are checked. P8 evidence is under
+`/data/blockchain/wr-analysis/performance-chain-p8-20261014`; results pending.
