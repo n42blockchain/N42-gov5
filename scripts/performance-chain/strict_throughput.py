@@ -39,8 +39,10 @@ def run(args):
                 'N42_VOTE_BEFORE_IMPORT', 'N42_TAKE_COMPACT', 'N42_COMPACT_BODY',
                 'N42_FAST_TRANSFER', 'N42_PARALLEL_BUILD', 'N42_BUILDER_PULLER'):
         env.pop(key, None)
-    if args.mode == 'parallel':
+    if args.mode in ('parallel', 'output-shards'):
         env.update(N42_FAST_TRANSFER='1', N42_PARALLEL_BUILD='1', N42_BUILDER_PULLER='4096')
+    if args.mode == 'output-shards':
+        env.update(N42_OUTPUT_SHARDS='16')
     report = dict(status='running', mode=args.mode, strict_ed25519=True, gateway_bypass=False,
                   root=str(args.root), offset=args.offset, receipt_samples=[], windows=[])
     report['binaries'] = {rel: hashlib.sha256((args.bundle / rel).read_bytes()).hexdigest()
@@ -121,6 +123,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('profile', 'bundle', 'rs-repo', 'root', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
-    parser.add_argument('--mode', choices=('serial', 'parallel'), required=True)
+    parser.add_argument('--mode', choices=('serial', 'parallel', 'output-shards'), required=True)
     parser.add_argument('--offset', type=int, required=True)
     run(parser.parse_args())
