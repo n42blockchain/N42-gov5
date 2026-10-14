@@ -15,6 +15,14 @@ by stage 0. Existing main-chain and Ethereum EL/CL defaults are unchanged.
 The original Go worktree (`qs/block-time-budget`) has extensive user changes;
 it and `/home/n42/src/n42/n42-rs` must not be edited by this effort.
 
+E1 is an explicitly trusted execution source with a common failure domain:
+seven consensus votes do not independently prove the shared executor's state
+transition correct. Matching chain/block identity, roots, receipts and gas
+checks result consistency and binding, not independent execution correctness.
+Any E1 deployment must state this trust assumption, retain the E7 independent
+execution control and independent replay/audit, and measure executor failure
+and recovery. Asynchronous audit is not a proof available before voting.
+
 | Evidence | Result or qualification |
 | --- | --- |
 | S103 / n42-r139 | Standing best: 776,967 executed TPS. Logs: `/data/blockchain/wr-logs/r35zzzcc.log`; harness: `/data/blockchain/gov5-work/run-r35zzzcc.sh`. Attestation on; 163k transactions/block, 125ms interval, 8 x 15M corpus, QS_MAXCPU=36, GOGC=100, GOMEMLIMIT=7GiB. |
@@ -89,8 +97,10 @@ contention handling are still to be implemented and reviewed.
    gates), `StateProcessor.Process`, `blockchain_write.go` and node construction
    in `internal/node/node.go`. Seven HotStuff instances retain separate BLS
    identities, WAL/recovery, validation and voting. One writer owns execution
-   state; parent/hash/root/receipt/gas/result identity are verified by followers.
-   Do not replace follower verification with trust in a shared database.
+   state; followers check parent/hash/root/receipt/gas/result identity and
+   consistency. E1 accepts a trusted execution source explicitly; these checks
+   are not equivalent to independent follower execution or a validity proof.
+   Shared database access alone must not silently change that trust boundary.
 4. Implement import-once, bounded queues/backpressure, authenticated chain-bound
    execution results, failure/restart/reorg handling and independent execution
    equivalence tests. Feature flags select independent/shared modes explicitly.
