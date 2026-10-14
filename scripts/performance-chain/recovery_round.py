@@ -169,16 +169,42 @@ def run(args):
                 time.sleep(0.5)
             else:
                 raise RuntimeError(f'EL{layer} did not recover the crash head')
+        for layer in range(1, manifest['execution_layers']):
+            for tx_hash, receipt in receipts.items():
+                now = rpc('eth_getTransactionReceipt', [tx_hash], layer=layer)
+                if not now or now['blockHash'] != receipt['blockHash'] or int(now['status'], 16) != 1:
+                    raise RuntimeError(f'EL{layer} did not preserve a successful receipt')
         command(['python3', str(scripts / 'transaction_smoke.py'), *common,
                  '--ingest', f"127.0.0.1:{env['F7_INGEST_BASE']}", '--offset', str(args.offset + 200),
                  '--output', str(args.output / 'after-rpc')], 'after-rpc.log')
         wait_above(after + 20)
+        new_hashes = json.loads((args.output / 'after-rpc' / 'transaction-smoke.json').read_text())['transaction_hashes']
+        new_receipts = {tx_hash: rpc('eth_getTransactionReceipt', [tx_hash]) for tx_hash in new_hashes}
+        target_height = max(int(receipt['blockNumber'], 16) for receipt in new_receipts.values())
+        target_block = rpc('eth_getBlockByNumber', [hex(target_height), False])
+        for layer in range(1, manifest['execution_layers']):
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                block = rpc('eth_getBlockByNumber', [hex(target_height), False], layer=layer)
+                if block:
+                    if block['hash'] != target_block['hash']:
+                        raise RuntimeError(f'EL{layer} differs at new receipt height')
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError(f'EL{layer} did not catch up to new transactions')
+            for tx_hash, receipt in new_receipts.items():
+                now = rpc('eth_getTransactionReceipt', [tx_hash], layer=layer)
+                if not now or now['blockHash'] != receipt['blockHash'] or int(now['status'], 16) != 1:
+                    raise RuntimeError(f'EL{layer} has no matching new successful receipt')
         if manifest['execution_layers'] == 1:
             command(['python3', str(scripts / 'check_shared_execution.py'), '--root', str(root),
                      '--output', str(args.output / 'shared-execution.json')], 'shared-execution.log')
         summary.update(status='passed', head_before=before, persisted_before=persisted,
                        head_after=after, preserved_successful_receipts=len(receipts),
-                       new_successful_receipts=96, canonical_hash_preserved=True)
+                       new_successful_receipts=96, canonical_hash_preserved=True,
+                       old_receipt_checks_all_layers=len(receipts) * manifest['execution_layers'],
+                       new_receipt_checks_all_layers=len(new_hashes) * manifest['execution_layers'])
     except BaseException as error:
         summary.update(status='failed', error=str(error))
         raise
