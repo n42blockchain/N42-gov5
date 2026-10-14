@@ -127,7 +127,7 @@ def run(args):
                   'successful_receipts': len(receipts), 'signature_rejection': negatives[0],
                   'transaction_hashes': hashes, 'blocks': sorted({r['blockHash'] for r in receipts}),
                   'ingest_tampered_signature': ingest_negatives,
-                  'scope': 'RPC admission and execution; ingest and restart tested separately'}
+                  'scope': 'RPC admission and execution; optional ingest rejection; restart evaluated separately'}
         (args.output / 'transaction-smoke.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result, indent=2))
     finally:
