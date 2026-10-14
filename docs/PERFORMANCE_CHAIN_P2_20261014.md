@@ -137,3 +137,26 @@ logical source change separately.
 
 Ethereum EL+CL, weekly updates, minimal/full/archive and Pro+DATC remain the
 completed maintenance track. Development effort stays on the performance chain.
+
+## P5 recovery follow-up and P6 queue
+
+P5 E1 passed on retained data: head 251, durable frontier 229, recovered head
+255; all 64 prior successful receipts and 96 new successful receipts checked.
+P5 E4 exposed another startup gap: a lagging validator had saved a certified
+commit received from peers without importing its body. Startup treated the
+missing local body as fatal, preventing the peer synchronization needed to
+obtain it. This is distinct from invalid local data.
+
+Rust commit `c4ea27859` distinguishes unavailable ancestry from invalid recovery
+input. Missing bodies allow networking to start from the actual EL head while
+retaining the recovered consensus lock and vote watermarks. Corrupt bodies,
+storage errors, bounds failures and rejected EL validation remain fatal. Six
+recovery tests passed, including exact missing-ancestor classification before
+any replay and fatal classification of an EL rejection; the validator example
+also passed cargo check. The commit is pushed.
+
+P6 builds the corrected binaries and retries retained E1/E4/E7 data in sequence.
+Evidence: `/data/blockchain/wr-analysis/performance-chain-p6-20261014`.
+The unattended runner releases its own hardware claim after cleanup and stops
+on a failed case. E4/E7 recovery remains unverified until those rounds finish;
+parallel-transfer throughput comparison follows recovery validation.
