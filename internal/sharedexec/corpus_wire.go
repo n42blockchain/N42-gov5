@@ -134,15 +134,14 @@ func WriteCorpusFrame(writer io.Writer, frame CorpusFrame) error {
 	return err
 }
 
-// ReadCorpusFrame bounds all hostile counts/lengths before sizing a buffer.
-// scratch is reusable per connection/shard, never a whole-corpus allocation.
-func ReadCorpusFrame(reader io.Reader, scratch []byte) (CorpusFrame, []byte, error) {
+// readCorpusFrameHeader checks bounded lengths without reading any payload.
+func readCorpusFrameHeader(reader io.Reader) (CorpusFrame, int, error) {
 	var header [CorpusWireHeaderSize]byte
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
-		return CorpusFrame{}, scratch, err
+		return CorpusFrame{}, 0, err
 	}
 	if !bytes.Equal(header[:4], corpusWireMagic[:]) {
-		return CorpusFrame{}, scratch, errors.New("unsupported corpus wire version")
+		return CorpusFrame{}, 0, errors.New("unsupported corpus wire version")
 	}
 	var frame CorpusFrame
 	copy(frame.CorpusID[:], header[4:36])
@@ -152,7 +151,16 @@ func ReadCorpusFrame(reader io.Reader, scratch []byte) (CorpusFrame, []byte, err
 	length := binary.LittleEndian.Uint32(header[48:52])
 	copy(frame.PayloadHash[:], header[52:84])
 	if frame.CorpusID == (types.Hash{}) || frame.Shard >= CorpusMaxShards || frame.Transactions == 0 || frame.Transactions > CorpusMaxFrameTxs || length > CorpusMaxFramePayload || uint64(length) < uint64(frame.Transactions)*5 {
-		return CorpusFrame{}, scratch, errors.New("invalid bounded corpus frame header")
+		return CorpusFrame{}, 0, errors.New("invalid bounded corpus frame header")
+	}
+	return frame, int(length), nil
+}
+
+// ReadCorpusFrame bounds hostile lengths before allocating reusable scratch.
+func ReadCorpusFrame(reader io.Reader, scratch []byte) (CorpusFrame, []byte, error) {
+	frame, length, err := readCorpusFrameHeader(reader)
+	if err != nil {
+		return CorpusFrame{}, scratch, err
 	}
 	if cap(scratch) < int(length) {
 		scratch = make([]byte, int(length))

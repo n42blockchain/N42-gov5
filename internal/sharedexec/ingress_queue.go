@@ -20,6 +20,7 @@ import (
 )
 
 var ErrIngressSnapshotChanged = errors.New("strict ingress canonical snapshot changed; retry original frame")
+var ErrIngressCreditsExhausted = errors.New("strict ingress credits exhausted")
 
 type StrictIngressOptions struct {
 	Manifest        []byte
@@ -73,6 +74,7 @@ type ingressFrameRecord struct {
 	id    CorpusFrameID
 	hash  types.Hash
 	count int
+	bytes int
 }
 type strictIngressQueue struct {
 	mu                                        sync.Mutex
@@ -90,12 +92,14 @@ type strictIngressQueue struct {
 	seen                                      [CorpusMaxShards]bool
 	verified                                  atomic.Uint64
 	admitted                                  uint64
+	transportListening                        bool
+	transportServing                          bool
 }
 
 // EnableStrictIngress is startup-only. The server must exclusively own all
 // canonical writes. It admits protected legacy transfers through direct signer
 // recovery; offline corpus verification and sender memo caches grant no trust.
-// The binary transport and producer queue selection are separate integrations.
+// Producer queue selection is a separate integration.
 func (s *Server) EnableStrictIngress(options StrictIngressOptions) error {
 	manifest, err := DecodeCorpusManifest(options.Manifest)
 	if err != nil {
@@ -161,6 +165,7 @@ type ingressReservation struct {
 	queue               *strictIngressQueue
 	transactions, bytes int
 	held                bool
+	stamp               ingressStamp
 }
 
 func (r *ingressReservation) releaseLocked() {
@@ -178,10 +183,10 @@ func (r *ingressReservation) release() {
 
 // ingressFrameLocked is checked again at publication: multiple requests can
 // finish signature verification under the same canonical stamp concurrently.
-func (q *strictIngressQueue) ingressFrameLocked(frame CorpusFrame) (int, bool, error) {
+func (q *strictIngressQueue) ingressFrameLocked(frame CorpusFrame, size int) (int, bool, error) {
 	for _, previous := range q.recent[frame.Shard] {
 		if previous.id == frame.CorpusFrameID {
-			if previous.hash != frame.PayloadHash {
+			if previous.hash != frame.PayloadHash || previous.count != int(frame.Transactions) || previous.bytes != size {
 				return 0, false, errors.New("strict ingress frame identity changed payload")
 			}
 			return previous.count, true, nil
@@ -209,38 +214,59 @@ func (s *Server) AdmitStrictFrame(ctx context.Context, identity Identity, epoch 
 	if err := frame.Validate(q.descriptor); err != nil {
 		return StrictIngressAck{}, err
 	}
-	q.mu.Lock()
-	if epoch != q.epoch || q.closed || q.reconciling {
-		q.mu.Unlock()
-		return StrictIngressAck{}, errors.New("strict ingress epoch unavailable")
+	reservation, known, err := s.reserveStrictIngress(q, epoch, frame, len(frame.Payload))
+	if err != nil {
+		return StrictIngressAck{}, err
 	}
-	duplicateCount, known, lookupErr := q.ingressFrameLocked(frame)
+	if known != nil {
+		return *known, nil
+	}
+	defer reservation.release()
+	frame.Payload = append([]byte(nil), frame.Payload...)
+	return s.verifyReservedIngress(ctx, q, frame, reservation)
+}
+
+// reserveStrictIngress runs on a validated bounded header before a transport
+// allocates or reads payload bytes. A duplicate acknowledges an existing result.
+func (s *Server) reserveStrictIngress(q *strictIngressQueue, epoch [16]byte, frame CorpusFrame, size int) (*ingressReservation, *StrictIngressAck, error) {
+	id, err := q.descriptor.ID()
+	if err != nil {
+		return nil, nil, err
+	}
+	_, _, expected, err := q.descriptor.FrameRange(frame.Shard, frame.Sequence)
+	if err != nil || frame.CorpusID != id || frame.Transactions != expected || size < int(frame.Transactions)*5 || size > CorpusMaxFramePayload {
+		return nil, nil, errors.New("strict ingress header identity/range/size mismatch")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if epoch != q.epoch || q.closed || s.ctx.Err() != nil {
+		return nil, nil, errors.New("strict ingress epoch unavailable")
+	}
+	if q.reconciling {
+		return nil, nil, ErrIngressSnapshotChanged
+	}
+	duplicateCount, known, lookupErr := q.ingressFrameLocked(frame, size)
 	if lookupErr != nil {
-		q.mu.Unlock()
-		return StrictIngressAck{}, lookupErr
+		return nil, nil, lookupErr
 	}
 	if known {
 		ack := StrictIngressAck{Status: q.status(s.identity), Duplicates: duplicateCount}
-		q.mu.Unlock()
-		return ack, nil
+		return nil, &ack, nil
 	}
-	count, size := int(frame.Transactions), len(frame.Payload)
+	count := int(frame.Transactions)
 	if count > q.maxTx-q.pending-q.reservedTx || size > q.maxBytes-q.bytes-q.reservedBytes {
-		q.mu.Unlock()
-		return StrictIngressAck{}, errors.New("strict ingress credits exhausted")
+		return nil, nil, ErrIngressCreditsExhausted
 	}
 	q.reservedTx += count
 	q.reservedBytes += size
-	reservation := &ingressReservation{queue: q, transactions: count, bytes: size, held: true}
-	stamp := q.stamp
-	q.mu.Unlock()
-	defer reservation.release()
-	// Validate and retain the same owned bytes. Caller buffers must never be
-	// recopied after signature/state checks, when their contents could differ.
-	frame.Payload = append([]byte(nil), frame.Payload...)
+	return &ingressReservation{queue: q, transactions: count, bytes: size, held: true, stamp: q.stamp}, nil, nil
+}
+
+func (s *Server) verifyReservedIngress(ctx context.Context, q *strictIngressQueue, frame CorpusFrame, reservation *ingressReservation) (StrictIngressAck, error) {
 	if err := frame.Validate(q.descriptor); err != nil {
 		return StrictIngressAck{}, err
 	}
+	count := int(frame.Transactions)
 	verified := make([]ingressVerified, 0, count)
 	_, firstNonce, _, _ := q.descriptor.FrameRange(frame.Shard, frame.Sequence)
 	addresses := make([]types.Address, 0, count*2)
@@ -295,7 +321,7 @@ func (s *Server) AdmitStrictFrame(ctx context.Context, identity Identity, epoch 
 			return StrictIngressAck{}, errors.New("strict ingress recipient is not EOA")
 		}
 	}
-	return s.admitVerifiedIngress(ctx, q, frame, stamp, snapshot, verified, reservation)
+	return s.admitVerifiedIngress(ctx, q, frame, reservation.stamp, snapshot, verified, reservation)
 }
 
 func (s *Server) admitVerifiedIngress(ctx context.Context, q *strictIngressQueue, frame CorpusFrame, stamp ingressStamp, snapshot internal.PerformanceCanonicalAccounts, verified []ingressVerified, reservation *ingressReservation) (StrictIngressAck, error) {
@@ -308,7 +334,7 @@ func (s *Server) admitVerifiedIngress(ctx context.Context, q *strictIngressQueue
 	if q.closed || s.ctx.Err() != nil || q.reconciling || q.stamp != stamp || snapshot.Hash != stamp.hash || snapshot.Number != stamp.number {
 		return StrictIngressAck{}, ErrIngressSnapshotChanged
 	}
-	duplicates, known, err := q.ingressFrameLocked(frame)
+	duplicates, known, err := q.ingressFrameLocked(frame, size)
 	if err != nil {
 		return StrictIngressAck{}, err
 	}
@@ -380,7 +406,7 @@ func (s *Server) admitVerifiedIngress(ctx context.Context, q *strictIngressQueue
 			q.lanes[from] = lane
 		}
 	}
-	recent := append(q.recent[frame.Shard], ingressFrameRecord{id: frame.CorpusFrameID, hash: frame.PayloadHash, count: count})
+	recent := append(q.recent[frame.Shard], ingressFrameRecord{id: frame.CorpusFrameID, hash: frame.PayloadHash, count: count, bytes: size})
 	if len(recent) > 32 {
 		recent = recent[len(recent)-32:]
 	}
