@@ -85,6 +85,7 @@ type Server struct {
 	reuseOwnBuild  bool
 	prepared       *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
 	ownBuildReuses atomic.Uint64
+	ingress        *strictIngressQueue // configured before serving; immutable pointer
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -122,6 +123,14 @@ func (s *Server) Close() {
 	s.wg.Wait()
 	s.execute.Lock()
 	s.prepared = nil
+	if q := s.ingress; q != nil {
+		q.mu.Lock()
+		q.closed = true
+		q.lanes = nil
+		q.pending = 0
+		q.bytes = 0
+		q.mu.Unlock()
+	}
 	s.execute.Unlock()
 	s.mu.Lock()
 	s.builds = nil
