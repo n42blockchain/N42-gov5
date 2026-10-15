@@ -45,6 +45,7 @@ func run(ctx context.Context, args []string) error {
 	genesisFile := flags.String("genesis", "", "Absolute explicitly provisioned performance genesis file")
 	datadir := flags.String("data-dir", "", "Already initialized dedicated performance execution datadir")
 	capacity := flags.Int("capacity", 64, "Bounded import-once registry capacity (1..256)")
+	parallelEVM := flags.Bool("parallel-evm", false, "Explicitly use existing Block-STM for performance imports above four transactions")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -177,6 +178,7 @@ func run(ctx context.Context, args []string) error {
 	root.SetCold(nil)
 	root.EnableUndoRecording()
 	bc.SetQMDBRootComputer(root)
+	bc.SetParallelEVM(*parallelEVM)
 	var server *sharedexec.Server
 	if *commitOwnerFile != "" {
 		server, err = sharedexec.NewWithTrustedCommitOwner(bc, *capacity, commitOwner)
