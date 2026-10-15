@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -507,9 +508,10 @@ type Service struct {
 	db     kv.RwDB
 	// journalDB, when set, is a small store of its own that takes the vote
 	// journal off the chain database's single writer (vote_journal_db.go).
-	journalDB       kv.RwDB
-	certificateSink CommitCertificateSink
-	certificateMu   sync.Mutex
+	journalDB        kv.RwDB
+	certificateSink  CommitCertificateSink
+	certificateMu    sync.Mutex
+	performanceReady atomic.Bool // journal installed; permits gated E1 bootstrap/retry
 
 	gossipTopic  string // fully qualified gossip topic string
 	rpcTopic     string // fully qualified RPC topic string
@@ -706,11 +708,15 @@ func (s *Service) Start() error {
 	log.Info("HotStuff service started",
 		"view", s.engine.Engine().CurrentView(),
 		"validators", s.engine.Engine().ValidatorCount())
+	if s.certificateSink != nil {
+		s.performanceReady.Store(true)
+	}
 	return nil
 }
 
 // Stop gracefully shuts down the service.
 func (s *Service) Stop() {
+	s.performanceReady.Store(false)
 	s.cancel()
 	s.wg.Wait()
 
