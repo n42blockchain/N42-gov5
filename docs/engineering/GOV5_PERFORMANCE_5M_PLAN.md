@@ -932,3 +932,56 @@ Feature race/full rebuild remain gated on quiet hardware. The first OS-process
 baseline monitor remains fixed at fcdb22d2 with this optimization off; it is still
 waiting on another driver's workload. No seven-process or new TPS result is
 claimed here.
+
+## Stage 14: offline Ed25519 carrier and reference encoding
+
+The new `AltSigTx` (0x50) is an offline carrier, not an enabled transaction mode.
+It has a mandatory 20-byte destination, uint64 chain/nonce/gas, uint128 fee caps,
+algorithm 1, 32-byte public key and 64-byte signature. Its canonical typed RLP
+and signing hash follow the first 11 fields of the Rust specification (including
+algorithm and public key); the signature signs that 32-byte Keccak hash.
+`SignAltTx` uses the explicit standard-library Ed25519 signing path. ECDSA VRS
+setters reject this type. Address derivation alone does not authenticate it.
+
+The three existing Rust plain/input/access-list fixtures match encoded bytes,
+signing hash, transaction hash, derived address and deterministic signatures.
+Reference source: n42-rs `c446f80a38c15a84d2a68b2e3ebf9a16390146a7`,
+`crates/n42/tx-types/testdata/altsig_vectors.json`, SHA256
+`cea8d623c1f0fddc22943124c16ca3846bb02556eb628d1de06467a718cb0301`.
+The copied public expected values contain no private key material; test signing
+uses the published fixture's deterministic repeated-byte seeds.
+
+Native protobuf reuses Type=80 and Sign=`pubkey32 || signature64`; From, V/R/S,
+PQ/blob fields, malformed nested integers/addresses and wrong lengths are rejected.
+No generated schema or old type encoding changes. Body protobuf round-trips the
+full carrier. Rawdb explicitly stores this type as native protobuf, since the
+normal fallback otherwise writes typed RLP that its ETH-only reader refuses.
+Unsupported compact transaction encoding still returns nil. Real temporary MDBX
+body/receipt storage preserves the hash, complete signature and Type=80 receipt.
+Native receipt consensus encoding still excludes Type; Ethereum receipt roots
+retain the type prefix. These two root profiles are deliberately unchanged.
+
+Default Ethereum transaction decoding, default block RLP decoding and existing
+signers reject 0x50. Sender/recovery/cache entrypoints explicitly reject it
+before consulting any per-object or process-wide sender memo, and memo writers
+ignore it; a deliberately poisoned-cache test proves this fail-closed ordering.
+The performance runtime configuration still accepts only
+its existing ECDSA scheme. Native carrier recognition is not protocol admission.
+A separate configuration-aware block decoder, explicit runtime type gate,
+activation-aware signer/cache, new genesis marker/namespace and full execution
+roundtrip remain required before enabling Ed25519. No mode has been silently
+activated in existing data or on ETH/native defaults.
+
+Bare Go 1.26.8 `ed25519.Verify` accepts some small-order public keys and aliases;
+it is not an adequate transaction authorization policy. This slice uses it only
+for valid reference-vector checks and exposes no protocol Ed sender verifier.
+Protocol acceptance must additionally define and enforce complete small-order
+rejection (and its canonical encoding policy), under a distinct Go rule ID.
+There is no claim of full compatibility with Rust's cofactored exceptional-point
+acceptance or any cryptographic batch verification speedup.
+
+Restricted carrier checks passed (transaction 0.008s, rawdb 0.008s). The initial
+storage test exposed and then verified the per-type protobuf selection above;
+full Block RLP support is explicitly pending. First fleet monitoring remains
+fixed to fcdb22d2 and is waiting on the other driver's n42-r141 workload. No new
+fleet/TPS result or runtime Ed25519 enablement is claimed.

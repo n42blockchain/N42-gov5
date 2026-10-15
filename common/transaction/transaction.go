@@ -185,6 +185,9 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 		return nil, fmt.Errorf("invalid proto message type for transaction")
 	}
 
+	if pbTx.Type == AltSigTxType {
+		return altSigFromProto(pbTx)
+	}
 	v, r, s := convertProtoVRS(pbTx)
 	var inner TxData
 
@@ -296,6 +299,15 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 	pbTx.Type = uint64(tx.inner.txType())
 
 	switch t := tx.inner.(type) {
+	case *AltSigTx:
+		pbTx.ChainID = t.ChainID
+		pbTx.Nonce = t.Nonce
+		pbTx.Gas = t.Gas
+		pbTx.Value = convertUint256IntToH256IfSet(t.Value)
+		pbTx.Data = t.Data
+		pbTx.Sign = t.sign()
+		pbTx.FeePerGas = convertUint256IntToH256IfSet(t.GasFeeCap)
+		pbTx.PriorityFeePerGas = convertUint256IntToH256IfSet(t.GasTipCap)
 	case *LegacyTx:
 		pbTx.Nonce = tx.Nonce()
 		pbTx.Gas = tx.Gas()
@@ -463,6 +475,9 @@ func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
 
 // WithSignatureValues sets the signature values using the transaction's existing chainID.
 func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, error) {
+	if tx.Type() == AltSigTxType {
+		return nil, fmt.Errorf("use SignAltTx for alt signature transactions")
+	}
 	tx.inner.setSignatureValues(tx.inner.chainID(), v, r, s)
 	return tx, nil
 }
@@ -473,6 +488,11 @@ func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, 
 // transaction encoding — use EncodeEthereumTransaction for ETH-compatible
 // serialization.
 func (tx *Transaction) Marshal() ([]byte, error) {
+	if t, ok := tx.inner.(*AltSigTx); ok {
+		if err := t.validate(); err != nil {
+			return nil, err
+		}
+	}
 	pbTx := tx.toProtoFields()
 	v, r, s := tx.RawSignatureValues()
 	if v != nil {
@@ -491,6 +511,11 @@ func (tx *Transaction) Marshal() ([]byte, error) {
 // Includes AccessList, uses nil-safe conversions, and excludes V/R/S from
 // the hash-relevant encoding (they're in the Sign field).
 func (tx *Transaction) MarshalV2() ([]byte, error) {
+	if t, ok := tx.inner.(*AltSigTx); ok {
+		if err := t.validate(); err != nil {
+			return nil, err
+		}
+	}
 	pbTx := tx.toProtoFields()
 	return proto.Marshal(pbTx)
 }
@@ -597,7 +622,7 @@ func (tx *Transaction) Hash() types.Hash {
 // network encoding can carry the sidecar, which the hash does not cover.
 func hashFromEncoding(txType uint8) bool {
 	switch txType {
-	case LegacyTxType, AccessListTxType, DynamicFeeTxType:
+	case LegacyTxType, AccessListTxType, DynamicFeeTxType, AltSigTxType:
 		return true
 	}
 	return false
@@ -740,6 +765,9 @@ func (tx *Transaction) Protected() bool {
 // WithSignature returns a new transaction with the given signature.
 // The signature must be in [R || S || V] format where V is 0 or 1.
 func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, error) {
+	if tx.Type() == AltSigTxType {
+		return nil, fmt.Errorf("use SignAltTx for alt signature transactions")
+	}
 	r, s, v, err := signer.SignatureValues(tx, sig)
 	if err != nil {
 		return nil, err

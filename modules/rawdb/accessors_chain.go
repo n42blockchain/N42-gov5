@@ -372,6 +372,11 @@ var CompactTxWrites = true
 // native protobuf fallback cannot represent an authorization list, so it
 // silently loses fields and cannot be read back as the original transaction.
 func encodeTxForStorage(tx *transaction.Transaction) ([]byte, error) {
+	// The offline performance carrier has a complete native protobuf form.
+	// Keep its storage round trip independent of the ETH-only raw decoder.
+	if tx.Type() == transaction.AltSigTxType {
+		return tx.Marshal()
+	}
 	if CompactTxWrites {
 		if data := tx.MarshalCompactStorage(); data != nil { // nil for unsupported types
 			return data, nil
