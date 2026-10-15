@@ -82,17 +82,9 @@ import (
 
 func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consensus.Engine, db kv.RwDB, p2p p2p.P2P, config *params.ChainConfig) (common.IBlockChain, error) {
 	c, cancel := context.WithCancel(ctx)
-	// Select the transaction-root encoding for this chain. Both Ethereum EL
-	// commitment schemes use the standard MPT root over RLP transactions
-	// (block.TxRoot -> DeriveShaErigon); native N42 schemes retain the legacy
-	// proto keccak-concat root for historical hash continuity. Must be set
-	// before any block is produced or validated.
-	block.UseEthereumTxRoot = config != nil && (config.StateScheme == string(params.StateCommitmentPresetQMDB) || config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
-	block.TxRootBlake3Time = txRootBlake3Time(config)
-	block.DeferredExecutionTime = deferredExecutionTime(config)
-	if block.DeferredExecutionTime != 0 && !nativeQMDBChain(config) {
+	if err := ConfigureBlockCommitmentRules(config); err != nil {
 		cancel()
-		return nil, errors.New("deferredExecutionTime is set but the chain is not the native QMDB chain: the stored execution results and the applied marker it relies on exist only there")
+		return nil, err
 	}
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
