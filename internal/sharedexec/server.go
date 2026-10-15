@@ -267,6 +267,10 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/commit-qc" {
+		s.serveCertifiedCommit(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/commit" {
 		s.serveCommit(w, r)
 		return

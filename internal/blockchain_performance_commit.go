@@ -2,8 +2,10 @@ package internal
 
 import (
 	"errors"
+	"github.com/n42blockchain/N42/common/block"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -16,6 +18,33 @@ import (
 func (bc *BlockChain) CommitExecutedExtension(hash types.Hash) error {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
+	return bc.commitExecutedExtension(hash)
+}
+
+// CommitCertifiedExtension verifies a strict CommitQC before changing finality.
+// This first bridge uses the fixed seven-member genesis validator set only.
+func (bc *BlockChain) CommitCertifiedExtension(qc *hotstuff.QuorumCertificate) error {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	engine, ok := bc.engine.(*hotstuff.HotStuff)
+	if !ok || bc.chainConfig == nil || bc.chainConfig.Performance == nil || qc == nil {
+		return errors.New("certified commit requires performance HotStuff executor")
+	}
+	var header *block.Header
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		var err error
+		header, err = rawdb.ReadHeaderByHash(tx, qc.BlockHash)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := engine.VerifyPerformanceCommitCertificate(bc, header, qc); err != nil {
+		return err
+	}
+	return bc.commitExecutedExtension(qc.BlockHash)
+}
+
+func (bc *BlockChain) commitExecutedExtension(hash types.Hash) error {
 	if bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled {
 		return errors.New("executed extension requires explicit performance QMDB chain")
 	}

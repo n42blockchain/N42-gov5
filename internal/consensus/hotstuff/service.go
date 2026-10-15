@@ -12,6 +12,7 @@ package hotstuff
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -496,7 +497,9 @@ type Service struct {
 	db     kv.RwDB
 	// journalDB, when set, is a small store of its own that takes the vote
 	// journal off the chain database's single writer (vote_journal_db.go).
-	journalDB kv.RwDB
+	journalDB       kv.RwDB
+	certificateSink CommitCertificateSink
+	certificateMu   sync.Mutex
 
 	gossipTopic  string // fully qualified gossip topic string
 	rpcTopic     string // fully qualified RPC topic string
@@ -656,6 +659,14 @@ func (s *Service) Start() error {
 	if err := s.anchorVoteJournal(); err != nil {
 		return fmt.Errorf("hotstuff: vote journal: %w", err)
 	}
+	if s.certificateSink != nil {
+		if err := s.ReplayCommitCertificates(s.ctx); err != nil {
+			if errors.Is(err, ErrPersistedCommitCertificate) {
+				return err
+			}
+			log.Warn("performance commit certificate replay pending", "err", err)
+		}
+	}
 
 	// Install the durable vote journal before any event can be processed. From
 	// here on every vote this node casts is on disk before it goes on the wire.
@@ -677,6 +688,10 @@ func (s *Service) Start() error {
 	go s.processOutputs()
 	go s.pacemakerLoop()
 	go s.subscribeMessages()
+	if s.certificateSink != nil {
+		s.wg.Add(1)
+		go s.certificateReplayLoop()
+	}
 
 	log.Info("HotStuff service started",
 		"view", s.engine.Engine().CurrentView(),
@@ -704,6 +719,17 @@ func (s *Service) Stop() {
 // consensus state with it. Runs on the output loop, or on the commit loop
 // under the lag gate (commitAsync).
 func (s *Service) handleBlockCommitted(output EngineOutput) {
+	if s.certificateSink != nil {
+		if output.QC == nil || output.QC.BlockHash != output.Hash || output.QC.View != output.View {
+			log.Error("performance commit output missing matching certificate")
+			s.cancel()
+			return
+		}
+		if err := s.CommitCertificate(s.ctx, output.QC); err != nil {
+			log.Warn("performance certified commit pending", "hash", output.Hash, "err", err)
+		}
+		return
+	}
 	log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
 	// Post-commit phase timings — OBSERVABILITY ONLY. Both steps run inline
 	// on the serial output loop and each opens its own MDBX write tx (a
@@ -1953,6 +1979,11 @@ func (s *Service) NotifyLagResultReady(hash types.Hash) {
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.
 func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
+	if s.certificateSink != nil {
+		if err := s.ReplayCommitCertificates(s.ctx); err != nil {
+			log.Debug("performance certified commit import retry pending", "err", err)
+		}
+	}
 	// Import notifications are execution retry opportunities for a committed
 	// block. A successful applied probe clears the production guard; a body-only
 	// or future-queued notification counts as another failed observation.
@@ -2151,6 +2182,15 @@ func (s *Service) NotifyBlockExecuted(hash, txHash, parentHash types.Hash, numbe
 // validator set (cross-epoch catch-up) fails verification and is skipped —
 // fail-closed; such a node converges via live commits once its view syncs.
 func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
+	if s.certificateSink != nil {
+		qc, err := ExtractHeaderQC(extra)
+		if err == nil && qc != nil {
+			if err := s.CommitCertificate(s.ctx, qc); err != nil {
+				log.Debug("performance header certificate pending", "err", err)
+			}
+		}
+		return
+	}
 	if s.blockProducer == nil || s.db == nil || len(extra) == 0 {
 		return
 	}

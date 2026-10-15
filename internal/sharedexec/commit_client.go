@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"io"
 	"net/http"
 )
@@ -16,16 +17,29 @@ func (c *Client) Commit(ctx context.Context, request CommitRequest, owner [32]by
 	if request.Identity != c.identity || request.Number == 0 || owner == ([32]byte{}) {
 		return CommitResult{}, errors.New("explicit commit identity, height and owner capability required")
 	}
-	raw, err := json.Marshal(request)
+	return c.commitRPC(ctx, "/v1/commit", request, request, owner)
+}
+
+func (c *Client) CommitCertified(ctx context.Context, request CommitRequest, qc *hotstuff.QuorumCertificate) (CommitResult, error) {
+	if request.Identity != c.identity || request.Number == 0 || qc == nil || qc.BlockHash != request.BlockHash {
+		return CommitResult{}, errors.New("explicit certified commit identity/height/certificate required")
+	}
+	return c.commitRPC(ctx, "/v1/commit-qc", CertifiedCommitRequest{CommitRequest: request, Certificate: qc.Clone()}, request, [32]byte{})
+}
+
+func (c *Client) commitRPC(ctx context.Context, path string, payload any, request CommitRequest, owner [32]byte) (CommitResult, error) {
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		return CommitResult{}, err
 	}
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/commit", bytes.NewReader(raw))
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path, bytes.NewReader(raw))
 	if err != nil {
 		return CommitResult{}, err
 	}
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-N42-Commit-Owner", hex.EncodeToString(owner[:]))
+	if owner != ([32]byte{}) {
+		r.Header.Set("X-N42-Commit-Owner", hex.EncodeToString(owner[:]))
+	}
 	response, err := c.http.Do(r)
 	if err != nil {
 		return CommitResult{}, err
