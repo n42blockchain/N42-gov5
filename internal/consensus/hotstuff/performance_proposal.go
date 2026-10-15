@@ -6,6 +6,25 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// RequestPerformanceProduction bootstraps/retries the current E1 leader through
+// the same synchronization, committed-parent and applied-parent gates used by a
+// ViewChanged output. It cannot enable production before the durable journal.
+func (s *Service) RequestPerformanceProduction() error {
+	if !s.performanceReady.Load() || s.certificateSink == nil || s.blockProducer == nil || s.engine == nil || s.engine.chainConfig == nil || s.engine.chainConfig.Performance == nil || s.ctx.Err() != nil {
+		return errors.New("performance production service is not ready")
+	}
+	engine := s.engine.Engine()
+	if engine == nil {
+		return errors.New("performance production engine unavailable")
+	}
+	if !engine.IsCurrentLeader() {
+		return nil
+	}
+	view, parent := engine.CurrentView(), engine.LockedQC().BlockHash
+	s.triggerBlockProduction(view, parent)
+	return nil
+}
+
 // NotifyPerformanceBlockSealed publishes a remotely executed candidate only in
 // the view for which its local candidate WAL was written. Legacy miner callers
 // continue to use NotifyBlockSealed.

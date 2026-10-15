@@ -755,3 +755,20 @@ Restricted unsigned-build/parallel-import and command checks passed (sharedexec
 0.098s, command 0.026s). Additional nil/default/race and binary rebuild checks are
 deferred while another session's Rust benchmark is active (load above 100); no
 fleet, benchmark or throughput claim was made in this slice.
+
+## Stage 11: gated automatic E1 production
+
+The remote producer's 200ms bootstrap/retry timer now requests production through
+the actual HotStuff Service gates, including peer lag, committed parent and
+applied parent, instead of calling Produce directly. An atomic readiness guard
+allows these requests only after Service.Start installs the durable vote journal;
+Stop closes that guard before cancellation. Ordinary native/ETH production is
+unchanged.
+
+The real lightweight Node test now starts its automatic producer. A wrapper around
+its actual network fetcher reports peer lag and proves retries reach the Service
+gate while owner Build/Import remain zero. Clearing lag allows one actual Unix
+Build/Import and QMDB applied marker, before the existing local Seal/WAL, strict
+5/7 CommitQC and ingress/status assertions. The restricted Node test passed in
+0.361s. This remains one runtime Node with a real owner and synthesized public
+certificates; it is not seven processes or a new throughput measurement.

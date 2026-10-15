@@ -243,12 +243,13 @@ func (p *Producer) loop() {
 	defer ticker.Stop()
 	for {
 		var parent types.Hash
+		retry := false
 		select {
 		case <-p.ctx.Done():
 			return
 		case parent = <-p.wake:
 		case <-ticker.C:
-			parent = p.replica.engine.Engine().LockedQC().BlockHash
+			retry = true
 		}
 		if !p.replica.engine.IsCurrentLeader() {
 			continue
@@ -257,6 +258,16 @@ func (p *Producer) loop() {
 		ready := p.published != p.replica.engine.Engine().CurrentView() && time.Since(p.lastProduced) >= p.interval
 		p.mu.Unlock()
 		if !ready {
+			continue
+		}
+		if retry {
+			// Timer retries must not bypass the Service's peer-lag and parent
+			// gates. Its accepted request enqueues a normal wake event above.
+			if err := p.replica.service.RequestPerformanceProduction(); err != nil {
+				p.mu.Lock()
+				p.lastError = err.Error()
+				p.mu.Unlock()
+			}
 			continue
 		}
 		_, err := p.Produce(p.ctx, parent)

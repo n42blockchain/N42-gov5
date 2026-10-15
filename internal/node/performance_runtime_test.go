@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,9 +34,29 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
+
+type performanceLagFetcher struct {
+	hotstuff.BlockFetcher
+	replica *sharedvalidator.Replica
+	behind  atomic.Uint64
+	gated   chan struct{}
+}
+
+func (f *performanceLagFetcher) HeightBehind() uint64 { return f.behind.Load() }
+func (f *performanceLagFetcher) BlockApplied(hash types.Hash, number uint64) bool {
+	return f.replica.BlockApplied(hash, number)
+}
+func (f *performanceLagFetcher) CatchUp() {
+	select {
+	case f.gated <- struct{}{}:
+	default:
+	}
+	f.BlockFetcher.CatchUp()
+}
 
 func TestPerformanceRuntimePathsRejectAliasesAndPublicFiles(t *testing.T) {
 	root := t.TempDir()
@@ -157,6 +178,7 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	cfg.NodeCfg.DataDir = filepath.Join(root, "validator")
 	cfg.NodeCfg.PerformanceRole = "validator"
 	cfg.NodeCfg.PerformanceExecutionSocket = socket
+	cfg.NodeCfg.Miner = true
 	if err := os.Mkdir(cfg.NodeCfg.DataDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +304,13 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	if _, key := public.SignerKey(); key != nil {
 		t.Fatal("owner acquired validator private key")
 	}
+	rt := n.performanceValidator
+	lag := &performanceLagFetcher{BlockFetcher: rt.network, replica: rt.replica, gated: make(chan struct{}, 1)}
+	lag.behind.Store(10)
+	rt.service.SetBlockFetcher(lag)
+	if err := rt.service.RequestPerformanceProduction(); err == nil {
+		t.Fatal("production request accepted before Start installed the vote journal")
+	}
 	if err := n.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +321,6 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := n.performanceValidator
 	apiSocket := filepath.Join(cfg.NodeCfg.DataDir, "validator-rpc", "validator.sock")
 	apiClient := sharedvalidator.NewAPIClient(apiSocket, executor.Identity())
 	defer apiClient.Close()
@@ -336,6 +364,47 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	if err := rt.producer.SubmitRawTransactionsAtHead(ctx, [][]byte{[]byte("invalid ethereum wire")}, status.BlockHash, status.Number); err == nil {
 		t.Fatal("malformed Ethereum wire was admitted")
 	}
+	select {
+	case <-lag.gated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer retry bypassed the Service's peer-lag gate")
+	}
+	if executor.BuildCalls() != 0 || executor.ImportCalls() != 0 {
+		t.Fatal("behind validator executed a candidate before its Service gate opened")
+	}
+	lag.behind.Store(0)
+	if err := rt.service.RequestPerformanceProduction(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		var hash types.Hash
+		if err := ownerdb.View(ctx, func(tx kv.Tx) error {
+			number, applied, ok, err := rawdb.ReadQMDBApplied(tx)
+			if ok && number == 1 {
+				hash = types.Hash(applied)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if hash != (types.Hash{}) && rt.replica.BlockApplied(hash, 1) {
+			break
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatal("gated automatic producer never executed the Unix batch")
+		}
+	}
+	if executor.BuildCalls() != 1 || executor.ImportCalls() != 1 {
+		t.Fatal("automatic runtime producer did not own the first execution")
+	}
+	// This synchronous retry now checks WAL idempotence after the actual
+	// Start/Service-triggered worker already executed the submitted batch.
 	b, err := rt.producer.Produce(ctx, gb.Hash())
 	if err != nil {
 		t.Fatal(err)
@@ -424,6 +493,9 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	}
 	if err := n.Close(); err != ErrNodeStopped {
 		t.Fatalf("closed node twice: %v", err)
+	}
+	if err := rt.service.RequestPerformanceProduction(); err == nil {
+		t.Fatal("closed Service accepted production bootstrap")
 	}
 	// The independent execution owner remains live after validator shutdown.
 	if !owner.HasAppliedBlock(b.Hash(), 1) {
