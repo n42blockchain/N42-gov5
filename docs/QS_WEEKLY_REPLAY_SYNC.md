@@ -398,3 +398,47 @@ chain would need `--fill-gaps=false` and a byte-exact receipt gate instead.
   nodes and advancing ~1.5 blk/s with txgen load; commit phases ~1.0-2.1 ms
   total; zero ValidateState / root-mismatch warnings. Old generation kept at
   `E:\qs-nodeN-pre20260810` for rollback until next week's cycle passes.
+
+### 2026-10-14 (old-mainnet resync + history-bearing replay + copy to Linux)
+
+Order followed: Step 0 (sync the old mainnet), Step 0c (replay from empty with
+`--qmdb-history`), audit, copy. The fleet was not touched and no fleet blocks
+were folded in.
+
+- **Resync**: `D:\mainnet\mainnet`, `n42q.exe` with `N42_BLOCK_ONLY_SYNC=1`
+  (command in `D:\mainnet\n42q.bat`, cwd `D:\mainnet`), 13,612,974 -> **14,066,100**
+  (453,126 blocks, ~11 min at ~500 blk/s, 1 peer). Caught up when the log printed
+  `currentNr=14066100 highestExpectedBlockNr=14066100`; stopped with
+  `sendbreak.exe`, clean shutdown, `mdbx.dat` 45,097,156,608 B.
+- **Replay** (new target, from genesis): `E:\qs-replay-hist-20261014`, chain
+  `mainnet_qmdb_staggered`, `--tree qmdb --qmdb-history`, binary built from
+  `843960f6`, **1h25m24s**, 14,066,100 blocks (1,976,062 empty, 0 missing),
+  27,206,380 txs all replayed, **txFailed 0**, receiptMatch 14,063,019 /
+  receiptMismatch 3,081 (0.022%, the expected old-vs-new EIP-set difference, same
+  as 2026-09-04), 0 errors in the log.
+- **checkpoint.json**: `sourceHead` 14,066,100, target `number` **14,105,498**
+  (39,398 gap-fill blocks), `hash`
+  `0xa7f2c0a16d2d2e0a482b4d5566f18abff3d945ea64731cf044602c7ed6a9c269`.
+  Final QMDB state: liveKeys 6,461,830, twigs 32,254, nextSlot 66,054,384, last
+  batch `qmdbRoot=0xdc3e8af2ff7861...`. Previous clean base (2026-09-04, no
+  history): sourceHead 13,612,974, number 13,652,362, hash `0x7b3f3a8f...7924`.
+- **Header root + history audit** (Step 0c gate): `qmdb-histcheck` TOTAL pass=96
+  fail=0 over heights 1 / 2,015,072 / 4,030,143 / 6,045,214 / 8,060,285 /
+  10,075,356 / 12,090,427 / 14,105,498; `qmdb-proof-fuzz` seed 42, 100,014 proofs,
+  0 failures, headerMissing=0, membership proof avg 1,130 B (max 1,167 B), 3.2 ms
+  avg / 4.9 ms p99, absent-key 25 us.
+- **Copy to Linux**: `/data/blockchain/qs-replay-hist-20261014/` (`chaindata/mdbx.dat`
+  plus `checkpoint.json`, `network.json`, `replay_stats-20261014.json`,
+  `replay-20261014.log`). `scp` to `mdbx.dat.part`, then renamed. 90,194,313,216 B,
+  12m44s (~118 MB/s), **md5 `47b2071a384b1b3a0ab9e3d8f8770d9e` on both sides**.
+  n42dev `/data` had 1.2 TB free beforehand.
+- **Not done this run**: (1) the old-mainnet SOURCE (45 GB) was not copied to
+  Linux, so there is no independent Linux replay to compare checkpoints with
+  (Step 0 item 3); (2) the Linux copy was verified by size + md5 only, the audit
+  tools were not run on Linux (they are Windows builds); (3) `qs-replay-hist-*` is
+  NOT a fleet seed - it has no era layout / txindex (Steps 2b, 2c) and was not
+  deployed. The no-history base `E:\qs-replay-win` was left untouched.
+- **Traps hit**: `n42q.exe version` does not exit (it starts a node); never use it
+  to probe the build, and it has no `--data.dir` default guard. Killed with
+  `taskkill /F` after it held no datadir. A bash `sleep N; cmd` over ~100 s is
+  rejected by the tool, so long waits go through a Monitor loop.
