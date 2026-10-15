@@ -107,8 +107,12 @@ func SignAltTx(tx *AltSigTx, key ed25519.PrivateKey) (*Transaction, error) {
 		return nil, fmt.Errorf("invalid alt signature signing input")
 	}
 	c := tx.copy().(*AltSigTx)
-	// Reconstruct from the seed instead of trusting an inconsistent private-key suffix.
-	key = ed25519.NewKeyFromSeed(key.Seed())
+	// Do not accept a caller-supplied public-key suffix inconsistent with its seed.
+	canonicalKey := ed25519.NewKeyFromSeed(key.Seed())
+	if !bytes.Equal(key, canonicalKey) {
+		return nil, fmt.Errorf("inconsistent Ed25519 private key")
+	}
+	key = canonicalKey
 	copy(c.PublicKey[:], key.Public().(ed25519.PublicKey))
 	hash, err := AltSigSigningHash(c)
 	if err != nil {
