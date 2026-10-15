@@ -513,3 +513,13 @@ proofs or silently widen that guard. Durable historical execution evidence,
 parallel/hedged fetch latency and payload-copy reduction remain later work.
 Next: actual remote leader producer, then NodeConfig/CLI lifecycle dispatch for
 the complete lightweight runtime, with unchanged chain-level genesis roles.
+
+Stage 7b correctness follow-up: HotStuff.Finalize intentionally treats zero root
+as its build path, while the generic BlockValidator does not independently check
+state root. Performance-only sealed VerifyHeader/VerifyHeaders and shared Import
+now reject zero state/receipt commitments before execution. Otherwise an imported
+signed zero-root block could be misreported as verified execution. Genesis and
+explicit unsigned Build (seal=false) retain their intended unset fields;
+nil-performance/native/ETH verification is unchanged. The regression signs such
+blocks with a real test leader and proves both the Unix executor entry and direct
+performance BlockChain batch import reject them without advancing state/head.

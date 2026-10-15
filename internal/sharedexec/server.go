@@ -140,6 +140,9 @@ func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResul
 	if !ok || !bodyOK || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || b.Hash() != request.BlockHash {
 		return ImportResult{}, errors.New("execution block hash or number mismatch")
 	}
+	if header.Root == (types.Hash{}) || header.ReceiptHash == (types.Hash{}) {
+		return ImportResult{}, errors.New("import requires nonzero execution commitments; unsigned templates use Build")
+	}
 	if body.IsFrameBody() {
 		return ImportResult{}, errors.New("execution frame transport is not wired yet")
 	}
