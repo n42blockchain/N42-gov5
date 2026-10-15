@@ -340,6 +340,19 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	}); err != nil {
 		return nil, err
 	}
+	persistCandidate := candidate == nil
+	if candidate == nil {
+		applied, err := p.replica.client.AppliedChild(ctx, sharedexec.AppliedChildRequest{Identity: p.replica.identity, ParentHash: parentHash, Number: parent.Number.Uint64() + 1, View: view})
+		if err != nil {
+			return nil, err
+		}
+		if len(applied.BlockRLP) > 0 {
+			candidate = new(block.Block)
+			if err := candidate.Unmarshal(applied.BlockRLP); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if candidate == nil {
 		txs, err := p.candidateTransactions(parent)
 		if err != nil {
@@ -382,6 +395,8 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if persistCandidate {
 		if err := engine.VerifyPerformanceSealedHeader(p.replica, candidate.Header().(*block.Header)); err != nil {
 			return nil, err
 		}

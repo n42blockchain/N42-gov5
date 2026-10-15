@@ -219,8 +219,13 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		result.Error = "parent is not applied; retry"
 		return
 	}
+	_, err := s.chain.InsertPerformanceExtension(s.ctx, b)
+	if errors.Is(err, internal.ErrPerformanceParentNotHead) {
+		result.Error = err.Error()
+		return
+	}
 	s.imports.Add(1)
-	if _, err := s.chain.InsertChain([]block.IBlock{b}); err != nil {
+	if err != nil {
 		result.State = "failed"
 		result.Error = err.Error()
 		return
@@ -270,6 +275,10 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/applied-child" {
+		s.serveAppliedChild(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/commit-qc" {
 		s.serveCertifiedCommit(w, r)
 		return
