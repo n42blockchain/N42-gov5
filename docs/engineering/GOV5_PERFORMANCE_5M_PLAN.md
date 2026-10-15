@@ -734,3 +734,24 @@ removal, oversized-array decoding and producer/progress regressions are covered
 by restricted tests and targeted race/vet. Fleet launcher/provisioning and a real
 seven-process functional check remain next. Another cargo/rustc session became
 active during this slice; no heavy build or fleet was started alongside it.
+
+## Stage 10: explicit parallel execution-owner imports
+
+The standalone owner now accepts `--parallel-evm` (default false), wiring the
+existing Block-STM import path for blocks above four transactions. Performance
+candidate builds were already parallel; this switch removes the owner's serial
+sealed-import bottleneck without changing ordinary Node/native/ETH defaults.
+The initial Build+Import pair still executes twice; prepared-state adoption is
+not implied by selecting the parallel importer.
+
+A real same-genesis, same-sealed-block differential with six independent signed
+transfers and the RIPEMD160 test proposer reproduced a parallel-import root
+mismatch before the fix. Performance-only strict parallel finalization now
+performs the same post-fee-fold FinalizeTx cleanup as the unsigned builder and
+serial importer. Both actual owners then match Build root/receipts/bloom/gas.
+Nil/default chains do not enter this additional cleanup branch.
+
+Restricted unsigned-build/parallel-import and command checks passed (sharedexec
+0.098s, command 0.026s). Additional nil/default/race and binary rebuild checks are
+deferred while another session's Rust benchmark is active (load above 100); no
+fleet, benchmark or throughput claim was made in this slice.

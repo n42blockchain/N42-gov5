@@ -333,6 +333,14 @@ func (p *StateProcessor) finishStrict(concreteHeader *block.Header, ibs *state.I
 	if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
 		return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 	}
+	if p.config != nil && p.config.Performance != nil {
+		// Deferred fee folding follows the workers' per-transaction cleanup.
+		// Match the performance unsigned builder and serial importer before
+		// finalization, including RIPEMD160's special zero-credit touch.
+		if err := ibs.FinalizeTx(p.config.RulesWithTimestamp(concreteHeader.Number.Uint64(), concreteHeader.Time), state.NewNoopWriter()); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
 		return nil, err
 	}
