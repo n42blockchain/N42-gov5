@@ -19,7 +19,7 @@
   "execution": {
     "baseline": "independent",
     "candidate": "shared-go-E1",
-    "candidate_status": "planned-not-implemented"
+    "candidate_status": "prototype-implemented-not-fleet-validated"
   },
   "transactions": {
     "baseline": "ethereum-secp256k1",
