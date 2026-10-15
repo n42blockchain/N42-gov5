@@ -408,7 +408,26 @@ func (h *HotStuff) Type() params.ConsensusType {
 
 // VerifyHeader checks whether a header conforms to the HotStuff consensus rules.
 func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHeader, seal bool) error {
+	if seal {
+		if err := h.verifyPerformanceExecutionCommitments(iHeader); err != nil {
+			return err
+		}
+	}
 	return h.verifyHeaderWithBatch(chain, iHeader, nil)
+}
+
+func (h *HotStuff) verifyPerformanceExecutionCommitments(ih block.IHeader) error {
+	if h.chainConfig == nil || h.chainConfig.Performance == nil {
+		return nil
+	}
+	header, ok := ih.(*block.Header)
+	if !ok || header == nil || header.Number == nil {
+		return errors.New("performance header missing")
+	}
+	if !header.Number.IsZero() && (header.Root == (types.Hash{}) || header.ReceiptHash == (types.Hash{})) {
+		return errors.New("sealed performance block execution commitments must be nonzero")
+	}
+	return nil
 }
 
 // verifyHeaderWithBatch is VerifyHeader with an optional in-batch parent index.
@@ -591,13 +610,19 @@ func (h *HotStuff) VerifyHeaders(chain consensus.ChainHeaderReader, headers []bl
 
 	go func() {
 		defer close(results)
-		for _, header := range headers {
+		for i, header := range headers {
 			select {
 			case <-abort:
 				return
 			default:
 			}
-			err := h.verifyHeaderWithBatch(chain, header, batch)
+			var err error
+			if i >= len(seals) || seals[i] {
+				err = h.verifyPerformanceExecutionCommitments(header)
+			}
+			if err == nil {
+				err = h.verifyHeaderWithBatch(chain, header, batch)
+			}
 			select {
 			case results <- err:
 			case <-abort:
