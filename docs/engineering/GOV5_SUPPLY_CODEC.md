@@ -1,13 +1,21 @@
 # Isolated Go signed-corpus transport
 
-Status: implementation under development; no 6M/s qualification or chain TPS
-result has been obtained from this code. The runtime transaction admission,
+Status: the standalone tool and targeted tests are implemented; no 6M/s
+qualification or chain TPS result has been obtained. Runtime transaction admission,
 consensus, execution and signature policies remain unchanged.
 
 The four codec tests passed on 2026-10-15 with `GOMAXPROCS=2 go test -p 1
 ./internal/sharedexec -run '^TestCorpus' -count=1` (package 0.014s). The BOX
-claim was released after that test turn. CLI/socket tests and the full-size
-qualification remain pending; this codec result is not a throughput result.
+claim was released after that test turn. All nine CLI tests also passed with
+`GOMAXPROCS=2 go test -p 1 ./cmd/gov5-replay -run '^TestSupply' -count=1
+-timeout=90s` (package 0.055s), followed by targeted `go vet`. These small tests
+used low scheduling priority and two Go workers; no fleet or corpus throughput
+test ran concurrently. Tests include actual Unix socket exchange, bounded global
+credits, malformed/unknown ACKs, manifest/epoch binding, duplicate/conflicting
+frames, final stream integrity, and 15 genuinely signed transactions prepared
+and reloaded from a fresh temporary genesis/shards. The full-size preparation,
+clean Make build, race run and actual qualification remain pending. Unit-test
+times are not throughput measurements.
 
 ## Corpus identity and integrity
 
