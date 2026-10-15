@@ -98,27 +98,35 @@ The completed repair monitor's provenance, stage logs and `status.json` live ben
 The runtime root is `/data/blockchain/gov5-performance-5m/runtime/f1015a`.
 Check the actual live monitor and status before starting anything else.
 
-The current finite-load monitor is `/tmp/gov5-load32k-afb24bc0-v3.py`, PID 832560
-at deployment; log `/tmp/gov5-load32k-afb24bc0-monitor.log`. Its source/runner
+The finite-load monitor `/tmp/gov5-load32k-afb24bc0-v3.py` was explicitly paused
+before any build/provision/run stage, following the user's supply correction.
+PID 832560 has exited; log `/tmp/gov5-load32k-afb24bc0-monitor.log`. Its source/runner
 proofs, controller history and `status.json` are under
 `/data/blockchain/gov5-work/validation/20261015-e1-load32k-afb24bc0/`.
-It pins the clean isolated workload worktree to `afb24bc0`, waits for complete
+It pinned the clean isolated workload worktree to `afb24bc0`, waiting for complete
 BOX admission, rebuilds only the load CLI with clean source provenance, and
 provisions `/data/blockchain/gov5-performance-5m/runtime/load32k-20261015a` once.
 It releases the build claim before independently claiming for the load run.
-The deployment state is `waiting-clean-build`, with no stages begun, blocked
-by foreign cargo/rustc. A waiting monitor is not a load result.
+The state is now `paused-user-supply-correction`, with no stages begun. The pause
+verified no owned claim, no child processes and no new runtime directory.
+`user-supply-pause-proof.json` and before/after statuses retain that evidence.
+There is no automatic resume. No 32k workload result was produced.
 
-The planned diagnostic corpus has 64 senders, 512 nonces each, four batches
+The prepared diagnostic corpus has 64 senders, 512 nonces each, four batches
 of 8,192 transactions, 64 fixed distinct recipients and one ingress validator.
 Signing precedes the 20-second observation; drain is bounded at 30 seconds.
 Only explicit head-conflict rejection permits a bounded batch retry. The owner
 receives GOMAXPROCS 36, each metadata process two; these are thread budgets,
 not exclusive physical core allocations. Report actual canonical counter
 delta/time, batch timings and corpus exhaustion as a finite-supply result,
-not 5M capacity or an S103 promotion. Frozen node/owner binary SHAs are reused.
+not 5M capacity or an S103 promotion. Its fixed 32,768/20-second supply caps the
+observed rate at 1,638.4 TPS even with instantaneous execution. It must not use
+the next capacity window. The user's next requirement is a Rust-informed Go
+feeder that can sustain supply above 5M/s; the prepared 32k tools remain only
+diagnostic tools. Frozen node/owner binary SHAs and the original f1015a data
+remain retained.
 
-The monitor retries only explicit resource refusal before `load-run` exists.
+When active, the monitor retries only explicit resource refusal before `load-run` exists.
 Once a child may have started, it preserves a failure and stops for diagnosis;
 it never creates another root to erase the outcome. TERM/INT unwind command
 and claim cleanup; functional process groups receive up to 90 seconds to clean
