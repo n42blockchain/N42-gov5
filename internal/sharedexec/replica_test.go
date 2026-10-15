@@ -158,6 +158,10 @@ func TestSevenMetadataReplicasShareExecutionAndCommitOnlyAfterQC(t *testing.T) {
 		if !replica.BlockApplied(b.Hash(), 1) || replica.CurrentBlock().Hash() != fixture.Chain.GenesisBlock().Hash() {
 			t.Fatal("execution evidence and canonical commit were conflated")
 		}
+		progress, err := replica.CanonicalProgress(ctx)
+		if err != nil || progress.CommittedExecutedTransactions != 0 {
+			t.Fatal("seven imports were incorrectly counted before finality")
+		}
 		assertNoExecutionState(t, stores[i])
 	}
 	if err := services[0].CommitCertificate(ctx, replicaQC(fixture.Keys, b.Hash(), 4)); err == nil {
@@ -172,6 +176,10 @@ func TestSevenMetadataReplicasShareExecutionAndCommitOnlyAfterQC(t *testing.T) {
 	for i, replica := range replicas {
 		if replica.CurrentBlock().Hash() != b.Hash() {
 			t.Fatal("authenticated ACK did not advance local metadata")
+		}
+		progress, err := replica.CanonicalProgress(ctx)
+		if err != nil || progress.CommittedExecutedTransactions != 1 {
+			t.Fatal("replica counter counted another validator's execution or reserved positions")
 		}
 		assertNoExecutionState(t, stores[i])
 		pending, err := services[i].PendingCommitCertificates(ctx)
@@ -325,6 +333,10 @@ func TestReplicaRecoversRemoteAckAfterLocalCanonicalRollback(t *testing.T) {
 	if fixture.Chain.CurrentBlock().Hash() != b.Hash() || replica.CurrentBlock().Hash() != fixture.Chain.GenesisBlock().Hash() {
 		t.Fatal("cross-database rollback boundary not preserved")
 	}
+	progress, err := replica.CanonicalProgress(ctx)
+	if err != nil || progress.Number != 0 || progress.CommittedExecutedTransactions != 0 {
+		t.Fatal("rolled-back canonical transaction leaked a committed count")
+	}
 	pending, err := service.PendingCommitCertificates(ctx)
 	if err != nil || len(pending) != 1 {
 		t.Fatal("local rollback lost retry certificate")
@@ -334,6 +346,10 @@ func TestReplicaRecoversRemoteAckAfterLocalCanonicalRollback(t *testing.T) {
 	}
 	if replica.CurrentBlock().Hash() != b.Hash() || server.ImportCalls() != 1 {
 		t.Fatal("idempotent ACK retry failed or re-executed")
+	}
+	progress, err = replica.CanonicalProgress(ctx)
+	if err != nil || progress.Number != 1 || progress.CommittedExecutedTransactions != 1 {
+		t.Fatal("replayed ACK counted transactions more than once")
 	}
 	assertNoExecutionState(t, store)
 }

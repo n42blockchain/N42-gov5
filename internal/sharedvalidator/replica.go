@@ -220,11 +220,25 @@ func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCert
 			if canonical != qc.BlockHash {
 				return errors.New("shared validator finalized metadata conflict")
 			}
-			return nil
+			_, err = readCanonicalProgress(tx, r.identity)
+			return err
 		}
 		if header.Number.Uint64() != *height+1 || header.ParentHash != head {
 			return errors.New("shared validator canonical parent must commit first")
 		}
+		progress, err := readCanonicalProgress(tx, r.identity)
+		if err != nil {
+			return err
+		}
+		count, err := storedTransactionCount(tx, qc.BlockHash, header.Number.Uint64())
+		if err != nil {
+			return err
+		}
+		if progress.CommittedExecutedTransactions > ^uint64(0)-count {
+			return errors.New("canonical transaction count overflow")
+		}
+		progress.Number, progress.BlockHash = header.Number.Uint64(), qc.BlockHash
+		progress.CommittedExecutedTransactions += count
 		if err := rawdb.WriteCanonicalHash(tx, qc.BlockHash, header.Number.Uint64()); err != nil {
 			return err
 		}
@@ -232,6 +246,9 @@ func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCert
 		if err := rawdb.WriteHeadHeaderHash(tx, qc.BlockHash); err != nil {
 			return err
 		}
-		return rawdb.WriteHotStuffCommittedHead(tx, qc.BlockHash)
+		if err := rawdb.WriteHotStuffCommittedHead(tx, qc.BlockHash); err != nil {
+			return err
+		}
+		return writeCanonicalProgress(tx, progress)
 	})
 }

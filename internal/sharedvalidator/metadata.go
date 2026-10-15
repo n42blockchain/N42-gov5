@@ -120,6 +120,9 @@ func InitializeMetadata(ctx context.Context, db kv.RwDB, cfg *params.ChainConfig
 				return err
 			}
 		}
+		if err := initializeCanonicalProgress(tx, identity); err != nil {
+			return err
+		}
 		return tx.Put(modules.HotStuffState, metadataKey, binding)
 	})
 }

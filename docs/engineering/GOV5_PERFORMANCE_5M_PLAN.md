@@ -678,3 +678,24 @@ build; targeted race checks of seven metadata clients, remote producer, child
 recovery, scoped P2P fetch, Node lifecycle, and HotStuff certificate/view gates;
 node/command regressions and vet. These checks do not launch a fleet or measure
 throughput. The existing missing lint-tool limitation remains unchanged.
+
+## Stage 9a: durable canonical transaction progress
+
+Metadata canonicalization now writes a full-identity/head-bound transaction
+counter in the same transaction as canonical/head/finality rows. It counts only
+transactions in committed blocks backed by the trusted owner's durable execution
+evidence. Candidate Build, accepted/uncommitted imports, duplicate QC delivery
+and the body's two reserved system positions contribute nothing. The hot path
+reads only the 12-byte stored-body count, avoiding another full payload decode.
+Each validator reports its own chain counter; the seven counters must never be
+summed as though they were independent chain throughput.
+
+CanonicalProgress reads an atomic snapshot and rejects missing/corrupt/mismatched
+identity/head records. Existing prototype metadata can backfill at most 256
+canonical bodies with matching stored durable evidence; larger histories need an
+explicit migration instead of an unbounded scan or a silent zero. This is a
+metric of accepted trusted execution, not an independent execution-validity proof.
+Tests cover real Build/import versus finality, 4/7 rejection, duplicate 5/7 QC,
+seven-client counts, rollback after remote ACK, replay, reopen and fail-closed
+backfill. A private runtime ingress/status transport is the next slice; no TPS
+result has been measured.
