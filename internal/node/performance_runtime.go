@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,13 +30,17 @@ import (
 const performanceRuntimeRoot = "/data/blockchain/gov5-performance-5m/runtime"
 
 type performanceValidatorRuntime struct {
-	replica  *sharedvalidator.Replica
-	network  *sharedvalidator.Network
-	producer *sharedvalidator.Producer
-	client   *sharedexec.Client
-	public   *p2p.Service
-	service  *hotstuff.Service
-	engine   *hotstuff.HotStuff
+	replica   *sharedvalidator.Replica
+	network   *sharedvalidator.Network
+	producer  *sharedvalidator.Producer
+	client    *sharedexec.Client
+	public    *p2p.Service
+	service   *hotstuff.Service
+	engine    *hotstuff.HotStuff
+	api       *sharedvalidator.API
+	apiServer *http.Server
+	apiDone   chan struct{}
+	root      string
 }
 
 func (n *Node) IsPerformanceValidator() bool { return n.performanceValidator != nil }
@@ -165,6 +170,7 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 	}
 	n := &Node{cliCtx: cliCtx, ctx: ctx, cancel: cancel, config: cfg, profile: profile, state: initializingState, shutDown: make(chan struct{}), keyDir: keydir, etherbase: address}
 	rt := new(performanceValidatorRuntime)
+	rt.root = root
 	n.performanceValidator = rt
 	defer func() {
 		if err != nil {
@@ -229,6 +235,9 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 	if rt.producer, err = sharedvalidator.NewProducer(ctx, rt.replica, time.Duration(cfg.Miner.BlockIntervalMs)*time.Millisecond); err != nil {
 		return nil, err
 	}
+	if rt.api, err = sharedvalidator.NewAPI(rt.replica, rt.producer); err != nil {
+		return nil, err
+	}
 	if cfg.NodeCfg.Miner {
 		rt.service.SetBlockProducer(rt.producer)
 	}
@@ -264,6 +273,27 @@ func (n *Node) startPerformanceValidator() error {
 		n.closePerformanceValidator()
 		return err
 	}
+	dir := filepath.Join(n.config.NodeCfg.DataDir, "validator-rpc")
+	if err := os.Mkdir(dir, 0700); err != nil && !os.IsExist(err) {
+		n.closePerformanceValidator()
+		return err
+	}
+	if err := privatePerformancePath(dir, rt.root, true, false); err != nil {
+		n.closePerformanceValidator()
+		return err
+	}
+	server, listener, err := rt.api.ListenUnix(filepath.Join(dir, "validator.sock"))
+	if err != nil {
+		n.closePerformanceValidator()
+		return err
+	}
+	rt.apiServer, rt.apiDone = server, make(chan struct{})
+	go func() {
+		defer close(rt.apiDone)
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			n.cancel()
+		}
+	}()
 	if n.config.NodeCfg.Miner {
 		if err := rt.producer.Start(); err != nil {
 			n.closePerformanceValidator()
@@ -287,6 +317,16 @@ func (n *Node) closePerformanceValidator() error {
 	n.lock.Unlock()
 	n.cancel()
 	rt := n.performanceValidator
+	var errs []error
+	if rt.apiServer != nil {
+		if err := rt.apiServer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		<-rt.apiDone
+	}
+	if rt.api != nil {
+		rt.api.Stop()
+	}
 	if rt.producer != nil {
 		rt.producer.Stop()
 	}
@@ -296,7 +336,6 @@ func (n *Node) closePerformanceValidator() error {
 	if rt.service != nil {
 		rt.service.Stop()
 	}
-	var errs []error
 	if rt.public != nil {
 		if err := rt.public.Stop(); err != nil {
 			errs = append(errs, err)
