@@ -1,6 +1,9 @@
 import hashlib
 import json
 import os
+import http.server
+import socketserver
+import threading
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,6 +23,40 @@ class FleetTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+
+    def status_server(self, code=200):
+        identity = {"version": 1, "namespace": "test", "chain_id": "4205001", "genesis_hash": "0x" + "11" * 32}
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                # A real HTTP exchange over a real Unix socket, with the same
+                # authority requirement as Go net/http. The old path Host fails.
+                good = self.headers.get("Host") == "validator" and request == {"identity": identity}
+                result = code if good else 400
+                self.send_response(result)
+                self.end_headers()
+                self.wfile.write(json.dumps({"identity": identity} if result == 200 else {"error": "invalid authority"}).encode())
+        path = str(self.base / "status.sock")
+        server = socketserver.UnixStreamServer(path, Handler)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        def stop():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1)
+        self.addCleanup(stop)
+        return path, identity
+
+    def test_status_real_unix_http_uses_valid_authority(self):
+        path, identity = self.status_server()
+        self.assertEqual(fleet.status(path, identity), {"identity": identity})
+
+    def test_status_retains_http_failure_reason(self):
+        path, identity = self.status_server(400)
+        with self.assertRaisesRegex(ValueError, "HTTP 400.*invalid authority"):
+            fleet.status(path, identity)
 
     def write(self, path, value):
         path.write_text(json.dumps(value))

@@ -212,10 +212,16 @@ def binary(path):
 
 
 class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, socket_path, timeout=2):
+        # HTTP authority is distinct from the Unix transport destination. A
+        # pathname Host header is rejected by Go's HTTP parser before the API.
+        self.socket_path = socket_path
+        super().__init__("validator", timeout=timeout)
+
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
-        self.sock.connect(self.host)
+        self.sock.connect(self.socket_path)
 
 
 def status(socket_path, identity):
@@ -224,8 +230,11 @@ def status(socket_path, identity):
         c.request("POST", "/v1/status", json.dumps({"identity": identity}), {"Content-Type": "application/json"})
         r = c.getresponse()
         data = r.read(4097)
-        if r.status != 200 or len(data) > 4096:
-            raise ValueError("validator status unavailable")
+        if len(data) > 4096:
+            raise ValueError("validator status response exceeds 4096 bytes")
+        if r.status != 200:
+            detail = data[:512].decode("utf-8", errors="replace").strip()
+            raise ValueError(f"validator status HTTP {r.status}: {detail}")
         out = json.loads(data)
         if out.get("identity") != identity:
             raise ValueError("validator returned another chain")
@@ -287,9 +296,9 @@ def run(m, node, owner, duration, initialize, smoke=None):
                 try:
                     initial = [status(v["api_socket"], m["identity"]) for v in m["validators"]]
                     break
-                except (OSError, ValueError, http.client.HTTPException):
+                except (OSError, ValueError, http.client.HTTPException) as error:
                     if time.monotonic() > deadline:
-                        raise ValueError("seven runtime API readiness timeout")
+                        raise ValueError(f"seven runtime API readiness timeout: {error}") from error
                     time.sleep(0.2)
             submitted = 0
             if smoke is not None:
