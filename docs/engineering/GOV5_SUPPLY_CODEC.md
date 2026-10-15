@@ -1,8 +1,9 @@
 # Isolated Go signed-corpus transport
 
-Status: the standalone tool and targeted tests are implemented; no 6M/s
-qualification or chain TPS result has been obtained. Runtime transaction admission,
-consensus, execution and signature policies remain unchanged.
+Status: targeted tests, race, the clean Make build and preparation of 192M signed
+transactions have passed. No 6M/s qualification or chain TPS result has been
+obtained. Runtime transaction admission, consensus, execution and signature
+policies remain unchanged.
 
 The four codec tests passed on 2026-10-15 with `GOMAXPROCS=2 go test -p 1
 ./internal/sharedexec -run '^TestCorpus' -count=1` (package 0.014s). The BOX
@@ -13,9 +14,8 @@ used low scheduling priority and two Go workers; no fleet or corpus throughput
 test ran concurrently. Tests include actual Unix socket exchange, bounded global
 credits, malformed/unknown ACKs, manifest/epoch binding, duplicate/conflicting
 frames, final stream integrity, and 15 genuinely signed transactions prepared
-and reloaded from a fresh temporary genesis/shards. The full-size preparation,
-clean Make build, race run and actual qualification remain pending. Unit-test
-times are not throughput measurements.
+and reloaded from a fresh temporary genesis/shards. Unit-test times are not
+throughput measurements.
 
 A subsequent regression expanded the CLI suite to ten tests (0.057s; targeted
 vet passed). Receiver completion time also participates in the exhaustion gate,
@@ -23,6 +23,34 @@ so a sampler pause after reading a partial count cannot hide corpus exhaustion
 before its eventual end timestamp. Window timestamps conservatively surround
 counter reads, and cancellation preserves the original error before closing
 the client's socket.
+
+## First full-size preparation evidence
+
+On 2026-10-15 the ten CLI tests passed under `GOMAXPROCS=2 go test -race -p 1
+./cmd/gov5-replay -run '^TestSupply' -count=1 -timeout=90s` (package 1.659s;
+command 26.014s), followed by `GOMAXPROCS=2 make gov5-replay` (2.001s). The
+build claim was released before acquiring a separate preparation claim.
+
+The clean source commit was `b0d9bdd5ff17109f450beb13d4dea418e8b40f9d`.
+The resulting binary SHA256 is
+`3bc57ac0f29ba110ff57001fd01bb13d6ff8bf3af990e95d0dadabb7c3ade597`.
+With `GOMAXPROCS=36`, preparation signed and directly recovered all 192,000,000
+transactions in 294.123 seconds. The 64 finalized shards contain 384,000 frames,
+19,579,435,444 original signed-transaction bytes and 20,379,691,444 total encoded
+file bytes. Preparation's sampled process RSS maximum was 1,222,916 KiB; this is
+not an aggregate memory limit or a claim of 36 exclusive physical cores.
+
+The immutable manifest SHA256 is
+`5fc8e1f94ba95bf3d14c93a10997db70c35305ff8757711dd5d59640da6a5d93`.
+Its chain ID is 4205001 and genesis hash is
+`0xb58a081ecf8b349f17fdd75bae27f23e34987fc2c5c89b51ef7ad8701525eeef`.
+Evidence is retained under
+`/data/blockchain/gov5-work/validation/20261015-gov5-supply-b0d9bdd5/` and
+`/data/blockchain/gov5-performance-5m/supply/s192a/prepare-cost.json`.
+The preparation claim was released; qualification must acquire a new BOX turn.
+Offline verification does not count as online verification or canonical execution:
+both reported counters remain zero. No receiver transport rate has been measured
+by this preparation result.
 
 ## Corpus identity and integrity
 
