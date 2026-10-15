@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/internal/sharedvalidator"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -23,6 +24,10 @@ import (
 )
 
 var (
+	performanceMetadataInitFlag = &cli.BoolFlag{
+		Name:  "performance.metadata-only",
+		Usage: "Initialize only metadata for an isolated seven-validator performance chain",
+	}
 	initCommand = &cli.Command{
 		Name:      "init",
 		Usage:     "Bootstrap and initialize a new genesis block",
@@ -32,6 +37,7 @@ var (
 			DataDirFlag,
 			ChainFlag,
 			ProfileFlag,
+			performanceMetadataInitFlag,
 		},
 		Description: `
 The init command initializes a new genesis block and definition for the network.
@@ -84,6 +90,10 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err := node.ValidatePerformanceGenesis(&DefaultConfig, genesis); err != nil {
 		return err
 	}
+	metadataOnly := cliCtx.Bool(performanceMetadataInitFlag.Name)
+	if metadataOnly && (genesis.Config.Performance == nil || genesis.Config.HotStuff == nil || len(genesis.Config.HotStuff.Validators) != 7) {
+		return errors.New("metadata-only init requires explicit seven-validator performance genesis")
+	}
 
 	if err := node.ValidateDataDirNetworkBinding(&DefaultConfig, genesis.Config, nil); err != nil {
 		utils.Fatalf("Failed to validate datadir network binding: %v", err)
@@ -94,6 +104,20 @@ func initGenesis(cliCtx *cli.Context) error {
 		utils.Fatalf("Failed to open database: %v", err)
 	}
 	defer chaindb.Close()
+	if metadataOnly {
+		genesisBlock, _, err = (&internalcore.GenesisBlock{GenesisConfig: genesis}).ToBlock()
+		if err != nil {
+			return err
+		}
+		if err := sharedvalidator.InitializeMetadata(cliCtx.Context, chaindb, genesis.Config, genesisBlock); err != nil {
+			return err
+		}
+		if err := node.PersistDataDirNetworkBinding(&DefaultConfig, genesis.Config, genesisBlock.Hash()); err != nil {
+			return err
+		}
+		log.Info("Successfully initialized performance validator metadata", "hash", genesisBlock.Hash())
+		return nil
+	}
 
 	if err := chaindb.Update(context.Background(), func(tx kv.RwTx) error {
 		storedHash, err := rawdb.ReadCanonicalHash(tx, 0)

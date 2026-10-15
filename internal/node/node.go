@@ -110,6 +110,7 @@ import (
 	"github.com/n42blockchain/N42/internal/mobileverify"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/peerdas"
+	"github.com/n42blockchain/N42/internal/sharedvalidator"
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/stateless"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
@@ -611,6 +612,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	if err := chainKv.View(ctx, func(tx kv.Tx) error {
+		metadataOnly, err := sharedvalidator.IsMetadataStore(tx)
+		if err != nil {
+			return err
+		}
+		if metadataOnly {
+			return errors.New("validator metadata store cannot start a full execution node; explicit metadata runtime is required")
+		}
 		// Chains converted with --virtual-td carry a DatabaseInfo marker instead
 		// of per-block all-zero TD rows; ReadTd then synthesizes TD 0 for known
 		// headers (and keeps nil => ErrUnknownAncestor for unknown ones).
