@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -293,6 +294,25 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 		}
 		t.Fatalf("public runtime dispatch bypassed fixed root: %v", err)
 	}
+	// Exercise the metadata constructor in an actual cold process. The owner
+	// remains in this parent process, so its root globals cannot leak into the
+	// validator and no live worker observes test-time global toggles.
+	childConfig := filepath.Join(root, "cold-validator-config.json")
+	encodedConfig, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(childConfig, encodedConfig, 0600); err != nil {
+		t.Fatal(err)
+	}
+	childCtx, childCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	command := exec.CommandContext(childCtx, os.Args[0], "-test.run=^TestPerformanceValidatorColdConstructor$", "-test.count=1")
+	command.Env = append(os.Environ(), "GOV5_COLD_CONFIG="+childConfig, "GOV5_COLD_ROOT="+root)
+	output, childErr := command.CombinedOutput()
+	childCancel()
+	if childErr != nil {
+		t.Fatalf("cold validator constructor: %v\n%s", childErr, output)
+	}
 	n, err := newPerformanceValidatorNode(ctx, cancel, nodeTNewContext(), cfg, profile, genesis, root)
 	if err != nil {
 		t.Fatal(err)
@@ -510,5 +530,49 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	}
 	if err := unused.Close(); err != nil {
 		t.Fatal("close before Start:", err)
+	}
+}
+
+// Only the parent fixture invokes this test in a child with an already-running
+// remote owner. A fresh process has no BlockChain to initialize block globals.
+func TestPerformanceValidatorColdConstructor(t *testing.T) {
+	path := os.Getenv("GOV5_COLD_CONFIG")
+	if path == "" {
+		t.Skip("subprocess-only constructor check")
+	}
+	if block.UseEthereumTxRoot || block.TxRootBlake3Time != 0 || block.DeferredExecutionTime != 0 {
+		t.Fatal("child did not start with cold process globals")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg conf.Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	profile, _ := params.ResolveExecutionProfile("n42")
+	genesis, err := resolveConfiguredGenesis(&cfg, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := *genesis.genesisHash
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n, err := newPerformanceValidatorNode(ctx, cancel, nodeTNewContext(), &cfg, profile, genesis, os.Getenv("GOV5_COLD_ROOT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	if !block.UseEthereumTxRoot || block.TxRootBlake3Time != 0 || block.DeferredExecutionTime != 0 {
+		t.Fatal("metadata-only constructor omitted configured commitment rules")
+	}
+	if n.p2pGenesisHash != expected {
+		t.Fatal("root rule startup changed actual initialized genesis identity")
+	}
+	if n.blockChain != nil || n.miner != nil || n.sync != nil {
+		t.Fatal("cold metadata validator constructed local execution")
 	}
 }

@@ -99,6 +99,11 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 			return nil, fmt.Errorf("performance validator requires explicit configuration; remove inherited %s", key)
 		}
 	}
+	// This constructor deliberately skips NewBlockChain. It must still select
+	// the same process-local commitment rules before producing/validating bodies.
+	if err := internal.ConfigureBlockCommitmentRules(genesis.chainConfig); err != nil {
+		return nil, err
+	}
 	if err := privatePerformancePath(cfg.NodeCfg.DataDir, root, true, false); err != nil {
 		return nil, err
 	}
