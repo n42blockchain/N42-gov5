@@ -439,6 +439,7 @@ were folded in.
   NOT a fleet seed - it has no era layout / txindex (Steps 2b, 2c) and was not
   deployed. The no-history base `E:\qs-replay-win` was left untouched.
 - **Traps hit**: `n42q.exe version` does not exit (it starts a node); never use it
-  to probe the build, and it has no `--data.dir` default guard. Killed with
-  `taskkill /F` after it held no datadir. A bash `sleep N; cmd` over ~100 s is
+  to probe the build. It was started from the repo directory, not `D:\mainnet`,
+  and was stopped with `taskkill /F` (plain `taskkill` is refused by a console-less
+  process); the repo stayed clean. A bash `sleep N; cmd` over ~100 s is
   rejected by the tool, so long waits go through a Monitor loop.
