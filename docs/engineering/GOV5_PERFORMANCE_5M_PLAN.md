@@ -616,3 +616,21 @@ empty registries can still return durable evidence from the database. Real
 competing siblings cannot change the applied marker or execute; future-view,
 wrong-chain/parent/height and malformed query requests are refused. Node/CLI
 lifecycle and runtime ingress remain next; no fleet or TPS result is claimed.
+
+## Stage 7e: explicit metadata-only genesis initialization
+
+`n42 init --performance.metadata-only --profile n42 --chain private` now uses
+the same metadata initializer as Replica. Given the same seven-validator
+performance genesis as the owner, it writes identical genesis/config identity
+and availability rows without copying funded alloc accounts, creating a QMDB
+applied marker or constructing an execution BlockChain. Reopening verifies the
+existing immutable binding; an owner database with account state cannot be
+relabelled as metadata. Ordinary init retains its existing full-state path.
+
+The ordinary Node constructor recognizes the metadata marker and rejects that
+store before constructing its local BlockChain/miner. Explicit lightweight Node
+runtime role/socket dispatch is the next slice, so this init option alone does
+not yet advertise a runnable validator process. Tests run the actual CLI init
+on a temporary funded genesis and assert shared owner genesis hash, empty
+Account table, absent execution marker and full-node startup rejection. The
+seven-replica remote-execution tests also pass through the extracted initializer.
