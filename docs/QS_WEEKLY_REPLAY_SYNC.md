@@ -151,6 +151,61 @@ numbers and the log carries no per-block line. If that is ever needed,
 per-block logging has to be added at the comparison and the replay re-run
 (~1.5 h for the full chain).
 
+## Step 0c — the history-bearing base (`--qmdb-history`, since 2026-10-14)
+
+The base above is built WITHOUT `--qmdb-history`: it carries the recent undo
+window only (`--qmdb-undo-window 64`), so it can prove state at the tip and
+the last 64 blocks, not at an arbitrary height. A base that must answer
+any-height proofs is a separate artifact and has to be replayed from an EMPTY
+target (the resume point lives in the target DB, see Step 0), so it cannot be
+bolted onto an existing base.
+
+Cost is low: the 2026-10-14 full replay of 14,066,100 source blocks took
+**1h25m** (2,745 blk/s average) and produced a **90 GB** `mdbx.dat`, against
+29 GB for the same chain without history.
+
+```powershell
+$env:N42_ETL_TMPDIR='D:/etl-tmp'
+Start-Process C:\N42\replay-<date>\n42.exe -WindowStyle Hidden -ArgumentList `
+  'replay-v2','--source','D:/mainnet/mainnet','--target','E:/qs-replay-hist-<date>', `
+  '--chain','mainnet_qmdb_staggered','--tree','qmdb','--qmdb-history', `
+  '--output','E:/qs-replay-hist-<date>/replay_stats-<date>.json', `
+  '--log','E:/qs-replay-hist-<date>/replay-<date>.log' `
+  -RedirectStandardOutput E:\qs-replay-hist-<date>\replay.out -RedirectStandardError E:\qs-replay-hist-<date>\replay.err
+```
+
+- Build the binary and the audit tools from the same commit, without
+  `make n42` (it bumps VERSION): `go build -tags nosqlite,noboltdb -o
+  C:\N42\replay-<date>\<name>.exe ./cmd/<name>` for `n42`, `qmdb-histcheck`,
+  `qmdb-proof-fuzz`, `hotstuff-inspect`.
+- Source is the old mainnet only (Step 0), stopped with `sendbreak.exe <pid>`
+  after the resync log shows `currentNr == highestExpectedBlockNr`. The
+  `replay.err` file fills with MDBX `spill_slowpath` lines (7 MB); that is MDBX
+  debug output, not an error. The structured log is the `--log` file.
+- A `gap-fill capped ... cappedAt=10000` warning appears at huge timestamp gaps
+  (2026-10-14: target blocks 7,481,399 and 7,909,951). It is expected.
+
+### The root in the header is the tree root, and it is checked
+
+With `--tree qmdb` the header's `Root` is the QMDB root. (`--tree bmt` puts the
+BMT root there instead, but the replay does NOT persist BMT nodes to MDBX - the
+code says "Skip persisting BMT nodes" - nor recompute them, so a BMT base has no
+history proofs; `--qmdb-history` is QMDB-only.) Both audit tools compare against
+the header, not against a number they computed themselves:
+
+```powershell
+# 8 spread heights x 12 keys; reconstructed root vs block header Root
+qmdb-histcheck.exe --db E:/qs-replay-hist-<date>/chaindata
+# 100,000 random proofs (present and absent keys): the membership proof folds to
+# the header root and round-trips the wire codec
+qmdb-proof-fuzz.exe --db E:/qs-replay-hist-<date>/chaindata --n 100000
+```
+
+GATE: `TOTAL pass=96 fail=0` and `ALL 100014 PROOFS CORRECT` (`headerMissing=0`).
+Both open the DB read-only (Accede), so they are safe while the files are being
+copied. Measured 2026-10-14: membership proof avg 1,130 B and 3.2 ms
+single-thread; absent-key proof 25 us.
+
 ## Step 1 — gracefully stop the fleet, record the head
 
 ```powershell
