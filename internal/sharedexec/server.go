@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/params"
@@ -64,28 +65,30 @@ type importJob struct {
 }
 
 type Server struct {
-	chain          *internal.BlockChain
-	identity       Identity
-	capacity       int
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	jobs           map[importKey]*importJob
-	completed      []importKey
-	wg             sync.WaitGroup
-	imports        atomic.Uint64
-	closed         bool
-	execute        sync.Mutex
-	commitOwner    [32]byte
-	builds         map[importKey]*buildJob
-	buildCompleted []importKey
-	buildBytes     int
-	buildCalls     atomic.Uint64
-	buildHTTP      sync.Mutex
-	reuseOwnBuild  bool
-	prepared       *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
-	ownBuildReuses atomic.Uint64
-	ingress        *strictIngressQueue // configured before serving; immutable pointer
+	chain            *internal.BlockChain
+	identity         Identity
+	capacity         int
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	jobs             map[importKey]*importJob
+	completed        []importKey
+	wg               sync.WaitGroup
+	imports          atomic.Uint64
+	closed           bool
+	execute          sync.Mutex
+	commitOwner      [32]byte
+	builds           map[importKey]*buildJob
+	buildCompleted   []importKey
+	buildBytes       int
+	buildCalls       atomic.Uint64
+	buildHTTP        sync.Mutex
+	reuseOwnBuild    bool
+	prepared         *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
+	ownBuildReuses   atomic.Uint64
+	ingress          *strictIngressQueue                     // configured before serving; immutable pointer
+	queuePlans       map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
+	queueExpiredView hotstuff.ViewNumber                     // execute
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -134,6 +137,7 @@ func (s *Server) Close() {
 	s.execute.Unlock()
 	s.mu.Lock()
 	s.builds = nil
+	s.queuePlans = nil
 	s.buildCompleted = nil
 	s.buildBytes = 0
 	s.mu.Unlock()
@@ -302,6 +306,10 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/build-queue" {
+		s.serveQueueBuild(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/applied-child" {
 		s.serveAppliedChild(w, r)
 		return

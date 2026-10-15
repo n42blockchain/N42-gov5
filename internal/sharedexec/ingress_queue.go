@@ -60,6 +60,7 @@ type ingressEntry struct {
 	nonce      uint64
 	hash       types.Hash
 	cost       uint256.Int
+	gasPrice   uint256.Int
 }
 type ingressLane struct {
 	entries []*ingressEntry
@@ -388,7 +389,7 @@ func (s *Server) admitVerifiedIngress(ctx context.Context, q *strictIngressQueue
 		if _, overflow := lane.cost.AddOverflow(&lane.cost, &v.cost); overflow || lane.cost.Gt(&a.Balance) {
 			return StrictIngressAck{}, errors.New("strict ingress insufficient canonical balance")
 		}
-		entry := &ingressEntry{slab: slab, start: v.start, end: v.end, nonce: v.nonce, hash: v.hash, cost: v.cost}
+		entry := &ingressEntry{slab: slab, start: v.start, end: v.end, nonce: v.nonce, hash: v.hash, cost: v.cost, gasPrice: v.gasPrice}
 		lane.entries = append(lane.entries, entry)
 		lane.next++
 		newEntries = append(newEntries, entry)
@@ -457,6 +458,7 @@ func (s *Server) reconcileStrictIngress() error {
 	floors := make(map[types.Address]uint64)
 	var head types.Hash
 	var number uint64
+	var canonicalView hotstuff.ViewNumber
 	err := s.chain.DB().View(s.ctx, func(tx kv.Tx) error {
 		head = rawdb.ReadHeadBlockHash(tx)
 		n := rawdb.ReadHeaderNumber(tx, head)
@@ -464,6 +466,17 @@ func (s *Server) reconcileStrictIngress() error {
 			return errors.New("strict ingress canonical head regressed")
 		}
 		number = *n
+		if number > 0 {
+			header := rawdb.ReadHeader(tx, head, number)
+			if header == nil {
+				return errors.New("queue canonical view header missing")
+			}
+			view, viewErr := hotstuff.ExtractViewFromExtra(header.Extra)
+			if viewErr != nil {
+				return viewErr
+			}
+			canonicalView = view
+		}
 		previous := stamp.hash
 		for height := stamp.number + 1; height <= number; height++ {
 			hash, err := rawdb.ReadCanonicalHash(tx, height)
@@ -501,7 +514,6 @@ func (s *Server) reconcileStrictIngress() error {
 		return err
 	}
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	for from, floor := range floors {
 		lane := q.lanes[from]
 		if lane == nil {
@@ -535,5 +547,7 @@ func (s *Server) reconcileStrictIngress() error {
 	q.stamp.hash = head
 	q.stamp.number = number
 	q.reconciling = false
+	q.mu.Unlock()
+	s.expireQueuePlans(number, canonicalView)
 	return nil
 }
