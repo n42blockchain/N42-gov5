@@ -16,9 +16,12 @@ The first two real eight-process attempts failed before a canonical executed
 transaction was observed. The Unix HTTP authority correction is committed.
 The cold-validator transaction-root initialization fix is `ee83d5bf` on the
 main performance branch, with the minimal baseline repair at `fb1671a4`.
-The third attempt is pending hardware. There is no new throughput result.
-Offline Ed25519 codec changes remain untested work in progress and must not
-enter this frozen-baseline retry.
+The third attempt passed on the original `f1015a` data: seven validators
+converged at height 98 with exactly eight committed/executed transactions.
+A subsequent normal restart advanced all seven from height 98 to 133 with
+count eight and empty queues. See [the evidence record](GOV5_E1_FIRST_FUNCTIONAL_20261015.md).
+These are functional results, not a throughput measurement. Offline Ed25519
+codec changes remain untested work in progress and did not enter either run.
 
 ## Hardware turns
 
@@ -69,6 +72,9 @@ new explicitly named recovery attempt; never blindly replay the batch.
    the owned processes and check convergence without duplicate execution or
    double counting. Record the expected behavior before each fault. Do not
    treat failure-free unit tests as proof of these OS-process outcomes.
+   The user also authorized an earlier, separate finite-corpus diagnostic
+   load after normal restart. It uses a fresh workload fixture and cannot
+   substitute for these fault gates or establish a promoted capacity baseline.
 5. Only after these gates, establish a reproducible Go E1 throughput baseline.
    Fix workload, block size, pacing, signatures, executor count and hardware
    allocation. Record committed-and-executed unique transactions, execution
@@ -87,11 +93,36 @@ microbenchmarks, queued transactions and Rust figures do not satisfy this gate.
 
 ## Persistence and reporting
 
-The passive repair monitor is `/tmp/gov5-root-rules-fb1671a4.py`; its provenance,
-stage logs and `status.json` live beneath
+The completed repair monitor's provenance, stage logs and `status.json` live beneath
 `/data/blockchain/gov5-work/validation/20261015-e1-fcdb22d2/root-rules-fb1671a4`.
 The runtime root is `/data/blockchain/gov5-performance-5m/runtime/f1015a`.
 Check the actual live monitor and status before starting anything else.
+
+The current finite-load monitor is `/tmp/gov5-load32k-afb24bc0-v3.py`, PID 832560
+at deployment; log `/tmp/gov5-load32k-afb24bc0-monitor.log`. Its source/runner
+proofs, controller history and `status.json` are under
+`/data/blockchain/gov5-work/validation/20261015-e1-load32k-afb24bc0/`.
+It pins the clean isolated workload worktree to `afb24bc0`, waits for complete
+BOX admission, rebuilds only the load CLI with clean source provenance, and
+provisions `/data/blockchain/gov5-performance-5m/runtime/load32k-20261015a` once.
+It releases the build claim before independently claiming for the load run.
+The deployment state is `waiting-clean-build`, with no stages begun, blocked
+by foreign cargo/rustc. A waiting monitor is not a load result.
+
+The planned diagnostic corpus has 64 senders, 512 nonces each, four batches
+of 8,192 transactions, 64 fixed distinct recipients and one ingress validator.
+Signing precedes the 20-second observation; drain is bounded at 30 seconds.
+Only explicit head-conflict rejection permits a bounded batch retry. The owner
+receives GOMAXPROCS 36, each metadata process two; these are thread budgets,
+not exclusive physical core allocations. Report actual canonical counter
+delta/time, batch timings and corpus exhaustion as a finite-supply result,
+not 5M capacity or an S103 promotion. Frozen node/owner binary SHAs are reused.
+
+The monitor retries only explicit resource refusal before `load-run` exists.
+Once a child may have started, it preserves a failure and stops for diagnosis;
+it never creates another root to erase the outcome. TERM/INT unwind command
+and claim cleanup; functional process groups receive up to 90 seconds to clean
+their owned children. No foreign process or claim is altered.
 
 The monitor automates its recorded validation/build/functional steps only. It
 does not autonomously diagnose arbitrary failures, implement all later stages,
