@@ -91,6 +91,9 @@ zkguest:
 		-ldflags "-s -w" -o build/bin/zkguest ./cmd/zkguest
 	@echo "zkguest build done!"
 
+gov5-perf-load: go-version
+	$(GOBUILD) -o $(BUILD_PATH)gov5-perf-load ./cmd/gov5-perf-load
+
 clef:
 	$(GOBUILD) -o $(BUILD_PATH)clef ./cmd/clef
 	@echo "Done building clef."
