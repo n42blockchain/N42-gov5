@@ -131,12 +131,14 @@ def occupied_ports(proc_root=Path("/proc")):
     return occupied
 
 
-def resource_blockers(proc_root=Path("/proc"), claim_roots=None, now=None):
+def resource_blockers(proc_root=Path("/proc"), claim_roots=None, now=None, ignored_claims=()):
     now = time.time() if now is None else now
     claim_roots = [Path("/data/blockchain"), Path("/data/blockchain/wr-logs")] if claim_roots is None else claim_roots
     blockers = []
     for directory in claim_roots:
         for claim in directory.glob(".box-claim*"):
+            if claim in ignored_claims:
+                continue
             try:
                 fields = claim.read_text().split()
                 stamps = [int(field) for field in fields]

@@ -858,3 +858,21 @@ checker's seven Unix-endpoint protocol/accounting and used-fixture refusal. Thos
 endpoint fixtures simulate status responses and are not execution or fleet
 evidence. Actual OS-process execution remains blocked by another session's
 active Rust resource claim/workload; no new TPS has been measured.
+
+## Stage 12d: shared BOX claim compatibility
+
+Before the first actual fleet, the launcher was corrected to follow the shared
+BOX-CLAIM-PROTOCOL.md: three quiet observations spaced 30 seconds apart, then
+exclusive epoch-second files at both standard `.box-claim-gov5` paths, a random
+20..50-second contention wait and a fresh resource/claim check. Any other active
+or ambiguous claim yields conservatively; owned files are released before the
+required 60-second retry delay. No existing claim, including a stale one, is
+overwritten. The stricter 90GiB available-memory floor remains.
+
+The separate private owner directory retains the immutable token. Cleanup also
+checks each standard file's device/inode and exact epoch content, preserving any
+replacement or foreign refresh. Own files are ignored during the post-acquire
+scan only after confirming their ownership bindings. Runs are bounded below the
+protocol's 30-minute refresh interval. Eighteen lightweight Python checks pass,
+including timing, partial dual-claim collision, contention yield and replacement
+preservation. These checks do not launch a fleet or establish a TPS result.

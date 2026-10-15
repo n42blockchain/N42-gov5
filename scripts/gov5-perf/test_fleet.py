@@ -100,31 +100,81 @@ class FleetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "manifest field"):
             self.validate()
 
+    def claim(self, owner, lock, blockers):
+        return fleet.claim(owner, lock, blockers, standard_paths=(self.base / ".box-claim-gov5", self.base / ".mirror-gov5"), wait=lambda seconds: None)
+
     def test_atomic_claim_rejects_competing_owner_and_only_removes_own_record(self):
         claim = self.base / ".box-claim-test"
         lock = self.base / ".resource.lock"
         quiet = lambda: ([], {"load1": 0})
-        with fleet.claim(claim, lock, quiet):
+        with self.claim(claim, lock, quiet):
             record = fleet.load(claim / "owner.json")
             self.assertEqual(record["pid"], os.getpid())
+            self.assertEqual((self.base / ".box-claim-gov5").read_text().strip(), record["claim_epoch"])
+            self.assertEqual((self.base / ".mirror-gov5").read_text().strip(), record["claim_epoch"])
             with self.assertRaises(FileExistsError):
-                with fleet.claim(claim, lock, quiet):
+                with self.claim(claim, lock, quiet):
                     self.fail("competing launcher entered")
         self.assertFalse(claim.exists())
+        self.assertFalse((self.base / ".box-claim-gov5").exists())
+        self.assertFalse((self.base / ".mirror-gov5").exists())
         with self.assertRaisesRegex(ValueError, "hardware blocked"):
-            with fleet.claim(claim, lock, lambda: (["other workload"], {})):
+            with self.claim(claim, lock, lambda: (["other workload"], {})):
                 self.fail("busy machine claimed")
         self.assertFalse(claim.exists())
-        with fleet.claim(claim, lock, quiet):
+        with self.claim(claim, lock, quiet):
             record = fleet.load(claim / "owner.json")
             record["token"] = "other-owner"
             self.write(claim / "owner.json", record)
         self.assertEqual(fleet.load(claim / "owner.json")["token"], "other-owner")
 
+    def test_standard_claim_collision_preserves_existing_epoch_and_cleans_partial(self):
+        mirror = self.base / ".mirror-gov5"
+        mirror.write_text("12345\n")
+        with self.assertRaises(FileExistsError):
+            with self.claim(self.base / ".owner", self.base / ".lock", lambda: ([], {})):
+                self.fail("overwrote existing BOX claim")
+        self.assertEqual(mirror.read_text(), "12345\n")
+        self.assertFalse((self.base / ".box-claim-gov5").exists())
+        self.assertFalse((self.base / ".owner").exists())
+
+    def test_quiet_spacing_and_postclaim_contention_yield(self):
+        calls, waits = [], []
+        def quiet():
+            calls.append(1)
+            return [], {"load1": 0}
+        self.assertEqual(len(fleet.quiet_checks(quiet, waits.append)), 3)
+        self.assertEqual(waits, [30, 30])
+        self.assertEqual(len(calls), 3)
+        calls.clear()
+        waits.clear()
+        owner = self.base / ".owner"
+        mirrors = (self.base / ".claim-a", self.base / ".claim-b")
+        def contended():
+            calls.append(1)
+            return ([] if len(calls) == 1 else ["active older or ambiguous claim"]), {}
+        def wait(seconds):
+            waits.append(seconds)
+            if seconds == 60:
+                self.assertFalse(owner.exists())
+                self.assertFalse(any(p.exists() for p in mirrors))
+        with self.assertRaisesRegex(ValueError, "contention"):
+            with fleet.claim(owner, self.base / ".lock", contended, standard_paths=mirrors, wait=wait):
+                self.fail("entered fleet after claim collision")
+        self.assertTrue(20 <= waits[0] <= 50)
+        self.assertEqual(waits[-1], 60)
+
+    def test_replaced_standard_claim_is_never_removed(self):
+        original = self.base / ".box-claim-gov5"
+        with self.claim(self.base / ".owner", self.base / ".lock", lambda: ([], {})):
+            original.unlink()
+            original.write_text("foreign-owner\n")
+        self.assertEqual(original.read_text(), "foreign-owner\n")
+
     def test_claim_cleans_only_owned_empty_directory_after_exception(self):
         claim = self.base / ".box-claim-test"
         with self.assertRaises(RuntimeError):
-            with fleet.claim(claim, self.base / ".lock", lambda: ([], {})):
+            with self.claim(claim, self.base / ".lock", lambda: ([], {})):
                 raise RuntimeError("child failed")
         self.assertFalse(claim.exists())
         with self.assertRaisesRegex(ValueError, "duplicate"):

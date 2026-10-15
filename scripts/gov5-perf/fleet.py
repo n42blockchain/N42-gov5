@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import random
 import signal
 import socket
 import stat
@@ -23,6 +24,7 @@ import preflight
 BASE = preflight.ISOLATED_ROOT / "runtime"
 CLAIM = Path("/data/blockchain/.box-claim-gov5-performance-5m")
 LOCK = Path("/data/blockchain/.gov5-perf-resource.lock")
+STANDARD_CLAIMS = (Path("/data/blockchain/.box-claim-gov5"), Path("/data/blockchain/wr-logs/.box-claim-gov5"))
 
 
 def pairs_unique(pairs):
@@ -114,12 +116,30 @@ def validate(path, base=BASE, check_ports=True):
     return m
 
 
+def quiet_checks(blockers=preflight.resource_blockers, wait=time.sleep):
+    snapshots = []
+    for i in range(3):
+        errors, snapshot = blockers()
+        if errors:
+            raise ValueError("hardware blocked: " + "; ".join(errors))
+        snapshots.append(snapshot)
+        if i != 2:
+            wait(30)
+    return snapshots
+
+
 @contextlib.contextmanager
-def claim(claim_path=CLAIM, lock_path=LOCK, blockers=preflight.resource_blockers):
-    """Serialize cooperating launchers; ambiguous existing claims fail closed."""
+def claim(claim_path=CLAIM, lock_path=LOCK, blockers=preflight.resource_blockers, standard_paths=None, wait=time.sleep):
+    """BOX protocol: dual epoch claims, contention wait, token-bound cleanup."""
+    if standard_paths is None:
+        if claim_path != CLAIM:
+            raise ValueError("custom owner directory requires explicit claim mirrors")
+        standard_paths = STANDARD_CLAIMS
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     token = uuid.uuid4().hex
     acquired = False
+    files = []
+    contention = False
     try:
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or not stat.S_ISREG(info.st_mode):
@@ -130,11 +150,35 @@ def claim(claim_path=CLAIM, lock_path=LOCK, blockers=preflight.resource_blockers
             raise ValueError("hardware blocked: " + "; ".join(errors))
         claim_path.mkdir(mode=0o700)
         acquired = True
-        record = {"pid": os.getpid(), "token": token, "created_unix": time.time(), "purpose": "gov5 E1 functional fixture; not TPS"}
+        epoch = str(int(time.time())) + "\n"
+        record = {"pid": os.getpid(), "token": token, "created_unix": time.time(), "claim_epoch": epoch.strip(), "purpose": "gov5 E1 functional fixture; not TPS"}
         owner = claim_path / "owner.json"
         with os.fdopen(os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as out:
             json.dump(record, out)
+        for path in standard_paths:
+            # Never overwrite even an apparently stale standard claim. Each
+            # driver's BOX-visible claim contains epoch seconds, not JSON.
+            claim_fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            info = os.fstat(claim_fd)
+            files.append((path, info.st_dev, info.st_ino))
+            with os.fdopen(claim_fd, "w") as out:
+                out.write(epoch)
         fcntl.flock(fd, fcntl.LOCK_UN)
+        wait(random.SystemRandom().randint(20, 50))
+        for path, device, inode in files:
+            info = path.lstat()
+            if (info.st_dev, info.st_ino) != (device, inode) or not stat.S_ISREG(info.st_mode) or path.read_text() != epoch:
+                contention = True
+                raise ValueError("hardware contention: owned BOX claim changed")
+        if blockers is preflight.resource_blockers:
+            errors, snapshot = blockers(ignored_claims=(*standard_paths, claim_path))
+        else:
+            errors, snapshot = blockers()
+        if errors:
+            # Refusing any other active claim is stricter than priority by
+            # epoch; ambiguous or simultaneous claims always yield safely.
+            contention = True
+            raise ValueError("hardware contention after claim: " + "; ".join(errors))
         yield snapshot
     finally:
         if acquired:
@@ -142,11 +186,20 @@ def claim(claim_path=CLAIM, lock_path=LOCK, blockers=preflight.resource_blockers
             # leaves an explicit stale claim requiring human review.
             try:
                 if load(claim_path / "owner.json").get("token") == token:
+                    for path, device, inode in files:
+                        try:
+                            info = path.lstat()
+                            if (info.st_dev, info.st_ino) == (device, inode) and stat.S_ISREG(info.st_mode) and path.read_text() == epoch:
+                                path.unlink()
+                        except OSError:
+                            pass
                     (claim_path / "owner.json").unlink()
                     claim_path.rmdir()
             except (OSError, ValueError):
                 pass
         os.close(fd)
+        if contention:
+            wait(60)
 
 
 def binary(path):
@@ -195,13 +248,7 @@ def run(m, node, owner, duration, initialize, smoke=None):
     def live():
         if any(p.poll() is not None for p in children):
             raise ValueError("owned child exited; inspect retained private logs")
-    # Quiet samples are observations, never authority. The final sample and
-    # claim acquisition remain under one inter-launcher lock below.
-    for _ in range(2):
-        errors, _ = preflight.resource_blockers()
-        if errors:
-            raise ValueError("hardware blocked: " + "; ".join(errors))
-        time.sleep(1)
+    quiet_checks()
     with claim() as resources:
         # Repeat validation after the atomic claim. Uncooperative external
         # programs can still race ports; actual binds remain authoritative.
