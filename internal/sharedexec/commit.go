@@ -60,7 +60,7 @@ func (s *Server) Commit(ctx context.Context, request CommitRequest, owner [32]by
 	return s.commit(ctx, request, nil)
 }
 
-func (s *Server) commit(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate) (CommitResult, error) {
+func (s *Server) commit(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate) (result CommitResult, err error) {
 	if request.Identity != s.identity || request.Number == 0 || request.BlockHash == (types.Hash{}) {
 		return CommitResult{}, errors.New("commit chain identity, hash or height mismatch")
 	}
@@ -82,7 +82,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	}
 	var b *block.Block
 	var duplicate bool
-	err := s.chain.DB().View(ctx, func(tx kv.Tx) error {
+	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
 		var err error
 		b, err = rawdb.ReadBlockByHash(tx, request.BlockHash)
 		if err != nil {
@@ -144,6 +144,19 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	if verified == nil {
 		return CommitResult{}, errors.New("commit requires actual durable execution")
 	}
+	if q := s.ingress; q != nil {
+		q.mu.Lock()
+		q.reconciling = true
+		q.stamp.generation++
+		q.mu.Unlock()
+		// The request may be canceled after canonical mutation. Always reconcile
+		// with the owner lifetime, retaining the dirty gate on any read failure.
+		defer func() {
+			if reconcileErr := s.reconcileStrictIngress(); reconcileErr != nil && err == nil {
+				err = reconcileErr
+			}
+		}()
+	}
 	if certificate != nil {
 		if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
 			return CommitResult{}, err
@@ -157,7 +170,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 			return CommitResult{}, err
 		}
 	}
-	result := CommitResult{CommitRequest: request}
+	result = CommitResult{CommitRequest: request}
 	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
 		hash, err := rawdb.ReadCanonicalHash(tx, request.Number)
 		if err != nil {
