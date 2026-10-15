@@ -477,3 +477,39 @@ running validator processes or a measured consensus fleet**. NodeConfig/CLI
 dispatch, real P2P body fetch/catch-up and remote leader production are the next
 independent runtime slice. Process roles are not exposed as runnable yet, and
 existing shared/deferred chain roles remain rejected. No new TPS is claimed.
+
+## Stage 7b: scoped metadata body fetch and certified catch-up
+
+The lightweight validator now has a real block source over its performance
+P2P host, using `/n42/shared-validator/blocks/1` under the existing full-genesis
+Noise/protocol namespace and static-peer allowlist. Construction rejects a host
+without that actual performance scope. It serves metadata blocks by hash or
+canonical number and returns saved public CommitQCs, without using normal sync
+or entering a local execution pipeline.
+
+Frames are bounded at 4KiB metadata and 64MiB raw block, with strict identity,
+single-response framing and ten-second stream deadlines. Two inbound streams,
+128 pending hashes and one fetch/one catch-up worker bound concurrency. Hash
+fetch retries missing availability/applied parents through Replica.Import; only
+durable remote execution evidence reaches its vote gate. Catch-up trusts peer
+height only when a 5/7 CommitQC authenticates the supplied head header hash,
+then fetches at most 64 canonical blocks/proofs per pass. A peer's unproven
+height claim cannot shut off leader production. Each local canonical advance
+still passes the full public certificate/remote ACK path.
+
+Stop removes the handler, cancels workers, resets tracked streams and waits for
+their handlers/requests to finish; concurrent/idempotent Stop waits for the same
+drain. The real two-host loopback test first fetches an uncommitted signed body
+and observes execution evidence without canonical advancement. After the origin
+stores a valid CommitQC, certified catch-up converges both metadata stores with
+the owner import count still one. It checks the actual genesis-bound Noise
+security protocol and drains a held incomplete request on Stop. Frame tests
+reject oversized lengths before reading/allocating a body and truncated frames.
+Restricted regressions and vet pass; this is not a seven-process fleet or TPS run.
+
+Historical imports/commits older than the executor's 256-header applied-lineage
+window still fail closed. This transport does not invent historical execution
+proofs or silently widen that guard. Durable historical execution evidence,
+parallel/hedged fetch latency and payload-copy reduction remain later work.
+Next: actual remote leader producer, then NodeConfig/CLI lifecycle dispatch for
+the complete lightweight runtime, with unchanged chain-level genesis roles.
