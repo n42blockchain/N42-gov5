@@ -276,12 +276,31 @@ def archive_smoke(source, destination):
     source.unlink()
 
 
-def run(m, node, owner, duration, initialize, smoke=None, attempt=None):
+def restart_baseline(m, node, owner, initialize, smoke, attempt, path):
+    if path is None:
+        return None
+    if initialize or smoke is not None or attempt is None:
+        raise ValueError("restart requires a new attempt and forbids initialize/smoke")
+    path = Path(path)
+    if not path.is_absolute() or not path.is_relative_to(Path(m["root"]) / "attempts"):
+        raise ValueError("restart baseline must belong to this runtime root")
+    private(path)
+    baseline = load(path)
+    import restart_check
+    restart_check.baseline_head(m, baseline)
+    if path != Path(baseline["log_directory"]) / "functional-result.json" or baseline["binaries"]["node"] != node or baseline["binaries"]["owner"] != owner:
+        raise ValueError("restart requires the same recorded runtime and binary paths/SHAs")
+    return baseline
+
+
+def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=None):
     root = Path(m["root"])
+    retained = restart_baseline(m, node, owner, initialize, smoke, attempt, restart)
     if attempt is not None and initialize:
         raise ValueError("recovery attempts cannot initialize existing chain data")
     log_root = root
     children = []
+    lifecycle = []
     logs = []
     env = dict(os.environ, GOMAXPROCS="2")
     def spawn(args, name):
@@ -289,6 +308,7 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None):
         logs.append(log)
         process = subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         children.append(process)
+        lifecycle.append((process, {"name": name, "pid": process.pid, "executable": args[0], "started_unix": time.time()}))
         return process
     def live():
         if any(p.poll() is not None for p in children):
@@ -340,6 +360,13 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None):
                         raise ValueError(f"seven runtime API readiness timeout: {error}") from error
                     time.sleep(0.2)
             write_record(log_root / "initial-status.json", initial)
+            if retained is not None:
+                import restart_check
+                expected = restart_check.baseline_head(m, retained)
+                for item in initial:
+                    current = restart_check.head(item, m["identity"])
+                    if current[2] != expected[2] or current[0] < expected[0] or (current[0] == expected[0] and current[1] != expected[1]):
+                        raise ValueError("initial restart canonical evidence changed or regressed")
             submitted = 0
             if smoke is not None:
                 if any(s.get("committed_executed_transactions") != 0 for s in initial):
@@ -362,6 +389,15 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None):
             while time.monotonic() < end:
                 live()
                 time.sleep(min(0.2, max(0, end - time.monotonic())))
+            if retained is not None:
+                evidence = restart_check.converge(m, retained, timeout=5, require_progress=True)
+                live()
+                write_record(log_root / "restart-check.json", evidence)
+                result.update(kind="normal-restart-convergence-not-full-replay-proof", initial=initial, final=evidence["final"],
+                              finished_unix=time.time(), submitted_transactions=0, counter_delta=0,
+                              baseline=str(restart), lifecycle=str(log_root / "process-lifecycle.json"), note=evidence["limitation"])
+                write_record(log_root / "functional-result.json", result)
+                return result
             convergence = time.monotonic() + 5
             while True:
                 live()
@@ -390,6 +426,10 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None):
                     p.wait(timeout=5)
             for log in logs:
                 log.close()
+            if retained is not None:
+                for process, record in lifecycle:
+                    record.update(stopped_unix=time.time(), return_code=process.poll())
+                write_record(log_root / "process-lifecycle.json", {"kind": "owned-restart-process-lifecycle", "processes": [record for _, record in lifecycle]})
 
 
 def main():
@@ -405,18 +445,19 @@ def main():
     parser.add_argument("--node-binary")
     parser.add_argument("--owner-binary")
     parser.add_argument("--smoke-binary", help="explicit gov5-perf-provision executable for one signed functional batch")
+    parser.add_argument("--restart-baseline", type=Path, help="same-root archived nonzero result; requires new attempt and identical binaries, no init/smoke")
     parser.add_argument("--duration-seconds", type=int, default=15)
     args = parser.parse_args()
     try:
         m = validate(args.manifest)
         if not args.run:
-            if args.initialize or args.attempt is not None:
-                raise ValueError("--initialize/--attempt require --run")
+            if args.initialize or args.attempt is not None or args.restart_baseline is not None:
+                raise ValueError("--initialize/--attempt/--restart-baseline require --run")
             print(json.dumps({"validation": "passed", "launch_performed": False, "identity": m["identity"], "genesis_sha256": m["genesis_sha256"]}))
             return 0
         if not 5 <= args.duration_seconds <= 60 or not args.node_binary or not args.owner_binary:
             raise ValueError("bounded 5..60 second run and explicit binaries required")
-        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None, args.attempt)
+        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None, args.attempt, args.restart_baseline)
         print(json.dumps({"result": str(Path(result["log_directory"]) / "functional-result.json"), "kind": result["kind"]}))
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
