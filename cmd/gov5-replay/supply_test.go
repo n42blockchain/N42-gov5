@@ -124,11 +124,36 @@ func TestSupplyActualUnixReplayVerifiesEveryShard(t *testing.T) {
 	if err := sink.integrity(); err != nil {
 		t.Fatal(err)
 	}
+	if sink.receivedComplete.Load() == nil {
+		t.Fatal("receiver omitted final unique-transaction time evidence")
+	}
 	if sink.unique.Load() != 25 || counters.acknowledged.Load() != 25 || counters.read.Load() != 25 || counters.written.Load() != 25 {
 		t.Fatal("receiver/sender counts differ")
 	}
 	if tx, bytes := credits.used(); tx != 0 || bytes != 0 {
 		t.Fatal("unacknowledged credit leak")
+	}
+}
+
+func TestSupplyExhaustionDuringEndSamplingCannotQualify(t *testing.T) {
+	endTime := time.Now()
+	end := supplySample{Unique: 150, at: endTime}
+	before := endTime.Add(-time.Second)
+	after := endTime.Add(time.Second)
+	// The counter read saw <total, then the sampler was descheduled while
+	// the remaining corpus arrived before its eventual end timestamp.
+	if supplyAvailableAtBoundary(192, end, &before) {
+		t.Fatal("old count hid exhaustion during sampler pause")
+	}
+	if !supplyAvailableAtBoundary(192, end, &after) {
+		t.Fatal("corpus remaining throughout the window rejected")
+	}
+	if supplyAvailableAtBoundary(192, end, nil) {
+		t.Fatal("missing receiver completion evidence accepted")
+	}
+	end.Unique = 192
+	if supplyAvailableAtBoundary(192, end, &after) {
+		t.Fatal("exhausted count accepted despite inconsistent later time")
 	}
 }
 
