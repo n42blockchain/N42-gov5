@@ -226,6 +226,38 @@ func (s *Service) PendingCommitCertificates(ctx context.Context) ([]QuorumCertif
 	return qcs, nil
 }
 
+// CertificateForBlock returns saved public finality evidence for block serving.
+// A pending delivery is still a valid certificate; it grants no execution ACK.
+func (s *Service) CertificateForBlock(ctx context.Context, hash types.Hash) (*QuorumCertificate, error) {
+	s.certificateMu.Lock()
+	defer s.certificateMu.Unlock()
+	if s.certificateSink == nil {
+		return nil, errors.New("commit certificate sink not configured")
+	}
+	var record *certificateRecord
+	if err := s.db.View(ctx, func(tx kv.Tx) error {
+		raw, err := tx.GetOne(modules.HotStuffState, certificateKey(certificatePrefix, hash))
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			return nil
+		}
+		record, err = s.decodeCertificate(tx, hash)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, nil
+	}
+	qc := record.QC.Clone()
+	if err := s.engine.VerifyPerformanceCommitQC(&qc); err != nil {
+		return nil, err
+	}
+	return &qc, nil
+}
+
 // ReplayCommitCertificates runs on startup and after imports. Height ordering
 // lets direct-extension commits catch up; missing local bodies remain pending.
 func (s *Service) ReplayCommitCertificates(ctx context.Context) error {
