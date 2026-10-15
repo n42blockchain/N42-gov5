@@ -24,6 +24,7 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
@@ -66,6 +67,15 @@ func executionChain(t *testing.T, genesis *conf.Genesis, commitOnly ...bool) (*i
 	var engine consensus.Engine = executionTestEngine{apos.NewFaker()}
 	if len(commitOnly) > 0 && commitOnly[0] {
 		engine = commitOnlyTestEngine{executionTestEngine{apos.NewFaker()}}
+	}
+	if genesis.Config.HotStuff != nil && len(genesis.Config.HotStuff.Validators) > 0 {
+		public := hotstuff.New(genesis.Config.HotStuff, genesis.Config)
+		public.SetRewardFunc(apos.DoReward)
+		if err := public.InitVerifierFromConfig(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = public.Close() })
+		engine = public
 	}
 	chain, err := internal.NewBlockChain(context.Background(), gb, engine, db, nil, genesis.Config)
 	if err != nil {

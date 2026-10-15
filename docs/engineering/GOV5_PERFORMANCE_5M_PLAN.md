@@ -567,3 +567,15 @@ small slice re-proposes the valid child on the owner's actual applied lineage
 instead of constructing a competing sibling or rewinding world state. Node
 lifecycle/CLI and runtime transaction ingress follow after that. No running
 seven-process fleet or new TPS measurement is claimed here.
+
+### Candidate root cleanup regression
+
+A view-two build/import differential exposed an empty-account discrepancy for
+the test proposer at RIPEMD160 address 0x03. Parallel fee folding touches the
+zero-fee recipient after the worker transaction cleanup, while serial import
+cleans that touch before finalization. The performance candidate builder now
+runs standard FinalizeTx cleanup after the fold and before block-end/finalize.
+The real HotStuff import must match all root/receipt/gas commitments. Fixtures
+with public validator sets now construct their StateProcessor with the real
+public HotStuff engine; changing BlockChain.SetEngine alone did not replace its
+already constructed processor. Default native/ETH build paths are unchanged.
