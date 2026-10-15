@@ -985,3 +985,38 @@ storage test exposed and then verified the per-type protobuf selection above;
 full Block RLP support is explicitly pending. First fleet monitoring remains
 fixed to fcdb22d2 and is waiting on the other driver's n42-r141 workload. No new
 fleet/TPS result or runtime Ed25519 enablement is claimed.
+
+## Stage 15: explicit offline Ed25519 acceptance policy
+
+`VerifyAltSigOffline` implements rule
+`gov5-ed25519-canonical-a-stdlib-v1`: exact expected chain ID, canonical public
+point encoding, `[8]A != identity`, followed by standard-library Ed25519
+verification of the carrier signing hash. Standard verification checks canonical
+S and compares the canonical computed R to the signature bytes. The cofactor
+check rejects every small-order point; it does not assert prime-subgroup
+membership for mixed-torsion points. This is an independent Go rule, with no
+claim to Rust's cofactored exceptional-point acceptance. It returns an address
+only after successful checks and does not consult or populate sender caches.
+Runtime Signer/cache/admission support is still disabled for type 0x50.
+`SignAltTx` now rejects a private key whose public suffix disagrees with its seed.
+
+The public point arithmetic dependency is pinned to `filippo.io/edwards25519`
+v1.1.1 (tag commit `d1c650afb95fad0742b98d95f2eb2cf031393abb`, module sum
+`h1:YpjwWWlNmGIDyXOn8zLzqiD+9TyIlPhGFG96P39uBpw=`). Its Go1.20 module has no
+additional requirements. Maintainer source confirms SetBytes accepts aliases,
+Bytes canonicalizes, and MultByCofactor uses three doublings; the policy checks
+re-encoding equality explicitly. The maintainer's published
+[GHSA-fw7p-63qq-7hpr advisory](https://github.com/FiloSottile/edwards25519/security/advisories/GHSA-fw7p-63qq-7hpr)
+affects MultiScalarMult before v1.1.1. This path does not call that API, and the
+pin nevertheless includes its fix. Source comparison against v1.1.0 found only
+that production-code initialization fix and test changes. No dependency-wide
+update or tidy was performed.
+
+Restricted policy tests passed in 0.008s: three existing independent reference
+vectors, wrong chain/payload/R/noncanonical S, malformed curve/key inputs and
+inconsistent private keys. The maintained library's order-eight generator is
+used to enumerate all eight torsion points, their sign encodings and all
+representable y+p aliases; all are rejected. A forged identity-key transaction
+is accepted by bare stdlib Verify and rejected by this policy, keeping the
+primitive/protocol distinction executable. No batch verifier, runtime activation,
+new chain data, fleet or TPS claim is part of this slice.

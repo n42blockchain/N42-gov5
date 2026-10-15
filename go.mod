@@ -3,6 +3,7 @@ module github.com/n42blockchain/N42
 go 1.26.8
 
 require (
+	filippo.io/edwards25519 v1.1.1
 	github.com/RoaringBitmap/roaring v1.9.4
 	github.com/VictoriaMetrics/metrics v1.44.1
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
