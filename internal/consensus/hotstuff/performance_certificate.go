@@ -54,15 +54,32 @@ func (h *HotStuff) VerifyPerformanceCommitCertificate(chain consensus.ChainHeade
 	if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || header.Hash() != qc.BlockHash {
 		return errors.New("certified committed header missing or mismatched")
 	}
+	view, _, _, err := decodeHeaderExtra(header.Extra)
+	if err != nil || view > qc.View {
+		return errors.New("certified committed header view exceeds proof")
+	}
+	return h.VerifyPerformanceSealedHeader(chain, header)
+}
+
+// VerifyPerformanceSealedHeader validates an available proposal without
+// granting finality. The lightweight validator uses this before remote import.
+func (h *HotStuff) VerifyPerformanceSealedHeader(chain consensus.ChainHeaderReader, header *block.Header) error {
+	if chain == nil || h.chainConfig == nil || h.chainConfig.Performance == nil || h.config == nil || len(h.config.Validators) != 7 || header == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() {
+		return errors.New("sealed performance header requires fixed seven-validator chain")
+	}
 	view, embedded, reserved, err := decodeHeaderExtra(header.Extra)
-	if err != nil || !reserved || view == 0 || view > qc.View {
+	if err != nil || !reserved || view == 0 || (h.config.EpochLength > 0 && uint64(view) >= h.config.EpochLength) {
 		return errors.New("certified committed header view/seal malformed")
 	}
 	canonical, err := buildHeaderExtra(view, embedded)
 	if err != nil || len(canonical) != len(header.Extra) || !bytes.Equal(canonical[:len(canonical)-96], header.Extra[:len(header.Extra)-96]) {
 		return errors.New("certified committed header extra malformed")
 	}
-	vs := h.Engine().ValidatorSetForView(view)
+	ce := h.Engine()
+	if ce == nil {
+		return errors.New("sealed performance header verifier not initialized")
+	}
+	vs := ce.ValidatorSetForView(view)
 	if vs == nil || vs.Len() != 7 {
 		return errors.New("certified committed header set unavailable")
 	}

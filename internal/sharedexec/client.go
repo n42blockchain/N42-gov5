@@ -27,6 +27,8 @@ func NewClient(socket string, identity Identity) *Client {
 
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 
+func (c *Client) Identity() Identity { return c.identity }
+
 func (c *Client) Import(ctx context.Context, request ImportRequest) (ImportResult, error) {
 	if request.Identity != c.identity {
 		return ImportResult{}, errors.New("client execution identity mismatch")
