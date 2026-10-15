@@ -1050,3 +1050,16 @@ Recovery must use those existing identities/data with separate attempt logs,
 not reinitialize or create a new genesis to conceal this failure. Go binaries
 have no change in this Python-only correction. A recovered eight-transaction
 closed loop is still pending.
+
+The separate `--attempt NAME` recovery option uses a new 0700 directory below
+root/attempts. Names are bounded lowercase basenames; aliases, nonprivate parents,
+existing attempts and --initialize are rejected. O_EXCL/O_NOFOLLOW logs, initial
+status and final result records are written there. Before starting the signed
+checker all seven initial committed/executed counters must be zero; any other
+value stops automatic nonce-zero replay for review. The unchanged baseline Go
+checker writes its legacy root smoke-result.json location; after it exits the
+runner exclusively links that newly created result into the attempt directory
+and removes only its same-inode source. Existing destination/results are never
+overwritten. Twelve lightweight Python checks pass in 0.031s, including actual
+Unix HTTP authority, path/permission/symlink rejection and exclusive archival.
+This option preserves genesis and all initialized chain/validator state.

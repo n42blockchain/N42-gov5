@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import signal
 import socket
 import stat
@@ -243,13 +244,48 @@ def status(socket_path, identity):
         c.close()
 
 
-def run(m, node, owner, duration, initialize, smoke=None):
+def attempt_logs(root, name):
+    if name is None:
+        return root
+    if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) is None:
+        raise ValueError("attempt requires a 1..32 character lowercase basename")
+    parent = root / "attempts"
+    try:
+        parent.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    private(parent, directory=True)
+    destination = parent / name
+    destination.mkdir(mode=0o700)  # O_EXCL semantics: never reuse an attempt.
+    private(destination, directory=True)
+    return destination
+
+
+def write_record(path, value):
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as out:
+        json.dump(value, out, indent=2)
+
+
+def archive_smoke(source, destination):
+    # The unchanged fixed-baseline checker writes this one legacy location.
+    # Link exclusively before removing only the exact result it just created.
+    private(source)
+    os.link(source, destination, follow_symlinks=False)
+    if source.lstat().st_ino != destination.lstat().st_ino or source.lstat().st_dev != destination.lstat().st_dev:
+        raise ValueError("smoke result changed during archival")
+    source.unlink()
+
+
+def run(m, node, owner, duration, initialize, smoke=None, attempt=None):
     root = Path(m["root"])
+    if attempt is not None and initialize:
+        raise ValueError("recovery attempts cannot initialize existing chain data")
+    log_root = root
     children = []
     logs = []
     env = dict(os.environ, GOMAXPROCS="2")
     def spawn(args, name):
-        log = os.fdopen(os.open(root / (name + ".log"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb")
+        log = os.fdopen(os.open(log_root / (name + ".log"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb")
         logs.append(log)
         process = subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         children.append(process)
@@ -262,7 +298,10 @@ def run(m, node, owner, duration, initialize, smoke=None):
         # Repeat validation after the atomic claim. Uncooperative external
         # programs can still race ports; actual binds remain authoritative.
         validate(root / "run.json")
-        result = {"kind": "functional-check-not-tps", "identity": m["identity"], "genesis_sha256": m["genesis_sha256"], "binaries": {"node": node, "owner": owner}, "resources": resources, "started_unix": time.time(), "owner_parallel_evm": True}
+        log_root = attempt_logs(root, attempt)
+        if smoke is not None and (root / "smoke-result.json").exists():
+            raise ValueError("existing smoke result requires explicit recovery review")
+        result = {"kind": "functional-check-not-tps", "identity": m["identity"], "genesis_sha256": m["genesis_sha256"], "binaries": {"node": node, "owner": owner}, "resources": resources, "started_unix": time.time(), "owner_parallel_evm": True, "attempt": attempt, "log_directory": str(log_root)}
         if smoke is not None:
             result["binaries"]["smoke"] = smoke
         try:
@@ -300,13 +339,20 @@ def run(m, node, owner, duration, initialize, smoke=None):
                     if time.monotonic() > deadline:
                         raise ValueError(f"seven runtime API readiness timeout: {error}") from error
                     time.sleep(0.2)
+            write_record(log_root / "initial-status.json", initial)
             submitted = 0
             if smoke is not None:
+                if any(s.get("committed_executed_transactions") != 0 for s in initial):
+                    raise ValueError("signed batch requires all initial counters zero; inspect existing canonical evidence")
                 p = spawn([smoke["path"], "--smoke-manifest", str(root / "run.json"), "--timeout-seconds", str(duration)], "signed-smoke")
                 if p.wait(timeout=duration + 5) != 0:
                     raise ValueError("signed functional checker failed; inspect retained private log")
                 children.remove(p)
-                evidence = load(root / "smoke-result.json")
+                smoke_path = root / "smoke-result.json"
+                if attempt is not None:
+                    archive_smoke(smoke_path, log_root / "smoke-result.json")
+                    smoke_path = log_root / "smoke-result.json"
+                evidence = load(smoke_path)
                 if evidence.get("identity") != m["identity"] or evidence.get("genesis_sha256") != m["genesis_sha256"] or evidence.get("kind") != "signed-transaction-functional-check-not-tps":
                     raise ValueError("signed functional result binding differs")
                 submitted = evidence["unique_committed_executed_transactions"]
@@ -329,8 +375,7 @@ def run(m, node, owner, duration, initialize, smoke=None):
                     raise ValueError("seven processes did not converge to one nonzero canonical head/counter")
                 time.sleep(0.1)
             result.update(initial=initial, final=final, finished_unix=time.time(), submitted_transactions=submitted, note="process/transport/finality functional check; no transaction TPS")
-            with os.fdopen(os.open(root / "functional-result.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as out:
-                json.dump(result, out, indent=2)
+            write_record(log_root / "functional-result.json", result)
             return result
         finally:
             for p in reversed(children):
@@ -356,6 +401,7 @@ def main():
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--run", action="store_true", help="explicitly claim hardware and launch owned processes")
     parser.add_argument("--initialize", action="store_true", help="explicit fresh DB initialization, only with --run")
+    parser.add_argument("--attempt", help="new private basename for an existing initialized run; separate logs/results, no --initialize")
     parser.add_argument("--node-binary")
     parser.add_argument("--owner-binary")
     parser.add_argument("--smoke-binary", help="explicit gov5-perf-provision executable for one signed functional batch")
@@ -364,14 +410,14 @@ def main():
     try:
         m = validate(args.manifest)
         if not args.run:
-            if args.initialize:
-                raise ValueError("--initialize requires --run")
+            if args.initialize or args.attempt is not None:
+                raise ValueError("--initialize/--attempt require --run")
             print(json.dumps({"validation": "passed", "launch_performed": False, "identity": m["identity"], "genesis_sha256": m["genesis_sha256"]}))
             return 0
         if not 5 <= args.duration_seconds <= 60 or not args.node_binary or not args.owner_binary:
             raise ValueError("bounded 5..60 second run and explicit binaries required")
-        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None)
-        print(json.dumps({"result": str(Path(m["root"]) / "functional-result.json"), "kind": result["kind"]}))
+        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None, args.attempt)
+        print(json.dumps({"result": str(Path(result["log_directory"]) / "functional-result.json"), "kind": result["kind"]}))
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
         print(json.dumps({"error": str(exc), "kind": "functional-check-not-tps"}))
