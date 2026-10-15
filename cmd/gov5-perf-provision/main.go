@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/holiman/uint256"
 	libcrypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -60,10 +62,26 @@ func main() {
 	template := flags.String("template", "", "Absolute empty dedicated performance genesis template")
 	senders := flags.Int("senders", 4, "Small functional fixture senders (1..64); not a throughput workload")
 	basePort := flags.Int("base-port", 25000, "First of seven reserved loopback P2P TCP ports (25000..29993)")
+	smoke := flags.String("smoke-manifest", "", "Explicitly send one small signed batch to the existing private fixture; never a TPS run")
+	timeout := flags.Int("timeout-seconds", 30, "Functional transaction finality timeout (5..60 seconds)")
 	_ = flags.Parse(os.Args[1:])
 	if flags.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(1)
+	}
+	if *smoke != "" {
+		if *root != "" || *template != "" || *timeout < 5 || *timeout > 60 {
+			fmt.Fprintln(os.Stderr, "smoke mode requires only an explicit manifest and timeout 5..60")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout)*time.Second)
+		defer cancel()
+		if err := smokeFixture(ctx, *smoke, runtimeBase); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(filepath.Join(filepath.Dir(*smoke), "smoke-result.json"))
+		return
 	}
 	if err := provision(*root, *template, *senders, *basePort, runtimeBase); err != nil {
 		fmt.Fprintln(os.Stderr, err)

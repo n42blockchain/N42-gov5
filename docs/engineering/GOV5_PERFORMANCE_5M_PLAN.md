@@ -827,3 +827,34 @@ slice. Fifteen lightweight Python checks pass, including claim contention,
 exception cleanup and preservation of another owner's token. The runner itself
 has not been launched: current preflight finds an active Rust hardware claim and
 another eight-process workload. No fleet result or new TPS is claimed.
+
+## Stage 12c: signed functional transaction checker (fleet pending)
+
+The provisioning tool's explicit `--smoke-manifest RUN/run.json` mode reads only
+the separate private load keys, signs two ordered Ethereum nonces per funded
+sender and submits the small batch through the seven private runtime APIs. With
+the default four senders this is eight transactions, enough to cross the owner's
+parallel-import threshold. It reads no validator BLS keys and initializes or
+launches nothing. Genesis-file SHA and actual computed genesis identity must match
+the manifest; socket paths are private, owned and canonical.
+
+All seven initial canonical counters must be zero. Admission uses each API's
+expected canonical head; a head conflict retries only while the chain counter
+remains zero. Once finality is observed the nonce-zero batch is not resent. The
+checker requires seven equal canonical heads and counters of exactly eight (or
+twice the explicitly provisioned sender count), and records that unique chain
+count once. A completed result is never overwritten, and a used fixture refuses
+replay. Queue admission and accepted imports are never counted as finality.
+
+The launcher optionally invokes this mode through `--smoke-binary ABS`, records
+that binary's SHA and binds its private result to the common identity/SHA before
+the final seven-process convergence check. The result remains explicitly
+`signed-transaction-functional-check-not-tps`, with accepted-trusted-execution
+semantics and the current Build+Import double execution disclosed.
+
+Restricted tool tests passed in 0.043s and vet passed; the fifteen Python checks
+still pass. Tests recover real transaction signatures/nonces and test the
+checker's seven Unix-endpoint protocol/accounting and used-fixture refusal. Those
+endpoint fixtures simulate status responses and are not execution or fleet
+evidence. Actual OS-process execution remains blocked by another session's
+active Rust resource claim/workload; no new TPS has been measured.

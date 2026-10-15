@@ -181,7 +181,7 @@ def status(socket_path, identity):
         c.close()
 
 
-def run(m, node, owner, duration, initialize):
+def run(m, node, owner, duration, initialize, smoke=None):
     root = Path(m["root"])
     children = []
     logs = []
@@ -207,6 +207,8 @@ def run(m, node, owner, duration, initialize):
         # programs can still race ports; actual binds remain authoritative.
         validate(root / "run.json")
         result = {"kind": "functional-check-not-tps", "identity": m["identity"], "genesis_sha256": m["genesis_sha256"], "binaries": {"node": node, "owner": owner}, "resources": resources, "started_unix": time.time(), "owner_parallel_evm": True}
+        if smoke is not None:
+            result["binaries"]["smoke"] = smoke
         try:
             if initialize:
                 for d, metadata in [(m["owner_dir"], False)] + [(v["data_dir"], True) for v in m["validators"]]:
@@ -242,6 +244,18 @@ def run(m, node, owner, duration, initialize):
                     if time.monotonic() > deadline:
                         raise ValueError("seven runtime API readiness timeout")
                     time.sleep(0.2)
+            submitted = 0
+            if smoke is not None:
+                p = spawn([smoke["path"], "--smoke-manifest", str(root / "run.json"), "--timeout-seconds", str(duration)], "signed-smoke")
+                if p.wait(timeout=duration + 5) != 0:
+                    raise ValueError("signed functional checker failed; inspect retained private log")
+                children.remove(p)
+                evidence = load(root / "smoke-result.json")
+                if evidence.get("identity") != m["identity"] or evidence.get("genesis_sha256") != m["genesis_sha256"] or evidence.get("kind") != "signed-transaction-functional-check-not-tps":
+                    raise ValueError("signed functional result binding differs")
+                submitted = evidence["unique_committed_executed_transactions"]
+                if type(submitted) is not int or not 2 <= submitted <= 128:
+                    raise ValueError("invalid functional transaction count")
             end = time.monotonic() + duration
             while time.monotonic() < end:
                 live()
@@ -252,11 +266,13 @@ def run(m, node, owner, duration, initialize):
                 final = [status(v["api_socket"], m["identity"]) for v in m["validators"]]
                 heads = {(s["number"], s["block_hash"], s["committed_executed_transactions"]) for s in final}
                 if len(heads) == 1 and final[0]["number"] > 0:
+                    if final[0]["committed_executed_transactions"] != submitted:
+                        raise ValueError("runtime canonical count differs from signed functional result")
                     break
                 if time.monotonic() > convergence:
                     raise ValueError("seven processes did not converge to one nonzero canonical head/counter")
                 time.sleep(0.1)
-            result.update(initial=initial, final=final, finished_unix=time.time(), submitted_transactions=0, note="empty-block process/transport/finality check; no transaction TPS")
+            result.update(initial=initial, final=final, finished_unix=time.time(), submitted_transactions=submitted, note="process/transport/finality functional check; no transaction TPS")
             with os.fdopen(os.open(root / "functional-result.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as out:
                 json.dump(result, out, indent=2)
             return result
@@ -286,6 +302,7 @@ def main():
     parser.add_argument("--initialize", action="store_true", help="explicit fresh DB initialization, only with --run")
     parser.add_argument("--node-binary")
     parser.add_argument("--owner-binary")
+    parser.add_argument("--smoke-binary", help="explicit gov5-perf-provision executable for one signed functional batch")
     parser.add_argument("--duration-seconds", type=int, default=15)
     args = parser.parse_args()
     try:
@@ -297,7 +314,7 @@ def main():
             return 0
         if not 5 <= args.duration_seconds <= 60 or not args.node_binary or not args.owner_binary:
             raise ValueError("bounded 5..60 second run and explicit binaries required")
-        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize)
+        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None)
         print(json.dumps({"result": str(Path(m["root"]) / "functional-result.json"), "kind": result["kind"]}))
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
