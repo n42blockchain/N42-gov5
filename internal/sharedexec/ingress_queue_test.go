@@ -126,6 +126,14 @@ func newStrictIngressFixture(t *testing.T, maxTx, maxBytes int, frameSize ...uin
 }
 
 func TestStrictIngressRealExecutionAndCertifiedCanonicalRelease(t *testing.T) {
+	testStrictIngressExecution(t, false)
+}
+
+func TestStrictIngressUnixRealExecutionAndCertifiedCanonicalRelease(t *testing.T) {
+	testStrictIngressExecution(t, true)
+}
+
+func testStrictIngressExecution(t *testing.T, transport bool) {
 	ctx := context.Background()
 	f := newStrictIngressFixture(t, 10, 1<<20)
 	server, chain, leader, template, frames, keys, from, recipient := f.server, f.chain, f.leader, f.template, f.frames, f.keys, f.from, f.recipient
@@ -133,13 +141,27 @@ func TestStrictIngressRealExecutionAndCertifiedCanonicalRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	admit := func(frame CorpusFrame) (StrictIngressAck, error) {
+		return server.AdmitStrictFrame(ctx, server.Identity(), status.Epoch, frame)
+	}
+	if transport {
+		path := startStrictIngressSocket(t, server)
+		admit = func(frame CorpusFrame) (StrictIngressAck, error) {
+			c, err := DialStrictIngress(ctx, path, server.Identity(), status.ManifestHash, frame.Shard)
+			if err != nil {
+				return StrictIngressAck{}, err
+			}
+			defer c.Close()
+			return c.Admit(ctx, frame)
+		}
+	}
 	for _, frame := range frames {
-		ack, err := server.AdmitStrictFrame(ctx, server.Identity(), status.Epoch, frame)
+		ack, err := admit(frame)
 		if err != nil || ack.NewlyAdmitted != 3 {
 			t.Fatalf("strict signed admission: %+v %v", ack, err)
 		}
 	}
-	duplicate, err := server.AdmitStrictFrame(ctx, server.Identity(), status.Epoch, frames[0])
+	duplicate, err := admit(frames[0])
 	if err != nil || duplicate.NewlyAdmitted != 0 || duplicate.Duplicates != 3 {
 		t.Fatalf("duplicate: %+v %v", duplicate, err)
 	}

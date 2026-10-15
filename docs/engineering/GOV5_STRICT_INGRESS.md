@@ -2,8 +2,9 @@
 
 The owner now has an explicit `EnableStrictIngress` API and an atomic
 `AdmitStrictFrame` API. Constructors leave the queue disabled. This first slice
-is an in-process backend with real execution/commit tests: no binary ingress
-listener, CLI switch, BuildFromQueue RPC or validator producer consumes it yet.
+has both an in-process backend and a separate private Unix binary admission
+listener/client. No CLI switch, BuildFromQueue RPC or validator producer consumes
+the queue yet.
 It does not change the existing native, ETH or shared-validator Submit API.
 
 The preceding [raw supply gate](GOV5_SUPPLY_CODEC.md) passed at 6,499,988.64
@@ -31,8 +32,9 @@ publishes none of the frame, including its new sender lanes and nonce cursors.
 
 Transaction and encoded-byte credits include verification in flight. Limits
 are independently bounded at 2M transactions and 512MiB encoded bytes. Successful
-admission retains one defensive payload copy and raw offsets/hash/nonce/cost
-metadata. A partially consumed slab keeps its **whole byte charge** until its
+admission retains one owned payload and raw offsets/hash/nonce/cost metadata.
+The public in-process API copies its caller buffer; the binary transport transfers
+its budgeted receive buffer without another payload copy. A partially consumed slab keeps its **whole byte charge** until its
 last pending entry is pruned. Pruning also releases or compacts pointer arrays;
 empty sender lanes retain no transaction array. Successful publication transfers
 its in-flight credits to retained credits atomically. Returned selector payloads are copies. These
@@ -40,6 +42,43 @@ credits are not a bound on metadata, GC, caller buffers, sockets or total RSS.
 Recent frame IDs retain 32 payload digests per shard; identical retries report
 zero new admissions, conflicting payloads fail, and expired IDs fail. This check
 is repeated at the final publication mutex, including concurrently verified frames.
+
+## Private binary admission protocol
+
+`ListenStrictIngressUnix` uses the same absolute, unaliased private-directory
+and 0600 socket checks as the existing execution socket, on a distinct endpoint.
+It requires an explicitly enabled queue. `GSI1` pins full chain/genesis identity,
+exact finalized manifest bytes SHA256 and shard; the welcome pins a fresh queue
+epoch. JSON control metadata has a 4096-byte length limit, rejects unknown fields
+and trailing values, and never reads ahead into a transaction payload.
+
+A client first sends only the bounded 84-byte `GCF1` frame header. The owner
+checks descriptor/range/count/length and reserves global transaction **and** byte
+credits before granting an upload. Only after the grant does it allocate/read
+the raw payload. Direct signature/state verification and final publication share
+the same reservation token and owned bytes; successful publication atomically
+transfers this token into retained ownership. A known published duplicate checks
+frame ID, digest, count and encoded length and acknowledges it without a body
+upload or another signature check. Concurrent grants still repeat these checks
+at final publication.
+
+Grant means zero admissions. Only the final identity/manifest/epoch/frame-bound
+ACK reports newly admitted and duplicate counts, whose sum must equal the frame
+count. Busy is a known zero-admission result and consumes no body; the same
+connection remains aligned for an explicit retry. An explicit rejection also
+means this request published nothing. Any missing or malformed ACK, wrong
+binding or ambiguous post-send IO poisons the client connection and returns
+`ErrIngressUnknownOutcome`: no reconnect or automatic frame replay occurs.
+An ACK lost **after publication** retains the admitted queue entries.
+
+At most 64 connections are served. IO uses a 2-second hello deadline and a
+30-second frame deadline; verification also has a server-lifetime-derived
+30-second context. A context cannot hard-interrupt an existing BlockChain mutex
+wait. Close gates new registrations, cancels the owner and closes the listener
+and live connections before waiting for handlers/verification, then frees queue
+payloads. The first client is synchronous, one frame at a time per connection;
+this is not a 6M/s strict online-admission claim. CLI exposure is intentionally
+paired with the later actual producer-consumption integration.
 
 ## Canonical state and failure boundary
 
@@ -80,10 +119,23 @@ Concurrent same-ID/different-payload publication, identical duplicate publicatio
 credit invariants and empty-lane metadata release also pass. Targeted
 `go vet -p 1 ./internal/sharedexec` passed.
 
+The binary slice adds eight tests, including the original six-transaction
+execution/receipt check through actual Unix admission. All 16 strict-ingress,
+four codec and four existing commit/build regressions passed together (0.257s)
+with the same constrained command and selectors; targeted vet also passed.
+Transport negatives cover wrong manifest, oversized/unknown/trailing control
+metadata, grant followed by partial disconnect, busy without losing framing,
+header-only duplicate, two concurrent conflicting granted frames, 64-connection
+cap, and Close while handlers wait for header, body or final ACK. A real private
+Unix test drops the final ACK only after successful publication: the client
+reports unknown and refuses a second send, while the queue records exactly
+three new admissions and releases its reservation. Test setup fixes (a nil
+optional fixture callback and a pre-write error mistaken for lost ACK) preceded
+these passing checks; they did not change protocol authorization.
+
 Race and fresh binary/fleet validation of this new backend await an independent
 BOX claim window. No queue throughput or new chain TPS has been measured.
-Next slices must add a distinct identity/epoch-bound binary admission transport,
-then stable queue-selection leases and BuildFromQueue with actual-applied parent
+Next slices must add stable queue-selection leases and BuildFromQueue with actual-applied parent
 accounts, followed by the default-off owner-queue producer integration. They
 must retain full bodies, leader-owned seals, validator WALs, Import checks and
 strict CommitQC. The present Build/Import test executes both paths separately;
