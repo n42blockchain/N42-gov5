@@ -634,3 +634,47 @@ not yet advertise a runnable validator process. Tests run the actual CLI init
 on a temporary funded genesis and assert shared owner genesis hash, empty
 Account table, absent execution marker and full-node startup rejection. The
 seven-replica remote-execution tests also pass through the extracted initializer.
+
+## Stage 8: actual lightweight Node runtime
+
+`--performance.role validator` and `--performance.execution-socket` are optional
+NodeConfig/CLI process settings, empty by default. All seven validators and the
+standalone owner still use the identical chain configuration/genesis, including
+the existing independent/local prototype metadata. NewNode dispatches this
+explicit role after actual-genesis/network binding checks and before the normal
+OpenDatabase/BlockChain/miner/sync path. It constructs only the metadata store,
+own-key HotStuff engine/WAL, scoped static-peer P2P, metadata body network,
+certificate bridge and remote producer. The command skips normal account wallet
+startup for this role. Nil/default native and ETH dispatch are unchanged.
+
+The public constructor pins paths to the dedicated performance runtime root.
+Datadir/key directories, private BLS/P2P key files and the owner's Unix endpoint
+must exist without symlink aliases, belong to the current user and exclude group
+or other permissions. The BLS key must match this node's genesis validator entry;
+no validator secret is given to the owner. Missing metadata init, public execution
+RPC, unsupported store/domain/deferred modes and inherited N42_/QS_/HIVE_ options
+are refused. Runtime creation also probes the actual owner's full chain identity.
+The owner also refuses metadata-marked stores. Startup installs the durable vote
+journal before enabling metadata-network imports or the producer. Normal CLI IPC
+must be explicitly disabled (`--ipcpath ""`) together with execution HTTP/WS/Auth
+RPC; the performance role never silently rewrites those shared CLI defaults.
+The current applied-child probe fails closed outside the retained 256-block
+history window; late join/restart after that requires a later historical-evidence
+adapter. Constructor failures and Close before/after Start release DB/host/LOCK;
+closing one validator leaves the independent execution owner running.
+
+The actual Node lifecycle test uses a real HotStuff owner BlockChain/QMDB and
+real Unix/P2P services. It submits a signed transfer to the wired producer,
+Builds/seals/imports remotely, and finalizes both databases with a strict 5/7 QC.
+The validator has nil BlockChain/miner/sync/account-manager and an empty Account
+table throughout. Separate cases cover role/endpoint/key/API rejection, the
+public fixed-root guard, Start/Close idempotence and reopening an unused node.
+This is one validator in a test process, not seven validator processes or a TPS
+measurement. Private runtime transaction ingress/status, an explicit launcher
+with atomic claims, and seven-process healthy/failure-path checks remain next.
+
+Validation uses GOMAXPROCS=2 and package concurrency one: Make full-repository
+build; targeted race checks of seven metadata clients, remote producer, child
+recovery, scoped P2P fetch, Node lifecycle, and HotStuff certificate/view gates;
+node/command regressions and vet. These checks do not launch a fleet or measure
+throughput. The existing missing lint-tool limitation remains unchanged.

@@ -25,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/internal/sharedexec"
+	"github.com/n42blockchain/N42/internal/sharedvalidator"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -124,6 +125,13 @@ func run(ctx context.Context, args []string) error {
 	}
 	defer db.Close()
 	if err := db.View(ctx, func(tx kv.Tx) error {
+		metadataOnly, err := sharedvalidator.IsMetadataStore(tx)
+		if err != nil {
+			return err
+		}
+		if metadataOnly {
+			return errors.New("execution owner cannot use a validator metadata store")
+		}
 		stored, err := rawdb.ReadCanonicalHash(tx, 0)
 		if err != nil {
 			return err
