@@ -139,6 +139,10 @@ func appRun(ctx *cli.Context) error {
 	}
 
 	StartNode(ctx, stack, false)
+	if stack.IsPerformanceValidator() {
+		stack.Wait()
+		return nil
+	}
 
 	// Unlock any account specifically requested
 	unlockAccounts(ctx, stack, &DefaultConfig)
@@ -198,6 +202,9 @@ func appRun(ctx *cli.Context) error {
 // DefaultCoprocessorCfg() when this flips it on, mirroring the equivalent
 // fill ApplyDefaults already does for MobileVerifyCfg.
 func applyN42NativeProductionDefaults(ctx *cli.Context) {
+	if DefaultConfig.NodeCfg.PerformanceRole != "" {
+		return
+	}
 	profile, err := params.ResolveExecutionProfile(DefaultConfig.NodeCfg.Profile)
 	if err != nil || profile.IsEthereumEL() {
 		return

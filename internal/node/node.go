@@ -191,6 +191,8 @@ type Node struct {
 	snapSync        *snapsync.Service
 	accman          *accounts.Manager
 
+	performanceValidator *performanceValidatorRuntime
+
 	api                *api.API
 	rpcAPIs            []jsonrpc.API
 	engineStateAdapter *api.EngineStateAdapter // ETH EL mode only
@@ -583,6 +585,14 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 	if err := validatePerformanceNetworkBinding(cfg, configuredGenesis); err != nil {
 		return nil, err
+	}
+	if cfg.NodeCfg.PerformanceRole != "" || cfg.NodeCfg.PerformanceExecutionSocket != "" {
+		metadataNode, err := newPerformanceValidatorNode(ctx, cancel, cliCtx, cfg, profile, configuredGenesis, performanceRuntimeRoot)
+		if err != nil {
+			return nil, err
+		}
+		success = true
+		return metadataNode, nil
 	}
 
 	// Apply storage tier configuration before opening any databases.
@@ -1813,6 +1823,9 @@ func (n *Node) wireCommitteePool(hs *hotstuff.HotStuff) error {
 func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
+	if n.performanceValidator != nil {
+		return n.startPerformanceValidator()
+	}
 
 	// A scheduled MobileAnchor fork makes MobileRegistryRoot mandatory in
 	// HotStuff headers. Fail before starting any service if this node can become
@@ -3452,6 +3465,9 @@ func (n *Node) InstanceDir() string {
 func (n *Node) Close() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
+	if n.performanceValidator != nil {
+		return n.closePerformanceValidator()
+	}
 
 	n.lock.Lock()
 	state := n.state

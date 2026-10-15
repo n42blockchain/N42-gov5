@@ -602,9 +602,17 @@ var (
 	}
 	PerformanceGenesisFlag = &cli.StringFlag{
 		Name:        "performance.genesis",
-		Usage:       "Explicit isolated performance genesis (private+n42 only; independent local execution)",
+		Usage:       "Explicit isolated performance genesis (private+n42 only)",
 		Category:    "DEVELOPMENT",
 		Destination: &DefaultConfig.NodeCfg.PerformanceGenesis,
+	}
+	PerformanceRoleFlag = &cli.StringFlag{
+		Name: "performance.role", Usage: "Explicit performance process role: validator (metadata-only)", Category: "DEVELOPMENT",
+		Destination: &DefaultConfig.NodeCfg.PerformanceRole,
+	}
+	PerformanceExecutionSocketFlag = &cli.StringFlag{
+		Name: "performance.execution-socket", Usage: "Private Unix socket of the isolated Go execution owner", Category: "DEVELOPMENT",
+		Destination: &DefaultConfig.NodeCfg.PerformanceExecutionSocket,
 	}
 )
 
@@ -711,6 +719,8 @@ var (
 		ChainFlag,
 		ProfileFlag,
 		PerformanceGenesisFlag,
+		PerformanceRoleFlag,
+		PerformanceExecutionSocketFlag,
 		MinFreeDiskSpaceFlag,
 		CSWarmDirFlag,
 	}
