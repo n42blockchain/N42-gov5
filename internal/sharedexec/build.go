@@ -61,13 +61,13 @@ func (s *Server) Build(ctx context.Context, request BuildRequest) (BuildResult, 
 		// Outputs have the same body plus result header/rewards. Reserve an
 		// extra header allowance; oversized results are rejected, not cached.
 		reserved := 2*len(request.TemplateRLP) + 4096
-		for (len(s.builds) >= s.capacity || s.buildBytes+reserved > MaxBuildRetainedBytes) && len(s.buildCompleted) > 0 {
+		for (len(s.builds)+len(s.queuePlans) >= s.capacity || s.buildBytes+reserved > MaxBuildRetainedBytes) && len(s.buildCompleted) > 0 {
 			old := s.buildCompleted[0]
 			s.buildCompleted = s.buildCompleted[1:]
 			s.buildBytes -= s.builds[old].bytes
 			delete(s.builds, old)
 		}
-		if len(s.builds) >= s.capacity || s.buildBytes+reserved > MaxBuildRetainedBytes {
+		if len(s.builds)+len(s.queuePlans) >= s.capacity || s.buildBytes+reserved > MaxBuildRetainedBytes {
 			s.mu.Unlock()
 			return BuildResult{}, errors.New("build capacity or retained payload budget busy; retry")
 		}
@@ -113,22 +113,26 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 	}()
 	s.execute.Lock()
 	defer s.execute.Unlock()
-	if err = s.ctx.Err(); err != nil {
-		return
+	result, err = s.executeBuildLocked(input, key.hash, job.bytes)
+}
+
+// executeBuildLocked requires execute, and never reacquires it. Callers retain
+// their owned immutable input and publish accounting before releasing execute.
+func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reserved int) (BuildResult, error) {
+	if err := s.ctx.Err(); err != nil {
+		return BuildResult{}, err
 	}
-	if crypto.Keccak256Hash(input) != key.hash {
-		err = errors.New("owned candidate template hash mismatch")
-		return
+	if crypto.Keccak256Hash(input) != templateHash {
+		return BuildResult{}, errors.New("owned candidate template hash mismatch")
 	}
 	var template block.Block
-	if err = template.Unmarshal(input); err != nil {
-		return
+	if err := template.Unmarshal(input); err != nil {
+		return BuildResult{}, err
 	}
 	header, ok := template.Header().(*block.Header)
 	body, bodyOK := template.Body().(*block.Body)
-	if !ok || !bodyOK || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || body.IsFrameBody() || len(template.Transactions()) > MaxTransactions || template.TxHash() != block.BodyTxRoot(body, header.Time) {
-		err = errors.New("invalid candidate template header or body")
-		return
+	if !ok || header == nil || !bodyOK || body == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || body.IsFrameBody() || len(template.Transactions()) > MaxTransactions || template.TxHash() != block.BodyTxRoot(body, header.Time) {
+		return BuildResult{}, errors.New("invalid candidate template header or body")
 	}
 	s.buildCalls.Add(1)
 	s.prepared = nil // a new build supersedes the only retained execution write
@@ -142,20 +146,17 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 		built, executed, buildErr = s.chain.BuildUnsignedCandidate(s.ctx, &template)
 	}
 	if buildErr != nil {
-		err = buildErr
-		return
+		return BuildResult{}, buildErr
 	}
 	raw, marshalErr := built.Marshal()
 	if marshalErr != nil {
-		err = marshalErr
-		return
+		return BuildResult{}, marshalErr
 	}
-	if len(raw) > MaxBlockBytes || len(raw)+len(input) > job.bytes {
-		err = errors.New("candidate exceeds reserved payload budget")
-		return
+	if len(raw) > MaxBlockBytes || len(raw)+len(input) > reserved {
+		return BuildResult{}, errors.New("candidate exceeds reserved payload budget")
 	}
 	s.prepared = prepared
-	result = BuildResult{Identity: s.identity, TemplateHash: key.hash, BlockHash: built.Hash(), BlockRLP: raw, Result: executed}
+	return BuildResult{Identity: s.identity, TemplateHash: templateHash, BlockHash: built.Hash(), BlockRLP: raw, Result: executed}, nil
 }
 
 func (s *Server) serveBuild(w http.ResponseWriter, r *http.Request) {

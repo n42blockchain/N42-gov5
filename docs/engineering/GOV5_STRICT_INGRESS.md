@@ -3,8 +3,8 @@
 The owner now has an explicit `EnableStrictIngress` API and an atomic
 `AdmitStrictFrame` API. Constructors leave the queue disabled. This first slice
 has both an in-process backend and a separate private Unix binary admission
-listener/client. No CLI switch, BuildFromQueue RPC or validator producer consumes
-the queue yet.
+listener/client. A `BuildFromQueue` RPC now consumes selected nonce prefixes into real unsigned
+candidates. No CLI switch or validator producer uses that RPC yet.
 It does not change the existing native, ETH or shared-validator Submit API.
 
 The preceding [raw supply gate](GOV5_SUPPLY_CODEC.md) passed at 6,499,988.64
@@ -104,6 +104,49 @@ and selection closed. A later idempotent commit can complete the scan and reopen
 the queue. This is a volatile queue: restart chooses a new epoch and must recheck
 canonical nonces. Old ACKs or a nonce-zero corpus cannot resume blindly.
 
+## Queue candidate construction
+
+`BuildFromQueue` accepts a leader-prepared empty-body template, full identity,
+queue epoch and transaction/encoded-byte limits. The owner publicly verifies the
+unsigned HotStuff template and requires its exact parent to be actual-applied.
+A separate bounded parent-account reader returns that parent's nonces/balances,
+gas limit, view and derived next base fee. It never supplies the canonical nonce
+baseline for admission. The builder checks the prepared fee and unchanged gas
+limit, then selects deterministic sender-order round-robin contiguous prefixes
+from each **actual parent** nonce, skipping already-applied ancestor entries
+without deleting them. Balance, base fee, block gas, transaction and encoded-byte
+limits bound selection. It reuses the existing real isolated QMDB builder, which
+rechecks the parent under the chain mutation lock and performs normal signature
+and state execution. Selection is not a sender-trust or execution exemption.
+
+The first valid `(epoch, view)` request binds its full prepared template and
+limits; changing them conflicts. Its one immutable selected full `TemplateRLP`
+and successful result are pinned until canonical expiry. Input and reserved
+output share the existing 128MiB encoded build budget; completed plans retain
+input plus actual output. Failed attempts retain input and must reserve output
+again before retrying **the same body**. Normal Build cannot evict queue plans;
+both paths share the registry slot limit. Canonical reconciliation releases plans
+at expired heights, maintaining a monotonic expired-view floor including pruned
+abandoned plans, so removing a guard cannot authorize that view at a new height.
+This conservative floor can require a newer view after an abandoned higher-view
+plan. Exhausted plan capacity fails closed until canonical progress or an
+explicit new process/queue epoch, rather than silently replacing a body.
+
+This first RPC holds the owner execute mutex through selection, build and
+completion/accounting. Request cancellation does not cancel already selected
+owner execution; successful results remain available to an exact retry, even
+when actual applied state has advanced. Waiting on this mutex is not a hard
+context deadline. This is deliberately still serial and makes no pipelining
+claim. Retained budgets exclude transient decoded transactions, responses,
+metadata, an optional prepared own-build write and total RSS.
+
+The independent client verifies full body root, transaction/encoded-byte limits,
+result commitments, unchanged leader header except TxHash and the existing
+execution/fork result fields, and reconstructs the selected template hash.
+Leader Seal, persistent own-candidate WAL, full-body Import, execution evidence
+and strict CommitQC remain required. The queue tests use separate Build and
+Import executions; they do not claim prepared reuse.
+
 ## Validation and remaining work
 
 Eight targeted queue tests and four existing default commit/unsigned-build
@@ -133,10 +176,27 @@ three new admissions and releases its reservation. Test setup fixes (a nil
 optional fixture callback and a pre-write error mistaken for lost ACK) preceded
 these passing checks; they did not change protocol authorization.
 
+Eight queue-build tests now pass with all earlier selected regressions: 35
+test functions together (0.373s), constrained to `GOMAXPROCS=2 go test -p 1
+./internal/sharedexec` with selector
+`^Test(QueueBuild|StrictIngress|Corpus|CanonicalCommitOverUnixWithRealExecution|CommitDisabledByDefault|CertifiedCommitUnixRequiresFiveOfSevenCommitDomain|UnsignedBuild)`,
+`-count=1 -timeout=90s`. Targeted vet also passed. Real Unix tests use two
+independently keyed leaders and one six-transaction queue across two blocks,
+verify actual nonce/balance/receipt state, reject 4/7 finality, and free only on
+5/7 canonical commitment. They also build both blocks while applied state leads
+canonical, then finalize the prefix in order. Further cases cover cancellation
+after selection, failure retaining the selected input for recovery, late
+admission not changing a view's body, cache pressure, byte-prefix limits,
+invalid requests, expired view reuse at a higher height, caller response copies
+and malformed/auxiliary-body return data. The client explicitly rejects verifier
+and proof payloads and checks scheduled rewards against WithdrawalsHash; this
+closes a review finding where transaction root and header hash alone did not
+bind those auxiliary fields.
+
 Race and fresh binary/fleet validation of this new backend await an independent
 BOX claim window. No queue throughput or new chain TPS has been measured.
-Next slices must add stable queue-selection leases and BuildFromQueue with actual-applied parent
-accounts, followed by the default-off owner-queue producer integration. They
+The next slice must integrate the default-off owner-queue producer and CLI
+using the existing full-body candidate, leader Seal and WAL path. They
 must retain full bodies, leader-owned seals, validator WALs, Import checks and
 strict CommitQC. The present Build/Import test executes both paths separately;
 it does not claim own-build reuse or pipelined execution.
