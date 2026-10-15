@@ -186,7 +186,7 @@ func TestStrictIngressMetadataBoundsAndDefaultDisabled(t *testing.T) {
 			t.Fatal("unknown/trailing metadata accepted")
 		}
 	}
-	chain, _, _, _, _, _ := unsignedBuildFixtureWithSet(t, 7, nil)
+	chain, _, _, template, _, _ := unsignedBuildFixtureWithSet(t, 7, nil)
 	s, err := New(chain, 8)
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +197,10 @@ func TestStrictIngressMetadataBoundsAndDefaultDisabled(t *testing.T) {
 	}
 	if err := s.ServeStrictIngress(nil); err == nil {
 		t.Fatal("unowned listener accepted")
+	}
+	rawRequest := buildRequest(t, s.Identity(), template)
+	if _, err := s.BuildFromQueue(context.Background(), QueueBuildRequest{Identity: s.Identity(), Epoch: [16]byte{1}, PreparedHash: rawRequest.TemplateHash, PreparedRLP: rawRequest.TemplateRLP, MaxTransactions: 6, MaxEncodedBytes: 1 << 20}); err == nil {
+		t.Fatal("default owner silently enabled queue build")
 	}
 }
 func TestStrictIngressClientUnknownAckNeverReplays(t *testing.T) {
