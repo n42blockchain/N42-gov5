@@ -876,3 +876,59 @@ scan only after confirming their ownership bindings. Runs are bounded below the
 protocol's 30-minute refresh interval. Eighteen lightweight Python checks pass,
 including timing, partial dual-claim collision, contention yield and replacement
 preservation. These checks do not launch a fleet or establish a TPS result.
+
+## Stage 13: opt-in reuse of owner-local candidate EVM output
+
+The executor's `--reuse-own-build` flag defaults to false. When explicitly enabled
+on a fixed-seven performance owner, Build prepares an owned state write while
+its read transaction is still valid. CommitBlock may read pending credits and
+storage, so postponing that preparation until after the read closes is unsafe.
+The cache retains prepared rows/logged writer calls, a copied linear root dirty
+snapshot, receipts, unpaid rewards and the complete unsigned candidate bytes.
+It retains neither the full IBS/account prefetcher nor the read transaction.
+
+There is at most one pending execution capsule, guarded by the existing owner
+execution lock. Its separate 128MiB budget counts backing capacities, variable
+code/row/log payloads and receipt/record structures; allocator bookkeeping is
+outside that payload budget. The pre-existing persistent speculative QMDB tree
+is the owner's working tree and is not duplicated into the capsule. An over-budget
+write is not retained. A new build, a non-durable import with an applied parent,
+or Close drops the pending capsule; completed Build response bytes retain their existing
+128MiB registry budget. Missing, superseded or server-restart cache entries use
+the ordinary sealed-import processor. Request cancellation cannot create a
+second owner while its worker continues.
+
+Adoption takes `bc.lock` under the server execution lock. It verifies the actual
+public BLS seal and body, requires the entire unsigned header/body bytes to match
+after zeroing only the reserved trailing 96-byte seal, checks the configuration
+fingerprint and execution commitments, and rechecks the actual applied parent
+and live parent root. The opaque capsule is bound to its original BlockChain
+and consumed by every attempted write, including failure. No private validator
+key or trusted finality capability is involved.
+
+The existing private block/state writer applies the prepared rows and replays
+the exact dirty set onto the live QMDB computer, preserving its reproduced-root
+guard, atomic data/receipt/undo/applied-marker write and failure peel. Error or
+panic before completion restores the live tree. Canonical state still advances
+only through strict CommitQC. Receipt/log metadata is rebound to the sealed hash.
+
+This slice eliminates the second **EVM execution**, not the live QMDB root fold.
+ComputeRootShared currently also folds, so neither that API nor AdoptOwnAppends
+establishes root-once execution. A later consuming transfer of the prepared tree,
+index and undo/flush state needs its own rollback/lifecycle proof. The new
+performance-only processor-entry counter is diagnostic (failed attempts included),
+not a finality/TPS metric.
+
+Real Unix/BlockChain tests prove Build=one processor entry and matching sealed
+Import adds none, versus ordinary import; root/receipts/gas/plain balances and
+durable markers agree. Actual 5/7 CommitQC then finalizes without re-execution.
+Other tests cover default-off, cache loss/server reopening, modified bodies and
+validly signed wrong roots, invalid seals, stale parents, and injected write
+errors/panics followed by safe ordinary-import recovery. State tests prove copied
+dirty values, no retained reader and capacity-based budgeting. Restricted checks
+passed (state 0.025s, sharedexec 0.122s, executor command 0.017s; added wrong-header
+0.054s and error/panic 0.038s checks), default parallel regression 0.024s and vet.
+Feature race/full rebuild remain gated on quiet hardware. The first OS-process
+baseline monitor remains fixed at fcdb22d2 with this optimization off; it is still
+waiting on another driver's workload. No seven-process or new TPS result is
+claimed here.

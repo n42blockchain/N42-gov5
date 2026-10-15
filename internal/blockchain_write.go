@@ -176,7 +176,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	if err := bc.joinLagWrite(); err != nil {
 		return NonStatTy, err
 	}
-	return bc.writeBlockWithStateOpt(blk, receipts, ibs, nopay, nil)
+	return bc.writeBlockWithStateOpt(blk, receipts, ibs, nopay, nil, nil)
 }
 
 // writeBlockWithStateJob is the ordered writer's write of j (its own
@@ -184,10 +184,10 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 // captured at the hand-off and no tree bookkeeping after the commit (the
 // joiner does it).
 func (bc *BlockChain) writeBlockWithStateJob(j *lagWriteJob) (WriteStatus, error) {
-	return bc.writeBlockWithStateOpt(j.blk, j.receipts, j.ibs, j.nopay, j)
+	return bc.writeBlockWithStateOpt(j.blk, j.receipts, j.ibs, j.nopay, j, nil)
 }
 
-func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int, job *lagWriteJob) (status WriteStatus, retErr error) {
+func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int, job *lagWriteJob, ownPrepared *state.PreparedStateWrite) (status WriteStatus, retErr error) {
 	// The receipts future of this block: the import's, or the one the hand-off
 	// took with it.
 	var future *receiptsResultFuture
@@ -298,7 +298,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	// history fold and the commit path also take -- is not held across the
 	// wait.
 	var (
-		prepared     *state.PreparedStateWrite
+		prepared     = ownPrepared
 		preparedLogs *rawdb.PreparedLogs
 	)
 	if job != nil {

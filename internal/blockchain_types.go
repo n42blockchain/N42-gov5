@@ -167,6 +167,9 @@ type BlockChain struct {
 	ChainDB      kv.RwDB
 	engine       consensus.Engine
 
+	// Explicit performance builder/import processor entries, not committed TPS.
+	performanceExecutionAttempts atomic.Uint64
+
 	// Transaction-lookup indexing, when a tier outside this package owns it.
 	// Declared as an interface rather than imported: internal/txlookup reaches
 	// internal/ethel, which imports this package, so depending on the
