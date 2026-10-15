@@ -1,9 +1,10 @@
 # Isolated Go signed-corpus transport
 
-Status: targeted tests, race, the clean Make build and preparation of 192M signed
-transactions have passed. No 6M/s qualification or chain TPS result has been
-obtained. Runtime transaction admission, consensus, execution and signature
-policies remain unchanged.
+Status: targeted tests, race, the clean Make build, preparation of 192M signed
+transactions and the 20-second raw transport qualification have passed. The
+receiver measured 6,499,988.64 unique transactions/second. No chain TPS result
+has been obtained. Runtime transaction admission, consensus, execution and
+signature policies remain unchanged.
 
 The four codec tests passed on 2026-10-15 with `GOMAXPROCS=2 go test -p 1
 ./internal/sharedexec -run '^TestCorpus' -count=1` (package 0.014s). The BOX
@@ -47,10 +48,34 @@ Its chain ID is 4205001 and genesis hash is
 Evidence is retained under
 `/data/blockchain/gov5-work/validation/20261015-gov5-supply-b0d9bdd5/` and
 `/data/blockchain/gov5-performance-5m/supply/s192a/prepare-cost.json`.
-The preparation claim was released; qualification must acquire a new BOX turn.
+The preparation claim was released before qualification acquired a new BOX turn.
 Offline verification does not count as online verification or canonical execution:
-both reported counters remain zero. No receiver transport rate has been measured
-by this preparation result.
+both reported counters remain zero.
+
+## First raw transport qualification
+
+On 2026-10-15 at 21:17 UTC, attempt `q1` used the same pinned binary and manifest
+under a separate BOX claim. The receiver confirmed 130,000,000 unique transactions
+over an actual monotonic window of 20.000034967 seconds:
+**6,499,988.63574487 transactions/second**, or 0.6426258658 encoded GiB/second.
+The offered rate was 6.5M/s. This demonstrates the requested 6M/s supply gate;
+it does not measure maximum transport capacity.
+
+All 64 shards passed their full EOF integrity checks. Read, written,
+acknowledged and final receiver counts were each 192,000,000, with zero
+duplicates. The corpus remained available throughout the measured window and
+finished at 29.538605109 seconds. Process RSS sampling observed up to 1,036,344
+KiB; this is an observed lower bound, not a guaranteed aggregate peak.
+Page cache was not explicitly preloaded and its state was uncontrolled.
+
+The command returned zero and released its claim. The raw result is retained at
+`/data/blockchain/gov5-performance-5m/supply/s192a/qualification-q1/result.json`;
+the validation artifact also retains per-second CPU, IO and memory observations.
+Its scope is `raw-signed-wire-transport-only`, with **`crypto_verified=0` and
+`on_chain_committed=0`**. The receiver parsed and integrity-checked the previously
+offline-verified corpus, then discarded payloads. No execution queue, online
+signature admission or consensus execution was involved. A 90-second supply
+window and the 5M committed/executed chain target remain unproven.
 
 ## Corpus identity and integrity
 
