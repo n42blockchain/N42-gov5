@@ -772,3 +772,25 @@ Build/Import and QMDB applied marker, before the existing local Seal/WAL, strict
 5/7 CommitQC and ingress/status assertions. The restricted Node test passed in
 0.361s. This remains one runtime Node with a real owner and synthesized public
 certificates; it is not seven processes or a new throughput measurement.
+
+## Stage 12a: fresh eight-process fixture provisioning
+
+`cmd/gov5-perf-provision` accepts an explicit fresh child of the dedicated runtime
+root and the empty performance genesis template. It writes seven independent
+validator BLS and P2P keys only in each validator's private directory; the owner
+receives no keys. All eight processes reference one populated genesis file and a
+manifest binding its full SHA256 and actual genesis header hash. Runtime roles
+and execution socket stay outside the immutable ChainConfig.
+
+Generated JSON configs use the existing YAML loader, six explicit IPv4 loopback
+static peers per validator, disabled discovery/QUIC/public bootnodes and disabled
+standard RPC surfaces. The small fixture uses four funded Ethereum-secp256k1
+senders by default and a 2000ms per-validator production interval. These choices
+are for functional checks, not the final performance workload. Load keys remain
+in a separate private load directory, never in the owner or repository.
+
+Provisioning refuses existing run roots, uses exclusive 0600 files/0700 directories
+and rejects symlink ancestry before mutation. Failure retains partial private
+files for review. It never initializes databases, launches/stops a process or
+deletes data. Its real config-loader/public-validator-set/key-binding and path
+tests passed in 0.023s; restricted vet passed. Provisioning is not a fleet run.
