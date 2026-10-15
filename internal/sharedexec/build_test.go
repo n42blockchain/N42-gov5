@@ -27,13 +27,17 @@ import (
 )
 
 func unsignedBuildFixture(t *testing.T, extra ...func(*conf.Genesis)) (*internal.BlockChain, *hotstuff.HotStuff, *hotstuff.HotStuff, *block.Block, types.Address, *commitment.QMDBRootComputer) {
+	return unsignedBuildFixtureWithSet(t, 4, nil, extra...)
+}
+
+func unsignedBuildFixtureWithSet(t *testing.T, count int, observeKeys func([]blscommon.SecretKey), extra ...func(*conf.Genesis)) (*internal.BlockChain, *hotstuff.HotStuff, *hotstuff.HotStuff, *block.Block, types.Address, *commitment.QMDBRootComputer) {
 	t.Helper()
 	// Only the test leader retains its test signing key. The executor receives
 	// genesis public keys and initializes a verifier without Authorize.
 	var keys []blscommon.SecretKey
 	var liveRoot *commitment.QMDBRootComputer
 	chain, transfer, recipient := executionFixtureConfigured(t, []bool{true}, func(g *conf.Genesis) {
-		for i := 0; i < 4; i++ {
+		for i := 0; i < count; i++ {
 			key, err := bls.RandKey()
 			if err != nil {
 				t.Fatal(err)
@@ -47,6 +51,9 @@ func unsignedBuildFixture(t *testing.T, extra ...func(*conf.Genesis)) (*internal
 			extra[0](g)
 		}
 	}, func(root *commitment.QMDBRootComputer) { liveRoot = root })
+	if observeKeys != nil {
+		observeKeys(keys)
+	}
 	cfg := chain.Config()
 	public := hotstuff.New(cfg.HotStuff, cfg)
 	t.Cleanup(func() { _ = public.Close() })

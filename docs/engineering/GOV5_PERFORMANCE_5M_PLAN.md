@@ -374,3 +374,58 @@ NodeConfig/CLI roles and endpoints. All processes must retain the same genesis
 ChainConfig; process-specific roles must not be placed in the immutable chain
 configuration. Owner finality capability stays with one explicit bridge and is
 never distributed to seven ordinary execution import clients.
+
+## Stage 6: public CommitQC transport and durable retry
+
+`POST /v1/commit-qc` and `Client.CommitCertified` now accept a complete public
+CommitQC instead of the prototype owner capability. The execution service checks
+full RPC chain identity/hash/height/parent and actual durable execution. Under
+the chain mutation lock it verifies the strict **Commit** signing domain, a
+5/7 quorum against exactly the fixed seven-member genesis key/address set, and
+the stored header's canonical extra, view proposer and real BLS seal. It then
+uses the same append-only executed canonical helper. Duplicate requests verify
+the certificate again. PrepareQCs, 4/7 certificates, invalid seals, wrong chain
+identity, unexecuted blocks and conflicting canonical forks cannot authorize it.
+No owner capability or validator secret enters this transport/executor.
+
+The current legacy QC signature domain is phase/view/block hash. It does not
+sign chain ID/genesis explicitly; those are bound by RPC identity, the frozen
+genesis validator set, and the locally stored sealed block's ancestry. This is
+not an H2-v4 chain-bound signature claim. H2-v4, committee evidence and
+validator-set changes remain rejected in this performance bridge.
+
+HotStuff Service now has an explicit optional CommitCertificateSink. Its actual
+OutputBlockCommitted handler preserves and passes the complete output QC.
+Before sending, it persists the full certificate and a pending marker with the
+resolved consensus/WAL snapshot in its own transaction. A durable remote ACK
+only clears the pending marker; the full proof remains for audit. Failed/lost
+ACKs retain the original certificate. Startup, block import, embedded header
+QCs and an optional one-second retry loop replay pending proofs in height order.
+The pending set is bounded at 256; it cannot silently drop older committed
+proofs. Persistence failure stops the opted-in service, and malformed persisted
+records fail closed. Ordinary nil/native/ETH services keep their existing path.
+
+CertificateBridge builds hash/height/parent requests from the validator's local
+metadata database and checks its genesis/config against the client's identity.
+It sends public certificates only. The validator store and executor store are
+different databases: ACK and local WAL updates have no cross-database atomicity.
+This slice deliberately does not pretend remote ACK advanced the validator's
+local canonical/head metadata; the next runtime adapter must implement that
+separate recovery state machine, preserve availability and independent vote WAL,
+and use validated remote execution evidence for its vote gate.
+
+Real Unix/BlockChain tests prove 4/7 rejection, 5/7 Prepare-domain rejection,
+5/7 Commit acceptance, duplicate revalidation, wrong identity and unavailable
+execution rejection. A separate metadata/WAL database forwards a valid proof,
+loses the ACK after the remote canonical transaction actually commits, and
+restarts/replays the preserved certificate without re-executing the block or
+changing its local canonical head. The actual Service output handler test checks
+complete certificate/pending/WAL durability before its sink is called and proves
+the sink cannot mutate the saved proof. Restricted sharedexec/CLI, Service/default
+regressions, performance canonical regressions and vet pass. No fleet, new TPS,
+full seven-validator runtime or prepared own-build execution reuse is claimed.
+
+Next independent slice: a lightweight validator metadata/header/body/WAL runtime
+and process roles in NodeConfig/CLI, keeping every process on the same immutable
+genesis ChainConfig. It must avoid local NewBlockChain/NewMiner execution paths
+and advance local metadata only after authenticated execution and commit evidence.

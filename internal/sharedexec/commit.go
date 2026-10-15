@@ -12,6 +12,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -56,6 +57,10 @@ func (s *Server) Commit(ctx context.Context, request CommitRequest, owner [32]by
 	if !s.authorizedCommit(owner) {
 		return CommitResult{}, errors.New("commit owner authorization required")
 	}
+	return s.commit(ctx, request, nil)
+}
+
+func (s *Server) commit(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate) (CommitResult, error) {
 	if request.Identity != s.identity || request.Number == 0 || request.BlockHash == (types.Hash{}) {
 		return CommitResult{}, errors.New("commit chain identity, hash or height mismatch")
 	}
@@ -139,7 +144,11 @@ func (s *Server) Commit(ctx context.Context, request CommitRequest, owner [32]by
 	if verified == nil {
 		return CommitResult{}, errors.New("commit requires actual durable execution")
 	}
-	if !duplicate {
+	if certificate != nil {
+		if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
+			return CommitResult{}, err
+		}
+	} else if !duplicate {
 		// Do not use CommitToCanonicalWith's bookkeeping hook for authorization:
 		// hook errors are swallowed. The service owns canonical decisions;
 		// CommitExecutedExtension also rechecks applied state under bc.lock,
