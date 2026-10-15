@@ -94,6 +94,9 @@ zkguest:
 gov5-perf-load: go-version
 	$(GOBUILD) -o $(BUILD_PATH)gov5-perf-load ./cmd/gov5-perf-load
 
+gov5-replay: go-version
+	$(GOBUILD) -o $(BUILD_PATH)gov5-replay ./cmd/gov5-replay
+
 clef:
 	$(GOBUILD) -o $(BUILD_PATH)clef ./cmd/clef
 	@echo "Done building clef."
