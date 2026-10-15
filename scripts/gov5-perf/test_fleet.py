@@ -101,6 +101,30 @@ class FleetTest(unittest.TestCase):
         self.assertEqual(fleet.load(source), {"unique": 9})
         self.assertEqual(fleet.load(destination), {"unique": 8})
 
+    def test_restart_mode_rejects_invalid_combinations_before_claim(self):
+        for initialize, smoke, attempt in ((True, None, "restart"), (False, {}, "restart"), (False, None, None)):
+            with self.subTest(initialize=initialize, smoke=smoke, attempt=attempt), patch.object(fleet, "quiet_checks", side_effect=AssertionError("claimed hardware")):
+                with self.assertRaisesRegex(ValueError, "restart requires"):
+                    fleet.run({"root": str(self.root)}, {}, {}, 5, initialize, smoke, attempt, self.root / "baseline.json")
+
+    def test_restart_baseline_requires_same_runtime_binaries_and_nonzero_evidence(self):
+        manifest = {"root": str(self.root), "identity": {"test": "identity"}, "genesis_sha256": "11" * 32}
+        node, owner = {"path": "/fixed/n42", "sha256": "22" * 32}, {"path": "/fixed/owner", "sha256": "33" * 32}
+        directory = fleet.attempt_logs(self.root, "baseline")
+        path = directory / "functional-result.json"
+        status = {"identity": manifest["identity"], "number": 98, "block_hash": "0x" + "44" * 32, "committed_executed_transactions": 8}
+        baseline = {"kind": "functional-check-not-tps", "identity": manifest["identity"], "genesis_sha256": manifest["genesis_sha256"],
+                    "final": [status] * 7, "binaries": {"node": node, "owner": owner}, "log_directory": str(directory)}
+        self.write(path, baseline)
+        self.assertEqual(fleet.restart_baseline(manifest, node, owner, False, None, "restart", path), baseline)
+        with self.assertRaisesRegex(ValueError, "binary paths/SHAs"):
+            fleet.restart_baseline(manifest, dict(node, sha256="changed"), owner, False, None, "restart", path)
+        for status in baseline["final"]:
+            status["committed_executed_transactions"] = 0
+        self.write(path, baseline)
+        with self.assertRaisesRegex(ValueError, "nonzero"):
+            fleet.restart_baseline(manifest, node, owner, False, None, "restart", path)
+
     def write(self, path, value):
         path.write_text(json.dumps(value))
         path.chmod(0o600)
