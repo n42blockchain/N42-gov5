@@ -299,6 +299,7 @@ type supplySample struct {
 	Elapsed float64 `json:"elapsed_seconds"`
 	Unique  uint64  `json:"receiver_unique_provisional"`
 	Bytes   uint64  `json:"receiver_encoded_bytes_provisional"`
+	at      time.Time
 }
 
 // The interval conservatively surrounds its counter boundaries: start time
@@ -306,14 +307,19 @@ type supplySample struct {
 func supplyBoundary(start time.Time, sink *supplySink, begin bool) supplySample {
 	var result supplySample
 	if begin {
-		result.Elapsed = time.Since(start).Seconds()
+		result.at = time.Now()
 	}
 	result.Unique = sink.unique.Load()
 	result.Bytes = sink.wireBytes.Load()
 	if !begin {
-		result.Elapsed = time.Since(start).Seconds()
+		result.at = time.Now()
 	}
+	result.Elapsed = result.at.Sub(start).Seconds()
 	return result
+}
+
+func supplyAvailableAtBoundary(total uint64, end supplySample, finished *time.Time) bool {
+	return finished != nil && end.Unique < total && finished.After(end.at)
 }
 
 func qualifySupply(ctx context.Context, root, attempt string, offered uint64, warm, measured time.Duration) error {
@@ -450,10 +456,17 @@ func qualifySupply(ctx context.Context, root, attempt string, offered uint64, wa
 	if elapsed > 0 {
 		rate = float64(end.Unique-begin.Unique) / elapsed
 	}
-	passed := runErr == nil && elapsed >= measured.Seconds() && rate >= 6_000_000 && end.Unique < manifest.Descriptor.TotalTransactions() && sink.integrity() == nil
+	finished := sink.receivedComplete.Load()
+	availableAtEnd := supplyAvailableAtBoundary(manifest.Descriptor.TotalTransactions(), end, finished)
+	passed := runErr == nil && elapsed >= measured.Seconds() && rate >= 6_000_000 && availableAtEnd && sink.integrity() == nil
 	result := map[string]any{"scope": "raw-signed-wire-transport-only", "qualified": passed, "manifest_sha256": manifest.Digest, "corpus_id": manifest.CorpusID, "session_epoch": fmt.Sprintf("%x", sink.epoch), "offered_tps": offered, "warmup_seconds": warm.Seconds(), "window_start": begin, "window_end": end, "actual_window_seconds": elapsed, "receiver_unique_wire_tps": rate, "receiver_encoded_gib_per_second": float64(end.Bytes-begin.Bytes) / elapsed / (1 << 30), "all_shards_integrity_verified": sink.integrity() == nil, "corpus_exhausted_in_window": end.Unique >= manifest.Descriptor.TotalTransactions(), "receiver_unique_final": sink.unique.Load(), "duplicates": sink.duplicates.Load(), "sender_read": counters.read.Load(), "sender_written": counters.written.Load(), "sender_acknowledged": counters.acknowledged.Load(), "crypto_verified": 0, "on_chain_committed": 0, "samples": samples, "corpus_cache_state": "not explicitly preloaded; kernel page cache uncontrolled", "gomaxprocs": runtime.GOMAXPROCS(0), "sender_file_buffer_bytes_per_shard": 8 << 20, "global_unacknowledged_tx_limit": 2_000_000, "global_unacknowledged_encoded_byte_limit": 512 << 20}
 	if runErr != nil {
 		result["error"] = runErr.Error()
+	}
+	result["corpus_available_through_window_end"] = availableAtEnd
+	if finished != nil {
+		result["corpus_finished_elapsed_seconds"] = finished.Sub(pacer.start).Seconds()
+		result["corpus_exhausted_in_window"] = end.Unique >= manifest.Descriptor.TotalTransactions() || !finished.After(end.at)
 	}
 	if err := exclusiveJSON(filepath.Join(output, "result.json"), result); err != nil {
 		return err
