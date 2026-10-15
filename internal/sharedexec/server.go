@@ -350,29 +350,37 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ListenUnix refuses symlinked/public directories and existing socket paths.
 // Filesystem permissions authorize local clients; no public TCP listener exists.
 func (s *Server) ListenUnix(path string) (*http.Server, net.Listener, error) {
-	if !filepath.IsAbs(path) {
-		return nil, nil, errors.New("execution socket path must be absolute")
-	}
-	dir := filepath.Dir(path)
-	real, err := filepath.EvalSymlinks(dir)
-	if err != nil || real != dir {
-		return nil, nil, errors.New("execution socket directory must exist without symlinks")
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, nil, errors.New("execution socket directory requires private permissions")
-	}
-	if _, err := os.Lstat(path); !os.IsNotExist(err) {
-		return nil, nil, errors.New("execution socket path already exists")
-	}
-	listener, err := net.Listen("unix", path)
+	listener, err := listenPrivateExecutionUnix(path)
 	if err != nil {
-		return nil, nil, err
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		_ = listener.Close()
 		return nil, nil, err
 	}
 	server := &http.Server{Handler: s, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 4096}
 	return server, listener, nil
+}
+
+func listenPrivateExecutionUnix(path string) (net.Listener, error) {
+	if !filepath.IsAbs(path) {
+		return nil, errors.New("execution socket path must be absolute")
+	}
+	dir := filepath.Dir(path)
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil || real != dir {
+		return nil, errors.New("execution socket directory must exist without symlinks")
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("execution socket directory requires private permissions")
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		return nil, errors.New("execution socket path already exists")
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	return listener, nil
 }
