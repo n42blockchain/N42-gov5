@@ -523,3 +523,47 @@ explicit unsigned Build (seal=false) retain their intended unset fields;
 nil-performance/native/ETH verification is unchanged. The regression signs such
 blocks with a real test leader and proves both the Unix executor entry and direct
 performance BlockChain batch import reject them without advancing state/head.
+
+## Stage 7c: remote leader producer with per-view candidate WAL
+
+The metadata validator now has a real BlockProducer: it prepares a template in
+its own initialized consensus engine, calls Unix Build, verifies the returned
+prepared fields/results, seals locally, and persists the sealed body plus a
+per-view parent/hash binding before remote import or proposal. Only durable
+remote import followed by a still-current leader/view can call the real
+consensus proposal path through a performance-only view/leader/parent/phase
+check held under the engine lock. Retrying/reopening a producer in that view loads the
+same sealed body instead of building another payload. Hash-only finality through
+the producer is refused; CommitQC remains the only runtime commit authority.
+
+The async queue owns normalized Ethereum-wire transaction copies, signature
+recovery ignores caller sender claims, and encoded retention/count are bounded
+at 64MiB/200k. Canonical inclusion prunes the volatile pool. Uncommitted ancestor
+transactions are excluded only for that parent's child, rather than discarded
+before finality. This is an exact valid-batch prototype: failed candidate
+selection/nonce/gas cases still require repacking instead of silently returning
+a subset. The pool is volatile, and general mempool replacement/repacking and
+single-gateway intake remain later optimization work.
+
+The optional certificate-sink production gate now checks the actual wrapped
+BlockApplied evidence. A metadata store's absent QMDB marker cannot trigger the
+legacy diagnostic gate's default-true behavior. Nil/native services retain that
+behavior. Parent-unavailable production parks/fetches and the existing durable
+import notification resumes it. Producer Stop cancels active Unix requests,
+drains attempts and releases its queue. A view change/cancel does not publish a
+newly built candidate for the obsolete view.
+
+The real transfer test observes the actual consensus Proposal after candidate
+WAL durability, keeps canonical at genesis until 5/7 QC, and proves a new producer
+object with an empty pool reuses the existing sealed candidate with BuildCalls=1
+and ImportCalls=1. A public observer cannot produce and unsigned admission fails.
+An async attempt blocked at the real Unix transport is canceled/drained before
+any execution/proposal. Restricted regressions/vet pass. The one Build and one
+Import still represent **two executions**, not prepared-state adoption.
+
+Before exposing the complete Node role, view-change recovery must handle an
+already executed orphan whose parent is the older HighQC. The proposed next
+small slice re-proposes the valid child on the owner's actual applied lineage
+instead of constructing a competing sibling or rewinding world state. Node
+lifecycle/CLI and runtime transaction ingress follow after that. No running
+seven-process fleet or new TPS measurement is claimed here.

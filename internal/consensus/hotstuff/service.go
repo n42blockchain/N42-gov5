@@ -365,6 +365,16 @@ func (s *Service) committedParentBlocked(parentHash types.Hash) bool {
 //
 // Returns true when production may proceed.
 func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
+	if s.certificateSink != nil && parentHash != (types.Hash{}) {
+		applied, checked, _ := s.blockExecutionStatus(parentHash)
+		if !checked || !applied {
+			if s.blockFetcher != nil {
+				s.blockFetcher.FetchBlockByHash(parentHash)
+			}
+			return false
+		}
+		return true
+	}
 	if parentHash == (types.Hash{}) || s.db == nil || s.blockFetcher == nil {
 		return true
 	}
