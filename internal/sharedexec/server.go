@@ -64,19 +64,24 @@ type importJob struct {
 }
 
 type Server struct {
-	chain       *internal.BlockChain
-	identity    Identity
-	capacity    int
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mu          sync.Mutex
-	jobs        map[importKey]*importJob
-	completed   []importKey
-	wg          sync.WaitGroup
-	imports     atomic.Uint64
-	closed      bool
-	execute     sync.Mutex
-	commitOwner [32]byte
+	chain          *internal.BlockChain
+	identity       Identity
+	capacity       int
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	jobs           map[importKey]*importJob
+	completed      []importKey
+	wg             sync.WaitGroup
+	imports        atomic.Uint64
+	closed         bool
+	execute        sync.Mutex
+	commitOwner    [32]byte
+	builds         map[importKey]*buildJob
+	buildCompleted []importKey
+	buildBytes     int
+	buildCalls     atomic.Uint64
+	buildHTTP      sync.Mutex
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -112,6 +117,11 @@ func (s *Server) Close() {
 	s.cancel()
 	s.mu.Unlock()
 	s.wg.Wait()
+	s.mu.Lock()
+	s.builds = nil
+	s.buildCompleted = nil
+	s.buildBytes = 0
+	s.mu.Unlock()
 }
 
 func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResult, error) {
@@ -259,6 +269,10 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/commit" {
 		s.serveCommit(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/build" {
+		s.serveBuild(w, r)
 		return
 	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/import" {

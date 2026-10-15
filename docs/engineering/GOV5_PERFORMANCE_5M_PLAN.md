@@ -302,3 +302,75 @@ Old canonical duplicates still require execution evidence within HasAppliedBlock
 256-header lineage window; older requests fail closed until historical execution
 proof transport is implemented. Restricted internal targeted tests, the two RPC
 package regressions and vet pass; no fleet or throughput measurement was run.
+
+## Stage 5: real unsigned candidate Build RPC
+
+`POST /v1/build` and the Unix client now accept full chain identity, a hash of
+the entire template RLP and its bytes. The leader prepares this template in its
+own consensus process: proposer, view, embedded QC and a reserved zero BLS seal
+are already present, while root/receipts/bloom/gas and fork result fields remain
+unset. The executor checks canonical extra encoding, the public view leader,
+existing public header/QC checks, parent and deterministic prepared timestamp.
+It does not call Prepare, Authorize or Seal for that leader. The returned block
+still has a zero seal. Signing and proposing remain the leader's responsibility.
+
+The actual BlockChain builder holds its state mutation lock through the snapshot,
+parallel execution, block end and FinalizeAndAssemble. Lock order is
+`server.execute -> bc.lock`; no path reverses it. An in-flight ordered writer is
+joined before the read snapshot. The parent must be the actual applied head,
+and NewMinerRootComputer supplies an isolated QMDB tree. Fresh initialized
+genesis may lack the applied marker; only its exact canonical/head identity and
+actual loaded live QMDB root admit the first build without writing a marker.
+Above genesis a missing marker is rejected. BuildParallel performs block start
+once; block end and public finalization follow in the same order as the miner.
+No live state, applied marker or canonical rows are written by the build.
+
+The first builder deliberately rejects the whole template if BuildParallel's
+lenient pass drops any candidates (including nonce gaps), and rejects its
+fee-recipient fallback case. It never labels a subset as the requested complete
+candidate list. Leader-side repacking and a serial fallback are later work.
+Deferred/frame, BAL/mobile/DAO adapters, committee evidence, H2-v4 and future
+validator-set epoch transitions remain rejected in this slice. Existing nil
+performance/native/ETH behavior and chain-level role validation are unchanged.
+
+Ownership/cache keys include full chain identity and Keccak(template RLP),
+binding view, proposer, QC, header and transactions rather than just parent.
+Capacity and a 128MiB retained payload budget bound the registry. Active jobs
+reserve their owned input plus output allowance; completed jobs account for the
+actual encoded output length. No decoded candidate is retained in the cache.
+Workers decode/build one candidate at a time; the HTTP route also serializes
+JSON framing to avoid seven full templates decoded simultaneously. Caller
+responses are defensive copies. The retention budget excludes caller-owned
+responses, JSON framing buffers and the single active decoded execution state;
+it is not a total process RSS claim. Each request still has raw 64MiB/200k-tx
+bounds, and the aggregate reservation can reject a near-limit template even
+with an otherwise empty registry. Hash-only waiting and single-copy fanout are
+later optimizations. Canceling a waiter leaves the build owner active, active
+jobs cannot be evicted, failed jobs are not cached, and Close drains jobs and
+releases retained cache bytes.
+
+Real tests use a public HotStuff executor with no signing key, actual
+BlockChain/StateProcessor/EVM/QMDB, and a separate test leader that prepares and
+signs externally. Build leaves live root, DB balances, applied/canonical rows
+unchanged; signed import subsequently matches its root/receipt/bloom/gas and
+changes the recipient from 1 to 24. Wrong chain/header/seal/parent/height and
+nonce gaps are rejected; a legal build after failure still succeeds. Different
+views do not alias, modifying a returned payload cannot corrupt the cache, and
+canceled waiters preserve one owner and the active/completed byte accounting.
+Restricted sharedexec/standalone regression tests, public verifier and commit
+regressions, and vet pass. Targeted race/full Make validation awaits the final
+runtime slice and quiet hardware checks. No fleet or TPS test was run.
+
+**Build and Import currently each execute once.** The differential test is not
+prepared own-build reuse or Rust-style execution-once proof. Safe prepared-state
+reuse, with complete final sealed-header checks, is a later separate slice.
+Cached candidates refer to the snapshot they were built on; a runtime leader
+must still confirm its parent/QC/view before signing, rather than treating a
+historical cached candidate as a current proposal. Shared-validator/deferred
+roles remain fail-closed until their actual runtime gates are wired.
+
+Next: a public commit-QC bridge and validator process runtime separation using
+NodeConfig/CLI roles and endpoints. All processes must retain the same genesis
+ChainConfig; process-specific roles must not be placed in the immutable chain
+configuration. Owner finality capability stays with one explicit bridge and is
+never distributed to seven ordinary execution import clients.

@@ -84,6 +84,10 @@ func executionChain(t *testing.T, genesis *conf.Genesis, commitOnly ...bool) (*i
 }
 
 func executionFixture(t *testing.T, commitOnly ...bool) (*internal.BlockChain, *block.Block, types.Address) {
+	return executionFixtureConfigured(t, commitOnly, nil)
+}
+
+func executionFixtureConfigured(t *testing.T, commitOnly []bool, configure func(*conf.Genesis), observeRoot ...func(*commitment.QMDBRootComputer)) (*internal.BlockChain, *block.Block, types.Address) {
 	t.Helper()
 	raw, err := os.ReadFile("../../scripts/gov5-perf/isolated-chain.json")
 	if err != nil {
@@ -100,7 +104,13 @@ func executionFixture(t *testing.T, commitOnly ...bool) (*internal.BlockChain, *
 	from := crypto.PubkeyToAddress(key.PublicKey)
 	to := types.HexToAddress("0x1000")
 	genesis.Alloc = conf.GenesisAlloc{from: {Balance: "0x56bc75e2d63100000"}, to: {Balance: "0x1"}}
-	owner, _ := executionChain(t, &genesis, commitOnly...)
+	if configure != nil {
+		configure(&genesis)
+	}
+	owner, ownerRoot := executionChain(t, &genesis, commitOnly...)
+	if len(observeRoot) > 0 {
+		observeRoot[0](ownerRoot)
+	}
 	builder, root := executionChain(t, &genesis)
 	txn, err := transaction.SignNewTx(key, transaction.NewLondonSigner(genesis.Config.ChainID), &transaction.LegacyTx{
 		Nonce: 0, To: &to, Value: uint256.NewInt(23), Gas: 21000, GasPrice: uint256.NewInt(1),
