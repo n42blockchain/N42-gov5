@@ -429,3 +429,51 @@ Next independent slice: a lightweight validator metadata/header/body/WAL runtime
 and process roles in NodeConfig/CLI, keeping every process on the same immutable
 genesis ChainConfig. It must avoid local NewBlockChain/NewMiner execution paths
 and advance local metadata only after authenticated execution and commit evidence.
+
+## Stage 7a: lightweight metadata replica and remote vote gate
+
+`internal/sharedvalidator.Replica` now provides an actual metadata/header/body
+store and `consensus.ChainHeaderReader` without a local execution BlockChain,
+StateProcessor, root computer or miner. It initializes only genesis metadata,
+binds the complete stored configuration/identity, rejects existing account state
+or unbound stores, and reopens the same bound metadata after restart. All seven
+replicas and the executor use identical genesis/ChainConfig. No chain-level
+Role/Mode is changed for a different process.
+
+Replica.Import first checks the actual sealed proposer/header and body root and
+persists block availability. It then sends the original bytes to the real Unix
+execution service. Only a checked/executed/durable response matching identity,
+hash, parent, height and header result commitments becomes persisted execution
+evidence. BlockApplied checks that evidence plus local header/body availability;
+accepted/missing-parent results remain unavailable for voting. AttachService
+wraps the supplied real block fetcher with this gate. Import releases its mutex
+before notifying Service, preserving the certificateMu -> replica.mu order and
+avoiding a retry callback deadlock.
+
+The replica is also the public CommitCertificateSink. It requires local block
+availability and remote execution evidence, rechecks the full CommitQC/seal,
+waits for the execution service's authenticated canonical ACK, and only then
+atomically appends its local canonical/head/finality metadata. Local and remote
+transactions remain separate. If the local transaction rolls back after remote
+success, Service retains the complete pending proof and an idempotent retry
+converges both stores. It never rewrites a conflicting finalized local prefix.
+
+The real integration tests create seven independent metadata/WAL databases,
+seven individually authorized test consensus engines and seven Unix clients on
+one identical genesis. Concurrent imports execute only once in the owner; all
+seven account tables stay empty. Four votes cannot advance metadata; a valid
+5/7 CommitQC through each Service outbox advances all seven only after remote
+ACK. Restart preserves bound execution/finality evidence. A stored child whose
+parent is not remotely applied stays accepted and cannot satisfy BlockApplied;
+parent import followed by child retry converges. An injected local canonical
+transaction rollback leaves the remote committed, local unchanged and full QC
+pending; retry repairs local metadata with no extra execution. Tests live in the
+external sharedexec integration suite using test-only fixture exports, so no
+production fixture interface or execution stub is added.
+
+Restricted sharedexec/standalone regression tests, Service/default regressions
+and vet pass. These are seven replicas/engines inside small tests, **not seven
+running validator processes or a measured consensus fleet**. NodeConfig/CLI
+dispatch, real P2P body fetch/catch-up and remote leader production are the next
+independent runtime slice. Process roles are not exposed as runnable yet, and
+existing shared/deferred chain roles remain rejected. No new TPS is claimed.
