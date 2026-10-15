@@ -1020,3 +1020,33 @@ representable y+p aliases; all are rejected. A forged identity-key transaction
 is accepted by bare stdlib Verify and rejected by this policy, keeping the
 primitive/protocol distinction executable. No batch verifier, runtime activation,
 new chain data, fleet or TPS claim is part of this slice.
+
+
+## Stage 16: first OS-process launch and readiness correction
+
+The frozen fcdb22d2 baseline completed restricted default/related tests, related
+and Node race checks, make build, all three Make binary targets and fresh
+provisioning. Binary/source hashes and exact command results are retained in
+`/data/blockchain/gov5-work/validation/20261015-e1-fcdb22d2/status.json`.
+After a separate complete BOX acquisition, the first actual seven-validator
+plus one-executor process group started in fixed runtime directory
+`/data/blockchain/gov5-performance-5m/runtime/f1015a`. All eight initialization
+steps completed. Node log files are in each vN/log/n42.log; stdout announces
+that redirection. Each validator initialized its own HotStuff identity/P2P/WAL.
+
+This first run failed at seven-API readiness before the signed transaction
+checker started. No eight-transaction finality or TPS result was obtained.
+The runner's Python HTTPConnection used the Unix pathname as its HTTP authority,
+producing Host: /data/.../validator.sock; Go rejects that authority before the
+API handler. The client now keeps transport socket_path separate from HTTP
+host `validator`. Non-200 status includes the HTTP code and bounded response
+body, and readiness preserves its final underlying error. Real Unix-socket
+HTTP tests require the valid authority and verify error detail; all nine fleet
+Python checks passed in 0.030s.
+
+The runner gracefully stopped all its children and released its claim. The
+failed run's logs and initialized data are retained in the same fixed directory.
+Recovery must use those existing identities/data with separate attempt logs,
+not reinitialize or create a new genesis to conceal this failure. Go binaries
+have no change in this Python-only correction. A recovered eight-transaction
+closed loop is still pending.
