@@ -1063,3 +1063,53 @@ and removes only its same-inode source. Existing destination/results are never
 overwritten. Twelve lightweight Python checks pass in 0.031s, including actual
 Unix HTTP authority, path/permission/symlink rejection and exclusive archival.
 This option preserves genesis and all initialized chain/validator state.
+
+The same-data retry used runner commit `7774408d` with the original three
+fcdb22d2 binaries; its committed script copies, SHA records and first-failure
+log snapshots are in
+`/data/blockchain/gov5-work/validation/20261015-e1-fcdb22d2/recovery-host-7774408d`.
+It passed seven-API readiness. The attempt's `initial-status.json` records all
+seven canonical heights/counters at zero; a subsequent live API observation
+still showed seven height-zero/count-zero heads and eight queued transactions.
+The signed checker timed out without a committed transaction. Its retained
+`attempts/retry-host/signed-smoke.log` reports the timeout, and the active leader's
+API reported `invalid candidate template header or body` from the executor.
+No completed eight-transaction closed loop or TPS was produced by either run.
+
+The second failure exposed a process-isolation bug hidden by same-process tests:
+NewBlockChain set UseEthereumTxRoot for QMDB, while the metadata-only constructor
+skipped NewBlockChain and kept the default native root flag. The leader therefore
+stamped a native transaction root and the executor correctly rejected it against
+the QMDB Ethereum transaction root. The fix shares the existing startup selection
+of UseEthereumTxRoot, TxRootBlake3Time and DeferredExecutionTime in
+`internal.ConfigureBlockCommitmentRules`. Ordinary NewBlockChain uses identical
+selection/error behavior; the explicit performance constructor now invokes it
+before opening its metadata DB or starting workers. These globals are startup
+only, with one chain per process; they must never be changed while workers run.
+The root mismatch guard remains enforced.
+
+Pure-baseline source commit `fb1671a4852d62671cfea186d90d19a018048a19` is based
+on fcdb22d2 in `/data/blockchain/gov5-work/wt-e1-root-rules-recovery-20261015`;
+the main performance branch cherry-pick is
+`ee83d5bf771452c4522d3cbbe65ebcc128426eda`. Restricted helper/default tests passed
+in 0.018s, and the improved real cold-subprocess validator test passed in 0.428s;
+vet passed. The cold process has no local BlockChain and cannot inherit the
+parent owner's globals. It verifies configured QMDB roots, unchanged actual
+genesis identity and absence of local BC/miner/sync. Genesis TxHash/ReceiptHash
+construction uses its fixed legacy/V2 empty-root selection, independent of these
+process globals. No genesis or stored chain data is rewritten by this fix.
+The main branch's unvalidated offline Ed codec work did not enter this source.
+
+A passive repair monitor is running at PID 4160188, script
+`/tmp/gov5-root-rules-fb1671a4.py`, log
+`/tmp/gov5-root-rules-fb1671a4-monitor.log`, status
+`/data/blockchain/gov5-work/validation/20261015-e1-fcdb22d2/root-rules-fb1671a4/status.json`.
+Its verified initial state is waiting with no stages begun: another session owns
+the standard dual claims and seven n42-r141 processes. It only polls while blocked
+and does not touch those processes or claims. After full BOX acquisition it will
+run restricted regression race checks and rebuild only n42 from fixed clean
+fb1671a4, retaining the original fcdb owner/provision executables and their hashes.
+It then releases that build claim and independently reacquires the complete BOX
+protocol for one same-f1015a `--attempt root-rules` functional run, without init or
+reset. Initial counters must again be zero before nonce-zero replay. The third
+run, new binary SHA, recovered finality and all TPS results remain pending.
