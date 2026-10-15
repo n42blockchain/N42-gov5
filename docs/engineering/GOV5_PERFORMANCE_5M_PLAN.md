@@ -579,3 +579,40 @@ The real HotStuff import must match all root/receipt/gas commitments. Fixtures
 with public validator sets now construct their StateProcessor with the real
 public HotStuff engine; changing BlockChain.SetEngine alone did not replace its
 already constructed processor. Default native/ETH build paths are unchanged.
+
+## Stage 7d: recover an executed child after a lost proposal
+
+The identity-bound Unix AppliedChild query reads the owner's actual applied
+lineage under the chain mutation lock and returns a stored sealed direct child
+with fresh durable receipt/root evidence. It never rewinds or selects a fork.
+Parent/height/full identity must match; future header views, unavailable ancestry
+and requests outside the 256-block lineage window fail closed. Large reply
+framing shares Build's serialization lock. Empty means the requested parent is
+the exact applied head and no child exists, rather than an arbitrary lookup miss.
+
+Before building, a leader with no per-view candidate WAL queries this endpoint.
+An existing valid child retains its original proposer/header/seal; the new
+leader persists that same payload hash in its own new-view candidate WAL, checks
+remote execution, and signs the actual new-view consensus Proposal locally.
+CommitQC remains required for canonicalization. Build/import do not run again
+for that already durable payload; this is re-proposal recovery, not prepared
+state adoption for the initial Build+Import pair.
+
+Shared imports now use a performance-only exact-parent append gate under the
+same BlockChain mutation lock as execution. Competing siblings remain retryable
+and never enter execution or the generic authorized future queue; any generic
+retry queue entry from this RPC is removed before releasing the lock. The
+standalone owner has no miner/P2P import path. Native/ETH generic imports retain
+their existing behavior. This single-lineage E1 prototype trusts local Unix
+clients as previously documented; it does not establish Byzantine liveness
+against a client deliberately submitting future-view candidates or add a
+certificate-authorized branch-switch protocol.
+
+Tests use an actual lost view-one proposal, a different independently keyed
+view-two leader and empty metadata/transaction queue: it emits the real Proposal
+for the same executed hash, then a strict five-signature view-two CommitQC
+finalizes it. BuildCalls and ImportCalls remain one each; a fresh service with
+empty registries can still return durable evidence from the database. Real
+competing siblings cannot change the applied marker or execute; future-view,
+wrong-chain/parent/height and malformed query requests are refused. Node/CLI
+lifecycle and runtime ingress remain next; no fleet or TPS result is claimed.

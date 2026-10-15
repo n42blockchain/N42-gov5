@@ -9,6 +9,11 @@ import (
 )
 
 func TestUnsignedBuildViewTwoRootMatchesRealHotStuffImport(t *testing.T) {
+	buildAndImportViewTwo(t)
+}
+
+func buildAndImportViewTwo(t *testing.T) (*Server, *Client, *block.Block) {
+	t.Helper()
 	ctx := context.Background()
 	f := NewExecutionFixtureForTest(t)
 	cfg := f.Chain.Config()
@@ -34,7 +39,7 @@ func TestUnsignedBuildViewTwoRootMatchesRealHotStuffImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := NewClient(startExecutionSocket(t, s), s.Identity())
-	defer c.Close()
+	t.Cleanup(c.Close)
 	built, err := c.Build(ctx, buildRequest(t, s.Identity(), block.NewBlock(header, f.Template.Transactions()).(*block.Block)))
 	if err != nil {
 		t.Fatal(err)
@@ -55,4 +60,5 @@ func TestUnsignedBuildViewTwoRootMatchesRealHotStuffImport(t *testing.T) {
 	if result, err := c.Import(ctx, ImportRequest{Identity: s.Identity(), BlockHash: b.Hash(), BlockRLP: raw}); err != nil || !result.Durable || result.Result != built.Result {
 		t.Fatalf("actual future-view block import: %+v %v", result, err)
 	}
+	return s, c, b
 }
