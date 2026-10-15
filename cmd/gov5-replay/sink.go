@@ -23,6 +23,7 @@ type supplySink struct {
 	epoch                         [16]byte
 	credits                       *supplyCredits
 	unique, wireBytes, duplicates atomic.Uint64
+	receivedComplete              atomic.Pointer[time.Time]
 	mu                            sync.Mutex
 	connected                     []bool
 	completed                     []bool
@@ -148,7 +149,13 @@ func (s *supplySink) consume(ctx context.Context, stream io.ReadWriter) error {
 			next++
 			transactions += uint64(count)
 			encodedBytes += reserved
-			s.unique.Add(uint64(count))
+			// Capture before publishing the final count. This conservatively
+			// bounds exhaustion even if the measurement sampler is descheduled
+			// between its count read and its end timestamp.
+			receivedAt := time.Now()
+			if s.unique.Add(uint64(count)) == s.manifest.Descriptor.TotalTransactions() {
+				s.receivedComplete.Store(&receivedAt)
+			}
 			s.wireBytes.Add(reserved)
 			ack.New = count
 		case frame.Sequence < next && next-frame.Sequence <= supplyWindow:

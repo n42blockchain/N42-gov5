@@ -17,6 +17,13 @@ and reloaded from a fresh temporary genesis/shards. The full-size preparation,
 clean Make build, race run and actual qualification remain pending. Unit-test
 times are not throughput measurements.
 
+A subsequent regression expanded the CLI suite to ten tests (0.057s; targeted
+vet passed). Receiver completion time also participates in the exhaustion gate,
+so a sampler pause after reading a partial count cannot hide corpus exhaustion
+before its eventual end timestamp. Window timestamps conservatively surround
+counter reads, and cancellation preserves the original error before closing
+the client's socket.
+
 ## Corpus identity and integrity
 
 The v1 descriptor binds full chain identity (chain ID 4205001, namespace and
