@@ -94,6 +94,13 @@ func (bc *BlockChain) BuildUnsignedCandidate(ctx context.Context, template *bloc
 	if failed != 0 || len(included) != len(template.Transactions()) {
 		return nil, zero, errors.New("unsigned build has rejected candidates (including nonce gaps); template must be repacked")
 	}
+	// The parallel fold credits deferred fees after each worker's FinalizeTx.
+	// A zero credit can still touch RIPEMD160's special empty account. Apply
+	// normal transaction cleanup before computing the assembled state root,
+	// matching the serial importer instead of retaining that empty account.
+	if err := ibs.FinalizeTx(bc.chainConfig.RulesWithTimestamp(header.Number.Uint64(), header.Time), state.NewNoopWriter()); err != nil {
+		return nil, zero, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, zero, err
 	}
