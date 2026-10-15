@@ -453,6 +453,9 @@ func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Tra
 	if !ok || sp == nil {
 		return nil, nil, 0, 0, ErrParallelNotApplicable
 	}
+	if bc.chainConfig != nil && bc.chainConfig.Performance != nil {
+		bc.performanceExecutionAttempts.Add(1)
+	}
 	run, err := sp.BuildParallel(header, txs, ibs, blockHashFunc)
 	if err != nil {
 		return nil, nil, 0, 0, err
@@ -2601,6 +2604,9 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				}
 			}
 			pstart := time.Now()
+			if ahead == nil && bc.chainConfig != nil && bc.chainConfig.Performance != nil {
+				bc.performanceExecutionAttempts.Add(1)
+			}
 			var nopay map[types.Address]*uint256.Int
 			if ahead != nil {
 				receipts, nopay, logs, usedGas, err = bc.process.(*StateProcessor).FinishParallel(concreteBlock, ibs, ahead.run)

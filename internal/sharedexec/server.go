@@ -82,6 +82,9 @@ type Server struct {
 	buildBytes     int
 	buildCalls     atomic.Uint64
 	buildHTTP      sync.Mutex
+	reuseOwnBuild  bool
+	prepared       *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
+	ownBuildReuses atomic.Uint64
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -117,6 +120,9 @@ func (s *Server) Close() {
 	s.cancel()
 	s.mu.Unlock()
 	s.wg.Wait()
+	s.execute.Lock()
+	s.prepared = nil
+	s.execute.Unlock()
 	s.mu.Lock()
 	s.builds = nil
 	s.buildCompleted = nil
@@ -219,7 +225,19 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		result.Error = "parent is not applied; retry"
 		return
 	}
-	_, err := s.chain.InsertPerformanceExtension(s.ctx, b)
+	prepared := s.prepared
+	s.prepared = nil
+	reused := false
+	var err error
+	if prepared != nil {
+		reused, err = s.chain.ImportPreparedCandidate(s.ctx, b, prepared)
+	}
+	if err == nil && !reused {
+		_, err = s.chain.InsertPerformanceExtension(s.ctx, b)
+	}
+	if reused {
+		s.ownBuildReuses.Add(1)
+	}
 	if errors.Is(err, internal.ErrPerformanceParentNotHead) {
 		result.Error = err.Error()
 		return

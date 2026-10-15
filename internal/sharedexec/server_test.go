@@ -51,10 +51,14 @@ func (executionTestEngine) Finalize(_ consensus.ChainHeaderReader, ih block.IHea
 }
 
 func executionChain(t *testing.T, genesis *conf.Genesis, commitOnly ...bool) (*internal.BlockChain, *commitment.QMDBRootComputer) {
+	return executionChainUsingDB(t, genesis, nil, commitOnly...)
+}
+
+func executionChainUsingDB(t *testing.T, genesis *conf.Genesis, wrap func(kv.RwDB) kv.RwDB, commitOnly ...bool) (*internal.BlockChain, *commitment.QMDBRootComputer) {
 	t.Helper()
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
-	db := memdb.New(t.TempDir())
+	var db kv.RwDB = memdb.New(t.TempDir())
 	t.Cleanup(db.Close)
 	var gb *block.Block
 	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
@@ -63,6 +67,9 @@ func executionChain(t *testing.T, genesis *conf.Genesis, commitOnly ...bool) (*i
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if wrap != nil {
+		db = wrap(db)
 	}
 	var engine consensus.Engine = executionTestEngine{apos.NewFaker()}
 	if len(commitOnly) > 0 && commitOnly[0] {

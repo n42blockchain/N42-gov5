@@ -10,6 +10,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
@@ -130,7 +131,16 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 		return
 	}
 	s.buildCalls.Add(1)
-	built, executed, buildErr := s.chain.BuildUnsignedCandidate(s.ctx, &template)
+	s.prepared = nil // a new build supersedes the only retained execution write
+	var built *block.Block
+	var executed rawdb.ExecutedResult
+	var prepared *internal.PreparedUnsignedCandidate
+	var buildErr error
+	if s.reuseOwnBuild {
+		built, executed, prepared, buildErr = s.chain.BuildPreparedUnsignedCandidate(s.ctx, &template)
+	} else {
+		built, executed, buildErr = s.chain.BuildUnsignedCandidate(s.ctx, &template)
+	}
 	if buildErr != nil {
 		err = buildErr
 		return
@@ -144,6 +154,7 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 		err = errors.New("candidate exceeds reserved payload budget")
 		return
 	}
+	s.prepared = prepared
 	result = BuildResult{Identity: s.identity, TemplateHash: key.hash, BlockHash: built.Hash(), BlockRLP: raw, Result: executed}
 }
 

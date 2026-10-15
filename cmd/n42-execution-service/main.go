@@ -46,6 +46,7 @@ func run(ctx context.Context, args []string) error {
 	datadir := flags.String("data-dir", "", "Already initialized dedicated performance execution datadir")
 	capacity := flags.Int("capacity", 64, "Bounded import-once registry capacity (1..256)")
 	parallelEVM := flags.Bool("parallel-evm", false, "Explicitly use existing Block-STM for performance imports above four transactions")
+	reuseOwnBuild := flags.Bool("reuse-own-build", false, "Reuse one matching owner-local candidate execution after public sealed-header validation (live root replay remains)")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -187,6 +188,11 @@ func run(ctx context.Context, args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if *reuseOwnBuild {
+		if err := server.EnableOwnBuildReuse(); err != nil {
+			return err
+		}
 	}
 	defer server.Close()
 	socketDir := filepath.Join(*datadir, "execution-rpc")
