@@ -1,11 +1,15 @@
 package node
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +83,13 @@ func TestPerformanceRuntimePathsRejectAliasesAndPublicFiles(t *testing.T) {
 }
 
 func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing.T) {
-	root := t.TempDir()
+	// Unix socket paths include the validator subdirectories and must fit
+	// the platform's sockaddr_un limit; testing.T's full-name path is longer.
+	root, err := os.MkdirTemp("", "gov5-node-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	g := performanceGenesisFixture(t)
 	var keys []blscommon.SecretKey
 	for i := 0; i < 7; i++ {
@@ -283,8 +293,48 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 		t.Fatal(err)
 	}
 	rt := n.performanceValidator
-	if err := rt.producer.SubmitTransactions([]*transaction.Transaction{tx}); err != nil {
+	apiSocket := filepath.Join(cfg.NodeCfg.DataDir, "validator-rpc", "validator.sock")
+	apiClient := sharedvalidator.NewAPIClient(apiSocket, executor.Identity())
+	defer apiClient.Close()
+	status, err := apiClient.Status(ctx)
+	if err != nil || status.Number != 0 || status.CommittedExecutedTransactions != 0 {
+		t.Fatalf("initial runtime status: %+v %v", status, err)
+	}
+	wire, err := tx.EthEncoded()
+	if err != nil {
 		t.Fatal(err)
+	}
+	admitted, err := apiClient.Submit(ctx, status.CanonicalProgress, [][]byte{wire})
+	if err != nil || admitted.Received != 1 || admitted.QueuedTransactions != 1 {
+		t.Fatalf("runtime wire admission: %+v %v", admitted, err)
+	}
+	if retried, err := apiClient.Submit(ctx, status.CanonicalProgress, [][]byte{wire}); err != nil || retried.QueuedTransactions != 1 {
+		t.Fatalf("same-head admission retry duplicated queue: %+v %v", retried, err)
+	}
+	wrongIdentity := executor.Identity()
+	wrongIdentity.ChainID = "999"
+	wrongClient := sharedvalidator.NewAPIClient(apiSocket, wrongIdentity)
+	if _, err := wrongClient.Status(ctx); err == nil {
+		t.Fatal("runtime status accepted another chain identity")
+	}
+	wrongClient.Close()
+	requestBytes, err := json.Marshal(map[string]any{
+		"identity": executor.Identity(), "canonical_hash": status.BlockHash,
+		"canonical_number": status.Number, "transactions": [][]byte{wire},
+		"sender": "untrusted sender claim",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{string(requestBytes), "{} {}", `{"transactions":[""]}`} {
+		recorder := httptest.NewRecorder()
+		rt.api.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/transactions", strings.NewReader(invalid)))
+		if recorder.Code == http.StatusOK {
+			t.Fatal("invalid framing or caller sender claim was accepted")
+		}
+	}
+	if err := rt.producer.SubmitRawTransactionsAtHead(ctx, [][]byte{[]byte("invalid ethereum wire")}, status.BlockHash, status.Number); err == nil {
+		t.Fatal("malformed Ethereum wire was admitted")
 	}
 	b, err := rt.producer.Produce(ctx, gb.Hash())
 	if err != nil {
@@ -309,6 +359,13 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	if rt.replica.CurrentBlock().Hash() != b.Hash() || owner.CurrentBlock().Hash() != b.Hash() {
 		t.Fatal("actual Node QC bridge failed canonicalization")
 	}
+	committed, err := apiClient.Status(ctx)
+	if err != nil || committed.Number != 1 || committed.BlockHash != b.Hash() || committed.CommittedExecutedTransactions != 1 {
+		t.Fatalf("runtime canonical progress: %+v %v", committed, err)
+	}
+	if _, err := apiClient.Submit(ctx, status.CanonicalProgress, [][]byte{wire}); err != sharedvalidator.ErrAdmissionHeadChanged {
+		t.Fatalf("stale acknowledged batch was admitted after commit: %v", err)
+	}
 	if err := n.db.View(ctx, func(tx kv.Tx) error {
 		cursor, err := tx.Cursor(modules.Account)
 		if err != nil {
@@ -323,8 +380,37 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.Close(); err != nil {
+	// Wait for 100 Continue: the actual HTTP handler has started decoding and
+	// is blocked on this private Unix body. Node close must cancel/drain it.
+	partial, err := net.Dial("unix", apiSocket)
+	if err != nil {
 		t.Fatal(err)
+	}
+	defer partial.Close()
+	_ = partial.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = fmt.Fprintf(partial, "POST /v1/transactions HTTP/1.1\r\nHost: unix\r\nContent-Length: 10000\r\nExpect: 100-continue\r\n\r\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := bufio.NewReader(partial).ReadString('\n')
+	if err != nil || !strings.Contains(continued, "100 Continue") {
+		t.Fatalf("decoder never blocked on body: %q %v", continued, err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- n.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Node close did not drain a blocked private API decoder")
+	}
+	if _, err := apiClient.Status(context.Background()); err == nil {
+		t.Fatal("closed Node still served private ingress/status")
+	}
+	if _, err := os.Lstat(apiSocket); !os.IsNotExist(err) {
+		t.Fatal("closed Node retained its Unix listener")
 	}
 	done := make(chan struct{})
 	go func() { n.Wait(); close(done) }()

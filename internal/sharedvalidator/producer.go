@@ -69,8 +69,64 @@ func (p *Producer) SubmitTransactions(txs []*transaction.Transaction) error {
 	if len(txs) > sharedexec.MaxTransactions {
 		return errors.New("remote producer transaction batch too large")
 	}
-	items := make(map[types.Hash]pendingTransaction, len(txs))
-	bytes := 0
+	raw := make([][]byte, len(txs))
+	for i, tx := range txs {
+		if tx == nil {
+			return errors.New("nil remote producer transaction")
+		}
+		var err error
+		raw[i], err = tx.EthEncoded()
+		if err != nil {
+			return err
+		}
+	}
+	return p.submitRaw(context.Background(), raw, nil)
+}
+
+type admissionHead struct {
+	hash   types.Hash
+	number uint64
+}
+
+var ErrAdmissionHeadChanged = errors.New("canonical head changed; refresh status before resubmitting")
+
+// SubmitRawTransactionsAtHead admits only signed Ethereum wire transactions.
+// A replay against an already advanced head cannot poison the current pool.
+func (p *Producer) SubmitRawTransactionsAtHead(ctx context.Context, raw [][]byte, head types.Hash, number uint64) error {
+	if head == (types.Hash{}) {
+		return errors.New("explicit canonical admission head required")
+	}
+	return p.submitRaw(ctx, raw, &admissionHead{head, number})
+}
+
+func (p *Producer) submitRaw(ctx context.Context, raws [][]byte, expected *admissionHead) error {
+	if ctx == nil || len(raws) > sharedexec.MaxTransactions {
+		return errors.New("invalid transaction admission context/count")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+	checkHead := func() error {
+		if expected == nil {
+			return nil
+		}
+		progress, err := p.replica.CanonicalProgress(ctx)
+		if err != nil {
+			return err
+		}
+		if progress.BlockHash != expected.hash || progress.Number != expected.number {
+			return ErrAdmissionHeadChanged
+		}
+		return nil
+	}
+	if err := checkHead(); err != nil {
+		return err
+	}
+	items := make(map[types.Hash]pendingTransaction, len(raws))
+	order := make([]types.Hash, 0, len(raws))
 	head := p.replica.CurrentBlock()
 	if head == nil {
 		return errors.New("remote producer canonical head unavailable")
@@ -80,31 +136,38 @@ func (p *Producer) SubmitTransactions(txs []*transaction.Transaction) error {
 		period = 3
 	}
 	signer := transaction.MakeSignerWithTimestamp(p.replica.cfg, uint256.NewInt(head.Number64().Uint64()+1).ToBig(), head.Time()+period)
-	for _, tx := range txs {
-		if tx == nil {
-			return errors.New("nil remote producer transaction")
+	inputBytes := 0
+	for _, raw := range raws {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		raw, err := tx.EthEncoded()
+		if err := p.ctx.Err(); err != nil {
+			return err
+		}
+		if len(raw) == 0 || len(raw) > sharedexec.MaxBlockBytes || inputBytes > sharedexec.MaxBlockBytes-len(raw) {
+			return errors.New("transaction admission wire budget exceeded")
+		}
+		inputBytes += len(raw)
+		tx, err := transaction.DecodeEthereumTransaction(append([]byte(nil), raw...))
 		if err != nil {
 			return err
 		}
-		if len(raw) > sharedexec.MaxBlockBytes {
-			return errors.New("remote producer transaction too large")
-		}
-		copyTx, err := transaction.DecodeEthereumTransaction(raw)
-		if err != nil {
+		if _, err := transaction.RecoverSenderFromSig(signer, tx); err != nil {
 			return err
 		}
-		if _, err := transaction.RecoverSenderFromSig(signer, copyTx); err != nil {
-			return err
-		}
-		hash := copyTx.Hash()
+		hash := tx.Hash()
 		if _, exists := items[hash]; !exists {
-			items[hash] = pendingTransaction{copyTx, len(raw)}
-			bytes += len(raw)
-			if bytes > sharedexec.MaxBlockBytes {
-				return errors.New("remote producer input retention exceeds limit")
-			}
+			items[hash] = pendingTransaction{tx, len(raw)}
+			order = append(order, hash)
+		}
+	}
+	// Signature work stays outside the replica lock. Recheck and enqueue while
+	// canonicalization is excluded, closing the head-check/queue insertion gap.
+	if expected != nil {
+		p.replica.mu.Lock()
+		defer p.replica.mu.Unlock()
+		if err := checkHead(); err != nil {
+			return err
 		}
 	}
 	p.mu.Lock()
@@ -112,26 +175,21 @@ func (p *Producer) SubmitTransactions(txs []*transaction.Transaction) error {
 	if p.closed {
 		return errors.New("remote producer stopped")
 	}
-	count := 0
-	added := 0
+	added, count := 0, 0
 	for hash, item := range items {
 		if _, exists := p.pending[hash]; !exists {
-			count++
 			added += item.bytes
+			count++
 		}
 	}
 	if len(p.pending)+count > sharedexec.MaxTransactions || p.bytes+added > sharedexec.MaxBlockBytes {
 		return errors.New("remote producer pending capacity full")
 	}
-	for _, tx := range txs {
-		hash := tx.Hash()
-		if item, exists := items[hash]; exists {
-			if _, already := p.pending[hash]; !already {
-				p.pending[hash] = item
-				p.order = append(p.order, hash)
-				p.bytes += item.bytes
-			}
-			delete(items, hash)
+	for _, hash := range order {
+		if _, exists := p.pending[hash]; !exists {
+			p.pending[hash] = items[hash]
+			p.order = append(p.order, hash)
+			p.bytes += items[hash].bytes
 		}
 	}
 	return nil

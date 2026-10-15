@@ -699,3 +699,38 @@ Tests cover real Build/import versus finality, 4/7 rejection, duplicate 5/7 QC,
 seven-client counts, rollback after remote ACK, replay, reopen and fail-closed
 backfill. A private runtime ingress/status transport is the next slice; no TPS
 result has been measured.
+
+## Stage 9b: actual private runtime transaction ingress/status
+
+An explicitly selected metadata Node now serves its own private Unix endpoint at
+`<datadir>/validator-rpc/validator.sock` (0700 directory, 0600 socket). It refuses
+aliases/public directories/existing paths and never adds a TCP or standard ETH
+RPC listener. The typed client and `/v1/status` return the bound canonical
+committed/executed counter, queued retention and producer diagnostics.
+
+`/v1/transactions` requires the full identity, an expected canonical hash/height,
+and signed Ethereum wire bytes (JSON base64), with no sender-claim field. The
+decoder bounds JSON bytes, array element count during decoding, decoded wire
+bytes (64MiB), and transactions (200k); large admission work is serialized.
+Signatures are recovered on owned wire copies outside the replica lock. The
+head is rechecked under that lock immediately before atomic pool insertion.
+Same-head retries deduplicate; a batch acknowledged before canonical advances
+cannot be replayed against its stale head (409). Receipt reports volatile queue
+admission, not durability or finality. Only the canonical counter measures chain
+throughput, and no measured TPS is claimed by these small tests.
+
+This remains the exact valid/ordered-batch Ethereum-secp256k1 prototype. General
+nonce/gas repacking, mempool replacement, persisted transaction intake, optimized
+single-gateway fanout and Ed25519/frame transport remain separate work; the
+operator must not interpret queue receipt as a committed transaction. Both the
+body decoder and signature loop can be canceled, and Node close closes transport
+connections then drains all API handlers before closing metadata.
+
+The actual Node/owner test now submits through the real Unix client, observes
+deduplication and canonical status after strict QC, refuses wrong-chain/unknown
+sender/bad framing/stale-head input, and proves a decoder blocked on a real
+100-continue request is canceled/drained on close within one second. Socket
+removal, oversized-array decoding and producer/progress regressions are covered
+by restricted tests and targeted race/vet. Fleet launcher/provisioning and a real
+seven-process functional check remain next. Another cargo/rustc session became
+active during this slice; no heavy build or fleet was started alongside it.
