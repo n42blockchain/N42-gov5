@@ -73,3 +73,23 @@ archived nonzero evidence, then exercise normal restart, two validators offline,
 three validators offline, and owner disconnection under separate bounded leases.
 New transaction batches additionally require an explicit trustworthy nonce
 source and unique payloads; the current private API has no nonce endpoint.
+
+## Normal restart result
+
+The same data and executable SHAs passed a normal restart in the separate
+`attempts/restart-normal` directory using committed Python runner `5e3f507f`.
+All seven initial observations were height 98/count 8. After ten seconds all
+seven reported height 133, hash
+`0xbd5b55f9689753a2671f5f1f89f2adc46c94fd5d3ccaa169fdaeb8c273933af4`,
+count 8 and queued transactions 0. Final height 133 exceeds the maximum initial
+height 98, demonstrating new empty-block commits after restart. No transaction
+was resubmitted, and the count did not multiply or reset.
+
+`functional-result.json`, `restart-check.json` and `process-lifecycle.json`
+retain the observations and eight independent process start/stop records; all
+eight exited with status 0. The BOX claim was released. Runner source/SHA proof
+and launch log are under
+`/data/blockchain/gov5-work/validation/20261015-e1-fcdb22d2/restart-normal-5e3f507f/`.
+The Python checker/runner/claim suites passed 29 tests in 0.024s. This proves
+bounded normal restart and empty-block progress, not complete WAL replay,
+higher-head ancestry auditing, new-transaction liveness, fault tolerance or TPS.
