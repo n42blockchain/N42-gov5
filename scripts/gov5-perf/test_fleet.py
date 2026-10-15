@@ -58,6 +58,49 @@ class FleetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HTTP 400.*invalid authority"):
             fleet.status(path, identity)
 
+    def test_attempt_logs_are_private_exclusive_and_confined(self):
+        for invalid in ("", "../escape", "/absolute", "a/b", "A", "a" * 33, ".hidden"):
+            with self.assertRaises(ValueError):
+                fleet.attempt_logs(self.root, invalid)
+        self.assertFalse((self.root / "attempts").exists())
+        path = fleet.attempt_logs(self.root, "retry-host")
+        self.assertEqual(path, self.root / "attempts/retry-host")
+        self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        self.write(path / "prior.json", {"preserve": True})
+        with self.assertRaises(FileExistsError):
+            fleet.attempt_logs(self.root, "retry-host")
+        self.assertEqual(fleet.load(path / "prior.json"), {"preserve": True})
+        (self.root / "attempts/alias").symlink_to(self.base, target_is_directory=True)
+        with self.assertRaises(FileExistsError):
+            fleet.attempt_logs(self.root, "alias")
+        with self.assertRaisesRegex(ValueError, "cannot initialize"):
+            fleet.run({"root": str(self.root)}, None, None, 5, True, attempt="retry")
+
+    def test_attempt_parent_alias_and_permissions_are_rejected(self):
+        parent = self.root / "attempts"
+        parent.symlink_to(self.base, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "aliases"):
+            fleet.attempt_logs(self.root, "retry")
+        parent.unlink()
+        parent.mkdir(mode=0o755)
+        with self.assertRaisesRegex(ValueError, "private"):
+            fleet.attempt_logs(self.root, "retry")
+
+    def test_smoke_result_archive_never_overwrites(self):
+        source = self.root / "smoke-result.json"
+        destination = fleet.attempt_logs(self.root, "retry") / "smoke-result.json"
+        self.write(source, {"unique": 8})
+        original = source.stat()
+        fleet.archive_smoke(source, destination)
+        self.assertFalse(source.exists())
+        self.assertEqual(destination.stat().st_ino, original.st_ino)
+        self.assertEqual(fleet.load(destination), {"unique": 8})
+        self.write(source, {"unique": 9})
+        with self.assertRaises(FileExistsError):
+            fleet.archive_smoke(source, destination)
+        self.assertEqual(fleet.load(source), {"unique": 9})
+        self.assertEqual(fleet.load(destination), {"unique": 8})
+
     def write(self, path, value):
         path.write_text(json.dumps(value))
         path.chmod(0o600)
