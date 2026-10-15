@@ -197,13 +197,17 @@ func SignTx(tx *Transaction, s Signer, prv *ecdsa.PrivateKey) (*Transaction, err
 // load -- the import's verification asks this first when a hint feed has
 // been filling the cache ahead of the block.
 func CachedSender(signer Signer, tx *Transaction) (types.Address, bool) {
-	if signer == nil || tx == nil {
+	if signer == nil || tx == nil || tx.Type() == AltSigTxType {
 		return types.Address{}, false
 	}
 	return senderCacheGet(tx.Hash(), signer)
 }
 
 func RecoverSenderFromSig(signer Signer, tx *Transaction) (types.Address, error) {
+	// Offline carrier recognition never grants runtime signature authorization.
+	if tx.Type() == AltSigTxType {
+		return types.Address{}, fmt.Errorf("alt signature runtime authorization is disabled")
+	}
 	hash := tx.Hash()
 	if addr, ok := senderCacheGet(hash, signer); ok {
 		return addr, nil
@@ -217,6 +221,10 @@ func RecoverSenderFromSig(signer Signer, tx *Transaction) (types.Address, error)
 }
 
 func Sender(signer Signer, tx *Transaction) (types.Address, error) {
+	// Offline carrier recognition never grants runtime signature authorization.
+	if tx.Type() == AltSigTxType {
+		return types.Address{}, fmt.Errorf("alt signature runtime authorization is disabled")
+	}
 	if sc := tx.from.Load(); sc != nil {
 		sigCache := sc.(sigCache)
 		// If the signer used to derive from in a previous
@@ -254,6 +262,9 @@ func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 // recovered from this transaction's signature under an equivalent signer; it
 // is NOT a way to assert an unverified sender.
 func (tx *Transaction) CacheSender(signer Signer, from types.Address) {
+	if tx.Type() == AltSigTxType {
+		return
+	}
 	if signer == nil {
 		return
 	}
@@ -269,6 +280,9 @@ func (tx *Transaction) CacheSender(signer Signer, from types.Address) {
 // senders of a frame in the background and attaches them when the frame is
 // decoded into a block).
 func (tx *Transaction) SetSenderMemo(signer Signer, from types.Address) {
+	if tx.Type() == AltSigTxType {
+		return
+	}
 	if signer == nil {
 		return
 	}

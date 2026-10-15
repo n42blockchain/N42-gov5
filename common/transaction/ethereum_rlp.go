@@ -237,6 +237,8 @@ func EncodeEthereumTransaction(tx *Transaction) ([]byte, error) {
 		return nil, fmt.Errorf("nil transaction")
 	}
 	switch inner := tx.inner.(type) {
+	case *AltSigTx:
+		return inner.encoded()
 	case *LegacyTx:
 		return rlp.EncodeToBytes(&legacyTxRLP{
 			Nonce:    inner.Nonce,
