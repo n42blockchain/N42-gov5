@@ -794,3 +794,36 @@ and rejects symlink ancestry before mutation. Failure retains partial private
 files for review. It never initializes databases, launches/stops a process or
 deletes data. Its real config-loader/public-validator-set/key-binding and path
 tests passed in 0.023s; restricted vet passed. Provisioning is not a fleet run.
+
+## Stage 12b: claimed functional fleet runner (not yet run)
+
+`scripts/gov5-perf/fleet.py RUN/run.json` defaults to read-only validation of
+private ownership/modes, canonical paths, full genesis SHA, topology and exact
+private node configs. Actual header/key bindings are additionally enforced by the
+Go owner and Node constructors. `--run --initialize --node-binary ABS
+--owner-binary ABS` explicitly initializes fresh directories and launches one
+owner plus seven validator processes, recording binary SHA256. Run duration is
+bounded to 5..60 seconds. There is no trusted owner commit capability.
+
+The launcher samples hardware quiet twice, then takes a filesystem flock and
+checks resources/other claims before atomically creating its private hardware
+claim. It repeats topology/occupied-port validation after acquisition. An
+uncooperative external program can still race a bind; actual listener binds are
+authoritative. Claim directories are never treated as expired automatically.
+Another Rust claim or n42/h2_validator workload blocks launch. Standard chain
+environment overrides are refused. The shared profile now accurately labels E1
+as an implemented prototype awaiting fleet validation; Ed25519 remains planned.
+
+Only owned Popen children receive termination/kill, with bounded drain, including
+normal SIGTERM/SIGINT unwinding. Cleanup removes only the matching-token claim
+record and empty claim directory. Chain data, keys, sockets belonging to other
+processes and private logs are never recursively removed. Failure retains partial
+data. Launch logs and result files are created exclusively with mode 0600.
+
+This first runner submits zero transactions and requires seven actual runtime
+APIs to converge to one nonzero canonical height/hash/counter; its artifact is
+explicitly `functional-check-not-tps`. Signed-transaction/fault cases are the next
+slice. Fifteen lightweight Python checks pass, including claim contention,
+exception cleanup and preservation of another owner's token. The runner itself
+has not been launched: current preflight finds an active Rust hardware claim and
+another eight-process workload. No fleet result or new TPS is claimed.

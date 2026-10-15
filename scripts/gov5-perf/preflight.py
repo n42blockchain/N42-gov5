@@ -38,12 +38,12 @@ def validate_profile(profile_path, isolated_root=ISOLATED_ROOT):
             raise ValueError(f"invalid isolated profile field: {key}")
     if p.get("execution") != {
         "baseline": "independent", "candidate": "shared-go-E1",
-        "candidate_status": "planned-not-implemented",
+        "candidate_status": "prototype-implemented-not-fleet-validated",
     } or p.get("transactions") != {
         "baseline": "ethereum-secp256k1", "candidate": "performance-ed25519",
         "candidate_status": "planned-not-implemented",
     }:
-        raise ValueError("candidate roles and transaction types remain unimplemented")
+        raise ValueError("execution prototype and unimplemented transaction mode must remain explicit")
     if p.get("p2p") != {
         "discovery": False, "bootnodes": [], "public_peers": False,
         "genesis_override": False,
@@ -155,7 +155,7 @@ def resource_blockers(proc_root=Path("/proc"), claim_roots=None, now=None):
         blockers.append("load1 >= 8")
     if available_gib < 90:
         blockers.append("MemAvailable < 90 GiB")
-    busy = {"cargo", "rustc", "compile", "link", "go", "rbtcd", "reth", "geth", "lighthouse", "mdbx_copy", "mdbx_chk", "overlay_audit"}
+    busy = {"cargo", "rustc", "compile", "link", "go", "rbtcd", "reth", "geth", "lighthouse", "h2_validator", "mdbx_copy", "mdbx_chk", "overlay_audit"}
     for directory in proc_root.iterdir():
         if not directory.name.isdigit():
             continue
