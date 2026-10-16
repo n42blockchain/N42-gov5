@@ -18,6 +18,7 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/sharedexec"
+	"github.com/n42blockchain/N42/internal/sharedvalidator"
 )
 
 func TestQueueFixtureBindsRealSignedUniqueNoncesAndSeparateConfigs(t *testing.T) {
@@ -174,5 +175,61 @@ func TestQueueCheckerRefusesNonzeroOwnerBeforeAdmission(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(root, "queue-smoke-result.json")); !os.IsNotExist(err) {
 		t.Fatal("failed queue checker published success")
+	}
+}
+
+func TestQueueCheckerRefusesNonzeroMetadataWithEmptyRestartedOwner(t *testing.T) {
+	base, template := provisionTestPaths(t)
+	root := filepath.Join(base, "q")
+	if err := provisionFixture(root, template, 4, 25000, base, true); err != nil {
+		t.Fatal(err)
+	}
+	var m manifest
+	if err := readFixtureJSON(filepath.Join(root, "run.json"), &m); err != nil {
+		t.Fatal(err)
+	}
+	_, digest, _, err := readQueueCorpus(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve := func(path string, value any) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		listener, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0600); err != nil {
+			t.Fatal(err)
+		}
+		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(value) })}
+		go server.Serve(listener)
+		t.Cleanup(func() { _ = server.Close() })
+	}
+	owner := sharedexec.StrictIngressStatus{Identity: m.Identity, ManifestHash: digest, Epoch: [16]byte{1}, CanonicalHash: m.Identity.GenesisHash}
+	serve(m.OwnerSocket, owner)
+	ingressPath := filepath.Join(filepath.Dir(m.OwnerSocket), "ingress.sock")
+	ingress, err := net.ListenUnix("unix", &net.UnixAddr{Name: ingressPath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingress.Close()
+	if err := os.Chmod(ingressPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range m.Validators {
+		serve(v.APISocket, sharedvalidator.StatusResult{CanonicalProgress: sharedvalidator.CanonicalProgress{Identity: m.Identity, Number: 1, BlockHash: types.HexToHash("0x1234"), CommittedExecutedTransactions: 1}, OwnerQueue: &sharedvalidator.OwnerQueueBinding{Epoch: owner.Epoch, ManifestHash: digest, MaxTransactions: 163000, MaxEncodedBytes: 32 << 20}})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := queueSmokeFixture(ctx, filepath.Join(root, "run.json"), base); err == nil || !strings.Contains(err.Error(), "refusing nonce-zero replay") {
+		t.Fatalf("empty restarted owner hid canonical transactions: %v", err)
+	}
+	_ = ingress.SetDeadline(time.Now().Add(10 * time.Millisecond))
+	if conn, err := ingress.Accept(); err == nil {
+		conn.Close()
+		t.Fatal("sent ingress hello after observing canonical transactions")
 	}
 }

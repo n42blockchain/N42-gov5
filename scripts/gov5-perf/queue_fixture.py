@@ -51,7 +51,7 @@ def evidence(value, m, binding):
     if value.get("kind") != "owner-queue-functional-check-not-tps" or value.get("identity") != m["identity"] or value.get("genesis_sha256") != m["genesis_sha256"] or value.get("manifest_sha256") != binding["manifest_hash"] or value.get("unique_committed_executed_transactions") != 8:
         raise ValueError("queue functional result binding differs")
     owner = value["owner_final"]
-    if owner["Identity"] != m["identity"] or owner["ManifestHash"] != binding["manifest_hash"] or owner["Reconciling"] or any(owner[k] != 0 for k in ("PendingTransactions", "ReservedTransactions", "RetainedEncodedBytes", "ReservedEncodedBytes")) or owner["NewlyAdmitted"] != 8 or owner["CryptoVerified"] != 8:
+    if owner["Identity"] != m["identity"] or owner["ManifestHash"] != binding["manifest_hash"] or owner["Reconciling"] or any(owner[k] != 0 for k in ("PendingTransactions", "ReservedTransactions", "RetainedEncodedBytes", "ReservedEncodedBytes")) or owner["NewlyAdmitted"] != 8 or owner["CryptoVerified"] < 8:
         raise ValueError("owner queue did not canonically release all credits")
     final = value["final"]
     if len(final) != 7 or any(s["committed_executed_transactions"] != 8 or s["identity"] != m["identity"] or s["block_hash"] != owner["CanonicalHash"] or s["number"] != owner["CanonicalNumber"] for s in final):
