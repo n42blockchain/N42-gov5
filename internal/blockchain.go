@@ -2783,6 +2783,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// rooted and written; aheadWait is what this import waited
 				// for it, aheadRun its whole run.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took, "aheadPre", ahead.pre,
+					"queueWaitMs", ahead.queueWait.Milliseconds(),
 					"setupAff", procPhases.SetupAffinity, "setupSys", procPhases.SetupBlockStart)
 			}
 			// The root's own split (P7: the fleet logged only the total):

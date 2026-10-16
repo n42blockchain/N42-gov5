@@ -200,6 +200,19 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 			}
 			piped.bc.lagPipe.mu.Unlock()
 			early++
+			if lagPipeAwaitPrepForTest {
+				// The child's preparation has started (or was not
+				// registered) before the snapshot launches its ahead run.
+				child := piped.bc.lagQueuedChild(h)
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+					piped.bc.aheadPreps.mu.Lock()
+					pr := piped.bc.aheadPreps.m[child.Hash()]
+					piped.bc.aheadPreps.mu.Unlock()
+					if pr == nil || pr.state.Load() != prepPending {
+						break
+					}
+				}
+			}
 		}
 		defer func() { lagPipeBeforePublishForTest = nil }()
 	}
@@ -383,6 +396,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	piped.bc.lagPipe.mu.Unlock()
 	_, _, queued := piped.bc.LagStats()
 	require.Zero(t, queued)
+	piped.bc.aheadPreps.mu.Lock()
+	require.Empty(t, piped.bc.aheadPreps.m, "preparations outlived their blocks")
+	piped.bc.aheadPreps.mu.Unlock()
 	piped.bc.avail.mu.Lock()
 	require.Empty(t, piped.bc.avail.m)
 	piped.bc.avail.mu.Unlock()

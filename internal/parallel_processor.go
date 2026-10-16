@@ -24,7 +24,6 @@ package internal
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -391,6 +390,14 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 // holding its reader lock across the run (ExecuteParallelAhead).
 func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid, ahead bool, spans []FrameSpan) (*parallelRun, error) {
 	numTxs := len(txs)
+	// An ahead run claims the block's preparation (ahead_prep.go) before
+	// its sender recovery below writes any sender: one still running is
+	// waited for, one not started is cancelled.
+	var prep *aheadPrep
+	var prepWait time.Duration
+	if ahead && p.bc != nil {
+		prep, prepWait = p.bc.claimAheadPrep(blockHash)
+	}
 	tStart := time.Now()
 	senderHintHits := 0
 	senderHintFills := 0
@@ -538,7 +545,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// transaction's objects). Fresh per block: a kept slice (cleared on
 	// release, like the results') measured slower, the collector marking
 	// it on every cycle.
-	prepared := make([]preparedTx, numTxs)
+	//
+	// An ahead run adopts the ones its preparation built for these
+	// transactions (ahead_prep.go).
+	var prepared []preparedTx
+	prepAdopted := prep.matches(txs, signer, concreteHeader.BaseFee, p.engine != nil) && !cfg.StatelessExec
+	if prepAdopted {
+		prepared = prep.prepared
+	} else {
+		prepared = make([]preparedTx, numTxs)
+	}
 	// One base-read cache for this block, shared by every worker (see
 	// parallel.BaseCache). Sized for the distinct accounts a block touches:
 	// the bench's blocks are ~163k transfers over ~23k recipients.
@@ -658,30 +674,28 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// the wave starts; the key function also prepares each transaction's
 	// message and hash there (prepared, above).
 	executor.SetAffinity(func(txIndex int) uint64 {
-		tx := txs[txIndex]
-		if pm := &prepared[txIndex]; !pm.ok && signer != nil {
-			if tx.AsMessageInto(&pm.msg, signer, concreteHeader.BaseFee) == nil {
-				NormalizeExecutionMessage(&pm.msg, cfg.StatelessExec, p.engine != nil)
-				pm.hash = tx.Hash()
-				pm.ok = true
-			}
-		}
-		if from := tx.From(); from != nil {
-			return binary.LittleEndian.Uint64(from[:8])
-		}
-		if signer != nil {
-			if from, err := transaction.Sender(signer, tx); err == nil {
-				return binary.LittleEndian.Uint64(from[:8])
-			}
-		}
-		return uint64(txIndex)
+		return p.txAffinityKey(txs, prepared, txIndex, signer, concreteHeader.BaseFee, cfg.StatelessExec)
 	})
 	// The keys, messages and hashes need no state: they are prepared before
 	// the block-start system calls, whose reads of the tree wait while the
 	// parent's root holds it (an ahead run starts at the parent's snapshot,
 	// just before its ComputeRoot), so the preparation overlaps that wait
 	// instead of following it (P10).
-	executor.PrepareAffinity()
+	//
+	// An adopted preparation computed them already, for this executor's
+	// worker count and wave modes (AdoptAffinity checks).
+	prepHit := prepAdopted && executor.AdoptAffinity(prep.aff)
+	if !prepHit {
+		executor.PrepareAffinity()
+	}
+	if ahead {
+		if prepHit {
+			aheadPrepHits.Add(1)
+		} else {
+			aheadPrepMisses.Add(1)
+		}
+	}
+	prep = nil
 	tAffinity := time.Now()
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		executor.Release()
@@ -997,7 +1011,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)

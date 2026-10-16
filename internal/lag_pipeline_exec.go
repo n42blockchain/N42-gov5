@@ -210,6 +210,9 @@ type aheadExec struct {
 	started  time.Time
 	seq      uint64        // launch order (drainingLocked)
 	pre      time.Duration // from launch to the start of the Block-STM run
+	// queueWait: from the block's queueing for the lag executor to the
+	// start of its ahead run (zero when it was not queued).
+	queueWait time.Duration
 
 	// Set by the executing goroutine before done closes.
 	ibs    *state.IntraBlockState
@@ -450,6 +453,9 @@ func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent) *ah
 func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	defer close(a.done)
 	defer func() { a.took = time.Since(a.started) }()
+	if since := bc.lagQueuedSince(a.blk.Hash()); !since.IsZero() {
+		a.queueWait = time.Since(since)
+	}
 	// A discarded run of the same block may still be filling its
 	// transactions' senders.
 	a.pipe.awaitDrained(a.blk.Hash(), a)
@@ -533,8 +539,10 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		}
 		p.mu.Unlock()
 		// The serial path executes blk next: a discarded run of it must not
-		// still be filling its transactions' senders.
+		// still be filling its transactions' senders, nor a preparation of
+		// it reading them.
 		p.awaitDrained(blk.Hash(), nil)
+		bc.dropAheadPrep(blk.Hash())
 		return nil
 	}
 	if p.spec == a {
@@ -559,6 +567,7 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		p.discarded.Add(1)
 		a.release()
 		p.awaitDrained(blk.Hash(), nil)
+		bc.dropAheadPrep(blk.Hash())
 		return nil
 	}
 	p.used.Add(1)

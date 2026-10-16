@@ -257,6 +257,14 @@ func stealFrom(sqs []stealQueue, self int) *waveChain {
 // with longest-processing-time greedy assignment (S83). Read once at init.
 var waveLPT = os.Getenv("N42_WAVE_LPT") == "1"
 
+// SetWaveModesForTest sets N42_WAVE_LPT and N42_WAVE_STEAL and returns the
+// restore.
+func SetWaveModesForTest(lpt, steal bool) func() {
+	pl, ps := waveLPT, waveSteal
+	waveLPT, waveSteal = lpt, steal
+	return func() { waveLPT, waveSteal = pl, ps }
+}
+
 // partitionByAffinity splits txIndices (ascending) into one in-order queue per
 // worker. Equal affinity keys always land on one worker. With lpt false the
 // worker is key % workers; with lpt true keys are sorted by chain length
@@ -425,6 +433,18 @@ func NewExecutorWithWorkerSetup(numTxs int, workers int, setup WorkerSetupFunc, 
 // order (see the affinity field). Call before Run.
 func (e *Executor) SetAffinity(key func(txIndex int) uint64) { e.affinity = key }
 
+// ResolveWorkers is the worker count NewExecutor uses for numTxs
+// transactions and a requested count (0 means runtime.NumCPU()).
+func ResolveWorkers(numTxs, workers int) int {
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+	if workers > numTxs {
+		workers = numTxs
+	}
+	return workers
+}
+
 // NewExecutor creates a Block-STM executor for numTxs transactions.
 // workers specifies the number of goroutines; 0 means runtime.NumCPU().
 // txArena holds the per-transaction arrays of an Executor so a block's worth
@@ -557,12 +577,7 @@ type txSlot struct {
 }
 
 func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
-	if workers > numTxs {
-		workers = numTxs
-	}
+	workers = ResolveWorkers(numTxs, workers)
 
 	a := arenaFor(numTxs)
 	return &Executor{
@@ -833,11 +848,68 @@ func (e *Executor) PrepareAffinity() {
 	e.prePart = e.partitionWave(all, e.preKeys)
 }
 
+// AffinityPrep is what PrepareAffinity computes -- every transaction's
+// affinity key and the first wave's partition -- computed without an
+// Executor, ahead of the block's run (the lag executor's queued child), and
+// adopted by AdoptAffinity in place of PrepareAffinity.
+type AffinityPrep struct {
+	numTxs, workers int
+	lpt, steal      bool
+	keys            []uint64
+	part            *wavePartition
+	// taken: adopted once (the steal chains carry run state).
+	taken atomic.Bool
+}
+
+// PrepareAffinityFor computes PrepareAffinity's result for numTxs
+// transactions on an executor of workers (as requested of NewExecutor)
+// with affinity key key, on at most goroutines goroutines. nil when
+// PrepareAffinity would compute nothing.
+func PrepareAffinityFor(numTxs, workers int, key func(txIndex int) uint64, goroutines int) *AffinityPrep {
+	if key == nil || numTxs <= 2 {
+		return nil
+	}
+	w := ResolveWorkers(numTxs, workers)
+	all := make([]int, numTxs)
+	for i := range all {
+		all[i] = i
+	}
+	keys := affinityKeysOn(numTxs, all, key, goroutines)
+	return &AffinityPrep{numTxs: numTxs, workers: w, lpt: waveLPT, steal: waveSteal, keys: keys, part: partitionFor(all, w, keys)}
+}
+
+// AdoptAffinity takes p in place of PrepareAffinity when it was computed
+// for this executor's transaction count, worker count and wave modes, and
+// reports whether it did (false: the caller runs PrepareAffinity). Call
+// after SetAffinity and before Run; p is used at most once.
+func (e *Executor) AdoptAffinity(p *AffinityPrep) bool {
+	if p == nil || e.affinity == nil || e.numTxs <= 2 || p.numTxs != e.numTxs || p.workers != e.workers ||
+		p.lpt != waveLPT || p.steal != waveSteal || !p.taken.CompareAndSwap(false, true) {
+		return false
+	}
+	e.preKeys, e.prePart = p.keys, p.part
+	p.keys, p.part = nil, nil
+	return true
+}
+
+// PreparedAffinityForTest returns the keys and first-wave queues prepared
+// for the next Run (nil when none are).
+func (e *Executor) PreparedAffinityForTest() (keys []uint64, queues [][]int) {
+	if e.prePart != nil {
+		queues = e.prePart.queues
+	}
+	return e.preKeys, queues
+}
+
 // partitionWave partitions txIndices (with their affinity keys) for a wave,
 // adding the steal chain lists when stealing applies.
 func (e *Executor) partitionWave(txIndices []int, keys []uint64) *wavePartition {
+	return partitionFor(txIndices, e.workers, keys)
+}
+
+func partitionFor(txIndices []int, workers int, keys []uint64) *wavePartition {
 	p := &wavePartition{}
-	p.queues, p.keys, p.topChain = partitionByAffinity(txIndices, e.workers, func(i int) uint64 { return keys[i] }, waveLPT)
+	p.queues, p.keys, p.topChain = partitionByAffinity(txIndices, workers, func(i int) uint64 { return keys[i] }, waveLPT)
 	if waveLPT && waveSteal {
 		p.chains, p.chainAt = buildChains(p.queues, keys)
 	}
@@ -883,15 +955,19 @@ const affinityKeysChunk = 4096
 // transaction's sender, a cache miss per transaction: serial, that was
 // ~13 ms of a 163k-transfer block's exec wave, with the workers waiting.
 func (e *Executor) affinityKeys(txIndices []int) []uint64 {
-	keys := make([]uint64, e.numTxs)
+	return affinityKeysOn(e.numTxs, txIndices, e.affinity, runtime.GOMAXPROCS(0))
+}
+
+// affinityKeysOn is affinityKeys with key on at most g goroutines.
+func affinityKeysOn(numTxs int, txIndices []int, key func(int) uint64, g int) []uint64 {
+	keys := make([]uint64, numTxs)
 	n := len(txIndices)
-	g := runtime.GOMAXPROCS(0)
 	if g > n/affinityKeysChunk {
 		g = n / affinityKeysChunk
 	}
 	if g <= 1 {
 		for _, idx := range txIndices {
-			keys[idx] = e.affinity(idx)
+			keys[idx] = key(idx)
 		}
 		return keys
 	}
@@ -903,7 +979,7 @@ func (e *Executor) affinityKeys(txIndices []int) []uint64 {
 		go func(part []int) {
 			defer wg.Done()
 			for _, idx := range part {
-				keys[idx] = e.affinity(idx)
+				keys[idx] = key(idx)
 			}
 		}(txIndices[lo:hi])
 	}

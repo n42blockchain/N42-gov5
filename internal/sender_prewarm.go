@@ -434,17 +434,30 @@ func (bc *BlockChain) SendersDoneHits() uint64 { return bc.senderJobs.doneHits.L
 // startSenderJob resolves blk's frames and starts recovering its senders in
 // the background (any goroutine). A block already resolved costs nothing to
 // resolve again.
-func (bc *BlockChain) startSenderJob(b *block.Block) {
+//
+// then (optional) runs once nothing this job started still writes the
+// block's senders: at once when no job runs (ok true), when its background
+// workers are done (true), or when another job of the block runs or the
+// frames do not resolve (false). It may run on the caller's goroutine.
+func (bc *BlockChain) startSenderJob(b *block.Block, then func(ok bool)) {
+	settled := func(ok bool) {
+		if then != nil {
+			then(ok)
+		}
+	}
 	workers := prewarmWorkers()
 	if workers == 0 || b == nil || bc.chainConfig == nil {
+		settled(b != nil)
 		return
 	}
 	body, ok := b.Body().(*block.Body)
 	if !ok || !body.IsFrameBody() {
+		settled(true)
 		return
 	}
 	hdr, ok := b.Header().(*block.Header)
 	if !ok || hdr == nil || hdr.Number == nil {
+		settled(true)
 		return
 	}
 	h := b.Hash()
@@ -452,11 +465,13 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 	js.mu.Lock()
 	if _, dup := js.m[h]; dup {
 		js.mu.Unlock()
+		settled(false)
 		return
 	}
 	js.mu.Unlock()
 	go func() {
 		if err := bc.ResolveFrames(b); err != nil {
+			settled(false)
 			return
 		}
 		txs := b.Transactions()
@@ -468,6 +483,7 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 		}
 		if len(txs) < senderRecoveryMinTxs || bc.sendersDoneFor(h) {
 			// Resolution attached every sender: nothing to recover.
+			settled(true)
 			return
 		}
 		j := bc.newSenderJob(transaction.MakeSignerWithTimestamp(bc.chainConfig, hdr.Number.ToBig(), hdr.Time),
@@ -478,6 +494,7 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 		}
 		if _, dup := js.m[h]; dup {
 			js.mu.Unlock()
+			settled(false)
 			return
 		}
 		if len(js.m) >= senderJobCap {
@@ -496,6 +513,7 @@ func (bc *BlockChain) startSenderJob(b *block.Block) {
 				bc.markSendersDone(h, j.txs, j.signer, true)
 			}
 			bc.forgetSenderJob(h, j)
+			settled(true)
 		})
 	}()
 }
