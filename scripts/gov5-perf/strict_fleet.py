@@ -3,12 +3,18 @@
 
 import argparse
 import hashlib
+import http.client
+import math
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import signal
 import stat
 import sys
+import subprocess
+import time
 
 import fleet
 import preflight
@@ -140,15 +146,205 @@ def validate(path, base=fleet.BASE, supply_base=SUPPLY_BASE, check_ports=True):
     return m
 
 
+def disk_budget(m, offered, free):
+    if type(offered) is not int or not 1 <= offered <= 20000000:
+        raise ValueError("offered target must be 1..20M; it is not measured throughput")
+    corpus = metadata(Path(m["supply"]["root"]) / "manifest.json", 1 << 20)
+    d = corpus["descriptor"]
+    unique = min(d["sender_count"] * d["nonces_per_sender"], offered * 120 + d["shard_count"] * d["frame_transactions"])
+    # Conservative planning estimate, not a storage-engine hard bound: eight
+    # full body copies plus owner receipts/index/state. Runtime low-water guard
+    # still stops dispatch/processes rather than risking the remaining disk.
+    estimate = unique * 4096
+    reserve = 64 << 30
+    if free < estimate + reserve:
+        raise ValueError("insufficient disk budget for signed prefix, eight body copies and receipt/state reserve")
+    return {"maximum_offered_prefix_transactions": unique, "estimated_bytes_per_transaction": 4096,
+            "estimated_chain_growth_bytes": estimate, "minimum_free_bytes": reserve, "free_bytes_before": free,
+            "limitation": "planning estimate, not proven write amplification; runtime low-water stops owned processes"}
+
+
+def strict_evidence(value, m):
+    if value.get("kind") != "strict-owner-queue-canonical-observation-not-capacity-promotion" or value.get("passed") is not True or value.get("error") or value.get("identity") != m["identity"] or value.get("manifest_sha256") != "0x" + m["supply"]["manifest_sha256"] or value.get("runtime_manifest") != str(Path(m["root"]) / "run.json") or value.get("full_source_integrity_verified") is not True or value.get("corpus_available_through_window") is not True:
+        raise ValueError("strict replay result identity/integrity/window binding differs")
+    elapsed, rate = value["actual_window_seconds"], value["canonical_committed_executed_tps"]
+    before = value["window_start"]["single_validator_canonical"]["committed_executed_transactions"]
+    after = value["window_end"]["single_validator_canonical"]["committed_executed_transactions"]
+    if type(before) is not int or type(after) is not int or before < 0 or after < before or not isinstance(elapsed, (float, int)) or not math.isfinite(elapsed) or not 20 <= elapsed <= 30 or not isinstance(rate, (float, int)) or not math.isfinite(rate) or rate < 0 or value["canonical_window_delta"] != after - before or not math.isclose(rate, (after - before) / elapsed, rel_tol=1e-12, abs_tol=1e-9):
+        raise ValueError("strict canonical window counter/timing differs")
+    expected = value["stream_final"]["acknowledged_unique_admitted"]
+    owner, final = value["owner_final"], value["final"]
+    epoch = value["owner_initial"]["Epoch"]
+    if type(expected) is not int or expected <= 0 or not isinstance(epoch, list) or len(epoch) != 16 or not any(epoch) or owner["Epoch"] != epoch or owner["Identity"] != m["identity"] or owner["ManifestHash"] != "0x" + m["supply"]["manifest_sha256"] or owner["NewlyAdmitted"] != expected or owner["CryptoVerified"] < expected or owner["Reconciling"] or any(owner[k] != 0 for k in ("PendingTransactions", "ReservedTransactions", "RetainedEncodedBytes", "ReservedEncodedBytes")):
+        raise ValueError("strict owner epoch/admission/credit evidence differs")
+    if len(final) != 7 or any(s["identity"] != m["identity"] or s["committed_executed_transactions"] != expected or s["block_hash"] != owner["CanonicalHash"] or s["number"] != owner["CanonicalNumber"] for s in final) or after > expected:
+        raise ValueError("strict seven canonical heads and owner differ")
+    return expected
+
+
+def run(m, node, owner, replay, attempt, initialize=False, offered=6500000, owner_procs=36, replay_procs=36):
+    if not isinstance(attempt, str) or re.fullmatch(r"[a-z][a-z0-9-]{0,31}", attempt) is None or type(owner_procs) is not int or not 1 <= owner_procs <= 256 or type(replay_procs) is not int or not 1 <= replay_procs <= 256:
+        raise ValueError("explicit new attempt and bounded process budgets required")
+    root = Path(m["root"])
+    if os.path.lexists(root / "attempts" / attempt) or os.path.lexists(root / "strict-attempts" / attempt):
+        raise ValueError("existing attempt cannot be replayed or reset automatically")
+    budget = disk_budget(m, offered, shutil.disk_usage(root).free)
+    children, logs, lifecycle = [], [], []
+    log_root = None
+    deadline = time.monotonic() + 600
+
+    def guard(force=False):
+        fleet.check_owned_claim([p.pid for p in children if p.poll() is None], force=force)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("bounded strict fleet turn expired")
+        if shutil.disk_usage(root).free < budget["minimum_free_bytes"]:
+            raise ValueError("strict fleet disk low-water; preserve data and stop owned processes")
+
+    def spawn(args, name, procs):
+        guard(True)
+        log = os.fdopen(os.open(log_root / (name + ".log"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb")
+        logs.append(log)
+        process = subprocess.Popen(args, cwd=root, env=dict(os.environ, GOMAXPROCS=str(procs)), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        record = {"name": name, "pid": process.pid, "executable": args[0], "gomaxprocs": procs, "started_unix": time.time()}
+        children.append(process)
+        lifecycle.append((process, record))
+        try:
+            record["actual_cpu_affinity"] = sorted(os.sched_getaffinity(process.pid))
+        except ProcessLookupError:
+            record["affinity_sample"] = "exited-before-sample"
+        return process
+
+    def wait_owned(process, seconds):
+        end = min(deadline, time.monotonic() + seconds)
+        while process.poll() is None:
+            guard()
+            if time.monotonic() >= end:
+                raise subprocess.TimeoutExpired(process.args, seconds)
+            time.sleep(0.1)
+        guard(True)
+        return process.returncode
+
+    def live():
+        guard()
+        if any(p.poll() is not None for p in children):
+            raise ValueError("owned strict fleet child exited; preserve same runtime/logs")
+
+    fleet.quiet_checks()
+    with fleet.claim() as resources:
+        if validate(root / "run.json") != m:
+            raise ValueError("strict runtime changed while waiting for claim")
+        budget = disk_budget(m, offered, shutil.disk_usage(root).free)
+        log_root = fleet.attempt_logs(root, attempt)
+        result = {"kind": "strict-owner-queue-fleet-observation-not-capacity-promotion", "identity": m["identity"], "source": m["supply"],
+                  "binaries": {"node": node, "owner": owner, "replay": replay}, "resources": resources, "disk_budget": budget,
+                  "log_directory": str(log_root), "started_unix": time.time(), "owner_gomaxprocs": owner_procs, "validator_gomaxprocs": 2,
+                  "replay_gomaxprocs": replay_procs, "cpu_limitation": "thread budgets with recorded affinity, not exclusive physical cores"}
+        try:
+            if initialize:
+                for directory, metadata_only in [(m["owner_dir"], False)] + [(v["data_dir"], True) for v in m["validators"]]:
+                    expected = {"keystore", "p2p.key", "node.json"} if metadata_only else set()
+                    if {p.name for p in Path(directory).iterdir()} != expected:
+                        raise ValueError("initialization requires fresh datadirs; never reset partial data")
+                    args = [node["path"], "init", "--profile", "n42", "--chain", "private", "--data.dir", directory]
+                    if metadata_only:
+                        args += ["--performance.metadata-only"]
+                    process = spawn(args + [m["genesis"]], "init-" + Path(directory).name, 2)
+                    if wait_owned(process, 120) != 0:
+                        raise ValueError("strict runtime initialization failed; retain partial data")
+                    children.remove(process)
+            sockets = [m["owner_socket"], str(root / "e/execution-rpc/ingress.sock")] + [v["api_socket"] for v in m["validators"]]
+            if any(os.path.lexists(path) for path in sockets):
+                raise ValueError("existing sockets are never removed by launcher")
+            manifest_path = str(Path(m["supply"]["root"]) / "manifest.json")
+            spawn([owner["path"], "--genesis", m["genesis"], "--data-dir", m["owner_dir"], "--parallel-evm", "--strict-ingress-manifest", manifest_path], "owner", owner_procs)
+            end = time.monotonic() + 30
+            while not all(Path(path).exists() for path in sockets[:2]):
+                live()
+                if time.monotonic() >= end:
+                    raise TimeoutError("strict owner readiness timeout")
+                time.sleep(0.1)
+            for v in m["validators"]:
+                spawn([node["path"], "--config", v["config"]], "v" + str(v["index"]), 2)
+            end = time.monotonic() + 30
+            while True:
+                live()
+                try:
+                    initial = []
+                    for v in m["validators"]:
+                        try:
+                            initial.append(fleet.status(v["api_socket"], m["identity"]))
+                        finally:
+                            guard(True)
+                    break
+                except (OSError, http.client.HTTPException):
+                    if time.monotonic() >= end:
+                        raise TimeoutError("strict validator API readiness timeout")
+                    time.sleep(0.1)
+            if any(s["committed_executed_transactions"] != 0 for s in initial):
+                raise ValueError("strict prefix replay requires fresh zero canonical state; no nonce-zero recovery")
+            fleet.write_record(log_root / "initial-status.json", initial)
+            process = spawn([replay["path"], "strict", "--root", m["supply"]["root"], "--runtime-manifest", str(root / "run.json"), "--attempt", attempt, "--offered-tps", str(offered)], "strict-replay", replay_procs)
+            if wait_owned(process, 150) != 0:
+                raise ValueError("strict replay failed; preserve same runtime, prefixes and unknown-outcome evidence")
+            children.remove(process)
+            live()
+            evidence_path = root / "strict-attempts" / attempt / "result.json"
+            evidence = metadata(evidence_path, 16 << 20)
+            expected = strict_evidence(evidence, m)
+            result.update(unique_final_canonical_transactions=expected, measured_canonical_tps=evidence["canonical_committed_executed_tps"], measured_elapsed_seconds=evidence["actual_window_seconds"], replay_result=str(evidence_path), finished_unix=time.time())
+            guard(True)
+            fleet.write_record(log_root / "strict-fleet-observation.json", result)
+        finally:
+            for process in reversed(children):
+                if process.poll() is None:
+                    process.send_signal(signal.SIGTERM)
+            end = time.monotonic() + 10
+            for process in reversed(children):
+                try:
+                    process.wait(timeout=max(0.01, end - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            for log in logs:
+                log.close()
+            for process, record in lifecycle:
+                record.update(stopped_unix=time.time(), return_code=process.poll())
+            fleet.write_record(log_root / "process-lifecycle.json", {"kind": "owned-strict-fleet-process-lifecycle", "processes": [record for _, record in lifecycle]})
+    # A staged observation is not promoted if cleanup or the claim tail fails.
+    fleet.write_record(log_root / "strict-fleet-result.json", result)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
+    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--initialize", action="store_true")
+    parser.add_argument("--attempt")
+    parser.add_argument("--node-binary", type=Path)
+    parser.add_argument("--owner-binary", type=Path)
+    parser.add_argument("--replay-binary", type=Path)
+    parser.add_argument("--offered-tps", type=int, default=6500000)
+    parser.add_argument("--owner-gomaxprocs", type=int, default=36)
+    parser.add_argument("--replay-gomaxprocs", type=int, default=36)
     args = parser.parse_args()
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt("signal " + str(signum))
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     try:
         m = validate(args.manifest)
+        if args.run:
+            if not args.attempt or any(p is None for p in (args.node_binary, args.owner_binary, args.replay_binary)):
+                raise ValueError("run requires explicit binaries and new attempt")
+            result = run(m, fleet.binary(args.node_binary), fleet.binary(args.owner_binary), fleet.binary(args.replay_binary), args.attempt, args.initialize, args.offered_tps, args.owner_gomaxprocs, args.replay_gomaxprocs)
+            print(json.dumps({"result": str(Path(result["log_directory"]) / "strict-fleet-result.json"), "kind": result["kind"]}))
+            return 0
+        if args.initialize or args.attempt or args.node_binary or args.owner_binary or args.replay_binary:
+            raise ValueError("execution options require --run")
         print(json.dumps({"kind": "strict-runtime-validation-only", "identity": m["identity"], "source_manifest_sha256": m["supply"]["manifest_sha256"], "full_source_sha_verified": False, "chain_execution_performed": False}))
         return 0
-    except (OSError, ValueError, TypeError, KeyError) as error:
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, http.client.HTTPException) as error:
         print(json.dumps({"error": str(error)}))
         return 1
 

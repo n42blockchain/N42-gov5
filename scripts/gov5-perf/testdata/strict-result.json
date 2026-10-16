@@ -1,0 +1,165 @@
+{
+  "kind": "strict-owner-queue-canonical-observation-not-capacity-promotion",
+  "passed": true,
+  "identity": {
+    "version": 1,
+    "namespace": "gov5-performance-5m-v1",
+    "chain_id": "4205001",
+    "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "manifest_sha256": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "runtime_manifest": "/dedicated/runtime/run.json",
+  "full_source_integrity_verified": true,
+  "corpus_available_through_window": true,
+  "actual_window_seconds": 20.0,
+  "canonical_committed_executed_tps": 0.2,
+  "canonical_window_delta": 4,
+  "window_start": {
+    "single_validator_canonical": {
+      "committed_executed_transactions": 1
+    }
+  },
+  "window_end": {
+    "single_validator_canonical": {
+      "committed_executed_transactions": 5
+    }
+  },
+  "stream_final": {
+    "acknowledged_unique_admitted": 8
+  },
+  "owner_initial": {
+    "Epoch": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "owner_final": {
+    "Identity": {
+      "version": 1,
+      "namespace": "gov5-performance-5m-v1",
+      "chain_id": "4205001",
+      "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "ManifestHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "Epoch": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "NewlyAdmitted": 8,
+    "CryptoVerified": 11,
+    "Reconciling": false,
+    "PendingTransactions": 0,
+    "ReservedTransactions": 0,
+    "RetainedEncodedBytes": 0,
+    "ReservedEncodedBytes": 0,
+    "CanonicalHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+    "CanonicalNumber": 10
+  },
+  "final": [
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "block_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "number": 10,
+      "committed_executed_transactions": 8
+    }
+  ]
+}
