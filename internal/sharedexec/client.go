@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 type Client struct {
@@ -67,23 +68,33 @@ func (c *Client) Import(ctx context.Context, request ImportRequest) (ImportResul
 	if err := decoder.Decode(&result); err != nil {
 		return ImportResult{}, err
 	}
-	if result.Identity != c.identity || result.BlockHash != request.BlockHash || result.ParentHash != requested.ParentHash() || result.Number != requested.Number64().Uint64() {
-		return ImportResult{}, errors.New("execution response identity or block hash mismatch")
+	if err := validateImportResult(c.identity, request.BlockHash, requested.Header().(*block.Header), result, response.StatusCode); err != nil {
+		return ImportResult{}, err
 	}
-	if result.Durable && (result.State != "durable" || !result.Checked || !result.Executed || response.StatusCode != http.StatusOK) {
-		return ImportResult{}, errors.New("invalid durable execution response")
-	}
-	if result.Durable {
-		header := requested.Header().(*block.Header)
-		if result.Result.Root != header.Root || result.Result.ReceiptHash != header.ReceiptHash || result.Result.Bloom != header.Bloom || result.Result.GasUsed != header.GasUsed {
-			return ImportResult{}, errors.New("execution response does not match block execution commitment")
-		}
-	}
-	if !result.Durable && (result.Checked || result.Executed || response.StatusCode != http.StatusAccepted || (result.State != "accepted" && result.State != "failed")) {
-		return ImportResult{}, errors.New("invalid non-durable execution response")
-	}
+
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return ImportResult{}, errors.New("invalid trailing execution response")
 	}
 	return result, nil
+}
+
+// All full-body and reference responses use the same commitment checks. A
+// transport optimization cannot relax the evidence used by import-gated votes.
+func validateImportResult(identity Identity, hash types.Hash, header *block.Header, result ImportResult, status int) error {
+	if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Hash() != hash {
+		return errors.New("invalid expected execution header")
+	}
+	if result.Identity != identity || result.BlockHash != hash || result.ParentHash != header.ParentHash || result.Number != header.Number.Uint64() {
+		return errors.New("execution response identity or block hash mismatch")
+	}
+	if result.Durable && (result.State != "durable" || !result.Checked || !result.Executed || status != http.StatusOK) {
+		return errors.New("invalid durable execution response")
+	}
+	if result.Durable && (result.Result.Root != header.Root || result.Result.ReceiptHash != header.ReceiptHash || result.Result.Bloom != header.Bloom || result.Result.GasUsed != header.GasUsed) {
+		return errors.New("execution response does not match block execution commitment")
+	}
+	if !result.Durable && (result.Checked || result.Executed || status != http.StatusAccepted || (result.State != "accepted" && result.State != "failed")) {
+		return errors.New("invalid non-durable execution response")
+	}
+	return nil
 }
