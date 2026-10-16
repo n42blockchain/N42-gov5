@@ -129,11 +129,128 @@ type Executor struct {
 	prePart *wavePartition
 }
 
-// wavePartition is a precomputed partitionByAffinity result.
+// wavePartition is a precomputed partitionByAffinity result, plus the
+// per-worker chain lists when work stealing is on.
 type wavePartition struct {
 	queues   [][]int
 	keys     int
 	topChain int
+	chains   [][]waveChain
+	// chainAt[w][p] is the index in chains[w] of the chain queues[w][p] is in.
+	chainAt [][]int32
+}
+
+// waveChain is one affinity key's transactions on one worker, in index
+// order. state is claimed (0 -> 1) by whoever runs the chain.
+type waveChain struct {
+	txs   []int
+	key   uint64
+	state atomic.Int32
+}
+
+// stealQueue is one worker's chains in LPT assignment order (longest first).
+// The owner walks its queue in index order and claims a chain at its first
+// transaction; thieves claim from the back of chains. top bounds the chains
+// thieves have not yet passed, remaining counts unclaimed transactions.
+type stealQueue struct {
+	chains    []waveChain
+	chainAt   []int32
+	top       atomic.Int32
+	remaining atomic.Int64
+}
+
+// waveSteal (N42_WAVE_STEAL=1) lets a worker that ran out of chains take
+// whole not-yet-started chains from the busiest worker (LPT mode only).
+var waveSteal = os.Getenv("N42_WAVE_STEAL") == "1"
+
+// buildChains groups each queue into per-key chains ordered as LPT assigned
+// them: by length descending, ties by first appearance.
+func buildChains(queues [][]int, keys []uint64) (out [][]waveChain, chainAt [][]int32) {
+	out = make([][]waveChain, len(queues))
+	chainAt = make([][]int32, len(queues))
+	for w, q := range queues {
+		pos := make(map[uint64]int)
+		var cs []waveChain
+		var counts []int
+		for _, idx := range q {
+			k := keys[idx]
+			i, ok := pos[k]
+			if !ok {
+				i = len(cs)
+				pos[k] = i
+				cs = append(cs, waveChain{key: k})
+				counts = append(counts, 0)
+			}
+			counts[i]++
+		}
+		order := make([]int, len(cs))
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(a, b int) bool { return counts[order[a]] > counts[order[b]] })
+		backing := make([]int, len(q))
+		off := 0
+		rank := make([]int, len(cs))
+		for r, ci := range order {
+			rank[ci] = r
+		}
+		sorted := make([]waveChain, len(cs))
+		fill := make([]int, len(cs))
+		for r, ci := range order {
+			sorted[r].key = cs[ci].key
+			sorted[r].txs = backing[off : off+counts[ci] : off+counts[ci]]
+			off += counts[ci]
+		}
+		at := make([]int32, len(q))
+		for p, idx := range q {
+			r := rank[pos[keys[idx]]]
+			sorted[r].txs[fill[r]] = idx
+			fill[r]++
+			at[p] = int32(r)
+		}
+		out[w], chainAt[w] = sorted, at
+	}
+	return out, chainAt
+}
+
+// steal claims the last unclaimed chain not yet passed by another thief.
+func (sq *stealQueue) steal() *waveChain {
+	for {
+		t := sq.top.Load()
+		if t <= 0 {
+			return nil
+		}
+		if !sq.top.CompareAndSwap(t, t-1) {
+			continue
+		}
+		c := &sq.chains[t-1]
+		if c.state.CompareAndSwap(0, 1) {
+			sq.remaining.Add(-int64(len(c.txs)))
+			return c
+		}
+	}
+}
+
+// stealFrom steals one chain from the most loaded worker other than self,
+// or returns nil when no other worker has unclaimed chains left.
+func stealFrom(sqs []stealQueue, self int) *waveChain {
+	for {
+		best, bestRem := -1, int64(0)
+		for w := range sqs {
+			if w == self {
+				continue
+			}
+			if r := sqs[w].remaining.Load(); r > bestRem && sqs[w].top.Load() > 0 {
+				best, bestRem = w, r
+			}
+		}
+		if best < 0 {
+			return nil
+		}
+		if c := sqs[best].steal(); c != nil {
+			return c
+		}
+	}
 }
 
 // waveLPT (N42_WAVE_LPT=1) replaces the modulo sender-to-worker assignment
@@ -560,6 +677,7 @@ func (e *Executor) executeParallel(txIndices []int) {
 	var queues [][]int
 	work := make(chan int, len(txIndices))
 	var keys []uint64
+	var sqs []stealQueue
 	if e.affinity != nil {
 		if e.preKeys != nil && len(txIndices) == e.numTxs {
 			// The first wave runs every transaction: PrepareAffinity's keys.
@@ -573,6 +691,14 @@ func (e *Executor) executeParallel(txIndices []int) {
 		}
 		e.preKeys, e.prePart = nil, nil
 		queues, e.waveKeys, e.waveTopChain = part.queues, part.keys, part.topChain
+		if part.chains != nil {
+			sqs = make([]stealQueue, e.workers)
+			for w := range sqs {
+				sqs[w].chains, sqs[w].chainAt = part.chains[w], part.chainAt[w]
+				sqs[w].top.Store(int32(len(part.chains[w])))
+				sqs[w].remaining.Store(int64(len(queues[w])))
+			}
+		}
 	}
 	e.waveAffKeys = keys
 
@@ -629,6 +755,38 @@ func (e *Executor) executeParallel(txIndices []int) {
 						ws.keyCount[keys[txIndex]]++
 					}
 				}
+				if sqs != nil {
+					sq := &sqs[workerID]
+					// Own transactions run in index order; a chain thieves
+					// already took is skipped at its first transaction.
+					owned := make([]uint8, len(sq.chains))
+					for p, txIndex := range queues[workerID] {
+						ci := sq.chainAt[p]
+						if owned[ci] == 0 {
+							c := &sq.chains[ci]
+							if !c.state.CompareAndSwap(0, 1) {
+								owned[ci] = 2
+								continue
+							}
+							owned[ci] = 1
+							sq.remaining.Add(-int64(len(c.txs)))
+						} else if owned[ci] == 2 {
+							continue
+						}
+						run(txIndex)
+					}
+					for c := stealFrom(sqs, workerID); c != nil; c = stealFrom(sqs, workerID) {
+						// A stolen chain is not in this worker's keyCount: size
+						// its sender's version list from the chain itself.
+						if ws.keyCount != nil {
+							ws.keyCount[c.key] = int32(len(c.txs))
+						}
+						for _, txIndex := range c.txs {
+							run(txIndex)
+						}
+					}
+					return
+				}
 				for _, txIndex := range queues[workerID] {
 					run(txIndex)
 				}
@@ -675,10 +833,14 @@ func (e *Executor) PrepareAffinity() {
 	e.prePart = e.partitionWave(all, e.preKeys)
 }
 
-// partitionWave partitions txIndices (with their affinity keys) for a wave.
+// partitionWave partitions txIndices (with their affinity keys) for a wave,
+// adding the steal chain lists when stealing applies.
 func (e *Executor) partitionWave(txIndices []int, keys []uint64) *wavePartition {
 	p := &wavePartition{}
 	p.queues, p.keys, p.topChain = partitionByAffinity(txIndices, e.workers, func(i int) uint64 { return keys[i] }, waveLPT)
+	if waveLPT && waveSteal {
+		p.chains, p.chainAt = buildChains(p.queues, keys)
+	}
 	return p
 }
 
