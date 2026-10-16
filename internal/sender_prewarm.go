@@ -237,6 +237,7 @@ func (j *senderJob) frame(i int, final bool) bool {
 			if !t.Own {
 				// Not stored (pulled past the budget and evicted, or read
 				// from the Frames table): attested senders still apply.
+				senderFramesNotStored.Add(1)
 				if ss := j.fromSource(sp.H, len(txs), final); ss != nil {
 					frame.ApplySenders(txs, ss)
 				}
@@ -294,6 +295,7 @@ func (j *senderJob) recoverTxs(h types.Hash, txs []*transaction.Transaction) *st
 		if tx == nil {
 			continue
 		}
+		senderRecoverTxsTxs.Add(1)
 		if a, err := transaction.Sender(j.signer, tx); err == nil {
 			addrs[k] = a
 		}

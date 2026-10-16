@@ -2802,6 +2802,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()))
 			}
 			fields = append(fields, bc.lagPipeLogFields()...)
+			fields = append(fields, senderSrcLogFields()...)
 			if procPhases.Skipped > 0 {
 				fields = append(fields, "skipped", procPhases.Skipped)
 			}

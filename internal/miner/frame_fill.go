@@ -132,6 +132,16 @@ func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.A
 		p.txs += e.Txs
 		return true
 	})
+	if frameReadyPick && len(p.hashes) > 0 && st.Recovering() {
+		// Observability: frames taken as ready only past the grace.
+		late := 0
+		for _, h := range p.hashes {
+			if st.Senders(h) == nil {
+				late++
+			}
+		}
+		internal.CountPickedUnreadyAfterGrace(late)
+	}
 	return p
 }
 
@@ -180,6 +190,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 		cachedSenders += frame.ApplySenders(p, st.Senders(pick.hashes[i]))
 		flat = append(flat, p...)
 	}
+	internal.CountLocalFillRecovered(len(flat) - cachedSenders)
 	dDecode := time.Since(tDecode)
 	tExec := time.Now()
 	finish := func(hashes []types.Hash, raws [][]byte, path string, skipped int, reasons *internal.FrameSkipCounts) error {

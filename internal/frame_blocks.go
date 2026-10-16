@@ -401,6 +401,7 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	// signer; the import then has no recovery left to do (P10).
 	complete := fs.store != nil && dropped == 0
 	declared := false
+	owned := 0
 	var signer transaction.Signer
 	for i, p := range per {
 		total += len(p)
@@ -411,6 +412,7 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 			declared = declared || d
 			if n != len(p) {
 				complete = false
+				owned++
 			} else if len(p) > 0 {
 				if signer == nil {
 					signer = ss.Signer
@@ -434,6 +436,7 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		// This block's import recovers the senders admission has not:
 		// admission recovery skips these frames from now on (P7).
 		fs.store.Claim(hashes)
+		senderFramesOwned.Add(uint64(owned))
 	}
 	log.Debug("frame body resolved", "number", b.Number64().Uint64(), "frames", len(hashes), "txs", len(txs),
 		"dropped", dropped, "cachedSenders", cached, "fromDB", fromDB, "pulled", pulled, "ms", time.Since(t0).Milliseconds())
