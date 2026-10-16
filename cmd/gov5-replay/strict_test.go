@@ -477,3 +477,19 @@ func TestStrictPumpRecordsFullShardExhaustion(t *testing.T) {
 		t.Fatalf("full shard EOF evidence missing: %+v %+v", progress, counters.sample())
 	}
 }
+
+func TestStrictPythonLauncherResultContract(t *testing.T) {
+	raw, err := os.ReadFile("../../scripts/gov5-perf/testdata/strict-result.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var result strictRunResult
+	if err := decoder.Decode(&result); err != nil {
+		t.Fatal("Python launcher fixture differs from actual Go result JSON:", err)
+	}
+	if !result.Passed || result.WindowStart == nil || result.WindowEnd == nil || result.WindowStart.Canonical.CommittedExecutedTransactions != 1 || result.WindowEnd.Canonical.CommittedExecutedTransactions != 5 || result.CanonicalWindowDelta != 4 || result.Stream.Admitted != 8 || len(result.Final) != 7 {
+		t.Fatal("cross-language canonical window/drain fixture differs")
+	}
+}
