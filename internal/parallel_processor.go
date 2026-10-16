@@ -1331,8 +1331,21 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 		ibs.CreateAccount(addr, true)
 	}
 
-	// Pass 1: Apply account-level changes.
-	for _, ae := range accounts {
+	// Pass 1: Apply account-level changes. A large block's entries go
+	// through ApplyAccounts (P13c), which prepares the written accounts'
+	// objects across goroutines and leaves the same serial sequence of
+	// map inserts and journal records the loop below makes; a decode
+	// error falls back to the loop, which reports it where it always did.
+	pass1 := accounts
+	if w := applyMVSWorkers(numTxs); applyBulkEnabled && w > 1 && len(accounts) >= applyBulkMinAccounts {
+		if bulk, ok := decodeAccountApplies(len(accounts), w, func(i int) (types.Address, []byte, *uint256.Int) {
+			return accounts[i].addr, accounts[i].value, accounts[i].delta
+		}); ok {
+			ibs.ApplyAccounts(bulk, w)
+			pass1 = nil
+		}
+	}
+	for _, ae := range pass1 {
 		if ae.delta != nil {
 			// The block only credited the account: add onto the base value,
 			// which is the same deferred increment the serial path takes.
@@ -1378,6 +1391,65 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	}
 
 	return nil
+}
+
+// applyBulkEnabled gates applyMVSToIBS's bulk account pass (P13c);
+// N42_APPLY_BULK=0 restores the per-entry loop.
+var applyBulkEnabled = os.Getenv("N42_APPLY_BULK") != "0"
+
+// applyBulkMinAccounts is the account-entry count from which the bulk
+// pass is taken.
+const applyBulkMinAccounts = 4096
+
+// decodeAccountApplies turns n account entries (entry(i): address, encoded
+// final account or nil for deleted, credit delta) into ApplyAccounts'
+// form across workers goroutines. ok is false when an encoding does not
+// decode.
+func decodeAccountApplies(n, workers int, entry func(int) (types.Address, []byte, *uint256.Int)) ([]state.AccountApply, bool) {
+	out := make([]state.AccountApply, n)
+	bad := make([]bool, workers)
+	per := (n + workers - 1) / workers
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		lo, hi := w*per, (w+1)*per
+		if hi > n {
+			hi = n
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(w, lo, hi int) {
+			defer wg.Done()
+			var acc account.StateAccount
+			for i := lo; i < hi; i++ {
+				addr, value, delta := entry(i)
+				o := &out[i]
+				o.Addr = addr
+				switch {
+				case delta != nil:
+					o.Delta = delta
+				case value == nil:
+					o.Delete = true
+				default:
+					acc = account.StateAccount{}
+					if err := acc.DecodeForStorageV2(value); err != nil {
+						bad[w] = true
+						return
+					}
+					o.Balance = acc.Balance
+					o.Nonce = acc.Nonce
+				}
+			}
+		}(w, lo, hi)
+	}
+	wg.Wait()
+	for _, b := range bad {
+		if b {
+			return nil, false
+		}
+	}
+	return out, true
 }
 
 // collectedRun is collectParallelResults' outcome.
