@@ -93,6 +93,44 @@ microbenchmarks, queued transactions and Rust figures do not satisfy this gate.
 
 ## Persistence and reporting
 
+### Queue integration checkpoint — 2026-10-16 06:47 UTC
+
+The baseline eight-transaction fleet and its same-data restart passed. The newer
+strict owner-queue fleet has **not run**. Its single passive worker is PID
+3767698, controller `/tmp/gov5-ownerqueue-b02d84a2-v2.py`, with evidence in
+`/data/blockchain/gov5-work/validation/20261016-gov5-ownerqueue-b02d84a2/status.json`.
+At this checkpoint it is `waiting-functional-run-v2`: external Rust build/test
+workloads prevent BOX admission. Targeted race tests, full build, three binary
+builds and fresh `q1016a` provisioning passed; `q1016a/attempts/q1` does not exist.
+Do not start a second worker or reinitialize this runtime.
+
+The queue binaries remain pinned to `b02d84a2`; the replacement claim guard is
+from `875f729b`. The guard checks claim identity throughout execution and after
+cleanup. A replaced claim causes failure even if an observation file exists;
+cleanup touches only owned processes and claims.
+
+The separate signed-corpus runtime, strict replay client and guarded launcher
+are tested and pushed, frozen at `df691d4f` in
+`/data/blockchain/gov5-work/wt-gov5-strict-runtime-df691d4f`. Main-branch launcher
+commit is `4f77e776`. Run the small queue gate first, preserve any actual failure
+on the same root, and diagnose it before starting the signed-corpus observation.
+No schema-2 fleet result or new chain TPS exists. Later fault/process gates and
+matched capacity promotion checks remain outstanding.
+
+Raw supply qualification reached 6,499,988.64 unique wires/s for 20.000034967 s;
+this excludes online signature verification and on-chain execution. Historical
+Go chain best remains 776,967 TPS. The strict observation uses one validator's
+canonical counter, a full twenty-second window and independent drain, never the
+sum of seven counters. Its default disk estimate needs 796.422 GiB free for the
+192M source plus reserve; recheck at admission rather than relying on today's
+approximately 920 GiB. Do not delete source corpus or runtime evidence to force
+the disk check to pass.
+
+An additional sealed-job reference RPC is committed as `56d50aa0` on the main
+branch, with targeted tests and vet passing. Replica/CLI activation remains off;
+it is excluded from the frozen first strict observation. Stop expanding
+optimizations until actual admission/execution phase data identifies a bottleneck.
+
 The completed repair monitor's provenance, stage logs and `status.json` live beneath
 `/data/blockchain/gov5-work/validation/20261015-e1-fcdb22d2/root-rules-fb1671a4`.
 The runtime root is `/data/blockchain/gov5-performance-5m/runtime/f1015a`.
