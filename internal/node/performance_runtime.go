@@ -78,6 +78,9 @@ func privatePerformancePath(path, root string, directory, socket bool) error {
 // root is fixed by the public Node constructor; tests supply their own temporary
 // root while exercising this same constructor and lifecycle.
 func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc, cliCtx *cli.Context, cfg *conf.Config, profile params.ProfileDescriptor, genesis configuredGenesis, root string) (_ *Node, err error) {
+	if err := cfg.NodeCfg.ValidatePerformanceOwnerQueue(cfg.NodeCfg.Chain, profile); err != nil {
+		return nil, err
+	}
 	if cfg.NodeCfg.PerformanceRole != "validator" || cfg.NodeCfg.PerformanceExecutionSocket == "" || cfg.NodeCfg.PerformanceGenesis == "" || cfg.NodeCfg.Chain != "private" || !profile.IsN42() || genesis.genesis == nil || genesis.chainConfig == nil || genesis.chainConfig.Performance == nil || genesis.chainConfig.HotStuff == nil || len(genesis.chainConfig.HotStuff.Validators) != 7 {
 		return nil, errors.New("performance validator runtime requires explicit private+n42 performance genesis, seven validators and execution socket")
 	}
@@ -239,6 +242,11 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 	}
 	if rt.producer, err = sharedvalidator.NewProducer(ctx, rt.replica, time.Duration(cfg.Miner.BlockIntervalMs)*time.Millisecond); err != nil {
 		return nil, err
+	}
+	if cfg.NodeCfg.PerformanceOwnerQueue {
+		if err = rt.producer.UseOwnerQueue(ctx, sharedvalidator.OwnerQueueOptions{MaxTransactions: cfg.NodeCfg.PerformanceQueueMaxTransactions, MaxEncodedBytes: cfg.NodeCfg.PerformanceQueueMaxEncodedBytes}); err != nil {
+			return nil, fmt.Errorf("performance owner queue startup: %w", err)
+		}
 	}
 	if rt.api, err = sharedvalidator.NewAPI(rt.replica, rt.producer); err != nil {
 		return nil, err

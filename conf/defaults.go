@@ -72,6 +72,9 @@ func NormalizeNetworkSelection(cfg *Config) error {
 	if err := cfg.ChainCfg.ValidatePerformanceSelection(preset.Chain, preset.Profile); err != nil {
 		return err
 	}
+	if err := cfg.NodeCfg.ValidatePerformanceOwnerQueue(preset.Chain, preset.Profile); err != nil {
+		return err
+	}
 	if cfg.NodeCfg.PerformanceGenesis != "" && (preset.Chain != "private" || !preset.Profile.IsN42()) {
 		return errors.New("performance genesis requires private chain and n42 profile")
 	}
@@ -236,4 +239,19 @@ func ValidateAndApplyDefaults(cfg *Config) error {
 		return err
 	}
 	return Validate(cfg)
+}
+
+// ValidatePerformanceOwnerQueue also serves programmatic constructors which do
+// not run the CLI normalization path. Zero values retain the existing mode.
+func (n NodeConfig) ValidatePerformanceOwnerQueue(chain string, profile params.ProfileDescriptor) error {
+	if !n.PerformanceOwnerQueue && n.PerformanceQueueMaxTransactions == 0 && n.PerformanceQueueMaxEncodedBytes == 0 {
+		return nil
+	}
+	if !n.PerformanceOwnerQueue || chain != "private" || !profile.IsN42() || n.PerformanceRole != "validator" || n.PerformanceExecutionSocket == "" || n.PerformanceGenesis == "" {
+		return errors.New("owner queue requires explicit private+n42 performance validator, genesis and execution socket")
+	}
+	if n.PerformanceQueueMaxTransactions < 0 || n.PerformanceQueueMaxTransactions > 200000 || n.PerformanceQueueMaxEncodedBytes < 0 || n.PerformanceQueueMaxEncodedBytes > 32<<20 {
+		return errors.New("owner queue limits exceed bounded transaction/encoded-byte selection")
+	}
+	return nil
 }
