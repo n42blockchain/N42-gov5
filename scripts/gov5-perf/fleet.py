@@ -293,10 +293,12 @@ def restart_baseline(m, node, owner, initialize, smoke, attempt, path):
     return baseline
 
 
-def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=None):
+def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=None, owner_queue=False):
     root = Path(m["root"])
+    if owner_queue and (smoke is None or restart is not None or attempt is None):
+        raise ValueError("owner queue mode requires its checker and a new attempt, and forbids restart mode")
     retained = restart_baseline(m, node, owner, initialize, smoke, attempt, restart)
-    if attempt is not None and initialize:
+    if attempt is not None and initialize and not owner_queue:
         raise ValueError("recovery attempts cannot initialize existing chain data")
     log_root = root
     children = []
@@ -318,8 +320,13 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
         # Repeat validation after the atomic claim. Uncooperative external
         # programs can still race ports; actual binds remain authoritative.
         validate(root / "run.json")
+        queue_binding = None
+        if owner_queue:
+            import queue_fixture
+            queue_binding = queue_fixture.validate(m)
         log_root = attempt_logs(root, attempt)
-        if smoke is not None and (root / "smoke-result.json").exists():
+        smoke_name = "queue-smoke-result.json" if owner_queue else "smoke-result.json"
+        if smoke is not None and os.path.lexists(root / smoke_name):
             raise ValueError("existing smoke result requires explicit recovery review")
         result = {"kind": "functional-check-not-tps", "identity": m["identity"], "genesis_sha256": m["genesis_sha256"], "binaries": {"node": node, "owner": owner}, "resources": resources, "started_unix": time.time(), "owner_parallel_evm": True, "attempt": attempt, "log_directory": str(log_root)}
         if smoke is not None:
@@ -340,7 +347,10 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
             for path in [m["owner_socket"]] + [v["api_socket"] for v in m["validators"]]:
                 if Path(path).exists() or Path(path).is_symlink():
                     raise ValueError("existing socket is never removed by launcher")
-            spawn([owner["path"], "--genesis", m["genesis"], "--data-dir", m["owner_dir"], "--parallel-evm"], "owner")
+            owner_args = [owner["path"], "--genesis", m["genesis"], "--data-dir", m["owner_dir"], "--parallel-evm"]
+            if owner_queue:
+                owner_args += ["--strict-ingress-manifest", queue_binding["manifest"]]
+            spawn(owner_args, "owner")
             deadline = time.monotonic() + 30
             while not Path(m["owner_socket"]).exists():
                 live()
@@ -348,7 +358,8 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                     raise ValueError("owner readiness timeout")
                 time.sleep(0.1)
             for v in m["validators"]:
-                spawn([node["path"], "--config", v["config"]], "v" + str(v["index"]))
+                config = str(root / "queue-configs" / f"v{v['index']}.json") if owner_queue else v["config"]
+                spawn([node["path"], "--config", config], "v" + str(v["index"]))
             deadline = time.monotonic() + 30
             while True:
                 live()
@@ -371,21 +382,25 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
             if smoke is not None:
                 if any(s.get("committed_executed_transactions") != 0 for s in initial):
                     raise ValueError("signed batch requires all initial counters zero; inspect existing canonical evidence")
-                p = spawn([smoke["path"], "--smoke-manifest", str(root / "run.json"), "--timeout-seconds", str(duration)], "signed-smoke")
+                p = spawn([smoke["path"], "--queue-smoke-manifest" if owner_queue else "--smoke-manifest", str(root / "run.json"), "--timeout-seconds", str(duration)], "signed-smoke")
                 if p.wait(timeout=duration + 5) != 0:
                     raise ValueError("signed functional checker failed; inspect retained private log")
                 children.remove(p)
-                smoke_path = root / "smoke-result.json"
+                smoke_path = root / smoke_name
                 if attempt is not None:
-                    archive_smoke(smoke_path, log_root / "smoke-result.json")
-                    smoke_path = log_root / "smoke-result.json"
+                    archive_smoke(smoke_path, log_root / smoke_name)
+                    smoke_path = log_root / smoke_name
                 evidence = load(smoke_path)
-                if evidence.get("identity") != m["identity"] or evidence.get("genesis_sha256") != m["genesis_sha256"] or evidence.get("kind") != "signed-transaction-functional-check-not-tps":
+                if owner_queue:
+                    submitted = queue_fixture.evidence(evidence, m, queue_binding)
+                elif evidence.get("identity") != m["identity"] or evidence.get("genesis_sha256") != m["genesis_sha256"] or evidence.get("kind") != "signed-transaction-functional-check-not-tps":
                     raise ValueError("signed functional result binding differs")
                 submitted = evidence["unique_committed_executed_transactions"]
+                if owner_queue:
+                    result.update(kind="owner-queue-functional-check-not-tps", queue_manifest=queue_binding, owner_queue_final=evidence["owner_final"])
                 if type(submitted) is not int or not 2 <= submitted <= 128:
                     raise ValueError("invalid functional transaction count")
-            end = time.monotonic() + duration
+            end = time.monotonic() + (0 if owner_queue else duration)
             while time.monotonic() < end:
                 live()
                 time.sleep(min(0.2, max(0, end - time.monotonic())))
@@ -406,6 +421,18 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                 if len(heads) == 1 and final[0]["number"] > 0:
                     if final[0]["committed_executed_transactions"] != submitted:
                         raise ValueError("runtime canonical count differs from signed functional result")
+                    if owner_queue:
+                        observed_owner = queue_fixture.owner_status(m)
+                        if observed_owner.get("CanonicalHash") != final[0]["block_hash"] or observed_owner.get("CanonicalNumber") != final[0]["number"]:
+                            if time.monotonic() > convergence:
+                                raise ValueError("owner and seven queue validators did not converge")
+                            time.sleep(0.1)
+                            continue
+                        refreshed = dict(evidence, final=final, owner_final=observed_owner)
+                        queue_fixture.evidence(refreshed, m, queue_binding)
+                        if observed_owner["Epoch"] != evidence["owner_final"]["Epoch"]:
+                            raise ValueError("queue owner epoch changed after checker")
+                        result["owner_queue_final"] = observed_owner
                     break
                 if time.monotonic() > convergence:
                     raise ValueError("seven processes did not converge to one nonzero canonical head/counter")
@@ -426,10 +453,10 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                     p.wait(timeout=5)
             for log in logs:
                 log.close()
-            if retained is not None:
+            if retained is not None or owner_queue:
                 for process, record in lifecycle:
                     record.update(stopped_unix=time.time(), return_code=process.poll())
-                write_record(log_root / "process-lifecycle.json", {"kind": "owned-restart-process-lifecycle", "processes": [record for _, record in lifecycle]})
+                write_record(log_root / "process-lifecycle.json", {"kind": "owned-queue-process-lifecycle" if owner_queue else "owned-restart-process-lifecycle", "processes": [record for _, record in lifecycle]})
 
 
 def main():
@@ -444,6 +471,7 @@ def main():
     parser.add_argument("--attempt", help="new private basename for an existing initialized run; separate logs/results, no --initialize")
     parser.add_argument("--node-binary")
     parser.add_argument("--owner-binary")
+    parser.add_argument("--owner-queue", action="store_true", help="explicit eight-transaction strict owner queue functional fixture; requires checker")
     parser.add_argument("--smoke-binary", help="explicit gov5-perf-provision executable for one signed functional batch")
     parser.add_argument("--restart-baseline", type=Path, help="same-root archived nonzero result; requires new attempt and identical binaries, no init/smoke")
     parser.add_argument("--duration-seconds", type=int, default=15)
@@ -451,13 +479,13 @@ def main():
     try:
         m = validate(args.manifest)
         if not args.run:
-            if args.initialize or args.attempt is not None or args.restart_baseline is not None:
+            if args.initialize or args.attempt is not None or args.restart_baseline is not None or args.owner_queue:
                 raise ValueError("--initialize/--attempt/--restart-baseline require --run")
             print(json.dumps({"validation": "passed", "launch_performed": False, "identity": m["identity"], "genesis_sha256": m["genesis_sha256"]}))
             return 0
         if not 5 <= args.duration_seconds <= 60 or not args.node_binary or not args.owner_binary:
             raise ValueError("bounded 5..60 second run and explicit binaries required")
-        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None, args.attempt, args.restart_baseline)
+        result = run(m, binary(args.node_binary), binary(args.owner_binary), args.duration_seconds, args.initialize, binary(args.smoke_binary) if args.smoke_binary else None, args.attempt, args.restart_baseline, args.owner_queue)
         print(json.dumps({"result": str(Path(result["log_directory"]) / "functional-result.json"), "kind": result["kind"]}))
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
