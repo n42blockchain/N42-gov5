@@ -206,6 +206,44 @@ func readQueueCorpus(m manifest) (sharedexec.CorpusManifest, types.Hash, []share
 func queueEmpty(s sharedexec.StrictIngressStatus) bool {
 	return !s.Reconciling && s.PendingTransactions == 0 && s.ReservedTransactions == 0 && s.RetainedEncodedBytes == 0 && s.ReservedEncodedBytes == 0
 }
+
+type queueAdmissionRetries struct {
+	Busy     int `json:"busy"`
+	Snapshot int `json:"snapshot"`
+}
+
+// Only typed, known zero-admission outcomes permit another send of this exact
+// frame on the same connection. A missing final ACK is never retried.
+func admitQueueFrame(ctx context.Context, frame sharedexec.CorpusFrame, timeout time.Duration, admit func(context.Context, sharedexec.CorpusFrame) (sharedexec.StrictIngressAck, error)) (sharedexec.StrictIngressAck, queueAdmissionRetries, error) {
+	work, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var retries queueAdmissionRetries
+	for {
+		ack, err := admit(work, frame)
+		if err == nil {
+			return ack, retries, nil
+		}
+		if !errors.Is(err, sharedexec.ErrIngressCreditsExhausted) && !errors.Is(err, sharedexec.ErrIngressSnapshotChanged) {
+			return ack, retries, err
+		}
+		if ack.NewlyAdmitted != 0 || ack.Duplicates != 0 {
+			return ack, retries, errors.New("retry carried nonzero admission; refusing replay")
+		}
+		if errors.Is(err, sharedexec.ErrIngressCreditsExhausted) {
+			retries.Busy++
+		} else {
+			retries.Snapshot++
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-work.Done():
+			timer.Stop()
+			return ack, retries, fmt.Errorf("bounded zero-admission retry stopped: %w", work.Err())
+		case <-timer.C:
+		}
+	}
+}
+
 func privateQueueSocket(path string) error {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil || resolved != path {
@@ -292,22 +330,56 @@ func queueSmokeFixture(ctx context.Context, path, base string) error {
 			return err
 		}
 		clients[i] = sharedvalidator.NewAPIClient(v.APISocket, m.Identity)
-		initial[i], err = clients[i].Status(ctx)
+	}
+	// Existing empty-block history is allowed, but never infer unused nonces
+	// from an empty volatile owner queue alone. Establish one common zero-count
+	// canonical head on all seven metadata stores and the owner before sending.
+	for {
+		for i, c := range clients {
+			initial[i], err = c.Status(ctx)
+			if err != nil {
+				return err
+			}
+			b := initial[i].OwnerQueue
+			if initial[i].CommittedExecutedTransactions != 0 || b == nil || b.Epoch != before.Epoch || b.ManifestHash != digest {
+				return errors.New("zero-count validators with identical owner binding required; refusing nonce-zero replay")
+			}
+		}
+		current, err := owner.StrictIngressStatus(ctx)
 		if err != nil {
 			return err
 		}
-		b := initial[i].OwnerQueue
-		if initial[i].CommittedExecutedTransactions != 0 || b == nil || b.Epoch != before.Epoch || b.ManifestHash != digest {
-			return errors.New("fresh zero-count validators with identical owner binding required")
+		if current.Epoch != before.Epoch || current.ManifestHash != digest || current.NewlyAdmitted != 0 || current.CryptoVerified != 0 || !queueEmpty(current) {
+			return errors.New("owner changed before zero-count canonical baseline")
+		}
+		converged := true
+		for _, s := range initial {
+			if s.CanonicalProgress.Number != current.CanonicalNumber || s.CanonicalProgress.BlockHash != current.CanonicalHash {
+				converged = false
+			}
+		}
+		if converged {
+			before = current
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 	var acks []sharedexec.StrictIngressAck
+	var admissionRetries []queueAdmissionRetries
 	for _, frame := range frames {
 		c, err := sharedexec.DialStrictIngress(ctx, filepath.Join(root, "e", "execution-rpc", "ingress.sock"), m.Identity, digest, frame.Shard)
 		if err != nil {
 			return err
 		}
-		ack, err := c.Admit(ctx, frame)
+		if c.Epoch() != before.Epoch {
+			c.Close()
+			return errors.New("owner epoch changed before first frame send")
+		}
+		ack, retries, err := admitQueueFrame(ctx, frame, 5*time.Second, c.Admit)
 		c.Close()
 		if err != nil {
 			return fmt.Errorf("queue admission stopped without replay: %w", err)
@@ -316,6 +388,7 @@ func queueSmokeFixture(ctx context.Context, path, base string) error {
 			return errors.New("fresh queue frame did not admit exactly two new transactions")
 		}
 		acks = append(acks, ack)
+		admissionRetries = append(admissionRetries, retries)
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -338,8 +411,8 @@ func queueSmokeFixture(ctx context.Context, path, base string) error {
 		if after.Epoch != before.Epoch || after.ManifestHash != digest {
 			return errors.New("owner volatile epoch changed during queue check")
 		}
-		if converged && queueEmpty(after) && after.NewlyAdmitted == 8 && after.CryptoVerified == 8 && after.CanonicalHash == final[0].CanonicalProgress.BlockHash && after.CanonicalNumber == final[0].CanonicalProgress.Number {
-			return writePrivate(resultPath, map[string]any{"kind": "owner-queue-functional-check-not-tps", "identity": m.Identity, "genesis_sha256": m.GenesisSHA256, "manifest_sha256": digest, "unique_committed_executed_transactions": 8, "initial": initial, "final": final, "owner_initial": before, "owner_final": after, "admission_acks": acks, "execution_trust": "accepted-trusted-execution-source", "build_then_import_executes_twice": true})
+		if converged && queueEmpty(after) && after.NewlyAdmitted == 8 && after.CryptoVerified >= 8 && after.CanonicalHash == final[0].CanonicalProgress.BlockHash && after.CanonicalNumber == final[0].CanonicalProgress.Number {
+			return writePrivate(resultPath, map[string]any{"kind": "owner-queue-functional-check-not-tps", "identity": m.Identity, "genesis_sha256": m.GenesisSHA256, "manifest_sha256": digest, "unique_committed_executed_transactions": 8, "initial": initial, "final": final, "owner_initial": before, "owner_final": after, "admission_acks": acks, "admission_retries": admissionRetries, "crypto_verified_counts_attempts": true, "execution_trust": "accepted-trusted-execution-source", "build_then_import_executes_twice": true})
 		}
 		select {
 		case <-ctx.Done():
