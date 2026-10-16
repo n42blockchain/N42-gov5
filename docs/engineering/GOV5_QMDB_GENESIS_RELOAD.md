@@ -39,3 +39,37 @@ it must first reproduce all relevant commitments on a preserved copy. This
 slice does not modify the retained runtime or authorize replay of old unknown
 ACKs. Full build/race and an actual retained-data recovery of this fix remain
 pending the required hardware turn.
+
+## Copy-only audit command
+
+`cmd/gov5-qmdb-audit` has no repair or execution path. Its `--copy-db` must be a
+non-aliased private `validation/.../audit-copy/chaindata` directory with an owned,
+read-only (0400), non-hardlinked `mdbx.dat`. The caller supplies its complete
+SHA256 and the exact original genesis SHA256. Database bytes, inode, size and
+mtime are checked again before creating an exclusive new JSON report. The
+original runtime path is rejected before opening any database.
+
+The command regenerates the fixed genesis in a disposable scratch database and
+checks its complete forest against its PlainState, then binds the copy's chain
+configuration and genesis hash. It checks canonical/applied header ancestry and
+requires the persisted world root to equal the applied header root. Only truly
+absent leaf blobs of fully sealed genesis twigs may enter an in-memory overlay.
+Existing empty or conflicting blobs and absent non-genesis blobs are errors.
+Every blob must reproduce its stored leaf root and bitmap-combined root.
+
+The audit validates positional key bounds and never-appended tails, all live
+entry hashes and unique keys, a fresh full-map index and live population, and
+both directions of exact PlainState account/storage values. Current 52-byte
+storage keys are supported; unknown layouts are rejected. The incident tool is
+bounded to one million append slots and 12,500 genesis accounts. It does not
+change QMDB's normal loading policy or claim a general chain-scale repair.
+
+Four targeted tests pass with GOMAXPROCS=2/-p=1 (0.064s), and targeted vet
+passes. A real temporary 6000-account MDBX fixture exercises missing sealed
+blobs after entry reclamation; malformed/existing blobs, partial-twig loss,
+changed live entries or flat values, positional overflow and missing/wrong
+storage all fail. A serialized header filed under an incorrect ancestor hash
+is rejected even when its height matches. The actual retained s192r1 copy has
+not yet been audited.
+An audit pass would identify proven candidate bytes only; it would authorize
+neither a database mutation nor replay of transactions with unknown ACKs.
