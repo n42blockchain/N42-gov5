@@ -1,5 +1,6 @@
 // gov5-qmdb-audit validates an explicitly copied performance database. Missing
-// sealed genesis leaves are tested in memory; this command has no repair mode.
+// sealed genesis leaves are tested in memory. Only restore-candidate-copy can
+// write, and only to a new explicitly bounded validation candidate.
 package main
 
 import (
@@ -56,7 +57,14 @@ func checkedHeader(tx kv.Tx, hash types.Hash, number uint64) (*block.Header, err
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := run(ctx, os.Args[1:]); err != nil {
+	args := os.Args[1:]
+	var err error
+	if len(args) > 0 && args[0] == "restore-candidate-copy" {
+		err = runRestoreCandidate(ctx, args[1:])
+	} else {
+		err = run(ctx, args)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
