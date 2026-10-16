@@ -614,6 +614,9 @@ var (
 		Name: "performance.execution-socket", Usage: "Private Unix socket of the isolated Go execution owner", Category: "DEVELOPMENT",
 		Destination: &DefaultConfig.NodeCfg.PerformanceExecutionSocket,
 	}
+	PerformanceOwnerQueueFlag           = &cli.BoolFlag{Name: "performance.owner-queue", Usage: "Consume the explicit Go owner's strict queue (local Submit disabled)", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceOwnerQueue}
+	PerformanceQueueMaxTransactionsFlag = &cli.IntFlag{Name: "performance.queue-max-transactions", Usage: "Owner queue block limit (0 selects 163000; maximum 200000)", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceQueueMaxTransactions}
+	PerformanceQueueMaxEncodedBytesFlag = &cli.IntFlag{Name: "performance.queue-max-encoded-bytes", Usage: "Owner queue selected encoded-byte limit (0 selects 32MiB; maximum 32MiB)", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceQueueMaxEncodedBytes}
 )
 
 var (
@@ -721,6 +724,7 @@ var (
 		PerformanceGenesisFlag,
 		PerformanceRoleFlag,
 		PerformanceExecutionSocketFlag,
+		PerformanceOwnerQueueFlag, PerformanceQueueMaxTransactionsFlag, PerformanceQueueMaxEncodedBytesFlag,
 		MinFreeDiskSpaceFlag,
 		CSWarmDirFlag,
 	}

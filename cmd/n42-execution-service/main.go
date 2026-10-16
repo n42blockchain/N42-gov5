@@ -9,13 +9,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/gofrs/flock"
 
@@ -48,6 +46,9 @@ func run(ctx context.Context, args []string) error {
 	parallelEVM := flags.Bool("parallel-evm", false, "Explicitly use existing Block-STM for performance imports above four transactions")
 	reuseOwnBuild := flags.Bool("reuse-own-build", false, "Reuse one matching owner-local candidate execution after public sealed-header validation (live root replay remains)")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
+	ingressManifest := flags.String("strict-ingress-manifest", "", "Explicit finalized performance corpus manifest; enables private strict ingress and owner queue")
+	ingressMaxTx := flags.Int("ingress-max-transactions", 0, "Strict queue global credits (0 selects 2000000; maximum 2000000)")
+	ingressMaxBytes := flags.Int("ingress-max-encoded-bytes", 0, "Strict queue encoded credits (0 selects 512MiB; maximum 512MiB)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -59,6 +60,19 @@ func run(ctx context.Context, args []string) error {
 	}
 	if flags.NArg() != 0 || !filepath.IsAbs(*genesisFile) || !filepath.IsAbs(*datadir) || *capacity < 1 || *capacity > 256 {
 		return errors.New("absolute --genesis/--data-dir and capacity 1..256 required")
+	}
+	capsSpecified := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "ingress-max-transactions" || f.Name == "ingress-max-encoded-bytes" {
+			capsSpecified = true
+		}
+	})
+	if *ingressManifest == "" && capsSpecified {
+		return errors.New("ingress credits require explicit --strict-ingress-manifest")
+	}
+	ingressOptions, err := strictIngressOptions(*ingressManifest, *ingressMaxTx, *ingressMaxBytes)
+	if err != nil {
+		return err
 	}
 	var commitOwner [32]byte
 	if *commitOwnerFile != "" {
@@ -98,6 +112,16 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	genesisHash := genesisBlock.Hash()
+	if ingressOptions != nil {
+		manifest, err := sharedexec.DecodeCorpusManifest(ingressOptions.Manifest)
+		if err != nil {
+			return err
+		}
+		expected := sharedexec.Identity{Version: 1, Namespace: genesis.Config.Performance.NetworkNamespace, ChainID: genesis.Config.ChainID.String(), GenesisHash: genesisHash}
+		if manifest.Descriptor.Identity != expected {
+			return errors.New("strict ingress manifest differs from actual owner genesis")
+		}
+	}
 	if err := node.ValidateDataDirNetworkBinding(cfg, genesis.Config, &genesisHash); err != nil {
 		return err
 	}
@@ -195,26 +219,14 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 	defer server.Close()
+	if ingressOptions != nil {
+		if err := server.EnableStrictIngress(*ingressOptions); err != nil {
+			return err
+		}
+	}
 	socketDir := filepath.Join(*datadir, "execution-rpc")
 	if err := os.Mkdir(socketDir, 0700); err != nil && !os.IsExist(err) {
 		return err
 	}
-	httpServer, listener, err := server.ListenUnix(filepath.Join(socketDir, "execution.sock"))
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	finished := make(chan error, 1)
-	go func() { finished <- httpServer.Serve(listener) }()
-	select {
-	case err := <-finished:
-		if !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		return httpServer.Shutdown(shutdownCtx)
-	}
-	return nil
+	return server.ServePrivateUnix(ctx, socketDir, ingressOptions != nil)
 }

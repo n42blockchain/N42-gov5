@@ -51,9 +51,12 @@ type NodeConfig struct {
 	// as a generic override for native or Ethereum genesis selection.
 	PerformanceGenesis string `json:"performance_genesis,omitempty" yaml:"performance_genesis,omitempty"`
 	// Runtime topology is process-local; all participants retain one genesis.
-	PerformanceRole            string `json:"performance_role,omitempty" yaml:"performance_role,omitempty"`
-	PerformanceExecutionSocket string `json:"performance_execution_socket,omitempty" yaml:"performance_execution_socket,omitempty"`
-	Miner                      bool   `json:"miner" yaml:"miner"`
+	PerformanceRole                 string `json:"performance_role,omitempty" yaml:"performance_role,omitempty"`
+	PerformanceExecutionSocket      string `json:"performance_execution_socket,omitempty" yaml:"performance_execution_socket,omitempty"`
+	PerformanceOwnerQueue           bool   `json:"performance_owner_queue,omitempty" yaml:"performance_owner_queue,omitempty"`
+	PerformanceQueueMaxTransactions int    `json:"performance_queue_max_transactions,omitempty" yaml:"performance_queue_max_transactions,omitempty"`
+	PerformanceQueueMaxEncodedBytes int    `json:"performance_queue_max_encoded_bytes,omitempty" yaml:"performance_queue_max_encoded_bytes,omitempty"`
+	Miner                           bool   `json:"miner" yaml:"miner"`
 
 	AuthRPC          bool     `json:"auth_rpc" yaml:"auth_rpc"`
 	AuthAddr         string   `json:"auth_addr" yaml:"auth_addr"`
