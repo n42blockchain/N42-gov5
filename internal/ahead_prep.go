@@ -93,6 +93,12 @@ type aheadPrep struct {
 	engine   bool
 	prepared []preparedTx
 	aff      *parallel.AffinityPrep
+	// base: the block's base prefill (ahead_base_prefill.go), started once
+	// the preparation is computed; nil when off or not started.
+	base *aheadBase
+	// dropping: the block will not use the preparation; its base prefill
+	// stops reading at the next key.
+	dropping atomic.Bool
 }
 
 type aheadPreps struct {
@@ -212,6 +218,9 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if fn := aheadPrepDoneForTest; fn != nil {
 		fn(pr)
 	}
+	if bc.aheadBaseUsable() {
+		pr.base = bc.startAheadBase(hdr, txs, prepared, sp, pr.dropping.Load)
+	}
 }
 
 // aheadPrepDoneForTest runs on a computed preparation before it is
@@ -219,7 +228,8 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 var aheadPrepDoneForTest func(pr *aheadPrep)
 
 // claimAheadPrep removes h's preparation for its import: one not started is
-// cancelled (nil), one running is waited for. The wait is returned.
+// cancelled (nil), one running is waited for, and so is its base prefill
+// (one still waiting for the tree is ended). The wait is returned.
 func (bc *BlockChain) claimAheadPrep(h types.Hash) (*aheadPrep, time.Duration) {
 	if bc == nil {
 		return nil, 0
@@ -234,6 +244,7 @@ func (bc *BlockChain) claimAheadPrep(h types.Hash) (*aheadPrep, time.Duration) {
 	}
 	t0 := time.Now()
 	<-pr.done
+	pr.base.halt()
 	wait := time.Since(t0)
 	if !pr.ok {
 		return nil, wait
@@ -245,6 +256,14 @@ func (bc *BlockChain) claimAheadPrep(h types.Hash) (*aheadPrep, time.Duration) {
 // not use it), waiting for one running: once it returns nothing reads the
 // block's senders for it.
 func (bc *BlockChain) dropAheadPrep(h types.Hash) {
+	if bc == nil {
+		return
+	}
+	bc.aheadPreps.mu.Lock()
+	if pr := bc.aheadPreps.m[h]; pr != nil {
+		pr.dropping.Store(true)
+	}
+	bc.aheadPreps.mu.Unlock()
 	bc.claimAheadPrep(h)
 }
 

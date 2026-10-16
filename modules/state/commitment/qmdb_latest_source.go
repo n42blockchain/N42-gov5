@@ -126,6 +126,8 @@ type LookupSource struct {
 	// fresh, when set, retries a lookup whose live entry sits below the
 	// resident window and is not visible to cold (NewLookupSourceRefreshing).
 	fresh kv.RoDB
+	// prefill, when set, answers the keys it holds (SetPrefill, P15).
+	prefill *BasePrefill
 }
 
 // NewLookupSourceRefreshing is NewLookupSource for a reader whose
@@ -155,6 +157,11 @@ func NewLookupSourceLocked(rc *QMDBRootComputer, cold kv.Getter) *LookupSource {
 
 // Get implements the reader's value source.
 func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
+	if pf := s.prefill; pf != nil {
+		if v, found, ok := pf.get(keyHash); ok {
+			return v, found
+		}
+	}
 	var v []byte
 	var found, evicted bool
 	if s.locked {

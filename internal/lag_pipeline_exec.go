@@ -116,6 +116,11 @@ var lagPipeAfterPublishForTest func(parent types.Hash)
 // it holds its read transaction (tests: orphan the child mid-run).
 var lagPipeAheadStartedForTest func(child *block.Block)
 
+// lagPipeAheadClaimedForTest runs on an ahead execution's goroutine once it
+// claimed its preparation, before it reads any state (tests: hold its reads
+// until the parent's root applied).
+var lagPipeAheadClaimedForTest func(bc *BlockChain, child *block.Block)
+
 // lagPipeAwaitAheadForTest makes the publication wait for the child's ahead
 // execution to finish before the parent's root runs (tests: the child can
 // then see the parent's writes only through the snapshot, never through the
@@ -302,6 +307,12 @@ func (bc *BlockChain) lagPipeHook(blk block.IBlock, ibs *state.IntraBlockState) 
 		return
 	}
 	ibs.SetRootPostStateHook(func(post *state.PostState) {
+		// The root about to run applies post's dirty set: the tree is
+		// then this block's post-state (a child's base prefill waits for
+		// it, ahead_base_prefill.go).
+		if rc := bc.qmdbRootComputer; rc != nil {
+			rc.LabelNextRoot(post, hdr.Number.Uint64(), h, hdr.ParentHash)
+		}
 		t0 := time.Now()
 		bc.lagPipePublish(hdr, post)
 		lagPublishNanos.Store(int64(time.Since(t0)))
@@ -477,6 +488,15 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 			<-j.done
 		}
 	}
+	// The block's preparation, and with it the base prefill its tree reads
+	// answer first (ahead_base_prefill.go), is claimed before the readers
+	// are built -- before the run's transaction opens: the prefill's own
+	// transactions may wait for read permits -- and the run adopts the rest.
+	claim := &aheadClaim{}
+	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
+	if fn := lagPipeAheadClaimedForTest; fn != nil {
+		fn(bc, a.blk)
+	}
 	tx, err := bc.ChainDB.BeginRo(bc.ctx)
 	if err != nil {
 		a.err = err
@@ -489,7 +509,11 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	}
 	var base state.StateReader = state.NewPlainStateReader(tx)
 	if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff {
-		base = commitment.NewQMDBStateReader(commitment.NewLookupSourceRefreshing(bc.qmdbRootComputer, tx, bc.ChainDB), base, mode)
+		src := commitment.NewLookupSourceRefreshing(bc.qmdbRootComputer, tx, bc.ChainDB)
+		if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
+			src.SetPrefill(ab.pf)
+		}
+		base = commitment.NewQMDBStateReader(src, base, mode)
 	}
 	prefetch := state.NewAccountPrefetch(state.LayerPostStates(layers, base))
 	ibs := state.New(prefetch)
@@ -504,7 +528,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		return bc.readHeaderOrPending(tx, hash, number)
 	}
 	a.pre = time.Since(a.started)
-	run, err := bc.process.(*StateProcessor).ExecuteParallelAhead(a.blk, ibs, GetHashFn(hdr, getHeader))
+	run, err := bc.process.(*StateProcessor).executeParallelAhead(a.blk, ibs, GetHashFn(hdr, getHeader), claim)
 	if err != nil {
 		a.err = err
 		return
