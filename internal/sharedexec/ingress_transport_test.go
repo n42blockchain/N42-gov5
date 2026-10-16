@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -416,13 +417,39 @@ func TestStrictIngressClientLostPublishedAckIsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	for range 2 {
-		if _, err := c.Admit(context.Background(), f.frames[0]); !errors.Is(err, ErrIngressUnknownOutcome) {
+	for i := range 2 {
+		if _, err := c.Admit(context.Background(), f.frames[0]); !errors.Is(err, ErrIngressUnknownOutcome) || (i == 0 && !strings.Contains(err.Error(), "read-final-ack")) {
 			t.Fatalf("missing published ACK %v", err)
 		}
 	}
 	status, _ = f.server.StrictIngressStatus()
 	if status.NewlyAdmitted != 3 || status.PendingTransactions != 3 || status.CryptoVerified != 3 || status.ReservedTransactions != 0 {
 		t.Fatalf("unknown outcome replayed or reverted %+v", status)
+	}
+}
+
+func TestStrictIngressContextDeadlineRemainsUnknown(t *testing.T) {
+	f := newStrictIngressFixture(t, 6, 1<<20)
+	status, _ := f.server.StrictIngressStatus()
+	local, peer := net.Pipe()
+	c := &StrictIngressClient{conn: local, identity: f.server.Identity(), manifest: status.ManifestHash, epoch: status.Epoch}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer peer.Close()
+		var header [CorpusWireHeaderSize]byte
+		_, _ = io.ReadFull(peer, header[:])
+		<-ctx.Done()
+	}()
+	_, err := c.Admit(ctx, f.frames[0])
+	if !errors.Is(err, ErrIngressUnknownOutcome) || !strings.Contains(err.Error(), "read-header-ack") {
+		t.Fatalf("deadline was downgraded or lost IO phase: %v", err)
+	}
+	<-done
+	if _, err := c.Admit(context.Background(), f.frames[0]); !errors.Is(err, ErrIngressUnknownOutcome) {
+		t.Fatalf("unknown context deadline was replayed: %v", err)
 	}
 }
