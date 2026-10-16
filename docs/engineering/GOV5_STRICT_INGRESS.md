@@ -439,3 +439,24 @@ small fixtures; no schema-2 process fleet or strict chain throughput run has
 been performed by this slice. Effective node configuration, public-key identity
 and schema-2 launcher validation remain the next integration step. The frozen
 b02d84a2 queue functional attempt and the main tree's Ed offline WIP are unchanged.
+
+
+## Schema-2 launcher preflight
+
+`python3 scripts/gov5-perf/strict_fleet.py <schema-2/run.json>` is a read-only
+preflight. It verifies exact finalized manifest SHA and original genesis bytes,
+the same descriptor limits and uneven shard/frame allocation bounds as the Go
+codec, dedicated paths/ports, all seven corresponding source-key bytes, and the
+exact effective queue/static-peer/discovery/pacing configuration. It forbids
+owner keystores and sender material in the fresh runtime. BLS public-key/address
+consistency is checked cryptographically by the existing Go provision and node
+startup paths; this Python step compares corresponding private files without
+printing them. It does not independently implement BLS arithmetic.
+
+Ten metadata-only tests pass (0.027s), including Go shape limits, shard wire
+bounds, bad source/genesis/key/config bindings, active ports, inherited chain
+environment, aliases, FIFO and duplicate JSON fields. This preflight does not
+hash all large shard contents or compute the actual Go genesis header. Those
+checks remain in the signed-corpus decoder, strict client integrity stage and
+owner/validator startup respectively. This command does not initialize data,
+claim hardware, start a fleet, or report TPS.
