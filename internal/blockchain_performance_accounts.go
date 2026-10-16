@@ -27,6 +27,7 @@ type PerformanceCanonicalAccounts struct {
 	Hash        types.Hash
 	Number      uint64
 	Accounts    map[types.Address]account.StateAccount
+	Exists      map[types.Address]bool
 	NextBaseFee uint256.Int
 }
 
@@ -84,6 +85,7 @@ func (bc *BlockChain) ReadPerformanceCanonicalAccounts(ctx context.Context, addr
 	}
 	reader := state.NewPlainStateReader(tx)
 	out.Accounts = make(map[types.Address]account.StateAccount, len(addresses))
+	out.Exists = make(map[types.Address]bool, len(addresses))
 	for _, address := range addresses {
 		a, err := reader.ReadAccountData(address)
 		if err != nil {
@@ -92,6 +94,7 @@ func (bc *BlockChain) ReadPerformanceCanonicalAccounts(ctx context.Context, addr
 		value := account.NewAccount()
 		if a != nil {
 			value = *a
+			out.Exists[address] = true
 		}
 		out.Accounts[address] = value
 	}
