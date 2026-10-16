@@ -1,6 +1,6 @@
 // gov5-qmdb-audit validates an explicitly copied performance database. Missing
-// sealed genesis leaves are tested in memory. Only restore-candidate-copy can
-// write, and only to a new explicitly bounded validation candidate.
+// sealed genesis leaves are tested in memory. Two explicit restoration commands
+// have separate candidate-copy and proved stopped-original path contracts.
 package main
 
 import (
@@ -61,6 +61,8 @@ func main() {
 	var err error
 	if len(args) > 0 && args[0] == "restore-candidate-copy" {
 		err = runRestoreCandidate(ctx, args[1:])
+	} else if len(args) > 0 && args[0] == "restore-original-two-leaves" {
+		err = runRestoreOriginal(ctx, args[1:])
 	} else {
 		err = run(ctx, args)
 	}
