@@ -35,23 +35,25 @@ type pendingTransaction struct {
 // Producer builds remotely and signs only in this validator. Per-view sealed
 // candidates are durable before import/proposal; retries cannot swap payloads.
 type Producer struct {
-	replica         *Replica
-	ctx             context.Context
-	cancel          context.CancelFunc
-	produceMu       sync.Mutex
-	mu              sync.Mutex
-	started, closed bool
-	done            chan struct{}
-	wake            chan types.Hash
-	pending         map[types.Hash]pendingTransaction
-	order           []types.Hash
-	bytes           int
-	pruned          uint64
-	published       hotstuff.ViewNumber
-	interval        time.Duration
-	lastProduced    time.Time
-	lastError       string
-	wg              sync.WaitGroup
+	replica           *Replica
+	ctx               context.Context
+	cancel            context.CancelFunc
+	produceMu         sync.Mutex
+	mu                sync.Mutex
+	started, closed   bool
+	done              chan struct{}
+	wake              chan types.Hash
+	pending           map[types.Hash]pendingTransaction
+	order             []types.Hash
+	bytes             int
+	pruned            uint64
+	published         hotstuff.ViewNumber
+	interval          time.Duration
+	lastProduced      time.Time
+	lastError         string
+	ownerQueue        *OwnerQueueBinding
+	productionStarted bool
+	wg                sync.WaitGroup
 }
 
 func NewProducer(ctx context.Context, replica *Replica, interval time.Duration) (*Producer, error) {
@@ -66,6 +68,9 @@ func NewProducer(ctx context.Context, replica *Replica, interval time.Duration) 
 // caller sender fields. The actual builder still verifies signature/nonce/state.
 // Queue capacity bounds encoded retention, not total decoded Go heap.
 func (p *Producer) SubmitTransactions(txs []*transaction.Transaction) error {
+	if p.OwnerQueueBinding() != nil {
+		return ErrOwnerQueueSubmissionDisabled
+	}
 	if len(txs) > sharedexec.MaxTransactions {
 		return errors.New("remote producer transaction batch too large")
 	}
@@ -100,6 +105,9 @@ func (p *Producer) SubmitRawTransactionsAtHead(ctx context.Context, raw [][]byte
 }
 
 func (p *Producer) submitRaw(ctx context.Context, raws [][]byte, expected *admissionHead) error {
+	if p.OwnerQueueBinding() != nil {
+		return ErrOwnerQueueSubmissionDisabled
+	}
 	if ctx == nil || len(raws) > sharedexec.MaxTransactions {
 		return errors.New("invalid transaction admission context/count")
 	}
@@ -174,6 +182,9 @@ func (p *Producer) submitRaw(ctx context.Context, raws [][]byte, expected *admis
 	defer p.mu.Unlock()
 	if p.closed {
 		return errors.New("remote producer stopped")
+	}
+	if p.ownerQueue != nil {
+		return ErrOwnerQueueSubmissionDisabled
 	}
 	added, count := 0, 0
 	for hash, item := range items {
@@ -359,6 +370,9 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	ctx = opCtx
 	p.produceMu.Lock()
 	defer p.produceMu.Unlock()
+	p.mu.Lock()
+	p.productionStarted = true
+	p.mu.Unlock()
 	if err := p.ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -423,26 +437,45 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 		}
 	}
 	if candidate == nil {
-		txs, err := p.candidateTransactions(parent)
-		if err != nil {
-			return nil, err
-		}
-		header := &block.Header{ParentHash: parentHash, Number: uint256.NewInt(parent.Number.Uint64() + 1), GasLimit: parent.GasLimit, Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(0)}
-		if p.replica.cfg.IsLondon(header.Number.Uint64()) {
-			header.BaseFee, _ = uint256.FromBig(misc.CalcBaseFee(p.replica.cfg, parent))
-		}
-		if err := engine.Prepare(p.replica, header); err != nil {
-			return nil, err
-		}
-		header.TxHash = block.TxRootAt(txs, header.Time)
-		template := block.NewBlock(header, txs).(*block.Block)
-		raw, err := template.Marshal()
-		if err != nil {
-			return nil, err
-		}
-		result, err := p.replica.client.Build(ctx, sharedexec.BuildRequest{Identity: p.replica.identity, TemplateHash: crypto.Keccak256Hash(raw), TemplateRLP: raw})
-		if err != nil {
-			return nil, err
+		var result sharedexec.BuildResult
+		if p.OwnerQueueBinding() != nil {
+			request, err := p.ownerQueueRequest(ctx, view, parent)
+			if err != nil {
+				return nil, err
+			}
+			if ce.CurrentView() != view || !engine.IsCurrentLeader() {
+				return nil, errors.New("owner queue view changed before build request")
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			built, err := p.replica.client.BuildFromQueue(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			result = built.BuildResult
+		} else {
+			txs, err := p.candidateTransactions(parent)
+			if err != nil {
+				return nil, err
+			}
+			header := &block.Header{ParentHash: parentHash, Number: uint256.NewInt(parent.Number.Uint64() + 1), GasLimit: parent.GasLimit, Difficulty: uint256.NewInt(0), BaseFee: uint256.NewInt(0)}
+			if p.replica.cfg.IsLondon(header.Number.Uint64()) {
+				header.BaseFee, _ = uint256.FromBig(misc.CalcBaseFee(p.replica.cfg, parent))
+			}
+			if err := engine.Prepare(p.replica, header); err != nil {
+				return nil, err
+			}
+			header.TxHash = block.TxRootAt(txs, header.Time)
+			template := block.NewBlock(header, txs).(*block.Block)
+			raw, err := template.Marshal()
+			if err != nil {
+				return nil, err
+			}
+			result, err = p.replica.client.Build(ctx, sharedexec.BuildRequest{Identity: p.replica.identity, TemplateHash: crypto.Keccak256Hash(raw), TemplateRLP: raw})
+			if err != nil {
+				return nil, err
+			}
 		}
 		if ce.CurrentView() != view || !engine.IsCurrentLeader() {
 			return nil, errors.New("remote candidate view changed before signing")
@@ -482,7 +515,13 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 			if err := rawdb.WriteBlock(tx, candidate); err != nil {
 				return err
 			}
-			return tx.Put(modules.HotStuffState, candidateKey(view), record)
+			if err := tx.Put(modules.HotStuffState, candidateKey(view), record); err != nil {
+				return err
+			}
+			if p.OwnerQueueBinding() != nil {
+				return tx.Delete(modules.HotStuffState, queueRequestKey(view))
+			}
+			return nil
 		}); err != nil {
 			return nil, err
 		}

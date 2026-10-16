@@ -29,3 +29,20 @@ func NewExecutionFixtureForTest(t *testing.T) *ExecutionFixtureForTest {
 	return f
 }
 func StartUnixExecutionForTest(t *testing.T, s *Server) string { return startExecutionSocket(t, s) }
+
+// Strict fixture exports only test data for the real producer integration.
+type StrictIngressFixtureForTest struct {
+	ExecutionFixtureForTest
+	Server   *Server
+	Frames   [2]CorpusFrame
+	Senders  [2]types.Address
+	Manifest []byte
+}
+
+func NewStrictIngressFixtureForTest(t *testing.T) *StrictIngressFixtureForTest {
+	f := newStrictIngressFixture(t, 32, 1<<20)
+	return &StrictIngressFixtureForTest{ExecutionFixtureForTest: ExecutionFixtureForTest{Chain: f.chain, Public: f.chain.Engine().(*hotstuff.HotStuff), Leader: f.leader, Template: f.template, Recipient: f.recipient, Keys: f.keys}, Server: f.server, Frames: f.frames, Senders: f.from, Manifest: append([]byte(nil), f.manifest...)}
+}
+func StartUnixStrictIngressForTest(t *testing.T, s *Server) string {
+	return startStrictIngressSocket(t, s)
+}
