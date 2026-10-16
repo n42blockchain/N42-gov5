@@ -17,11 +17,22 @@ import (
 
 func runSupply(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: gov5-replay prepare|qualify|strict [options]")
+		return errors.New("usage: gov5-replay prepare|qualify|strict|recover [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	root := flags.String("root", "", "absolute fresh private corpus directory")
 	switch args[0] {
+	case "recover":
+		runtime := flags.String("runtime-manifest", "", "retained schema-2 runtime; no transaction dispatch")
+		attempt := flags.String("attempt", "", "new recovery evidence basename")
+		baseline := flags.String("baseline-result", "", "failed strict result in this same runtime")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *runtime == "" || *baseline == "" {
+			return errors.New("recover requires explicit runtime/baseline and no positional arguments")
+		}
+		return runStrictRecovery(ctx, *root, *runtime, *attempt, *baseline)
 	case "prepare":
 		template := flags.String("genesis-template", "", "explicit private n42 performance genesis template")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -55,7 +66,7 @@ func runSupply(ctx context.Context, args []string) error {
 		}
 		return qualifySupply(ctx, *root, *attempt, *rate, 4*time.Second, 20*time.Second)
 	default:
-		return errors.New("supported commands are prepare, qualify and strict")
+		return errors.New("supported commands are prepare, qualify, strict and recover")
 	}
 }
 
