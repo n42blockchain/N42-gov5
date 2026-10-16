@@ -154,13 +154,15 @@ func (s *Server) serveStrictIngressConnection(q *strictIngressQueue, conn net.Co
 		reservation, known, err := s.reserveStrictIngress(q, q.epoch, frame, size)
 		if err != nil {
 			kind := "rejected"
-			if errors.Is(err, ErrIngressCreditsExhausted) || errors.Is(err, ErrIngressSnapshotChanged) {
+			if errors.Is(err, ErrIngressCreditsExhausted) {
 				kind = "busy"
+			} else if errors.Is(err, ErrIngressSnapshotChanged) {
+				kind = "retry"
 			}
 			if writeErr := writeIngressMetadata(conn, s.ingressReply(q, kind, frame, StrictIngressAck{}, err)); writeErr != nil {
 				return writeErr
 			}
-			if kind == "busy" {
+			if kind == "busy" || kind == "retry" {
 				continue
 			}
 			return err
@@ -173,6 +175,15 @@ func (s *Server) serveStrictIngressConnection(q *strictIngressQueue, conn net.Co
 		}
 		ack, err := s.receiveGrantedIngress(q, conn, frame, size, reservation)
 		if err != nil {
+			// receiveGrantedIngress has already released its reservation. Only
+			// this typed, zero-publication failure permits another header on
+			// the same connection; IO and all other validation errors stop.
+			if errors.Is(err, ErrIngressSnapshotChanged) {
+				if writeErr := writeIngressMetadata(conn, s.ingressReply(q, "retry", frame, StrictIngressAck{}, err)); writeErr != nil {
+					return writeErr
+				}
+				continue
+			}
 			_ = writeIngressMetadata(conn, s.ingressReply(q, "rejected", frame, StrictIngressAck{}, err))
 			return err
 		}

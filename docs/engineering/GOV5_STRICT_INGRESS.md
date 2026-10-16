@@ -316,3 +316,32 @@ initially used the wrong existing config-loader signature; it was corrected
 before these checks. These tests do not claim an OS-process queue run: gated
 race, clean binary builds and the fresh eight-process functional run remain
 required. No strict queue or chain TPS has been measured.
+
+## Typed zero-admission snapshot retry
+
+The strict client exposes its immutable welcome epoch before the first frame.
+A new typed `retry` reply is limited to canonical-snapshot changes with zero new
+or duplicate admissions. It carries `RetryReason=canonical_snapshot_changed`;
+unknown reasons, nonzero counters or a reason attached to another reply kind
+poison the connection as an unknown outcome. Human-readable error text never
+controls replay. Existing clients fail closed on this extension.
+
+The owner emits this reply only before queue publication. After a grant it has
+consumed the complete payload and released that frame's reservation before
+sending retry and accepting another header on the same connection. The chain
+reader distinguishes a present applied marker that differs from canonical from
+missing markers and storage/header failures; only the former maps to snapshot
+retry. It still refuses speculative PlainState as a canonical nonce baseline.
+A caller may explicitly retry the identical signed frame under its own bounded
+deadline; there is no automatic reconnect or replay.
+
+Eight selected retry/transport regressions passed (0.099s), using low-priority
+GOMAXPROCS=2, go test -p 1 ./internal/sharedexec with selector
+`^TestStrictIngress(SnapshotRetry|MalformedRetry|MissingApplied|NonceRejection|UnixGrant|ClientLostPublishedAck|CanonicalReadFailure)`,
+-count=1 and -timeout=90s. Real QMDB Import without CommitQC yields retry and no
+retained credits; after 5/7 commitment the same frame succeeds on the same
+connection. CryptoVerified counts six verification attempts while NewlyAdmitted
+counts three unique transactions in that case. Header-only retry reads no body;
+missing applied markers and nonce rejection remain fatal; malformed retry data
+is unknown and never replayed. Targeted sharedexec vet passed. Race and fresh binary validation of this optional
+extension remain separate from the frozen b02d84a2 eight-process fixture.
