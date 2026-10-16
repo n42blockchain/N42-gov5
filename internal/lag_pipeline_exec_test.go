@@ -212,6 +212,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 						break
 					}
 				}
+				if lagPipeAwaitBaseForTest {
+					awaitAheadBase(t, piped.bc, child.Hash())
+				}
 			}
 		}
 		defer func() { lagPipeBeforePublishForTest = nil }()
@@ -242,6 +245,11 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	parent := piped.bc.genesisBlock.Header().(*block.Header)
 	wire := make([]*block.Block, 0, blocks)
 	for n := uint64(1); n <= blocks; n++ {
+		if lagPipeRotateToForTest {
+			// A recipient the parent did not write: the child reads it
+			// from the base (written two blocks earlier).
+			fb.To = types.Address{0xee, byte(n % 3)}
+		}
 		raws, hashes, _ := fb.Frames(t, frames, perFrame)
 		for i := range raws {
 			require.True(t, pipedStore.Put(hashes[i], raws[i]))

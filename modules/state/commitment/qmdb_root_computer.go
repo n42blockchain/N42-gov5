@@ -71,6 +71,14 @@ type QMDBRootComputer struct {
 	// leaves resident for K blocks after their flush (qmdb.EvictLag).
 	// K = 0 evicts everything flushed, as before.
 	evictLag qmdb.EvictLag
+
+	// applied is what the tree's values are (P15, AppliedState): the count
+	// of value mutations so far and, when the last one was a ComputeRoot
+	// labelled for its block (LabelNextRoot), that block. Stored under the
+	// exclusive lock, read without it.
+	applied atomic.Pointer[QMDBAppliedState]
+	// nextLabel is the label the next ComputeRoot of that dirty set takes.
+	nextLabel atomic.Pointer[rootLabel]
 }
 
 // evictLagFromEnv parses N42_QMDB_EVICT_LAG_BLOCKS (unset, invalid or <= 0
@@ -250,6 +258,7 @@ func (r *QMDBRootComputer) PendingBuilds() int {
 func (r *QMDBRootComputer) PeelAll() error {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.noteMutationLocked(nil)
 	if u := r.lastUndo; u != nil {
 		r.lastUndo = nil
 		if err := r.t.ApplyUndo(u); err != nil {
@@ -282,6 +291,7 @@ func (r *QMDBRootComputer) PeelAll() error {
 func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.noteMutationLocked(nil)
 	// Re-point the cold entry reader + leaf store at THIS tx first: the tree's
 	// attached readers still reference whatever tx the last execution ran with
 	// (evmRecord re-points them per block, then closes that tx) — reading
@@ -321,6 +331,7 @@ func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 func (r *QMDBRootComputer) RewindForUndo(cold kv.Getter, u *qmdb.BlockUndo) error {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.noteMutationLocked(nil)
 	if u == nil || r.indexTrusted == 0 || r.indexTrusted <= u.PrevNextSlot {
 		return nil // never loaded that block: nothing of it is in this tree
 	}
@@ -374,6 +385,7 @@ func (r *QMDBRootComputer) VoidIndexTrust() { r.indexTrusted = 0 }
 func (r *QMDBRootComputer) ApplyUndo(undo *qmdb.BlockUndo) error {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.noteMutationLocked(nil)
 	return r.t.ApplyUndo(undo)
 }
 
@@ -398,6 +410,7 @@ func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
 }
 
 func (r *QMDBRootComputer) loadFromLocked(g qmdb.Getter) error {
+	r.noteMutationLocked(nil)
 	if r.mdbxIdx == nil {
 		// In-RAM index: force the rebuild scan. On a mid-run recovery reload
 		// the index still reflects the PRE-reload in-memory tree (e.g. reverts
@@ -449,6 +462,7 @@ var reloadVerify = os.Getenv("N42_QMDB_RELOAD_VERIFY") == "1"
 func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.noteMutationLocked(nil)
 	if r.mdbxIdx != nil || r.indexTrusted == 0 {
 		return r.loadFromLocked(g) // persistent index / first load: already right
 	}
@@ -660,6 +674,8 @@ func (r *QMDBRootComputer) CommitFlushed() {
 func (r *QMDBRootComputer) AbortFlushed() {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	// Bookkeeping only (the dead-row reclaim list): the tree's values stay
+	// (no noteMutationLocked; the peel that follows a real abort counts).
 	r.abortFlushedLocked()
 }
 
@@ -698,6 +714,7 @@ func (r *QMDBRootComputer) setColdLocked(g qmdb.Getter) {
 func (r *QMDBRootComputer) UseMDBXIndex(tx kv.RwTx) {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.noteMutationLocked(nil)
 	r.mdbxIdx = newQMDBMDBXIndex(tx)
 	r.t.SetIndex(r.mdbxIdx)
 }
@@ -833,6 +850,11 @@ func (r *QMDBRootComputer) ComputeRoot(
 	r.readers.Lock()
 	defer r.readers.Unlock()
 	dLock := time.Since(tLock)
+	var label *rootLabel
+	if l := r.nextLabel.Swap(nil); l != nil && l.post.HoldsAccounts(accounts) {
+		label = l
+	}
+	r.noteMutationLocked(label)
 	tOps := time.Now()
 	// An op with a nil Value is a delete (ApplyOps' convention); every
 	// live value here is non-empty (an encoded account or a 32-byte word).

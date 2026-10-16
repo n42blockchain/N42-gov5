@@ -4,6 +4,8 @@
 package state
 
 import (
+	"reflect"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -109,6 +111,17 @@ func storageBytes(v *uint256.Int) []byte {
 func (ps *PostState) removed(addr types.Address) bool {
 	a, ok := ps.accounts[addr]
 	return ok && (a == nil || accountIsEmpty(a))
+}
+
+// HoldsAccounts reports whether m is this snapshot's own account map -- the
+// very map a root walk that published it handed its root computer -- and not
+// merely an equal one (commitment.QMDBRootComputer.LabelNextRoot binds a
+// label to the root of exactly this dirty set).
+func (ps *PostState) HoldsAccounts(m map[types.Address]*account.StateAccount) bool {
+	if ps == nil || ps.accounts == nil || m == nil {
+		return false
+	}
+	return reflect.ValueOf(ps.accounts).UnsafePointer() == reflect.ValueOf(m).UnsafePointer()
 }
 
 // Accounts reports how many accounts the snapshot holds (diagnostics).

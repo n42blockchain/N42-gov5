@@ -292,18 +292,32 @@ func (p *StateProcessor) ParallelApplicable(b *block.Block) bool {
 // executor's pipeline: the strict Block-STM run of b and the fold of its
 // writes into ibs, with no block end, no Finalize and no state root. Its
 // reads take the QMDB tree's reader lock per lookup (never for the whole
-// run) and retry an entry evicted under them through a fresh transaction,
+// run; a key its base prefill holds takes none, ahead_base_prefill.go) and
+// retry an entry evicted under them through a fresh transaction,
 // so the parent's root and write proceed on the tree meanwhile. ibs reads
 // the parent's unwritten post-state through its post-state layers.
 // FinishParallel completes the block once its parent is written.
 func (p *StateProcessor) ExecuteParallelAhead(b *block.Block, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	return p.executeParallelAhead(b, ibs, blockHashFunc, nil)
+}
+
+// executeParallelAhead is ExecuteParallelAhead with the block's preparation
+// already claimed (nil: the run claims it).
+func (p *StateProcessor) executeParallelAhead(b *block.Block, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, claim *aheadClaim) (*parallelRun, error) {
 	if !p.ParallelApplicable(b) {
 		return nil, ErrParallelNotApplicable
 	}
 	hdr := b.Header().(*block.Header)
 	body, _ := b.Body().(*block.Body)
 	txs := b.Transactions()
-	return p.runParallelMode(hdr, b.Hash(), txs, ibs, blockHashFunc, false, body.IsFrameBody(), true, FrameSpansOf(body, len(txs)))
+	return p.runParallelMode(hdr, b.Hash(), txs, ibs, blockHashFunc, false, body.IsFrameBody(), true, FrameSpansOf(body, len(txs)), claim)
+}
+
+// aheadClaim is a block's preparation its ahead run claimed before building
+// its readers (their base prefill comes with it).
+type aheadClaim struct {
+	prep *aheadPrep
+	wait time.Duration
 }
 
 // FinishParallel is the second half: the gas check, block end and Finalize
@@ -382,21 +396,33 @@ func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transa
 // neither mode; in lenient mode any other failure returns
 // ErrFrameTxNotSkippable before the state is applied.
 func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid bool, spans []FrameSpan) (*parallelRun, error) {
-	return p.runParallelMode(concreteHeader, blockHash, txs, ibs, blockHashFunc, lenient, skipInvalid, false, spans)
+	return p.runParallelMode(concreteHeader, blockHash, txs, ibs, blockHashFunc, lenient, skipInvalid, false, spans, nil)
 }
 
 // runParallelMode is runParallel; ahead (strict runs only) stops after the
 // fold, before block end and Finalize, and reads the QMDB tree without
 // holding its reader lock across the run (ExecuteParallelAhead).
-func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid, ahead bool, spans []FrameSpan) (*parallelRun, error) {
+func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient, skipInvalid, ahead bool, spans []FrameSpan, claim *aheadClaim) (*parallelRun, error) {
 	numTxs := len(txs)
 	// An ahead run claims the block's preparation (ahead_prep.go) before
 	// its sender recovery below writes any sender: one still running is
-	// waited for, one not started is cancelled.
+	// waited for, one not started is cancelled. The lag pipeline claims it
+	// before building the run's state reader (claim), for its base prefill.
 	var prep *aheadPrep
 	var prepWait time.Duration
 	if ahead && p.bc != nil {
-		prep, prepWait = p.bc.claimAheadPrep(blockHash)
+		if claim != nil {
+			prep, prepWait = claim.prep, claim.wait
+		} else {
+			prep, prepWait = p.bc.claimAheadPrep(blockHash)
+		}
+	}
+	// The base prefill (ahead_base_prefill.go): the run's tree reads answer
+	// its keys without the tree's lock.
+	base := prep.prefill()
+	var basePF *commitment.BasePrefill
+	if ahead && base != nil {
+		basePF = base.pf
 	}
 	tStart := time.Now()
 	senderHintHits := 0
@@ -574,7 +600,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		if err != nil {
 			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
 		}
-		base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers)
+		base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers, basePF)
 		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
 		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
 		// One base-read cache for the whole block, shared by every worker: the
@@ -717,7 +743,10 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// build tree and a follower's live tree can both be bumping the same
 	// atomics in the same process. Caveat: if a future caller ever reaches
 	// GetVia from outside the wave (e.g. a second concurrent block build),
-	// this snapshot would double-count that caller's reads too.
+	// this snapshot would double-count that caller's reads too. Two such
+	// callers exist on the ahead path (P15): a base prefill answers its
+	// keys without reaching GetVia (they are not counted here), and the
+	// next block's prefill may read the tree while this wave runs (counted).
 	var waveCold0, waveResident0 uint64
 	var waveColdNs0 int64
 	if useQMDB {
@@ -928,7 +957,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				return nil, fmt.Errorf("ProcessParallel: prefetch read span: %w", err)
 			}
 		}
-		n, err := p.prefetchPendingCredits(ibs, pf, pspan, useQMDB, ahead, mode, postLayers)
+		n, err := p.prefetchPendingCredits(ibs, pf, pspan, useQMDB, ahead, mode, postLayers, basePF)
 		if pspan != nil {
 			pspan.End()
 		}
@@ -1004,14 +1033,26 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			SkipReasons: skipReasons,
 		})
 	}
+	if basePF != nil {
+		noteAheadBaseUsed(base, concreteHeader.Number.Uint64(), basePF)
+	}
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
 		execNs, valNs := executor.WaveTimes()
+		baseHits, baseMisses := basePF.Stats()
+		var baseTook, baseClaimWait time.Duration
+		var baseAt uint64
+		baseSkip := ""
+		if base != nil {
+			baseTook, baseClaimWait, baseAt, baseSkip = base.took, base.claimWait, base.at, base.skip
+		}
 		if lenient && failed > 0 {
 			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(),
+			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillSkip", baseSkip,
+			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
@@ -1025,12 +1066,15 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 // when reads come from it, the run's post-state layers on top. A locked run
 // holds the tree's reader lock for its span; an ahead run takes it per
 // lookup and retries an evicted entry through a fresh transaction.
-func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) state.StateReader {
+func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState, basePF *commitment.BasePrefill) state.StateReader {
 	var base state.StateReader = state.NewPlainStateReader(tx)
 	if useQMDB {
 		var src *commitment.LookupSource
 		if ahead {
 			src = commitment.NewLookupSourceRefreshing(p.bc.qmdbRootComputer, tx, p.bc.ChainDB)
+			if basePF != nil {
+				src.SetPrefill(basePF)
+			}
 		} else {
 			src = commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx)
 		}
@@ -1614,7 +1658,7 @@ func applyMVSWorkers(numTxs int) int {
 // fold as before.
 // span is the caller's QMDB read span (nil: no QMDB reads); the workers'
 // transactions are opened under its permit.
-func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, span *commitment.ReadSpan, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
+func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, span *commitment.ReadSpan, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState, basePF *commitment.BasePrefill) (int, error) {
 	if pf.HasKnown() {
 		// The run's base-read cache answers the fold (SetKnown): every
 		// credited account was read by the transaction that credited it,
@@ -1662,7 +1706,7 @@ func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *
 				return
 			}
 			defer tx.Rollback()
-			base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers)
+			base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers, basePF)
 			for i := lo; i < hi; i++ {
 				a, err := base.ReadAccountData(addrs[i])
 				if err != nil {
