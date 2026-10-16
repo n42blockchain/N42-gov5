@@ -171,6 +171,51 @@ func TestStrictStopDispatchAllowsInFlightFinalAck(t *testing.T) {
 		t.Fatal("dispatch continued after boundary")
 	}
 }
+
+func TestStrictRetryGetsFreshRequestDeadline(t *testing.T) {
+	for _, retry := range []error{sharedexec.ErrIngressCreditsExhausted, sharedexec.ErrIngressSnapshotChanged} {
+		frame := strictTestFrame(t)
+		epoch := [16]byte{1}
+		var first context.Context
+		var firstDeadline time.Time
+		c := &strictTestAdmitter{epoch: epoch}
+		c.admit = func(ctx context.Context, f sharedexec.CorpusFrame) (sharedexec.StrictIngressAck, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok || ctx.Err() != nil {
+				t.Fatal("request has no live bounded IO context")
+			}
+			if c.calls == 1 {
+				first, firstDeadline = ctx, deadline
+				return sharedexec.StrictIngressAck{}, retry
+			}
+			if first.Err() != context.Canceled || !deadline.After(firstDeadline) || time.Until(deadline) < 4*time.Second {
+				t.Fatal("known-zero wait consumed the next request's IO context")
+			}
+			return strictTestAck(f, epoch), nil
+		}
+		accepted, err := strictAdmitFrame(context.Background(), context.Background(), c, frame, epoch, new(strictStreamCounters))
+		if err != nil || !accepted || c.calls != 2 {
+			t.Fatalf("fresh deadline retry: %v %v calls=%d", accepted, err, c.calls)
+		}
+	}
+}
+
+func TestStrictKnownZeroStopNeverStartsAnotherRequest(t *testing.T) {
+	frame := strictTestFrame(t)
+	epoch := [16]byte{1}
+	dispatch, stop := context.WithCancel(context.Background())
+	defer stop()
+	c := &strictTestAdmitter{epoch: epoch}
+	c.admit = func(context.Context, sharedexec.CorpusFrame) (sharedexec.StrictIngressAck, error) {
+		stop()
+		return sharedexec.StrictIngressAck{}, sharedexec.ErrIngressCreditsExhausted
+	}
+	counters := new(strictStreamCounters)
+	accepted, err := strictAdmitFrame(context.Background(), dispatch, c, frame, epoch, counters)
+	if err != nil || accepted || c.calls != 1 || counters.admitted.Load() != 0 || counters.busy.Load() != 1 {
+		t.Fatalf("known-zero stop started IO/reported admission: %v %v %+v", accepted, err, counters.sample())
+	}
+}
 func TestStrictSnapshotRetryHasBoundedDeadline(t *testing.T) {
 	frame := strictTestFrame(t)
 	epoch := [16]byte{1}
