@@ -27,11 +27,12 @@ type leafCandidate struct {
 }
 
 type forestReport struct {
-	NextSlot       uint64          `json:"next_slot"`
-	GenesisSlots   uint64          `json:"genesis_slots"`
-	LiveKeys       uint64          `json:"live_keys"`
-	Root           types.Hash      `json:"root"`
-	MissingGenesis []leafCandidate `json:"missing_genesis_leaf_blobs"`
+	NextSlot           uint64             `json:"next_slot"`
+	GenesisSlots       uint64             `json:"genesis_slots"`
+	LiveKeys           uint64             `json:"live_keys"`
+	Root               types.Hash         `json:"root"`
+	MissingGenesis     []leafCandidate    `json:"missing_genesis_leaf_blobs"`
+	EmptyBeneficiaries []emptyBeneficiary `json:"retained_empty_beneficiaries,omitempty"`
 }
 
 type leafOverlay struct {
@@ -107,6 +108,10 @@ type liveValue struct {
 // auditForest never writes to tx. Only missing, fully sealed genesis blobs
 // enter its temporary overlay; every current commitment must reproduce exactly.
 func auditForest(tx kv.Tx, genesis qmdb.Getter, expected types.Hash) (forestReport, error) {
+	return auditForestWithBeneficiaries(tx, genesis, expected, nil)
+}
+
+func auditForestWithBeneficiaries(tx kv.Tx, genesis qmdb.Getter, expected types.Hash, beneficiaries map[qmdb.Hash]types.Address) (forestReport, error) {
 	var out forestReport
 	next, err := readCursor(tx, "nextSlot")
 	if err != nil {
@@ -226,7 +231,18 @@ func auditForest(tx kv.Tx, genesis qmdb.Getter, expected types.Hash) (forestRepo
 		}
 	}
 	if err := auditPlainState(tx, live); err != nil {
-		return out, err
+		// The generic cross-check remains strict. Only this incident's explicit
+		// beneficiary policy can classify its verified, unmatched entries.
+		if !errors.Is(err, errUnmatchedPlainState) {
+			return out, err
+		}
+		out.EmptyBeneficiaries, err = auditEmptyBeneficiaries(tx, live, beneficiaries)
+		if err != nil {
+			return out, err
+		}
+	}
+	if len(live) != 0 {
+		return out, unmatchedPlainState(live)
 	}
 	out.LiveKeys, out.Root = liveCount, expected
 	return out, nil
