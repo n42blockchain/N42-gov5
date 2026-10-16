@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -62,6 +63,8 @@ func main() {
 	template := flags.String("template", "", "Absolute empty dedicated performance genesis template")
 	senders := flags.Int("senders", 4, "Small functional fixture senders (1..64); not a throughput workload")
 	basePort := flags.Int("base-port", 25000, "First of seven reserved loopback P2P TCP ports (25000..29993)")
+	queue := flags.Bool("owner-queue", false, "Prepare a fresh eight-transaction strict owner queue fixture")
+	queueSmoke := flags.String("queue-smoke-manifest", "", "Admit the dedicated queue fixture once and verify canonical release; not TPS")
 	smoke := flags.String("smoke-manifest", "", "Explicitly send one small signed batch to the existing private fixture; never a TPS run")
 	timeout := flags.Int("timeout-seconds", 30, "Functional transaction finality timeout (5..60 seconds)")
 	_ = flags.Parse(os.Args[1:])
@@ -69,8 +72,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(1)
 	}
+	if *queueSmoke != "" {
+		if *root != "" || *template != "" || *smoke != "" || *queue || *timeout < 5 || *timeout > 60 {
+			fmt.Fprintln(os.Stderr, "queue smoke requires only an explicit manifest and timeout 5..60")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout)*time.Second)
+		defer cancel()
+		if err := queueSmokeFixture(ctx, *queueSmoke, runtimeBase); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *smoke != "" {
-		if *root != "" || *template != "" || *timeout < 5 || *timeout > 60 {
+		if *queue || *root != "" || *template != "" || *timeout < 5 || *timeout > 60 {
 			fmt.Fprintln(os.Stderr, "smoke mode requires only an explicit manifest and timeout 5..60")
 			os.Exit(1)
 		}
@@ -83,7 +99,7 @@ func main() {
 		fmt.Println(filepath.Join(filepath.Dir(*smoke), "smoke-result.json"))
 		return
 	}
-	if err := provision(*root, *template, *senders, *basePort, runtimeBase); err != nil {
+	if err := provisionFixture(*root, *template, *senders, *basePort, runtimeBase, *queue); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -115,6 +131,13 @@ func writePrivate(path string, value any) error {
 // allowedBase is fixed by main. Tests use a private temporary root, never a
 // production namespace. Existing runs/keys are refused instead of overwritten.
 func provision(root, template string, senders, basePort int, allowedBase string) error {
+	return provisionFixture(root, template, senders, basePort, allowedBase, false)
+}
+
+func provisionFixture(root, template string, senders, basePort int, allowedBase string, queue bool) error {
+	if queue && senders != 4 {
+		return errors.New("owner queue functional fixture requires exactly four senders")
+	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !strings.HasPrefix(root, allowedBase+string(filepath.Separator)) || !filepath.IsAbs(template) || senders < 1 || senders > 64 || basePort < 25000 || basePort > 29993 {
 		return errors.New("explicit isolated absolute paths, senders 1..64 and base-port 25000..29993 required")
 	}
@@ -210,9 +233,25 @@ func provision(root, template string, senders, basePort int, allowedBase string)
 	}
 	out.LoadKeys = filepath.Join(loaddir, "keys.json")
 	var loadKeys []string
+	var queueSeed []byte
+	if queue {
+		queueSeed = make([]byte, 32)
+		if _, err := rand.Read(queueSeed); err != nil {
+			return err
+		}
+		if err := writePrivate(filepath.Join(loaddir, "queue-seed"), queueSeed); err != nil {
+			return err
+		}
+	}
 	g.Alloc = make(conf.GenesisAlloc)
 	for i := 0; i < senders; i++ {
-		key, err := crypto.GenerateKey()
+		var key *ecdsa.PrivateKey
+		var err error
+		if queue {
+			key, err = queueFixtureKey(queueSeed, uint32(i))
+		} else {
+			key, err = crypto.GenerateKey()
+		}
 		if err != nil {
 			return err
 		}
@@ -269,5 +308,11 @@ func provision(root, template string, senders, basePort int, allowedBase string)
 			return err
 		}
 	}
-	return writePrivate(filepath.Join(root, "run.json"), out)
+	if err := writePrivate(filepath.Join(root, "run.json"), out); err != nil {
+		return err
+	}
+	if queue {
+		return prepareQueueFixture(out, &g, queueSeed, loadKeys)
+	}
+	return nil
 }
