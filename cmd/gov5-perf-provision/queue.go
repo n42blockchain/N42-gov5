@@ -204,7 +204,38 @@ func readQueueCorpus(m manifest) (sharedexec.CorpusManifest, types.Hash, []share
 	return corpus, types.Hash(sha256.Sum256(raw)), frames, nil
 }
 func queueEmpty(s sharedexec.StrictIngressStatus) bool {
-	return !s.Reconciling && s.PendingTransactions == 0 && s.ReservedTransactions == 0 && s.RetainedEncodedBytes == 0 && s.ReservedEncodedBytes == 0
+	return !s.Reconciling && queueCreditsEmpty(s)
+}
+func queueCreditsEmpty(s sharedexec.StrictIngressStatus) bool {
+	return s.PendingTransactions == 0 && s.ReservedTransactions == 0 && s.RetainedEncodedBytes == 0 && s.ReservedEncodedBytes == 0
+}
+
+func waitQueueRecovery(ctx context.Context, manifest types.Hash, probe func(context.Context) (sharedexec.StrictIngressStatus, error)) (sharedexec.StrictIngressStatus, error) {
+	work, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var epoch [16]byte
+	for {
+		status, err := probe(work)
+		if err != nil {
+			return status, err
+		}
+		if epoch == ([16]byte{}) {
+			epoch = status.Epoch
+		}
+		if epoch == ([16]byte{}) || status.Epoch != epoch || status.ManifestHash != manifest || status.NewlyAdmitted != 0 || status.CryptoVerified != 0 || !queueCreditsEmpty(status) {
+			return status, errors.New("zero-admission owner recovery binding changed; never blindly replay nonce zero")
+		}
+		if !status.Reconciling {
+			return status, nil
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-work.Done():
+			timer.Stop()
+			return status, fmt.Errorf("owner recovery blocked at canonical %d/%s; no transactions sent: %w", status.CanonicalNumber, status.CanonicalHash, work.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 type queueAdmissionRetries struct {
@@ -306,7 +337,9 @@ func queueSmokeFixture(ctx context.Context, path, base string) error {
 	}
 	owner := sharedexec.NewClient(m.OwnerSocket, m.Identity)
 	defer owner.Close()
-	before, err := owner.StrictIngressStatus(ctx)
+	recoveryStart := time.Now()
+	before, err := waitQueueRecovery(ctx, digest, owner.StrictIngressStatus)
+	recoveryWait := time.Since(recoveryStart)
 	if err != nil {
 		return err
 	}
@@ -349,10 +382,10 @@ func queueSmokeFixture(ctx context.Context, path, base string) error {
 		if err != nil {
 			return err
 		}
-		if current.Epoch != before.Epoch || current.ManifestHash != digest || current.NewlyAdmitted != 0 || current.CryptoVerified != 0 || !queueEmpty(current) {
+		if current.Epoch != before.Epoch || current.ManifestHash != digest || current.NewlyAdmitted != 0 || current.CryptoVerified != 0 || !queueCreditsEmpty(current) {
 			return errors.New("owner changed before zero-count canonical baseline")
 		}
-		converged := true
+		converged := !current.Reconciling
 		for _, s := range initial {
 			if s.CanonicalProgress.Number != current.CanonicalNumber || s.CanonicalProgress.BlockHash != current.CanonicalHash {
 				converged = false
@@ -412,7 +445,7 @@ func queueSmokeFixture(ctx context.Context, path, base string) error {
 			return errors.New("owner volatile epoch changed during queue check")
 		}
 		if converged && queueEmpty(after) && after.NewlyAdmitted == 8 && after.CryptoVerified >= 8 && after.CanonicalHash == final[0].CanonicalProgress.BlockHash && after.CanonicalNumber == final[0].CanonicalProgress.Number {
-			return writePrivate(resultPath, map[string]any{"kind": "owner-queue-functional-check-not-tps", "identity": m.Identity, "genesis_sha256": m.GenesisSHA256, "manifest_sha256": digest, "unique_committed_executed_transactions": 8, "initial": initial, "final": final, "owner_initial": before, "owner_final": after, "admission_acks": acks, "admission_retries": admissionRetries, "crypto_verified_counts_attempts": true, "execution_trust": "accepted-trusted-execution-source", "build_then_import_executes_twice": true})
+			return writePrivate(resultPath, map[string]any{"kind": "owner-queue-functional-check-not-tps", "identity": m.Identity, "genesis_sha256": m.GenesisSHA256, "manifest_sha256": digest, "unique_committed_executed_transactions": 8, "initial": initial, "final": final, "owner_initial": before, "owner_final": after, "admission_acks": acks, "admission_retries": admissionRetries, "startup_recovery_wait_ns": recoveryWait.Nanoseconds(), "crypto_verified_counts_attempts": true, "execution_trust": "accepted-trusted-execution-source", "build_then_import_executes_twice": true})
 		}
 		select {
 		case <-ctx.Done():

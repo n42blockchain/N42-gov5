@@ -82,3 +82,17 @@ sharedvalidator. Tests used GOMAXPROCS=2/-p=1; new binaries/race remain pending
 the next hardware claim. These tests reconstruct services over a real BC and
 invoke Replay/Produce explicitly; they do not reopen the BC from disk or prove
 full service.Start/seven-process recovery.
+
+The checker waits at most ten seconds for initial recovery, pinning the first
+epoch and exact manifest and continuously requiring zero newly admitted,
+verification attempts, pending/reserved transactions and retained/reserved
+bytes. A changed binding or probe failure stops immediately. A persistent gate
+reports its canonical tuple and that no transactions were sent; it does not
+trigger a replay or alternate root. API availability alone is not readiness.
+Afterward the seven-node zero-count/common-head baseline is still mandatory;
+a transient reconciling observation during that baseline waits rather than
+weakening its conditions. The result separately records the initial wait.
+All twelve `TestQueue*` functions passed (0.382s), including session/counter/
+credit changes during recovery, bounded missing-certificate waiting, and
+non-retry of transport failures; provision vet passed. This checker change has
+not yet run against the seven-process retained fixture.
