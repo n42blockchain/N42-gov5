@@ -243,8 +243,39 @@ fixtures and Unix integration tests, not a seven-process queue fleet or TPS run.
 
 Race and fresh binary/fleet validation of this new backend await an independent
 BOX claim window. No queue throughput or new chain TPS has been measured.
-The next slice must expose the existing owner-queue producer through default-off
-NodeCfg/CLI settings and the owner's separate private listener. They
-must retain full bodies, leader-owned seals, validator WALs, Import checks and
-strict CommitQC. The present Build/Import test executes both paths separately;
+Runtime selection is now explicit and default-off. Validators use
+`--performance.owner-queue`, optionally
+`--performance.queue-max-transactions` (default 163000) and
+`--performance.queue-max-encoded-bytes` (default 32 MiB). Equivalent NodeCfg
+JSON/YAML fields are `performance_owner_queue`,
+`performance_queue_max_transactions` and `performance_queue_max_encoded_bytes`.
+Any queue option requires the private n42 performance validator role, explicit
+genesis and owner socket; ordinary nil/native/ETH selection remains unchanged.
+The constructor pins the owner's epoch/manifest before serving the validator API,
+including validators that are not configured to produce blocks.
+
+The owner opts in with `--strict-ingress-manifest /absolute/manifest.json`.
+Optional `--ingress-max-transactions` and `--ingress-max-encoded-bytes` bound
+credits to at most 2 million transactions and 512 MiB. The manifest is checked
+against the actual configured genesis before opening the database. Input must
+be a bounded regular file without aliases; nonblocking/no-follow open plus
+pre/post file-identity checks reject FIFO and replacement races. The owner binds
+both `execution.sock` and `ingress.sock` under its existing private execution-rpc
+directory before serving either. Partial startup failure preserves unrelated
+existing files; endpoint failure or shutdown cancels and drains work before
+BlockChain/database closure. Full bodies, leader-owned seals, validator WALs,
+Import checks and strict CommitQC remain in the production path. The present Build/Import test executes both paths separately;
 it does not claim own-build reuse or pipelined execution.
+
+The runtime wiring slice passed targeted tests across conf, cmd/n42,
+cmd/n42-execution-service, internal/node, internal/sharedexec and
+internal/sharedvalidator with the earlier selector extended by OwnerPrivate,
+PerformanceValidator, PerformanceRuntimePaths and ExecutionServiceRejects,
+using GOMAXPROCS=2, -p 1, -count=1 and -timeout=120s. Package times were
+0.004s, 0.020s, 0.018s, 0.531s and 0.526s; sharedvalidator compiled with no
+matching tests. Targeted vet of all six packages passed. New cases exercise
+actual CLI destinations and YAML loading, invalid options before datadir
+creation (including FIFO), constructor pinning without local execution,
+startup-only selection, both private endpoints and partial-start/endpoint-exit
+cleanup. Fresh binaries, race and seven-process queue validation remain pending
+an independent BOX window; these fixture results are not chain TPS.

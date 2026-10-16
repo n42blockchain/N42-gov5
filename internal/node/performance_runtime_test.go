@@ -2,8 +2,10 @@ package node
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -531,6 +533,65 @@ func TestPerformanceValidatorNodeRunsRemoteExecutionWithoutLocalChain(t *testing
 	if err := unused.Close(); err != nil {
 		t.Fatal("close before Start:", err)
 	}
+	// Keep the complete default-mode run above unchanged. Reopen a fresh owner
+	// service on the same canonical BC only after the old owner has drained.
+	_ = httpServer.Close()
+	executor.Close()
+	queueOwner, err := sharedexec.New(owner, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queueOwner.Close()
+	queueSocket := filepath.Join(ownerdir, "queue-execute.sock")
+	queueHTTP, queueListener, err := queueOwner.ListenUnix(queueSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = queueHTTP.Serve(queueListener) }()
+	defer queueHTTP.Close()
+	queueCfg := *cfg
+	queueCfg.NodeCfg.PerformanceExecutionSocket = queueSocket
+	queueCfg.NodeCfg.PerformanceOwnerQueue = true
+	failCtx, failCancel := context.WithCancel(context.Background())
+	rejected, queueErr := newPerformanceValidatorNode(failCtx, failCancel, nodeTNewContext(), &queueCfg, profile, genesis, root)
+	failCancel()
+	if rejected != nil || queueErr == nil || !strings.Contains(queueErr.Error(), "owner queue startup") {
+		if rejected != nil {
+			_ = rejected.Close()
+		}
+		t.Fatalf("disabled owner queue accepted: %v", queueErr)
+	}
+	queueTx, err := transaction.SignNewTx(sender, transaction.NewLondonSigner(g.Config.ChainID), &transaction.LegacyTx{Nonce: 1, To: &to, Gas: 21000, GasPrice: uint256.NewInt(1), Value: uint256.NewInt(23)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queueWire, err := queueTx.EthEncoded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := runtimeQueueManifest(t, queueOwner.Identity(), cfg.NodeCfg.PerformanceGenesis, queueWire)
+	if err := queueOwner.EnableStrictIngress(sharedexec.StrictIngressOptions{Manifest: manifest, MaxTransactions: 32, MaxEncodedBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	queueCtx, queueCancel := context.WithCancel(context.Background())
+	defer queueCancel()
+	queuedNode, err := newPerformanceValidatorNode(queueCtx, queueCancel, nodeTNewContext(), &queueCfg, profile, genesis, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := queuedNode.performanceValidator.producer.OwnerQueueBinding()
+	queueStatus, _ := queueOwner.StrictIngressStatus()
+	if binding == nil || binding.Epoch != queueStatus.Epoch || binding.ManifestHash != queueStatus.ManifestHash || binding.MaxTransactions != sharedvalidator.DefaultOwnerQueueTransactions || queuedNode.blockChain != nil || queuedNode.miner != nil {
+		_ = queuedNode.Close()
+		t.Fatal("NodeCfg did not select actual owner queue metadata producer")
+	}
+	if err := queuedNode.performanceValidator.producer.SubmitTransactions([]*transaction.Transaction{queueTx}); err == nil {
+		_ = queuedNode.Close()
+		t.Fatal("configured queue node accepted local pool")
+	}
+	if err := queuedNode.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Only the parent fixture invokes this test in a child with an already-running
@@ -575,4 +636,31 @@ func TestPerformanceValidatorColdConstructor(t *testing.T) {
 	if n.blockChain != nil || n.miner != nil || n.sync != nil {
 		t.Fatal("cold metadata validator constructed local execution")
 	}
+}
+
+func runtimeQueueManifest(t *testing.T, identity sharedexec.Identity, genesisPath string, wire []byte) []byte {
+	t.Helper()
+	genesis, err := os.ReadFile(genesisPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := sharedexec.CorpusDescriptor{Version: sharedexec.CorpusVersion, Identity: identity, GenesisFileHash: types.Hash(sha256.Sum256(genesis)), Codec: sharedexec.CorpusCodec, Signature: sharedexec.CorpusSignature, KeyDerivation: sharedexec.CorpusKeyDerivation, SeedCommitment: types.Hash{1}, SenderCount: 1, NonceStart: 1, NoncesPerSender: 1, RecipientRule: sharedexec.CorpusRecipientRule, RecipientCount: 1, ShardCount: 1, FrameTransactions: 1}
+	id, err := d.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := sharedexec.MakeCorpusFrame(sharedexec.CorpusFrameID{CorpusID: id}, [][]byte{wire})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := sharedexec.WriteCorpusFrame(&encoded, frame); err != nil {
+		t.Fatal(err)
+	}
+	m := sharedexec.CorpusManifest{Descriptor: d, CorpusID: id, Shards: []sharedexec.CorpusShard{{Index: 0, File: "shard-00.gcf", SHA256: types.Hash(sha256.Sum256(encoded.Bytes())), Bytes: uint64(encoded.Len()), Frames: 1, Transactions: 1}}}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
