@@ -279,3 +279,40 @@ creation (including FIFO), constructor pinning without local execution,
 startup-only selection, both private endpoints and partial-start/endpoint-exit
 cleanup. Fresh binaries, race and seven-process queue validation remain pending
 an independent BOX window; these fixture results are not chain TPS.
+
+## Small process fixture
+
+`gov5-perf-provision --owner-queue --run-root /dedicated/fresh/root
+--template /absolute/isolated-chain.json` prepares exactly four funded senders
+with two genuinely signed nonce-zero/one transactions each. Its private seed
+uses the same versioned HMAC key derivation and per-transaction recipient recipe
+as the supply corpus. It writes four complete GCF shards and a finalized,
+identity-bound manifest under `load/queue`, and separate `queue-configs/vN.json`.
+The original `run.json` and base node configs retain their existing schema.
+Neither this mode nor preparation initializes a database or starts processes.
+
+The current repository fleet runner adds an explicit `--owner-queue` mode,
+requiring `--smoke-binary` and a new `--attempt` name. This mode can initialize
+fresh datadirs in that new attempt; default/restart modes retain their existing
+rules. It reuses the same three quiet samples and dual BOX claims, verifies
+private configs and shard hashes, enables the owner's manifest flag, and starts
+all validators with the queue configs. Its checker sends each of the four frames
+once through strict ingress; ambiguous ACK/IO errors stop without replay. It
+requires initial zero canonical counts and fresh empty owner status. Success
+requires eight unique canonical executed transactions, seven matching heads,
+the same owner canonical tuple and epoch, and independently all four central
+queue credit counters zero. Validator-local queued count zero is insufficient.
+Logs/results and process lifecycle evidence remain in the exclusive attempt.
+A failed real run retains its datadirs and is not automatically reinitialized.
+
+Eight provision/checker tests pass (0.050s), including actual transaction decode,
+direct signature recovery, per-sender nonce uniqueness, declared recipient
+mapping, corpus hash corruption, original config preservation, invalid-shape
+rejection before writing and a nonzero owner refusing nonce-zero admission.
+Eighteen Python tests pass, comprising the original fleet checks plus queue
+manifest/config validation, alias/hash drift, central credit-release evidence
+and incompatible mode rejection. Targeted provision vet passed. A test setup
+initially used the wrong existing config-loader signature; it was corrected
+before these checks. These tests do not claim an OS-process queue run: gated
+race, clean binary builds and the fresh eight-process functional run remain
+required. No strict queue or chain TPS has been measured.
