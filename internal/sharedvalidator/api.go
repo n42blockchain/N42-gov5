@@ -65,6 +65,7 @@ type StatusRequest struct {
 	Identity sharedexec.Identity `json:"identity"`
 }
 type StatusResult struct {
+	OwnerQueue *OwnerQueueBinding `json:"owner_queue,omitempty"`
 	CanonicalProgress
 	QueuedTransactions int    `json:"queued_transactions"`
 	ProducerRunning    bool   `json:"producer_running"`
@@ -113,7 +114,12 @@ func (a *API) status(ctx context.Context) (StatusResult, error) {
 	}
 	a.producer.mu.Lock()
 	defer a.producer.mu.Unlock()
-	return StatusResult{CanonicalProgress: progress, QueuedTransactions: len(a.producer.pending), ProducerRunning: a.producer.started && !a.producer.closed, LastProducerError: a.producer.lastError}, nil
+	var binding *OwnerQueueBinding
+	if a.producer.ownerQueue != nil {
+		copy := *a.producer.ownerQueue
+		binding = &copy
+	}
+	return StatusResult{OwnerQueue: binding, CanonicalProgress: progress, QueuedTransactions: len(a.producer.pending), ProducerRunning: a.producer.started && !a.producer.closed, LastProducerError: a.producer.lastError}, nil
 }
 
 func decodeAPI(w http.ResponseWriter, r *http.Request, max int64, value any) error {
@@ -162,6 +168,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path != "/v1/transactions" {
 		http.NotFound(w, r)
+		return
+	}
+	if a.producer.OwnerQueueBinding() != nil {
+		http.Error(w, ErrOwnerQueueSubmissionDisabled.Error(), http.StatusConflict)
 		return
 	}
 	// Serialize large base64 decoding, signature admission and response framing.
@@ -281,6 +291,11 @@ func (c *APIClient) Status(ctx context.Context) (StatusResult, error) {
 	}
 	if result.Identity != c.identity || result.BlockHash == (types.Hash{}) || result.QueuedTransactions < 0 || result.QueuedTransactions > sharedexec.MaxTransactions || (result.Number == 0 && (result.BlockHash != c.identity.GenesisHash || result.CommittedExecutedTransactions != 0)) {
 		return result, errors.New("validator status response binding invalid")
+	}
+	if binding := result.OwnerQueue; binding != nil {
+		if binding.Epoch == ([16]byte{}) || binding.ManifestHash == (types.Hash{}) || binding.MaxTransactions < 1 || binding.MaxTransactions > sharedexec.MaxTransactions || binding.MaxEncodedBytes < 1 || binding.MaxEncodedBytes > sharedexec.MaxQueueBuildEncodedBytes || result.QueuedTransactions != 0 {
+			return result, errors.New("validator owner queue binding invalid")
+		}
 	}
 	return result, nil
 }

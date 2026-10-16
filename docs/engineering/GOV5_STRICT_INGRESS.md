@@ -4,7 +4,8 @@ The owner now has an explicit `EnableStrictIngress` API and an atomic
 `AdmitStrictFrame` API. Constructors leave the queue disabled. This first slice
 has both an in-process backend and a separate private Unix binary admission
 listener/client. A `BuildFromQueue` RPC now consumes selected nonce prefixes into real unsigned
-candidates. No CLI switch or validator producer uses that RPC yet.
+candidates. The validator Producer has a startup-only `UseOwnerQueue` API using this RPC;
+NodeCfg/CLI exposure is the next slice.
 It does not change the existing native, ETH or shared-validator Submit API.
 
 The preceding [raw supply gate](GOV5_SUPPLY_CODEC.md) passed at 6,499,988.64
@@ -147,6 +148,38 @@ Leader Seal, persistent own-candidate WAL, full-body Import, execution evidence
 and strict CommitQC remain required. The queue tests use separate Build and
 Import executions; they do not claim prepared reuse.
 
+## Validator producer integration
+
+`Producer.UseOwnerQueue` is explicit and startup-only, before Start, Produce or
+any local pending transactions. It queries the private owner status RPC once,
+pins full identity, manifest and epoch, and bounds selection limits. The default
+selection cap is 163,000 transfers, matching half of the existing 6,846,000,000
+gas limit at 21,000 gas each. The immutable s192a corpus has gas price/base fee
+1: blindly selecting 200,000 could raise the next base fee to 2 and stop further
+admission. This fixture and fee profile are unchanged.
+
+Production retains sealed own-candidate WAL recovery and AppliedChild lookup
+before requesting a new queue candidate. For a new candidate it first persists
+the complete prepared request, manifest, epoch, parent, view and limits in its
+own metadata WAL, then sends BuildFromQueue. A producer restart reads this
+request rather than calling Prepare again; changed epoch/manifest/limits fail
+closed. The head inside the prepared request must match the captured view even
+if consensus advances during Prepare, and view/leader/context are checked again
+before RPC and before signing/proposal. Already sealed candidates remain the
+stronger recovery source. Seal is still local to the validator. Persisting the
+sealed body/own-candidate binding and deleting its prepared-request WAL entry
+share one local transaction; Import and execution evidence precede Notify.
+Unsealed abandoned request records remain durable safety evidence; this slice
+does not claim a general historical WAL garbage collector.
+
+Queue mode rejects both direct and raw local submissions, including an early
+HTTP rejection before large JSON decoding, so it cannot ACK an unconsumed local
+pool. Validator status adds an optional owner-queue binding only when selected;
+its existing queued count continues to mean **local** pending transactions.
+Owner pending/reserved transaction and encoded-byte counts must be queried
+independently for draining. Restart does not transparently refresh a volatile
+owner epoch or replay old nonce-zero frames.
+
 ## Validation and remaining work
 
 Eight targeted queue tests and four existing default commit/unsigned-build
@@ -193,10 +226,25 @@ and proof payloads and checks scheduled rewards against WithdrawalsHash; this
 closes a review finding where transaction root and header hash alone did not
 bind those auxiliary fields.
 
+The producer slice adds five real-owner tests. Its six signed transactions
+cross private GSI1 ingress, the actual producer's BuildFromQueue, local BLS Seal,
+durable candidate WAL, full Import and 5/7 certificate bridge. The validator has
+no execution-state tables; the owner has no BLS private key. Tests cover 4/7
+rejection and committed counter 6, prepared WAL before a canceled RPC, recreated
+producer sending byte-identical requests, changed owner epoch rejecting an
+unsealed old request without overwriting it, sealed WAL priority, Stop canceling
+a blocked request, and a full seven-view leader rotation during Prepare without
+writing the wrong WAL or invoking execution. All 44 selected queue, producer,
+reproposal, codec, unsigned-build and commit regressions passed together (0.478s)
+with `GOMAXPROCS=2 go test -p 1 ./internal/sharedexec ./internal/sharedvalidator`,
+the earlier selector extended with `OwnerQueue|RemoteProducer|NextLeaderReproposes`,
+`-count=1 -timeout=90s`. Targeted vet of both packages passed. These are local
+fixtures and Unix integration tests, not a seven-process queue fleet or TPS run.
+
 Race and fresh binary/fleet validation of this new backend await an independent
 BOX claim window. No queue throughput or new chain TPS has been measured.
-The next slice must integrate the default-off owner-queue producer and CLI
-using the existing full-body candidate, leader Seal and WAL path. They
+The next slice must expose the existing owner-queue producer through default-off
+NodeCfg/CLI settings and the owner's separate private listener. They
 must retain full bodies, leader-owned seals, validator WALs, Import checks and
 strict CommitQC. The present Build/Import test executes both paths separately;
 it does not claim own-build reuse or pipelined execution.

@@ -36,6 +36,7 @@ type strictIngressFixture struct {
 	keys      []blscommon.SecretKey
 	frames    [2]CorpusFrame
 	recipient types.Address
+	manifest  []byte
 }
 
 func newStrictIngressFixture(t *testing.T, maxTx, maxBytes int, frameSize ...uint16) strictIngressFixture {
@@ -122,7 +123,7 @@ func newStrictIngressFixture(t *testing.T, maxTx, maxBytes int, frameSize ...uin
 		t.Fatal(err)
 	}
 	t.Cleanup(server.Close)
-	return strictIngressFixture{server: server, chain: chain, leader: leader, template: template, private: private, from: from, keys: keys, frames: frames, recipient: recipient}
+	return strictIngressFixture{server: server, chain: chain, leader: leader, template: template, private: private, from: from, keys: keys, frames: frames, recipient: recipient, manifest: encodedManifest}
 }
 
 func TestStrictIngressRealExecutionAndCertifiedCanonicalRelease(t *testing.T) {
