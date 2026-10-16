@@ -104,3 +104,30 @@ recovery evidence, failed-baseline binding, original configuration preservation,
 no initialization/dispatch, dangling-attempt refusal, forced cleanup and claim
 tail failure. A shared Go/Python JSON fixture also passed the actual Go recovery
 result decoder and nonce-vector hash check (0.011s).
+
+## Known-zero backpressure and request deadlines
+
+The first strict run reused one five-second context across all Busy/Snapshot
+retries of a frame. Known-zero backpressure could consume almost that whole
+allowance before another request began. Its cancellation could then close the
+connection while that request awaited its final ACK. This is a concrete failure
+mechanism consistent with the retained run; the old logs cannot identify which
+protocol phase produced its first unknown outcome.
+
+Each synchronous Admit now gets a fresh five-second request context bounded by
+the unchanged overall run context. After a typed zero-admission Busy/Snapshot
+reply, retry waits consume the observation window rather than the next request's
+I/O allowance. Dispatch stop prevents another request, while a request already
+in flight may finish its final ACK. Unknown outcomes still poison the connection
+and stop without replay; diagnostics now include shard, sequence, payload hash,
+I/O phase and any context cancellation. This change does not resolve the old
+23,500 unconfirmed admissions or authorize their replay.
+
+Seven targeted driver/Unix transport tests passed (replay 0.069s, sharedexec
+0.053s), covering fresh deadlines after Busy and Snapshot, cancelled prior
+contexts, stop between known-zero retries, completion of an in-flight final ACK,
+the parent deadline, and fatal lost/timeout ACKs. Three existing prefix/retry/
+unknown regressions passed (0.034s and 0.023s). Vet for both packages and diff
+checks passed. These were low-resource tests with GOMAXPROCS=2 and -p=1; this
+change has not been built or run against the retained runtime. The separately
+frozen account-recovery worker remains pinned to a81bb5a5 and is unaffected.
