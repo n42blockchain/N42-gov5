@@ -143,6 +143,28 @@ See [the retained first strict failure](GOV5_STRICT_S192R1_FIRST_OBSERVATION.md)
 Afterward about 791.75GiB remained, below the same default disk gate. Next is
 same-data recovery without dispatch, not automatic replay or a replacement root.
 
+The actual same-data `recovery-q1` attempt subsequently failed in owner startup:
+QMDB twig zero could not reproduce its stored commitment. Only the owner
+started and exited one; no validators, nonce audit or transactions ran. A
+6000-account real MDBX regression reproduced the missing sealed-genesis-leaf
+mechanism after old entry reclamation. The prevention fix is `aa60e65b`; it
+persists genesis leaf blobs without changing the computed root and does not
+repair existing databases. See [the reload investigation](GOV5_QMDB_GENESIS_RELOAD.md).
+
+As of 2026-10-16 15:25 UTC the sole new monitor is PID 3509411,
+`/tmp/gov5-qmdb-audit-b0745937.py`, source `b0745937`, controller SHA256
+`1ca4b917ab7496963384c3b78f65d78f202f0b0c17ab77537424cb9b15fcc82e`.
+Monitor log: `/tmp/gov5-qmdb-audit-b0745937-monitor.log`; state/artifacts:
+`/data/blockchain/gov5-work/validation/20261016-gov5-qmdb-audit-b0745937/`.
+It is `waiting-validation-build`, with no stages started and foreign
+compilation/tests blocking BOX admission. It will separately claim for
+race/Make/binary validation, release and yield, then claim for a file-level
+backup and read-only working-copy audit. The original DB and untouched backup
+are never opened through MDBX. Four targeted tests and vet have passed; actual
+retained-copy audit, any precise repair, nonce reconciliation and resumed load
+remain unproven. Neither a successful copy audit nor the monitor's existence
+authorizes replay of previously unknown ACKs or establishes new chain TPS.
+
 An additional sealed-job reference RPC is committed as `56d50aa0` on the main
 branch, with targeted tests and vet passing. Replica/CLI activation remains off;
 it is excluded from the frozen first strict observation. Stop expanding
