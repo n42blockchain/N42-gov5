@@ -147,18 +147,20 @@ func strictAdmitFrame(ctx, dispatch context.Context, c strictAdmitter, frame sha
 	if c.Epoch() != epoch {
 		return false, errors.New("strict welcome epoch differs before first frame")
 	}
-	work, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	var lastRetry error
 	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if dispatch.Err() != nil {
 			return false, nil
 		}
-		if work.Err() != nil && lastRetry != nil {
-			return false, fmt.Errorf("strict bounded frame blocked (%v): %w", lastRetry, work.Err())
-		}
+		// Backpressure consumes the measured dispatch window, not the next
+		// request's IO allowance. Reusing one context across known-zero replies
+		// could close a newly granted request just as its final ACK arrived.
+		work, cancel := context.WithTimeout(ctx, 5*time.Second)
 		start := time.Now()
 		ack, err := c.Admit(work, frame)
+		cancel() // Admit has attempted to stop its callback before returning.
 		counters.admitNanos.Add(uint64(time.Since(start)))
 		if err == nil {
 			if ack.Status.Epoch != epoch || ack.NewlyAdmitted != int(frame.Transactions) || ack.Duplicates != 0 {
@@ -173,7 +175,6 @@ func strictAdmitFrame(ctx, dispatch context.Context, c strictAdmitter, frame sha
 		if ack.NewlyAdmitted != 0 || ack.Duplicates != 0 {
 			return false, fmt.Errorf("%w: retry carried admission", sharedexec.ErrIngressUnknownOutcome)
 		}
-		lastRetry = err
 		if errors.Is(err, sharedexec.ErrIngressSnapshotChanged) {
 			counters.snapshot.Add(1)
 		} else {
@@ -185,9 +186,9 @@ func strictAdmitFrame(ctx, dispatch context.Context, c strictAdmitter, frame sha
 		case <-dispatch.Done():
 			timer.Stop()
 			return false, nil
-		case <-work.Done():
+		case <-ctx.Done():
 			timer.Stop()
-			return false, fmt.Errorf("strict bounded frame blocked (%v): %w", lastRetry, work.Err())
+			return false, ctx.Err()
 		case <-timer.C:
 		}
 		elapsed := uint64(time.Since(start))
@@ -251,7 +252,7 @@ func strictPumpShard(ctx, dispatch context.Context, source strictSource, m suppl
 		}
 		accepted, err := strictAdmitFrame(ctx, dispatch, c, frame, epoch, counters)
 		if err != nil {
-			return err
+			return fmt.Errorf("strict shard %d sequence %d payload %s: %w", shard, seq, frame.PayloadHash.Hex(), err)
 		}
 		if !accepted {
 			return nil

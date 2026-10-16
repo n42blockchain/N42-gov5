@@ -95,10 +95,14 @@ func (c *StrictIngressClient) Admit(ctx context.Context, frame CorpusFrame) (Str
 	}
 	stop := context.AfterFunc(ctx, func() { _ = c.conn.Close() })
 	defer stop()
+	phase := "write-header"
 	unknown := func(err error) (StrictIngressAck, error) {
 		c.broken = true
 		_ = c.conn.Close()
-		return StrictIngressAck{}, fmt.Errorf("%w: %v", ErrIngressUnknownOutcome, err)
+		if ctx.Err() != nil {
+			return StrictIngressAck{}, fmt.Errorf("%w: %s: %v (context: %v)", ErrIngressUnknownOutcome, phase, err, ctx.Err())
+		}
+		return StrictIngressAck{}, fmt.Errorf("%w: %s: %v", ErrIngressUnknownOutcome, phase, err)
 	}
 	if err := writeIngressBytes(c.conn, header[:]); err != nil {
 		return unknown(err)
@@ -125,6 +129,7 @@ func (c *StrictIngressClient) Admit(ctx context.Context, frame CorpusFrame) (Str
 		}
 		return reply.Ack, ErrIngressSnapshotChanged
 	}
+	phase = "read-header-ack"
 	reply, err := read()
 	if err != nil {
 		return unknown(err)
@@ -156,9 +161,11 @@ func (c *StrictIngressClient) Admit(ctx context.Context, frame CorpusFrame) (Str
 	default:
 		return unknown(errors.New("unexpected strict ingress header ACK"))
 	}
+	phase = "write-payload"
 	if err := writeIngressBytes(c.conn, frame.Payload); err != nil {
 		return unknown(err)
 	}
+	phase = "read-final-ack"
 	reply, err = read()
 	if err != nil {
 		return unknown(err)
