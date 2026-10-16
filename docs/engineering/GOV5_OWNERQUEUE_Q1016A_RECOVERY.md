@@ -60,8 +60,8 @@ exists and new builds remain blocked. That state needs an explicit recovery
 protocol; this slice does not invent a certificate, rewind state, or claim
 automatic recovery. All three runtime binaries now need the startup slice,
 including n42's pin-before-replay change. Frozen sources, both attempts, and
-their binary artifacts remain unchanged. The next actual recovery, strict load,
-and fault gates have not passed.
+their binary artifacts remain unchanged. The actual recovery subsequently passed as recorded below. Strict load and
+fault gates remain pending.
 
 Validation: eight `TestQueue*` tests passed under GOMAXPROCS=2/-p=1 (0.130s),
 including typed retry bounds, exact frame preservation, no unknown/rejection
@@ -78,8 +78,8 @@ another validator's existing-child reproposal, and LockedQC-at-tip without a
 CommitQC remaining blocked (0.078s). Targeted startup and existing strict/queue/
 epoch/two-leader regressions passed (0.208s); cancellation and storage-read
 failure regressions passed (0.044s). Vet passed for internal, sharedexec and
-sharedvalidator. Tests used GOMAXPROCS=2/-p=1; new binaries/race remain pending
-the next hardware claim. These tests reconstruct services over a real BC and
+sharedvalidator. Tests used GOMAXPROCS=2/-p=1; the later claimed race/build results are
+recorded below. These tests reconstruct services over a real BC and
 invoke Replay/Produce explicitly; they do not reopen the BC from disk or prove
 full service.Start/seven-process recovery.
 
@@ -94,5 +94,60 @@ a transient reconciling observation during that baseline waits rather than
 weakening its conditions. The result separately records the initial wait.
 All twelve `TestQueue*` functions passed (0.382s), including session/counter/
 credit changes during recovery, bounded missing-certificate waiting, and
-non-retry of transport failures; provision vet passed. This checker change has
-not yet run against the seven-process retained fixture.
+non-retry of transport failures; provision vet passed. This checker change subsequently ran against the seven-process retained
+fixture as recorded below.
+
+## Same-data recovery passed — 2026-10-16 10:57 UTC
+
+The `startup-qc` attempt reopened the retained `q1016a` databases, with no
+initialization, reset, genesis change or replacement runtime. Controller
+`/tmp/gov5-ownerqueue-startup-757c2ded.py` completed with `phase=passed` and
+functional child exit zero. Evidence is under
+`/data/blockchain/gov5-performance-5m/runtime/q1016a/attempts/startup-qc/`:
+`functional-result.json`, `queue-smoke-result.json`, `process-lifecycle.json`
+and the nine process logs. Earlier failed attempts remain intact.
+
+All seven initial metadata heads were height one, hash
+`0x8e414c6273573673323eb0f30d7672297da38b39c26fb07cf5887eea9860d0ef`,
+with zero canonical transactions. The checker waited 142,042,359 ns for startup
+reconciliation, then established all seven and owner at height two, hash
+`0xacae720d33039486bf03c013dbb53645712b082cccb4123feca78e5569aafcfe`,
+still zero transactions and empty owner credits, before sending nonce zero.
+Thus the existing applied child was recovered on the original databases.
+
+The final seven metadata heads and owner all agreed on height 15, hash
+`0xd4a2455d7dd4e632dabf0ac596eaf6a8daa98938192796c769fab0d21884e7d3`,
+and exactly eight unique canonical committed-and-executed transactions.
+Owner NewlyAdmitted was eight; pending/reserved transactions and retained/
+reserved encoded bytes were all zero, with Reconciling false. The first frame
+made 36 explicit zero-admission snapshot retries on its original connection;
+CryptoVerified was 64 verification attempts, not 64 unique transactions. The
+other three frames had no retries. All owner, seven validator and checker
+processes exited zero and no recorded child remained after cleanup. The
+controller accepted success only after the runner and claim cleanup returned.
+
+This is the first actual strict owner-queue eight-process functional result
+and a successful recovery of this specific applied-ahead state. It is not
+chain TPS, general crash recovery, a proof for LockedQC-at-tip without CommitQC,
+or the remaining two-offline/three-offline/owner-disconnection process gates.
+Build then Import still executes twice; the executor is trusted by the seven
+consensus identities. Signature verification and QC requirements were retained.
+
+The source was clean `757c2ded8aa98656bfea4c0be31f23186f2e1148`. Claimed targeted
+race passed for provision (1.526s) and sharedexec (1.211s, including external
+producer recovery tests); the sharedvalidator package had no selector match.
+`make build` and all three binary Make targets passed. Artifact directory:
+`/data/blockchain/gov5-work/validation/20261016-gov5-ownerqueue-startup-757c2ded/`.
+Its status records complete commands, affinity, claim resources and these SHAs:
+
+| Binary | SHA-256 |
+| --- | --- |
+| n42 | `3cfa04eacf2bf7232cb0874f9fe33d98642896d93d530f218d1179d85ca93f7c` |
+| n42-execution-service | `26ba6026c062721955d8dbe373f6649c21a454cbf21ecdeea47ad507f42d02f3` |
+| gov5-perf-provision | `9ca71641f0f494ebf4bfc2e5c1500878eada1faec1d098c7e254d23e247e9633` |
+
+A pre-start read-only `hotstuff-inspect` snapshot is retained alongside the
+validation logs. It showed all seven LockedQC and CommittedQC at view one;
+v2 alone had voted at view two. That tool prints hash prefixes and does not
+inspect pending certificates or owner applied state; the actual recovery
+result, rather than that partial snapshot, establishes this gate's success.

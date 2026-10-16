@@ -1,6 +1,6 @@
 # Gov5 5M unattended campaign
 
-Updated 2026-10-15. The user authorized continuous work, small commits/pushes,
+Updated 2026-10-16. The user authorized continuous work, small commits/pushes,
 and alternating hardware use with the other session. The implementation and
 evidence history is in [the main plan](GOV5_PERFORMANCE_5M_PLAN.md).
 
@@ -93,38 +93,43 @@ microbenchmarks, queued transactions and Rust figures do not satisfy this gate.
 
 ## Persistence and reporting
 
-### Queue integration checkpoint — 2026-10-16 06:47 UTC
+### Queue integration checkpoint — 2026-10-16 10:57 UTC
 
-The baseline eight-transaction fleet and its same-data restart passed. The newer
-strict owner-queue fleet has **not run**. Its single passive worker is PID
-3767698, controller `/tmp/gov5-ownerqueue-b02d84a2-v2.py`, with evidence in
-`/data/blockchain/gov5-work/validation/20261016-gov5-ownerqueue-b02d84a2/status.json`.
-At this checkpoint it is `waiting-functional-run-v2`: external Rust build/test
-workloads prevent BOX admission. Targeted race tests, full build, three binary
-builds and fresh `q1016a` provisioning passed; `q1016a/attempts/q1` does not exist.
-Do not start a second worker or reinitialize this runtime.
+The first actual strict owner-queue eight-process gate passed on the original
+`q1016a` data in attempt `startup-qc`. Earlier attempts `q1` and `snapshot-retry`
+failed and remain retained. The startup recovery source is clean `757c2ded`;
+claimed targeted race, full Make build and all three binary builds passed.
+All seven initial metadata heads had height one/count zero. Recovery reached
+height two/count zero before sending; final seven and owner agreed at height
+15/hash `d4a2455d7dd4e632dabf0ac596eaf6a8daa98938192796c769fab0d21884e7d3`
+with exactly eight unique committed-and-executed transactions and all four
+owner queue credits zero. CryptoVerified 64 counts attempts, including 36
+known-zero snapshot retries, rather than unique transactions.
 
-The queue binaries remain pinned to `b02d84a2`; the replacement claim guard is
-from `875f729b`. The guard checks claim identity throughout execution and after
-cleanup. A replaced claim causes failure even if an observation file exists;
-cleanup touches only owned processes and claims.
+The unique recovery worker PID 1256875 completed and released its claims.
+Its controller `/tmp/gov5-ownerqueue-startup-757c2ded.py` and validation directory
+`/data/blockchain/gov5-work/validation/20261016-gov5-ownerqueue-startup-757c2ded/`
+record commands, source/binary hashes and cleanup. Actual process evidence is
+under `runtime/q1016a/attempts/startup-qc/`; every owned process exited zero.
+See [the recovery record](GOV5_OWNERQUEUE_Q1016A_RECOVERY.md) for precise limits.
+This specific restart recovery does not replace the remaining process fault
+gates, and eight transactions do not establish a chain throughput result.
 
 The separate signed-corpus runtime, strict replay client and guarded launcher
-are tested and pushed, frozen at `df691d4f` in
-`/data/blockchain/gov5-work/wt-gov5-strict-runtime-df691d4f`. Main-branch launcher
-commit is `4f77e776`. Run the small queue gate first, preserve any actual failure
-on the same root, and diagnose it before starting the signed-corpus observation.
-No schema-2 fleet result or new chain TPS exists. Later fault/process gates and
-matched capacity promotion checks remain outstanding.
+are tested and pushed, frozen at `df691d4f`; the startup source `757c2ded`
+also contains those unchanged files. Next build only the replay binary and
+reuse the three proven startup binaries with explicit source/SHA provenance.
+Provision a separate runtime from the exact `s192a` genesis/validator identities;
+preserve both existing runtime roots and all source corpus bytes. Obtain each
+hardware turn afresh. No schema-2 strict observation or new chain TPS exists.
 
 Raw supply qualification reached 6,499,988.64 unique wires/s for 20.000034967 s;
 this excludes online signature verification and on-chain execution. Historical
-Go chain best remains 776,967 TPS. The strict observation uses one validator's
-canonical counter, a full twenty-second window and independent drain, never the
-sum of seven counters. Its default disk estimate needs 796.422 GiB free for the
-192M source plus reserve; recheck at admission rather than relying on today's
-approximately 920 GiB. Do not delete source corpus or runtime evidence to force
-the disk check to pass.
+Go chain best remains 776,967 TPS. The first strict observation uses one
+validator's canonical counter, a full twenty-second window and independent
+drain, never the sum of seven counters. Its default disk planning estimate
+needs 796.422 GiB free for the 192M source plus reserve; recheck at admission.
+Do not delete source corpus or runtime evidence to force the disk check to pass.
 
 An additional sealed-job reference RPC is committed as `56d50aa0` on the main
 branch, with targeted tests and vet passing. Replica/CLI activation remains off;
