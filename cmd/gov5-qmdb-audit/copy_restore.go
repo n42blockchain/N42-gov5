@@ -400,38 +400,7 @@ func restoreCandidate(ctx context.Context, dir string, before fileObservation, p
 			return err
 		}
 		defer tx.Rollback()
-		snapshot, err := auditBoundSnapshot(tx, g)
-		if err != nil {
-			return err
-		}
-		if !sameAuditedSnapshot(snapshot, proof, false) {
-			return errors.New("candidate snapshot changed before write")
-		}
-		tables, err := logicalFingerprints(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if !sameOtherRows(out.BeforeTables, tables, false) {
-			return errors.New("logical database changed before write")
-		}
-		if err := insertAbsentLeaves(tx, blobs); err != nil {
-			return err
-		}
-		snapshot, err = auditBoundSnapshot(tx, g)
-		if err != nil {
-			return err
-		}
-		if len(snapshot.Forest.MissingGenesis) != 0 || !sameAuditedSnapshot(snapshot, proof, true) {
-			return errors.New("restored transaction does not reproduce exact snapshot without overlay")
-		}
-		tables, err = logicalFingerprints(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if !sameOtherRows(out.BeforeTables, tables, true) {
-			return errors.New("restore changed logical keys/sequences other than the two leaves")
-		}
-		if err := ctx.Err(); err != nil {
+		if err := restoreMissingGenesisRows(ctx, tx, g, proof, out.BeforeTables, blobs); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -508,6 +477,44 @@ func restoreCandidate(ctx context.Context, dir string, before fileObservation, p
 	// Passed remains false until all original/backup/audit observations are
 	// rechecked outside this helper, after both environments have closed.
 	return out, nil
+}
+
+// restoreMissingGenesisRows has no path or database-open authority. Both
+// explicit restore commands retain their own file, lock, intent and lifecycle
+// checks. The caller owns this transaction and decides whether to commit.
+func restoreMissingGenesisRows(ctx context.Context, tx kv.RwTx, g *auditedGenesis, proof auditReport, before []tableFingerprint, blobs [][]byte) error {
+	snapshot, err := auditBoundSnapshot(tx, g)
+	if err != nil {
+		return err
+	}
+	if !sameAuditedSnapshot(snapshot, proof, false) {
+		return errors.New("snapshot changed before write")
+	}
+	tables, err := logicalFingerprints(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !sameOtherRows(before, tables, false) {
+		return errors.New("logical database changed before write")
+	}
+	if err := insertAbsentLeaves(tx, blobs); err != nil {
+		return err
+	}
+	snapshot, err = auditBoundSnapshot(tx, g)
+	if err != nil {
+		return err
+	}
+	if len(snapshot.Forest.MissingGenesis) != 0 || !sameAuditedSnapshot(snapshot, proof, true) {
+		return errors.New("restored transaction does not reproduce exact snapshot without overlay")
+	}
+	tables, err = logicalFingerprints(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !sameOtherRows(before, tables, true) {
+		return errors.New("restore changed logical keys/sequences other than the two leaves")
+	}
+	return ctx.Err()
 }
 
 func insertAbsentLeaves(tx kv.RwTx, blobs [][]byte) error {
