@@ -189,6 +189,9 @@ type BlockChain struct {
 	// senderJobs: per-block sender recovery started when a block is queued
 	// for the lag executor (sender_prewarm.go).
 	senderJobs senderJobs
+	// aheadPreps: per-block preparation of a queued child's parallel run
+	// (ahead_prep.go).
+	aheadPreps aheadPreps
 
 	// executedHook, when set, fires the moment a block's execution and state
 	// validation succeed during import — BEFORE writeBlockWithState. Wired to

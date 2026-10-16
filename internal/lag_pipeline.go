@@ -348,7 +348,7 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	}
 	if b, ok := blk.(*block.Block); ok {
 		bc.RememberAvailable(b)
-		bc.EnqueueLagImport(b)
+		bc.enqueueLagImport(b, true)
 	}
 	return false, nil
 }
@@ -444,6 +444,13 @@ func (bc *BlockChain) LagStats() (imported, lastNumber uint64, queued int) {
 
 // EnqueueLagImport hands an available block to the lag executor.
 func (bc *BlockChain) EnqueueLagImport(b *block.Block) {
+	bc.enqueueLagImport(b, false)
+}
+
+// enqueueLagImport is EnqueueLagImport; prep (a block another node built,
+// queued by its availability check) also prepares its parallel run ahead
+// of its execution (ahead_prep.go).
+func (bc *BlockChain) enqueueLagImport(b *block.Block, prep bool) {
 	if b == nil {
 		return
 	}
@@ -462,7 +469,11 @@ func (bc *BlockChain) EnqueueLagImport(b *block.Block) {
 	le.mu.Unlock()
 	if fresh {
 		// Its senders are recovered from now on, not when it executes (P7).
-		bc.startSenderJob(b)
+		if prep {
+			bc.startAheadPrep(b)
+		} else {
+			bc.startSenderJob(b, nil)
+		}
 	}
 	if le.started.CompareAndSwap(false, true) {
 		go bc.lagLoop()
@@ -627,6 +638,19 @@ func (bc *BlockChain) lagExecUnqueue(hash types.Hash) {
 	le.mu.Lock()
 	delete(le.queued, hash)
 	le.mu.Unlock()
+	bc.dropAheadPrep(hash)
+}
+
+// lagQueuedSince returns when hash was queued for the lag executor (zero
+// when it is not queued).
+func (bc *BlockChain) lagQueuedSince(hash types.Hash) time.Time {
+	le := &bc.lagExec
+	le.mu.Lock()
+	defer le.mu.Unlock()
+	if q := le.queued[hash]; q != nil {
+		return q.since
+	}
+	return time.Time{}
 }
 
 func (bc *BlockChain) lagDone(b *block.Block, imported bool) {
