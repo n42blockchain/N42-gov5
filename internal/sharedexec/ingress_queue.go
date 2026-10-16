@@ -84,6 +84,7 @@ type strictIngressQueue struct {
 	manifestHash                              types.Hash
 	stamp                                     ingressStamp
 	reconciling                               bool
+	bootstrapPending                          bool
 	closed                                    bool
 	maxTx, maxBytes                           int
 	pending, bytes, reservedTx, reservedBytes int
@@ -121,10 +122,16 @@ func (s *Server) EnableStrictIngress(options StrictIngressOptions) error {
 		return errors.New("strict ingress requires unused owner")
 	}
 	snapshot, err := s.chain.ReadPerformanceCanonicalAccounts(s.ctx, nil)
-	if err != nil {
+	bootstrap := errors.Is(err, internal.ErrPerformanceCanonicalNotApplied)
+	if err != nil && !bootstrap {
 		return err
 	}
-	q := &strictIngressQueue{descriptor: manifest.Descriptor, manifestHash: types.Hash(sha256.Sum256(options.Manifest)), maxTx: options.MaxTransactions, maxBytes: options.MaxEncodedBytes, lanes: make(map[types.Address]*ingressLane), stamp: ingressStamp{hash: snapshot.Hash, number: snapshot.Number}}
+	// This exact typed outcome carries verified canonical metadata only. No
+	// speculative PlainState nonce becomes an admission baseline. Keep new
+	// admission/builds closed while validators replay existing certificates or
+	// repropose an already applied child. Recovery is not guaranteed without a
+	// usable certificate/child; no new candidate is built through this gate.
+	q := &strictIngressQueue{descriptor: manifest.Descriptor, manifestHash: types.Hash(sha256.Sum256(options.Manifest)), maxTx: options.MaxTransactions, maxBytes: options.MaxEncodedBytes, lanes: make(map[types.Address]*ingressLane), stamp: ingressStamp{hash: snapshot.Hash, number: snapshot.Number}, reconciling: bootstrap, bootstrapPending: bootstrap}
 	if _, err := rand.Read(q.epoch[:]); err != nil {
 		return err
 	}
@@ -457,6 +464,7 @@ func (s *Server) reconcileStrictIngress() error {
 	}
 	q.mu.Lock()
 	stamp := q.stamp
+	bootstrap := q.bootstrapPending
 	q.mu.Unlock()
 	floors := make(map[types.Address]uint64)
 	var head types.Hash
@@ -516,6 +524,20 @@ func (s *Server) reconcileStrictIngress() error {
 	if err != nil {
 		return err
 	}
+	ready := true
+	if bootstrap {
+		// A duplicate or older valid QC may advance metadata while actual state
+		// is still ahead. Acknowledge that QC, retaining the startup gate until
+		// one real canonical PlainState snapshot matches this canonical tuple.
+		snapshot, err := s.chain.ReadPerformanceCanonicalAccounts(s.ctx, nil)
+		if errors.Is(err, internal.ErrPerformanceCanonicalNotApplied) {
+			ready = false
+		} else if err != nil {
+			return err
+		} else if snapshot.Hash != head || snapshot.Number != number {
+			return errors.New("strict ingress startup canonical snapshot changed")
+		}
+	}
 	q.mu.Lock()
 	for from, floor := range floors {
 		lane := q.lanes[from]
@@ -549,7 +571,8 @@ func (s *Server) reconcileStrictIngress() error {
 	}
 	q.stamp.hash = head
 	q.stamp.number = number
-	q.reconciling = false
+	q.bootstrapPending = bootstrap && !ready
+	q.reconciling = q.bootstrapPending
 	q.mu.Unlock()
 	s.expireQueuePlans(number, canonicalView)
 	return nil
