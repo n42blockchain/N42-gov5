@@ -226,10 +226,11 @@ class FleetTest(unittest.TestCase):
             with self.claim(claim, lock, lambda: (["other workload"], {})):
                 self.fail("busy machine claimed")
         self.assertFalse(claim.exists())
-        with self.claim(claim, lock, quiet):
-            record = fleet.load(claim / "owner.json")
-            record["token"] = "other-owner"
-            self.write(claim / "owner.json", record)
+        with self.assertRaises(fleet.HardwareContention):
+            with self.claim(claim, lock, quiet):
+                record = fleet.load(claim / "owner.json")
+                record["token"] = "other-owner"
+                self.write(claim / "owner.json", record)
         self.assertEqual(fleet.load(claim / "owner.json")["token"], "other-owner")
 
     def test_standard_claim_collision_preserves_existing_epoch_and_cleans_partial(self):
@@ -270,9 +271,10 @@ class FleetTest(unittest.TestCase):
 
     def test_replaced_standard_claim_is_never_removed(self):
         original = self.base / ".box-claim-gov5"
-        with self.claim(self.base / ".owner", self.base / ".lock", lambda: ([], {})):
-            original.unlink()
-            original.write_text("foreign-owner\n")
+        with self.assertRaises(fleet.HardwareContention):
+            with self.claim(self.base / ".owner", self.base / ".lock", lambda: ([], {})):
+                original.unlink()
+                original.write_text("foreign-owner\n")
         self.assertEqual(original.read_text(), "foreign-owner\n")
 
     def test_claim_cleans_only_owned_empty_directory_after_exception(self):
@@ -283,6 +285,79 @@ class FleetTest(unittest.TestCase):
         self.assertFalse(claim.exists())
         with self.assertRaisesRegex(ValueError, "duplicate"):
             fleet.pairs_unique([("identity", 1), ("identity", 2)])
+
+class ClaimOwnershipTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="g5-claim-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.owner = self.root / ".owner"
+        self.paths = (self.root / ".box-claim-codex", self.root / ".mirror-codex", self.root / ".box-claim-gov5", self.root / ".mirror-gov5")
+
+    def claim(self):
+        return fleet.claim(self.owner, self.root / ".lock", lambda: ([], {}), standard_paths=self.paths, wait=lambda seconds: None)
+
+    def test_default_claim_has_distinct_codex_identity_and_legacy_mirrors(self):
+        self.assertEqual([p.name for p in fleet.STANDARD_CLAIMS], [".box-claim-codex", ".box-claim-codex", ".box-claim-gov5", ".box-claim-gov5"])
+
+    def test_claim_overwrite_stops_owned_work_and_preserves_foreign_file(self):
+        with self.assertRaises(fleet.HardwareContention):
+            with self.claim():
+                fleet.check_owned_claim()
+                original = self.paths[2]
+                replacement = self.root / "replacement"
+                epoch = original.read_text()
+                replacement.write_text(epoch)
+                replacement.chmod(0o600)
+                replacement.replace(original)
+                with self.assertRaisesRegex(ValueError, "hardware contention.*identity changed"):
+                    fleet.check_owned_claim()
+        self.assertEqual(self.paths[2].read_text(), epoch)
+        self.assertFalse(self.paths[0].exists())
+        self.assertFalse(self.paths[1].exists())
+        self.assertFalse(self.paths[3].exists())
+        with self.assertRaisesRegex(ValueError, "no owned claim"):
+            fleet.check_owned_claim()
+
+    def test_runtime_process_guard_ignores_only_recorded_owned_pids(self):
+        with self.claim():
+            blockers = (["load1 >= 8", "MemAvailable < 90 GiB", "other workload: pid=100 comm=n42", "other workload: pid=200 comm=rustc"], {})
+            with patch.object(preflight, "resource_blockers", return_value=blockers):
+                with self.assertRaisesRegex(ValueError, "pid=200"):
+                    fleet.check_owned_claim([100], force=True)
+                fleet.check_owned_claim([100, 200], force=True)
+
+    def test_runtime_guard_rejects_foreign_claim_before_any_process(self):
+        with self.claim():
+            for error in ("active claim: .box-claim-rust", "unreadable claim: .box-claim-rust", "unknown resource refusal"):
+                with self.subTest(error=error), patch.object(preflight, "resource_blockers", return_value=([error], {})):
+                    with self.assertRaisesRegex(ValueError, "hardware contention"):
+                        fleet.check_owned_claim([], force=True)
+
+
+    def test_runtime_contention_releases_only_own_files_and_yields_sixty_seconds(self):
+        waits = []
+        with self.assertRaises(fleet.HardwareContention):
+            with fleet.claim(self.owner, self.root / ".lock", lambda: ([], {}), standard_paths=self.paths, wait=waits.append):
+                with patch.object(preflight, "resource_blockers", return_value=(["active claim: .box-claim-rust"], {})):
+                    fleet.check_owned_claim([], force=True)
+        self.assertEqual(waits[-1], 60)
+        self.assertFalse(self.owner.exists())
+        self.assertFalse(any(path.exists() for path in self.paths))
+
+    def test_status_checks_claim_after_success_and_failed_io(self):
+        for failure in (None, OSError("socket not ready")):
+            with self.subTest(failure=failure):
+                with patch.object(fleet, "status", return_value={"number": 1}, side_effect=failure), patch.object(fleet, "check_owned_claim") as check:
+                    if failure:
+                        with self.assertRaises(OSError):
+                            fleet.guarded_status("socket", {}, lambda: [123])
+                    else:
+                        self.assertEqual(fleet.guarded_status("socket", {}, lambda: [123]), {"number": 1})
+                    check.assert_called_once_with([123], force=True)
+        with patch.object(fleet, "status", return_value={}), patch.object(fleet, "check_owned_claim", side_effect=fleet.HardwareContention("lost claim")):
+            with self.assertRaises(fleet.HardwareContention):
+                fleet.guarded_status("socket", {}, lambda: [])
 
 
 if __name__ == "__main__":

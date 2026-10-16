@@ -25,7 +25,47 @@ import preflight
 BASE = preflight.ISOLATED_ROOT / "runtime"
 CLAIM = Path("/data/blockchain/.box-claim-gov5-performance-5m")
 LOCK = Path("/data/blockchain/.gov5-perf-resource.lock")
-STANDARD_CLAIMS = (Path("/data/blockchain/.box-claim-gov5"), Path("/data/blockchain/wr-logs/.box-claim-gov5"))
+STANDARD_CLAIMS = (
+    Path("/data/blockchain/.box-claim-codex"),
+    Path("/data/blockchain/wr-logs/.box-claim-codex"),
+    Path("/data/blockchain/.box-claim-gov5"),
+    Path("/data/blockchain/wr-logs/.box-claim-gov5"),
+)
+_active_claim = None
+
+
+class HardwareContention(ValueError):
+    pass
+
+
+def check_owned_claim(owned_pids=None, force=False):
+    """Check immutable ownership; stop only our work if another driver intrudes."""
+    record = _active_claim
+    if record is None:
+        raise HardwareContention("hardware contention during owned run: no owned claim")
+    try:
+        private(record["path"], directory=True)
+        owner = load(record["path"] / "owner.json")
+        if owner.get("token") != record["token"] or owner.get("pid") != os.getpid():
+            raise ValueError("owner token changed")
+        for path, device, inode in record["files"]:
+            private(path)
+            info = path.lstat()
+            if (info.st_dev, info.st_ino) != (device, inode) or path.read_text() != record["epoch"]:
+                raise ValueError("BOX claim identity changed")
+        if owned_pids is not None and (force or time.monotonic() - record["last_process_check"] >= 1):
+            errors, _ = preflight.resource_blockers(ignored_claims=(*[item[0] for item in record["files"]], record["path"]))
+            record["last_process_check"] = time.monotonic()
+            owned = set(owned_pids)
+            for error in errors:
+                match = re.fullmatch(r"other workload: pid=(\d+) comm=.+", error)
+                if match is not None and int(match.group(1)) in owned:
+                    continue
+                if error in ("load1 >= 8", "MemAvailable < 90 GiB"):
+                    continue
+                raise ValueError(error)
+    except (OSError, ValueError) as error:
+        raise HardwareContention("hardware contention during owned run: " + str(error)) from error
 
 
 def pairs_unique(pairs):
@@ -131,7 +171,10 @@ def quiet_checks(blockers=preflight.resource_blockers, wait=time.sleep):
 
 @contextlib.contextmanager
 def claim(claim_path=CLAIM, lock_path=LOCK, blockers=preflight.resource_blockers, standard_paths=None, wait=time.sleep):
-    """BOX protocol: dual epoch claims, contention wait, token-bound cleanup."""
+    """BOX protocol: distinct Codex claims plus gov5 mirrors, owner-only cleanup."""
+    global _active_claim
+    previous_claim = _active_claim
+    activated = False
     if standard_paths is None:
         if claim_path != CLAIM:
             raise ValueError("custom owner directory requires explicit claim mirrors")
@@ -180,8 +223,17 @@ def claim(claim_path=CLAIM, lock_path=LOCK, blockers=preflight.resource_blockers
             # epoch; ambiguous or simultaneous claims always yield safely.
             contention = True
             raise ValueError("hardware contention after claim: " + "; ".join(errors))
-        yield snapshot
+        _active_claim = {"path": claim_path, "token": token, "epoch": epoch, "files": tuple(files), "last_process_check": 0}
+        activated = True
+        try:
+            yield snapshot
+            check_owned_claim([] if blockers is preflight.resource_blockers else None, force=True)
+        except HardwareContention:
+            contention = True
+            raise
     finally:
+        if activated:
+            _active_claim = previous_claim
         if acquired:
             # Never unlink another owner or recursively remove data. A crash
             # leaves an explicit stale claim requiring human review.
@@ -293,6 +345,14 @@ def restart_baseline(m, node, owner, initialize, smoke, attempt, path):
     return baseline
 
 
+def guarded_status(socket_path, identity, owned_pids):
+    # Bound checks by each IO operation, including failed readiness reads.
+    try:
+        return status(socket_path, identity)
+    finally:
+        check_owned_claim(owned_pids(), force=True)
+
+
 def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=None, owner_queue=False):
     root = Path(m["root"])
     if owner_queue and (smoke is None or restart is not None or attempt is None):
@@ -306,13 +366,26 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
     logs = []
     env = dict(os.environ, GOMAXPROCS="2")
     def spawn(args, name):
+        check_owned_claim([p.pid for p in children if p.poll() is None], force=True)
         log = os.fdopen(os.open(log_root / (name + ".log"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb")
         logs.append(log)
         process = subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         children.append(process)
         lifecycle.append((process, {"name": name, "pid": process.pid, "executable": args[0], "started_unix": time.time()}))
         return process
+    def wait_owned(process, timeout):
+        deadline = time.monotonic() + timeout
+        while process.poll() is None:
+            check_owned_claim([p.pid for p in children if p.poll() is None])
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        check_owned_claim([p.pid for p in children if p.poll() is None], force=True)
+        return process.returncode
+    def owned_status(socket_path, identity):
+        return guarded_status(socket_path, identity, lambda: [p.pid for p in children if p.poll() is None])
     def live():
+        check_owned_claim([p.pid for p in children if p.poll() is None])
         if any(p.poll() is not None for p in children):
             raise ValueError("owned child exited; inspect retained private logs")
     quiet_checks()
@@ -341,7 +414,7 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                     if metadata:
                         args += ["--performance.metadata-only"]
                     p = spawn(args + [m["genesis"]], "init-" + Path(d).name)
-                    if p.wait(timeout=120) != 0:
+                    if wait_owned(p, 120) != 0:
                         raise ValueError("initialization failed; retain partial data for review")
                     children.remove(p)
             for path in [m["owner_socket"]] + [v["api_socket"] for v in m["validators"]]:
@@ -364,8 +437,10 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
             while True:
                 live()
                 try:
-                    initial = [status(v["api_socket"], m["identity"]) for v in m["validators"]]
+                    initial = [owned_status(v["api_socket"], m["identity"]) for v in m["validators"]]
                     break
+                except HardwareContention:
+                    raise
                 except (OSError, ValueError, http.client.HTTPException) as error:
                     if time.monotonic() > deadline:
                         raise ValueError(f"seven runtime API readiness timeout: {error}") from error
@@ -383,7 +458,7 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                 if any(s.get("committed_executed_transactions") != 0 for s in initial):
                     raise ValueError("signed batch requires all initial counters zero; inspect existing canonical evidence")
                 p = spawn([smoke["path"], "--queue-smoke-manifest" if owner_queue else "--smoke-manifest", str(root / "run.json"), "--timeout-seconds", str(duration)], "signed-smoke")
-                if p.wait(timeout=duration + 5) != 0:
+                if wait_owned(p, duration + 5) != 0:
                     raise ValueError("signed functional checker failed; inspect retained private log")
                 children.remove(p)
                 smoke_path = root / smoke_name
@@ -405,24 +480,28 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                 live()
                 time.sleep(min(0.2, max(0, end - time.monotonic())))
             if retained is not None:
-                evidence = restart_check.converge(m, retained, timeout=5, require_progress=True)
+                evidence = restart_check.converge(m, retained, timeout=5, read=owned_status, require_progress=True)
                 live()
                 write_record(log_root / "restart-check.json", evidence)
                 result.update(kind="normal-restart-convergence-not-full-replay-proof", initial=initial, final=evidence["final"],
                               finished_unix=time.time(), submitted_transactions=0, counter_delta=0,
                               baseline=str(restart), lifecycle=str(log_root / "process-lifecycle.json"), note=evidence["limitation"])
+                check_owned_claim([p.pid for p in children if p.poll() is None], force=True)
                 write_record(log_root / "functional-result.json", result)
                 return result
             convergence = time.monotonic() + 5
             while True:
                 live()
-                final = [status(v["api_socket"], m["identity"]) for v in m["validators"]]
+                final = [owned_status(v["api_socket"], m["identity"]) for v in m["validators"]]
                 heads = {(s["number"], s["block_hash"], s["committed_executed_transactions"]) for s in final}
                 if len(heads) == 1 and final[0]["number"] > 0:
                     if final[0]["committed_executed_transactions"] != submitted:
                         raise ValueError("runtime canonical count differs from signed functional result")
                     if owner_queue:
-                        observed_owner = queue_fixture.owner_status(m)
+                        try:
+                            observed_owner = queue_fixture.owner_status(m)
+                        finally:
+                            check_owned_claim([p.pid for p in children if p.poll() is None], force=True)
                         if observed_owner.get("CanonicalHash") != final[0]["block_hash"] or observed_owner.get("CanonicalNumber") != final[0]["number"]:
                             if time.monotonic() > convergence:
                                 raise ValueError("owner and seven queue validators did not converge")
@@ -438,6 +517,7 @@ def run(m, node, owner, duration, initialize, smoke=None, attempt=None, restart=
                     raise ValueError("seven processes did not converge to one nonzero canonical head/counter")
                 time.sleep(0.1)
             result.update(initial=initial, final=final, finished_unix=time.time(), submitted_transactions=submitted, note="process/transport/finality functional check; no transaction TPS")
+            check_owned_claim([p.pid for p in children if p.poll() is None], force=True)
             write_record(log_root / "functional-result.json", result)
             return result
         finally:

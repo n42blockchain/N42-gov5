@@ -374,3 +374,33 @@ This slice only prepares the schema-2 runtime. Its full shard SHA precheck,
 strict replay driver and fleet schema-2 validation remain subsequent work.
 Neither preparation nor these tests prove real queue throughput. The frozen
 b02d84a2 eight-transaction functional worker remains independent.
+
+
+## Functional runner claim ownership
+
+The b02d84a2 targeted race suite and Make build completed successfully, and its
+three immutable binaries and fresh q1016a fixture are retained under
+`validation/20261016-gov5-ownerqueue-b02d84a2`. The eight-process queue run has
+not started. During the build, another gov5 driver replaced the shared gov5
+claim (epoch 1792124415, 2026-10-16 04:20:15 UTC) and started its n42-r143 fleet
+at 04:20:39 UTC. Therefore this build interval is not evidence of exclusive
+hardware use. No throughput was measured in that interval. Its files and
+processes were left untouched.
+
+The functional runner now takes distinct Codex epoch claims in both BOX
+locations, plus the legacy gov5 mirrors. It checks immutable inode/epoch and
+its private owner token before every spawn, during owned child waits, after
+each status RPC, before successful evidence publication, and after cleanup.
+Resource scans reject new or unreadable foreign claims and any unrecorded
+workload. Only runtime load/memory thresholds and recorded owned PIDs are
+exempt; quiet-start thresholds still apply. These are bounded polling checks,
+not a continuous watchdog or an OS resource lock. On contention it stops only
+its recorded children, preserves foreign files, releases only its own claims,
+and yields for 60 seconds. A result file alone is insufficient: the runner must
+also exit successfully after its final ownership check.
+
+Twenty-four Python fleet/queue-fixture tests pass, covering replacement even
+with the same epoch, foreign claims without any process, runtime contention
+yield, and status checks after successful or failed IO. The q1016a root and its
+original genesis are preserved; the pending run reuses the b02d84a2 binaries
+with this separately pinned runner, without rebuilding or reprovisioning.
