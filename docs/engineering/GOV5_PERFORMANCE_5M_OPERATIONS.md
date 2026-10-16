@@ -165,6 +165,14 @@ retained-copy audit, any precise repair, nonce reconciliation and resumed load
 remain unproven. Neither a successful copy audit nor the monitor's existence
 authorizes replay of previously unknown ACKs or establishes new chain TPS.
 
+Update 2026-10-16 16:22 UTC: that monitor completed both targeted race suites,
+full Make build and the audit binary build, all exit zero, then released its
+claim and yielded. Its immutable binary SHA256 is
+`8d244aac8ecc4571c6f8039e3f45ddede9a7ab83bd956399659973fe653374d1`.
+The phase is now `waiting-copy-audit`: competing compilation/tests resumed
+before the separately claimed copy turn. No backup, working DB copy or audit
+result has been produced. The original source tree remains frozen at b0745937.
+
 An additional sealed-job reference RPC is committed as `56d50aa0` on the main
 branch, with targeted tests and vet passing. Replica/CLI activation remains off;
 it is excluded from the frozen first strict observation. Stop expanding

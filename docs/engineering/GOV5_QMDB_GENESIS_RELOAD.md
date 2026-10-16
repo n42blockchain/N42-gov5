@@ -73,3 +73,21 @@ is rejected even when its height matches. The actual retained s192r1 copy has
 not yet been audited.
 An audit pass would identify proven candidate bytes only; it would authorize
 neither a database mutation nor replay of transactions with unknown ACKs.
+
+## Claimed validation checkpoint, 2026-10-16 16:22 UTC
+
+The frozen clean source `b074593757f44fac44bc269da8d8e0bf5b883f47` passed
+the genesis regression under race (1.136s), the audit package under race
+(1.268s), full `make -o version-build build` (170.144s wall), and the Make
+audit-binary target (11.019s wall). GOMAXPROCS=2 and GOFLAGS=-p=1 applied.
+Three quiet samples and claim contention checks passed; the build claim was
+released normally before publishing the immutable binary and yielding.
+
+Binary SHA256:
+`8d244aac8ecc4571c6f8039e3f45ddede9a7ab83bd956399659973fe653374d1`.
+Logs, binary and status are under
+`/data/blockchain/gov5-work/validation/20261016-gov5-qmdb-audit-b0745937/`.
+The earlier build/race pending item is therefore resolved. The separate
+backup/read-only-copy turn is still waiting for hardware; no retained DB has
+been opened, copied or repaired in this stage. Root/nonce recovery and resumed
+transactions remain pending actual retained-data evidence.
