@@ -72,9 +72,9 @@ func (p *Producer) UseOwnerQueue(ctx context.Context, options OwnerQueueOptions)
 	if err != nil {
 		return err
 	}
-	if status.Reconciling {
-		return errors.New("owner queue is reconciling")
-	}
+	// Pin identity/epoch even while the owner is reconciling. Starting the
+	// validator permits durable QC replay and existing AppliedChild recovery;
+	// server-side admission and new queue builds remain closed until ready.
 	binding := &OwnerQueueBinding{Epoch: status.Epoch, ManifestHash: status.ManifestHash, MaxTransactions: options.MaxTransactions, MaxEncodedBytes: options.MaxEncodedBytes}
 	p.mu.Lock()
 	defer p.mu.Unlock()
