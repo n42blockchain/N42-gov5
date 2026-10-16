@@ -70,6 +70,13 @@ class QueueFixtureTest(unittest.TestCase):
         status = {"identity": self.m["identity"], "committed_executed_transactions": 8, "queued_transactions": 0, "block_hash": owner["CanonicalHash"], "number": 3}
         result = {"kind": "owner-queue-functional-check-not-tps", "identity": self.m["identity"], "genesis_sha256": self.m["genesis_sha256"], "manifest_sha256": binding["manifest_hash"], "unique_committed_executed_transactions": 8, "owner_final": owner, "final": [copy.deepcopy(status) for _ in range(7)]}
         self.assertEqual(queue_fixture.evidence(result, self.m, binding), 8)
+        retried = copy.deepcopy(result)
+        retried["owner_final"]["CryptoVerified"] = 12
+        self.assertEqual(queue_fixture.evidence(retried, self.m, binding), 8)
+        incomplete = copy.deepcopy(result)
+        incomplete["owner_final"]["CryptoVerified"] = 7
+        with self.assertRaisesRegex(ValueError, "release"):
+            queue_fixture.evidence(incomplete, self.m, binding)
         for key in ("PendingTransactions", "ReservedTransactions", "RetainedEncodedBytes", "ReservedEncodedBytes"):
             bad = copy.deepcopy(result)
             bad["owner_final"][key] = 1
