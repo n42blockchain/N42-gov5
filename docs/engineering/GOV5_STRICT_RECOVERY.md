@@ -42,9 +42,14 @@ checked against the seven canonical counters. Neither this RPC nor a successful
 snapshot resolves the old volatile frame ACK set automatically; any subsequent
 replay plan is a separate explicit, validated step.
 
-The current slice adds this endpoint/client and existence metadata only.
-Recovery-only fleet launch, collection of a full same-snapshot vector, and a
-same-data actual recovery remain pending. No runtime feature, signature policy,
+The endpoint slice adds the client and existence metadata. The separate
+`gov5-replay recover` command now collects the public genesis sender set in
+1000-account batches, requires a new empty epoch and disabled producers, and
+checks a complete canonical-bound nonce vector against all seven counters.
+It requires the retained failed result, permits the documented late canonical
+commit without count/height regression, and never opens an admission transport.
+A changed batch tuple discards the entire vector. Recovery-only fleet launch
+and a same-data actual recovery remain pending. No runtime feature, signature policy,
 consensus certificate or default native/ETH behavior is relaxed.
 
 Validation: three `TestCanonicalAccounts*` tests passed under nice19/ionice idle,
@@ -57,3 +62,14 @@ JSON, closed owner, altered responses and maximum-width 1000-account responses.
 
 `go vet ./internal/sharedexec ./internal` and `git diff --check` passed. Full Make
 build, targeted race and updated runtime binaries await the next hardware turn.
+
+The recovery command has a 45-second bound and records its failed-run hash,
+nonce vector/hash, canonical nonce sum, owner/validator observations, and zero
+dispatched transactions separately from any throughput result. It rejects absent,
+contract, underfunded and out-of-source-range senders. New queue epoch and nonce
+state do not grant replay permission for the previous unknown ACKs.
+Three `TestRecovery*` tests passed (0.015s) with GOMAXPROCS=2/-p=1, covering a
+1001-account two-batch snapshot, whole-vector rejection on a changed second
+batch, typed snapshot conflict, invalid sender state, late commit acceptance,
+immutable same-block count, nonregression and zero-activity session binding.
+Replay vet passed. Actual same-data account collection is not yet run.
