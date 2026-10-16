@@ -127,6 +127,11 @@ func SeedQMDBGenesis(tx kv.RwTx) (types.Hash, error) {
 		return types.Hash{}, err
 	}
 	rc := commitment.NewQMDBRootComputer()
+	// Persist frozen leaf blobs from genesis, before the first reload evicts
+	// sealed twig heaps. Later updates may reclaim old entry rows; those rows
+	// must not be the only recovery source for already committed leaf hashes.
+	rc.SetCold(tx)
+	defer rc.SetCold(nil)
 	root, err := rc.ComputeRoot(accounts, storage)
 	if err != nil {
 		return types.Hash{}, err
