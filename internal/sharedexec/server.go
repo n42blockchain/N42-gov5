@@ -306,6 +306,10 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/import-ref" {
+		s.serveImportRef(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/ingress-status" {
 		s.serveIngressStatus(w, r)
 		return
