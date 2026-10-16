@@ -60,8 +60,9 @@ commit. Old tuple queries then fail. Other tests cover wrong identity/session/
 manifest/tuple, duplicate/oversized address lists, malformed/unknown/trailing
 JSON, closed owner, altered responses and maximum-width 1000-account responses.
 
-`go vet ./internal/sharedexec ./internal` and `git diff --check` passed. Full Make
-build, targeted race and updated runtime binaries await the next hardware turn.
+`go vet ./internal/sharedexec ./internal` and `git diff --check` passed. The
+targeted race, full Make build and updated owner/audit binaries subsequently
+passed in the hardware turn recorded below. Actual same-data recovery is pending.
 
 The recovery command has a 45-second bound and records its failed-run hash,
 nonce vector/hash, canonical nonce sum, owner/validator observations, and zero
@@ -104,6 +105,36 @@ recovery evidence, failed-baseline binding, original configuration preservation,
 no initialization/dispatch, dangling-attempt refusal, forced cleanup and claim
 tail failure. A shared Go/Python JSON fixture also passed the actual Go recovery
 result decoder and nonce-vector hash check (0.011s).
+
+## Recovery build checkpoint, 2026-10-16
+
+The clean frozen source was a81bb5a570f18a8cdeea5b036a1b37d8cf1fcc30.
+During the completed hardware turn, targeted race passed for sharedexec (1.369s)
+and gov5-replay (1.104s), followed by `make -o version-build build` and the two
+Make binary targets, all exit zero. The claim tail passed and the build claim
+was released before requesting a separate runtime turn. Artifact directory:
+`/data/blockchain/gov5-work/validation/20261016-gov5-strict-recovery-a81bb5a5`.
+
+| Binary | Source | SHA256 |
+| --- | --- | --- |
+| n42, reused | 757c2ded8aa98656bfea4c0be31f23186f2e1148 | 3cfa04eacf2bf7232cb0874f9fe33d98642896d93d530f218d1179d85ca93f7c |
+| n42-execution-service | a81bb5a570f18a8cdeea5b036a1b37d8cf1fcc30 | 4cf74294516e23e241c36a4f2d184cd77e008196cb99e8fab5b55176bae15a17 |
+| gov5-replay | a81bb5a570f18a8cdeea5b036a1b37d8cf1fcc30 | 14e84ef0b8c37a905cb996f6a954fe220a306e79e267736566f34679f283bf72 |
+
+An earlier Make invocation was terminated by our guard when foreign cargo
+appeared during the claim. Its exit -15, logs and status are retained. The
+controller was then corrected to distinguish genuine compiler failures from
+guard-triggered termination even when contention occurs simultaneously. Ten
+small simulations of the actual controller loop passed; source, output and
+historical controllers/status are retained in the artifact directory. Real
+compiler errors, timeouts, unknown results and existing runtime attempts stop.
+Only proven prelaunch or guard/tail resource contention may wait and retry.
+
+As of 14:18 UTC, the single controller was waiting for the separate runtime
+window; `recovery-q1` did not exist. No canonical nonce vector or recovery result
+had been collected. This build checkpoint is not a recovery pass or TPS result.
+The later request-deadline fix described below is excluded from these frozen
+binaries and remains unverified in the runtime.
 
 ## Known-zero backpressure and request deadlines
 
