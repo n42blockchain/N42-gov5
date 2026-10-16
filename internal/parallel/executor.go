@@ -124,6 +124,16 @@ type Executor struct {
 	// preKeys: every transaction's affinity key, computed by
 	// PrepareAffinity before Run (nil: computed by the first wave).
 	preKeys []uint64
+	// prePart: the full-set partition PrepareAffinity computed (nil:
+	// computed by the first wave).
+	prePart *wavePartition
+}
+
+// wavePartition is a precomputed partitionByAffinity result.
+type wavePartition struct {
+	queues   [][]int
+	keys     int
+	topChain int
 }
 
 // waveLPT (N42_WAVE_LPT=1) replaces the modulo sender-to-worker assignment
@@ -148,9 +158,12 @@ func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64
 		key   uint64
 		count int
 	}
+	// chainOf[j] is the chain index of txIndices[j], so the placement pass
+	// needs no second key lookup.
 	pos := make(map[uint64]int)
+	chainOf := make([]int32, len(txIndices))
 	var chains []chain
-	for _, idx := range txIndices {
+	for j, idx := range txIndices {
 		k := affinity(idx)
 		i, ok := pos[k]
 		if !ok {
@@ -159,6 +172,7 @@ func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64
 			chains = append(chains, chain{key: k})
 		}
 		chains[i].count++
+		chainOf[j] = int32(i)
 	}
 	order := make([]int, len(chains))
 	for i := range order {
@@ -166,7 +180,7 @@ func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64
 	}
 	sort.SliceStable(order, func(a, b int) bool { return chains[order[a]].count > chains[order[b]].count })
 	load := make([]int, workers)
-	assigned := make(map[uint64]int, len(chains))
+	assigned := make([]int, len(chains))
 	for _, ci := range order {
 		best := 0
 		for w := 1; w < workers; w++ {
@@ -175,13 +189,16 @@ func partitionByAffinity(txIndices []int, workers int, affinity func(int) uint64
 			}
 		}
 		load[best] += chains[ci].count
-		assigned[chains[ci].key] = best
+		assigned[ci] = best
 		if chains[ci].count > topChain {
 			topChain = chains[ci].count
 		}
 	}
-	for _, idx := range txIndices {
-		w := assigned[affinity(idx)]
+	for w := range queues {
+		queues[w] = make([]int, 0, load[w])
+	}
+	for j, idx := range txIndices {
+		w := assigned[chainOf[j]]
 		queues[w] = append(queues[w], idx)
 	}
 	return queues, len(chains), topChain
@@ -550,8 +567,12 @@ func (e *Executor) executeParallel(txIndices []int) {
 		} else {
 			keys = e.affinityKeys(txIndices)
 		}
-		e.preKeys = nil
-		queues, e.waveKeys, e.waveTopChain = partitionByAffinity(txIndices, e.workers, func(i int) uint64 { return keys[i] }, waveLPT)
+		part := e.prePart
+		if part == nil || len(txIndices) != e.numTxs {
+			part = e.partitionWave(txIndices, keys)
+		}
+		e.preKeys, e.prePart = nil, nil
+		queues, e.waveKeys, e.waveTopChain = part.queues, part.keys, part.topChain
 	}
 	e.waveAffKeys = keys
 
@@ -651,6 +672,14 @@ func (e *Executor) PrepareAffinity() {
 		all[i] = i
 	}
 	e.preKeys = e.affinityKeys(all)
+	e.prePart = e.partitionWave(all, e.preKeys)
+}
+
+// partitionWave partitions txIndices (with their affinity keys) for a wave.
+func (e *Executor) partitionWave(txIndices []int, keys []uint64) *wavePartition {
+	p := &wavePartition{}
+	p.queues, p.keys, p.topChain = partitionByAffinity(txIndices, e.workers, func(i int) uint64 { return keys[i] }, waveLPT)
+	return p
 }
 
 // presizeVersions is N42_MV_PRESIZE (default on; "0" disables): see
