@@ -404,3 +404,38 @@ with the same epoch, foreign claims without any process, runtime contention
 yield, and status checks after successful or failed IO. The q1016a root and its
 original genesis are preserved; the pending run reuses the b02d84a2 binaries
 with this separately pinned runner, without rebuilding or reprovisioning.
+
+
+## Explicit strict prefix replay client
+
+`gov5-replay strict --root <signed-corpus> --runtime-manifest <schema-2/run.json>
+--attempt <new-name>` is separate from raw transport qualification. It checks
+all complete shard SHA256 values before measurement, seeks the same open files,
+and retains them for prefix replay. Only original signed bytes are sent, one
+500-transaction frame at a time per shard/connection. The welcome epoch is
+checked before the first request. Busy and typed zero-admission snapshot retry
+retain exactly the same frame under a five-second per-frame deadline; unknown
+ACKs, duplicate admission, bad epoch and other rejection stop without reconnect
+or replay. Ending dispatch leaves existing work contexts alive for final ACKs.
+
+After four seconds of warm-up, a twenty-second observation takes the difference
+of one validator's canonical committed/executed counter. Its monotonic timing
+encloses the start and end RPCs conservatively. Read, verified attempts,
+admitted, credit waits, snapshot retry waits, per-shard consumed prefixes and
+owner credits are reported separately. A shard exhausting before the window
+ends invalidates sufficient-supply evidence even when other shards still have
+transactions. Final in-flight ACKs settle before an independent thirty-second
+drain checks all seven heads/counts and all four owner credit counters. Drain
+transactions never increase the measured numerator. This driver does not assert
+that single-flight strict admission reaches the raw sink's 6.5M/s result.
+
+Twenty-two selected supply/strict tests have passed across the targeted runs,
+including full-source integrity and descriptor retention, final-ACK completion
+while dispatch stops, exact typed retries, unknown-outcome no-replay, first-frame
+failure cancellation, full short-shard EOF, early/late EOF window boundaries,
+source metadata changes, runtime bindings, counter regression and central
+credit release. Targeted CLI vet passes. These are client/checker tests with
+small fixtures; no schema-2 process fleet or strict chain throughput run has
+been performed by this slice. Effective node configuration, public-key identity
+and schema-2 launcher validation remain the next integration step. The frozen
+b02d84a2 queue functional attempt and the main tree's Ed offline WIP are unchanged.
