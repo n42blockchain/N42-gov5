@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
+
+var errUnmatchedPlainState = errors.New("committed live keys absent from plain state")
 
 // Diagnose the already verified live entries without accepting any missing
 // PlainState row. In particular, a recognized empty system account remains a
@@ -50,5 +53,5 @@ func unmatchedPlainState(live map[qmdb.Hash]liveValue) error {
 	if err != nil {
 		return fmt.Errorf("encode unmatched-state diagnostics: %w", err)
 	}
-	return fmt.Errorf("committed live keys absent from plain state: %s", encoded)
+	return fmt.Errorf("%w: %s", errUnmatchedPlainState, encoded)
 }
