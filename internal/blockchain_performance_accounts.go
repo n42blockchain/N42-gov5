@@ -15,7 +15,10 @@ import (
 )
 
 // ErrPerformanceCanonicalNotApplied identifies the retryable absence of a
-// canonical PlainState snapshot. Other storage/header errors remain fatal.
+// canonical PlainState snapshot. On this exact error, the returned Hash and
+// Number are validated canonical metadata, but Accounts remains nil and must
+// never be used as a nonce/balance baseline. Other storage/header errors remain
+// fatal and do not grant this metadata contract.
 var ErrPerformanceCanonicalNotApplied = errors.New("canonical accounts are not actual applied state; retry")
 
 // PerformanceCanonicalAccounts is one stable canonical PlainState snapshot.
