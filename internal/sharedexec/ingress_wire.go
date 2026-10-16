@@ -29,7 +29,10 @@ type ingressReply struct {
 	PayloadHash  types.Hash
 	Ack          StrictIngressAck
 	Error        string
+	RetryReason  string `json:",omitempty"`
 }
+
+const ingressRetrySnapshot = "canonical_snapshot_changed"
 
 func writeIngressBytes(w io.Writer, raw []byte) error {
 	for len(raw) > 0 {
@@ -88,6 +91,9 @@ func (s *Server) ingressReply(q *strictIngressQueue, kind string, frame CorpusFr
 		ack.Status, _ = s.StrictIngressStatus()
 	}
 	reply := ingressReply{Kind: kind, Identity: s.identity, ManifestHash: q.manifestHash, Epoch: q.epoch, FrameID: frame.CorpusFrameID, PayloadHash: frame.PayloadHash, Ack: ack}
+	if kind == "retry" && errors.Is(err, ErrIngressSnapshotChanged) {
+		reply.RetryReason = ingressRetrySnapshot
+	}
 	if err != nil {
 		reply.Error = err.Error()
 		if len(reply.Error) > 256 {
