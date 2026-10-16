@@ -51,7 +51,7 @@ type auditReport struct {
 
 func checkedHeader(tx kv.Tx, hash types.Hash, number uint64) (*block.Header, error) {
 	header := rawdb.ReadHeader(tx, hash, number)
-	if header == nil || header.Number == nil || header.Number.Uint64() != number || header.Hash() != hash {
+	if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.Uint64() != number || header.Hash() != hash {
 		return nil, errors.New("header hash/number differs from requested anchor")
 	}
 	return header, nil
@@ -201,7 +201,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer db.Close()
-	report := auditReport{Kind: "gov5-qmdb-missing-genesis-leaves-readonly-audit-v1", DatabaseSHA256: dbSHA, GenesisSHA256: *expectedGenesis, Genesis: genesisAnchor}
+	report := auditReport{Kind: "gov5-qmdb-missing-genesis-leaves-readonly-audit-v2", DatabaseSHA256: dbSHA, GenesisSHA256: *expectedGenesis, Genesis: genesisAnchor}
 	if err := db.View(ctx, func(tx kv.Tx) error {
 		stored, err := rawdb.ReadCanonicalHash(tx, 0)
 		if err != nil {
@@ -264,7 +264,18 @@ func run(ctx context.Context, args []string) error {
 		}
 		report.Canonical = chainAnchor{*cn, ch, header.Root}
 		report.Applied = chainAnchor{n, types.Hash(h), applied.Root}
-		report.Forest, err = auditForest(tx, gtx, applied.Root)
+		if !genesis.Config.IsSpuriousDragon(0) || genesis.Config.HotStuff == nil {
+			return errors.New("empty-beneficiary policy requires EIP-161 from genesis")
+		}
+		validators := make(map[types.Address]bool)
+		for _, validator := range genesis.Config.HotStuff.Validators {
+			validators[types.HexToAddress(validator.Address)] = true
+		}
+		beneficiaries, err := usedBeneficiaries(tx, applied, genesisAnchor.Hash, validators)
+		if err != nil {
+			return err
+		}
+		report.Forest, err = auditForestWithBeneficiaries(tx, gtx, applied.Root, beneficiaries)
 		return err
 	}); err != nil {
 		return err
