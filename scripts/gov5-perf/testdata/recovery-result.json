@@ -1,0 +1,631 @@
+{
+  "kind": "strict-owner-queue-recovery-no-dispatch-not-tps",
+  "passed": true,
+  "identity": {
+    "version": 1,
+    "namespace": "gov5-performance-5m-v1",
+    "chain_id": "4205001",
+    "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "manifest_sha256": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+  "runtime_manifest": "/fixture/runtime/run.json",
+  "baseline_result": "/fixture/runtime/strict-attempts/failed/result.json",
+  "baseline_sha256": "0x5555555555555555555555555555555555555555555555555555555555555555",
+  "dispatched_transactions": 0,
+  "initial": [
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    }
+  ],
+  "final": [
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    },
+    {
+      "identity": {
+        "version": 1,
+        "namespace": "gov5-performance-5m-v1",
+        "chain_id": "4205001",
+        "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "number": 2,
+      "block_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "committed_executed_transactions": 8,
+      "producer_running": false,
+      "queued_transactions": 0,
+      "owner_queue": {
+        "epoch": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "manifest_hash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+        "max_transactions": 163000,
+        "max_encoded_bytes": 33554432
+      }
+    }
+  ],
+  "owner_initial": {
+    "Identity": {
+      "version": 1,
+      "namespace": "gov5-performance-5m-v1",
+      "chain_id": "4205001",
+      "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "Epoch": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "ManifestHash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+    "CanonicalHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+    "CanonicalNumber": 2,
+    "CanonicalGeneration": 1,
+    "Reconciling": false,
+    "PendingTransactions": 0,
+    "RetainedEncodedBytes": 0,
+    "ReservedTransactions": 0,
+    "ReservedEncodedBytes": 0,
+    "CryptoVerified": 0,
+    "NewlyAdmitted": 0
+  },
+  "owner_final": {
+    "Identity": {
+      "version": 1,
+      "namespace": "gov5-performance-5m-v1",
+      "chain_id": "4205001",
+      "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "Epoch": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "ManifestHash": "0x35e7332fb3bec39769b6714eaf963374698a9032cdfa9e08ab16e1faf8223032",
+    "CanonicalHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+    "CanonicalNumber": 2,
+    "CanonicalGeneration": 1,
+    "Reconciling": false,
+    "PendingTransactions": 0,
+    "RetainedEncodedBytes": 0,
+    "ReservedTransactions": 0,
+    "ReservedEncodedBytes": 0,
+    "CryptoVerified": 0,
+    "NewlyAdmitted": 0
+  },
+  "accounts": [
+    {
+      "address": "0x0000000000000000000000000000000000000001",
+      "exists": true,
+      "nonce": 2,
+      "balance": "1000000000",
+      "code_hash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000002",
+      "exists": true,
+      "nonce": 2,
+      "balance": "1000000000",
+      "code_hash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000003",
+      "exists": true,
+      "nonce": 2,
+      "balance": "1000000000",
+      "code_hash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000004",
+      "exists": true,
+      "nonce": 2,
+      "balance": "1000000000",
+      "code_hash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    }
+  ],
+  "canonical_nonce_sum": 8,
+  "account_vector_sha256": "0x839efa6dce024b9e3aed1b96e8f3720e6f695f7e3ab4915636ea29cb005a4b87",
+  "readonly_snapshot_retries": 0,
+  "limitation": "unknown ACKs are not replay-authorized"
+}
