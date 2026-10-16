@@ -42,19 +42,20 @@ type validatorRecord struct {
 	TCPPort   int    `json:"tcp_port"`
 }
 type manifest struct {
-	SchemaVersion    int                 `json:"schema_version"`
-	Status           string              `json:"status"`
-	Root             string              `json:"root"`
-	Genesis          string              `json:"genesis"`
-	GenesisSHA256    string              `json:"genesis_sha256"`
-	Identity         sharedexec.Identity `json:"identity"`
-	OwnerDir         string              `json:"owner_dir"`
-	OwnerSocket      string              `json:"owner_socket"`
-	OwnerParallelEVM bool                `json:"owner_parallel_evm"`
-	Validators       []validatorRecord   `json:"validators"`
-	LoadKeys         string              `json:"load_keys"`
-	Transactions     string              `json:"transactions"`
-	GasPrice         string              `json:"gas_price"`
+	SchemaVersion    int                   `json:"schema_version"`
+	Status           string                `json:"status"`
+	Root             string                `json:"root"`
+	Genesis          string                `json:"genesis"`
+	GenesisSHA256    string                `json:"genesis_sha256"`
+	Identity         sharedexec.Identity   `json:"identity"`
+	OwnerDir         string                `json:"owner_dir"`
+	OwnerSocket      string                `json:"owner_socket"`
+	OwnerParallelEVM bool                  `json:"owner_parallel_evm"`
+	Validators       []validatorRecord     `json:"validators"`
+	LoadKeys         string                `json:"load_keys,omitempty"`
+	Transactions     string                `json:"transactions"`
+	GasPrice         string                `json:"gas_price"`
+	Supply           *supplyRuntimeBinding `json:"supply,omitempty"`
 }
 
 func main() {
@@ -63,6 +64,8 @@ func main() {
 	template := flags.String("template", "", "Absolute empty dedicated performance genesis template")
 	senders := flags.Int("senders", 4, "Small functional fixture senders (1..64); not a throughput workload")
 	basePort := flags.Int("base-port", 25000, "First of seven reserved loopback P2P TCP ports (25000..29993)")
+	supply := flags.String("supply-corpus", "", "Explicit existing private signed supply corpus; copy exact genesis and validator BLS identities to a fresh runtime")
+	supplyInterval := flags.Uint64("supply-block-interval-ms", 2000, "Per-validator runtime pacing for supply corpus mode; does not change genesis")
 	queue := flags.Bool("owner-queue", false, "Prepare a fresh eight-transaction strict owner queue fixture")
 	queueSmoke := flags.String("queue-smoke-manifest", "", "Admit the dedicated queue fixture once and verify canonical release; not TPS")
 	smoke := flags.String("smoke-manifest", "", "Explicitly send one small signed batch to the existing private fixture; never a TPS run")
@@ -70,6 +73,38 @@ func main() {
 	_ = flags.Parse(os.Args[1:])
 	if flags.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
+		os.Exit(1)
+	}
+	if *supply != "" {
+		invalidSupplyFlags := false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "senders" || f.Name == "timeout-seconds" {
+				invalidSupplyFlags = true
+			}
+		})
+		if invalidSupplyFlags {
+			fmt.Fprintln(os.Stderr, "sender and timeout options do not apply to supply runtime provisioning")
+			os.Exit(1)
+		}
+		if *template != "" || *queue || *queueSmoke != "" || *smoke != "" {
+			fmt.Fprintln(os.Stderr, "supply corpus mode requires only fresh runtime root/corpus/pacing/ports")
+			os.Exit(1)
+		}
+		if err := provisionSupplyRuntime(*root, *supply, *basePort, *supplyInterval, runtimeBase, "/data/blockchain/gov5-performance-5m/supply"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(filepath.Join(*root, "run.json"))
+		return
+	}
+	explicitSupplyInterval := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "supply-block-interval-ms" {
+			explicitSupplyInterval = true
+		}
+	})
+	if explicitSupplyInterval {
+		fmt.Fprintln(os.Stderr, "supply pacing requires explicit supply corpus")
 		os.Exit(1)
 	}
 	if *queueSmoke != "" {
@@ -289,24 +324,8 @@ func provisionFixture(root, template string, senders, basePort int, allowedBase 
 	sum := sha256.Sum256(gbytes)
 	out.GenesisSHA256 = hex.EncodeToString(sum[:])
 	out.Identity = sharedexec.Identity{Version: 1, Namespace: g.Config.Performance.NetworkNamespace, ChainID: g.Config.ChainID.String(), GenesisHash: gb.Hash()}
-	for _, v := range out.Validators {
-		var peers []string
-		for j, id := range peerIDs {
-			if j != v.Index {
-				peers = append(peers, fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", basePort+j, id))
-			}
-		}
-		// JSON is valid YAML. The existing loader uses YAML tags, so untagged
-		// MinerConfig fields are deliberately lower-case, not Go's JSON names.
-		config := map[string]any{
-			"node":  map[string]any{"data_dir": v.DataDir, "chain": "private", "profile": "n42", "performance_genesis": out.Genesis, "performance_role": "validator", "performance_execution_socket": out.OwnerSocket, "miner": true, "http": false, "ws": false, "auth_rpc": false, "ipc_path": ""},
-			"chain": nil,
-			"miner": map[string]any{"etherbase": v.Address, "blockintervalms": uint64(2000)},
-			"p2p":   map[string]any{"private_key": filepath.Join(v.DataDir, "p2p.key"), "data_dir": v.DataDir, "local_ip": "127.0.0.1", "host_address": "127.0.0.1", "tcp_port": v.TCPPort, "udp_port": v.TCPPort, "max_peers": 16, "static_peers": peers, "no_discovery": true, "quic_enabled": false, "bootstrap_node_addr": []string{}, "discv5_bootstrap_addr": []string{}, "relay_node_addr": "", "enable_upnp": false},
-		}
-		if err := writePrivate(v.Config, config); err != nil {
-			return err
-		}
+	if err := writeRuntimeValidatorConfigs(out, peerIDs, basePort, false, 2000); err != nil {
+		return err
 	}
 	if err := writePrivate(filepath.Join(root, "run.json"), out); err != nil {
 		return err

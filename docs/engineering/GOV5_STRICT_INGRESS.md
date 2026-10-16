@@ -345,3 +345,32 @@ counts three unique transactions in that case. Header-only retry reads no body;
 missing applied markers and nonce rejection remain fatal; malformed retry data
 is unknown and never replayed. Targeted sharedexec vet passed. Race and fresh binary validation of this optional
 extension remain separate from the frozen b02d84a2 eight-process fixture.
+
+## Provisioning from an existing signed corpus
+
+`gov5-perf-provision --supply-corpus /dedicated/supply/s192a
+--run-root /dedicated/runtime/fresh-name --base-port 28000` is a separate opt-in
+preparation path. It writes schema 2 with a `supply` binding (source root, exact
+manifest SHA, corpus ID, genesis file SHA and per-validator pacing); it does not
+pretend to have the v1 `load_keys` fixture. `--supply-block-interval-ms` defaults
+to 2000 and can explicitly set runtime pacing without changing genesis. The
+source manifest, genesis and all seven validator keys are checked before a new
+runtime root is created. The output genesis is an exact byte copy. Each fresh
+validator receives only its corresponding BLS key and a new P2P identity; the
+owner directory stays empty. Sender seeds/keys and chain databases are not read
+or copied. Existing roots are never overwritten.
+
+Twelve provision/checker tests pass (0.084s), including the unchanged v1 fixture
+checks. Small actual-key fixtures verify exact source genesis bytes, all seven
+corresponding BLS keys, newly generated P2P identities, effective owner-queue
+configuration, manifest binding and no source file changes. Wrong genesis,
+wrong/order-swapped BLS keys, source aliases, invalid pacing and noncanonical
+validator addresses fail before creating the output root; FIFO source input
+fails without blocking. Review caught a mismatch between normalized address
+lookup and raw-address key filenames; exact address validation and canonical
+filenames now agree with node startup. Targeted provision vet passed.
+
+This slice only prepares the schema-2 runtime. Its full shard SHA precheck,
+strict replay driver and fleet schema-2 validation remain subsequent work.
+Neither preparation nor these tests prove real queue throughput. The frozen
+b02d84a2 eight-transaction functional worker remains independent.
