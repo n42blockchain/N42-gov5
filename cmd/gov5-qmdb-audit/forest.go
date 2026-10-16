@@ -299,7 +299,7 @@ func auditPlainState(tx kv.Tx, live map[qmdb.Hash]liveValue) error {
 		}
 	}
 	if len(live) != 0 {
-		return errors.New("committed live keys absent from plain state")
+		return unmatchedPlainState(live)
 	}
 	return nil
 }
