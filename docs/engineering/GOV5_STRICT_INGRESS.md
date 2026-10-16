@@ -460,3 +460,45 @@ hash all large shard contents or compute the actual Go genesis header. Those
 checks remain in the signed-corpus decoder, strict client integrity stage and
 owner/validator startup respectively. This command does not initialize data,
 claim hardware, start a fleet, or report TPS.
+
+
+## Explicit schema-2 strict fleet run
+
+The same dedicated launcher now accepts `--run --initialize --attempt <new-name>`
+with three explicit immutable binaries (`--node-binary`, `--owner-binary`,
+`--replay-binary`). It uses the shared three-quiet-check/dual-location Codex and
+gov5 claim guard; the frozen b02d84a2 eight-transaction gate remains the first
+actual run. A strict runtime uses the source corpus's exact genesis and matching
+seven keys in a fresh root; no old f1015a/q1016a data is reused or reset.
+
+The default process budgets are owner GOMAXPROCS 36, replay 36 and each validator
+2, with actual CPU affinity sampled for each child. They are thread budgets,
+not claims about exclusive physical cores or a capacity upper bound. The run
+initializes only fresh directories, keeps one lifecycle record per owned
+process, requires seven zero canonical counters before starting strict replay,
+and stops only those children on error, TERM, contention or disk low-water.
+The overall turn is bounded to ten minutes. Failed attempts and all data remain
+for same-root diagnosis; unknown ACK outcomes are never automatically replayed.
+
+The initial disk gate budgets the maximum offered prefix under the client's
+120-second work context, capped by the unique corpus size, at an estimated
+4 KiB per transaction plus 64 GiB reserve. This includes planning room for eight
+full-body copies and owner receipt/index/state growth; it is not a proven
+storage amplification bound. A live low-water check is additional protection,
+not a replacement for the initial gate. It never assumes queue backpressure
+will make an otherwise excessive disk budget safe. For default s192a the upper
+prefix is all 192M unique transactions, not the planned 24-second supply count.
+
+The launcher checks the actual Go result contract, one canonical window delta,
+all seven final heads/counts, the pinned epoch/manifest and four central owner
+credit counters. It accepts repeated crypto *attempts* from known snapshot
+retries without counting them as new transactions. It writes an observation
+inside the claim, cleans up children, and only publishes `strict-fleet-result.json`
+after the claim exits successfully. A changed manifest during the quiet/claim
+wait is rejected before creating an attempt. Eighteen strict-launcher Python
+tests pass (0.036s), including simulated partial initialization cleanup, owned
+child shutdown and tail claim replacement preventing result publication. A
+shared public JSON fixture is strictly decoded by the actual Go result type
+(test 0.011s) and consumed by Python, covering the `single_validator_canonical`
+field that review found was initially misnamed in the launcher. These are
+bounded code tests; no schema-2 process run or strict chain TPS is claimed yet.
