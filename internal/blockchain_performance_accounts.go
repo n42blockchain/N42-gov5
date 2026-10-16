@@ -14,6 +14,10 @@ import (
 	"github.com/n42blockchain/N42/modules/state"
 )
 
+// ErrPerformanceCanonicalNotApplied identifies the retryable absence of a
+// canonical PlainState snapshot. Other storage/header errors remain fatal.
+var ErrPerformanceCanonicalNotApplied = errors.New("canonical accounts are not actual applied state; retry")
+
 // PerformanceCanonicalAccounts is one stable canonical PlainState snapshot.
 // A speculative applied child cannot be used as a canonical nonce baseline.
 type PerformanceCanonicalAccounts struct {
@@ -58,8 +62,11 @@ func (bc *BlockChain) ReadPerformanceCanonicalAccounts(ctx context.Context, addr
 	if !applied && out.Number == 0 && out.Hash == bc.GenesisBlock().Hash() && bc.qmdbRootComputer != nil && bc.qmdbRootComputer.Root() == bc.GenesisBlock().StateRoot() {
 		an, ah, applied = 0, out.Hash, true
 	}
-	if !applied || an != out.Number || ah != out.Hash {
-		return out, errors.New("canonical accounts are not actual applied state; retry")
+	if !applied {
+		return out, errors.New("canonical accounts applied marker missing")
+	}
+	if an != out.Number || ah != out.Hash {
+		return out, ErrPerformanceCanonicalNotApplied
 	}
 	parent := rawdb.ReadHeader(tx, out.Hash, out.Number)
 	if parent == nil || out.Number == ^uint64(0) || (bc.chainConfig.IsLondon(out.Number) && parent.BaseFee == nil) {

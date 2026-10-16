@@ -314,6 +314,9 @@ func (s *Server) verifyReservedIngress(ctx context.Context, q *strictIngressQueu
 	}
 	snapshot, err := s.chain.ReadPerformanceCanonicalAccounts(ctx, addresses)
 	if err != nil {
+		if errors.Is(err, internal.ErrPerformanceCanonicalNotApplied) {
+			return StrictIngressAck{}, ErrIngressSnapshotChanged
+		}
 		return StrictIngressAck{}, err
 	}
 	for i := 1; i < len(addresses); i += 2 {
