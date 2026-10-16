@@ -48,8 +48,8 @@ The endpoint slice adds the client and existence metadata. The separate
 checks a complete canonical-bound nonce vector against all seven counters.
 It requires the retained failed result, permits the documented late canonical
 commit without count/height regression, and never opens an admission transport.
-A changed batch tuple discards the entire vector. Recovery-only fleet launch
-and a same-data actual recovery remain pending. No runtime feature, signature policy,
+A changed batch tuple discards the entire vector. The separate recovery-only fleet launcher is implemented; a same-data actual
+recovery with account-vector collection remains pending. No runtime feature, signature policy,
 consensus certificate or default native/ETH behavior is relaxed.
 
 Validation: three `TestCanonicalAccounts*` tests passed under nice19/ionice idle,
@@ -73,3 +73,34 @@ Three `TestRecovery*` tests passed (0.015s) with GOMAXPROCS=2/-p=1, covering a
 batch, typed snapshot conflict, invalid sender state, late commit acceptance,
 immutable same-block count, nonregression and zero-activity session binding.
 Replay vet passed. Actual same-data account collection is not yet run.
+
+## Producer-disabled replay launcher
+
+`scripts/gov5-perf/recovery_fleet.py` explicitly requires `--run`, a retained
+failed `--baseline-result`, fresh attempt name and node/owner/audit binaries.
+It has no initialization or transaction-dispatch option. It reuses schema-2
+validation and full BOX claims/guards; before startup it rechecks the runtime
+and exact failure bytes. Original node configurations remain unchanged.
+Private attempt-local copies set only node.miner=false, so service startup can
+replay stored CommitQCs and exchange existing bodies without producing new
+candidates. This mode cannot recover an applied child lacking a usable QC.
+
+The bounded claimed work window is 180 seconds, excluding the preceding quiet
+and contention checks. The audit itself is bounded to 45 seconds. Existing-data
+recovery requires 64GiB free and stops at that low-water mark; it neither uses
+nor weakens the separate 796.422GiB default capacity-run planning gate. Runtime
+and audit thread budgets are two, with actual affinity recorded.
+
+The launcher independently checks the full public sender vector, its digest,
+funding/EOA/range constraints, canonical sum, all seven heads and new zero-activity
+owner epoch. Successful observation remains staged until every owned child exits
+zero without forced termination and the claim tail passes. A forced kill,
+nonzero shutdown or claim contention preserves evidence without promoting a
+successful result. All original data and unknown frame outcomes remain intact;
+this mode grants no permission to replay the previous volatile admissions.
+
+Seven Python tests passed (0.022s), covering nonzero late commits, malformed
+recovery evidence, failed-baseline binding, original configuration preservation,
+no initialization/dispatch, dangling-attempt refusal, forced cleanup and claim
+tail failure. A shared Go/Python JSON fixture also passed the actual Go recovery
+result decoder and nonce-vector hash check (0.011s).

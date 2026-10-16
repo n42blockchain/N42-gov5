@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -10,6 +16,26 @@ import (
 	"github.com/n42blockchain/N42/internal/sharedexec"
 	"github.com/n42blockchain/N42/internal/sharedvalidator"
 )
+
+func TestRecoveryWireJSONContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "gov5-perf", "testdata", "recovery-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	var result strictRecoveryResult
+	if err := d.Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Decode(new(any)); err != io.EOF || !result.Passed || result.Dispatched != 0 || result.Kind != "strict-owner-queue-recovery-no-dispatch-not-tps" || len(result.Final) != 7 || len(result.Accounts) != 4 || result.NonceSum != 8 {
+		t.Fatal("shared Python/Go recovery schema differs")
+	}
+	encoded, _ := json.Marshal(result.Accounts)
+	if types.Hash(sha256.Sum256(encoded)) != result.VectorSHA256 {
+		t.Fatal("shared nonce vector JSON digest differs")
+	}
+}
 
 func recoveryTestBatch(request sharedexec.CanonicalAccountsRequest) sharedexec.CanonicalAccountsResult {
 	r := sharedexec.CanonicalAccountsResult{Identity: request.Identity, Epoch: request.Epoch, ManifestHash: request.ManifestHash, CanonicalHash: request.CanonicalHash, CanonicalNumber: request.CanonicalNumber}
