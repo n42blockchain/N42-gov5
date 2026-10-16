@@ -71,6 +71,9 @@ func (c *StrictIngressClient) deadline(ctx context.Context) error {
 }
 func (c *StrictIngressClient) Close() error { return c.conn.Close() }
 
+// Epoch is the immutable welcome binding, available before sending any frame.
+func (c *StrictIngressClient) Epoch() [16]byte { return c.epoch }
+
 // Admit sends a header, awaits a credit grant, then sends exactly one payload.
 // Busy is a known zero-admission result. Any ambiguous IO/protocol outcome
 // poisons this connection and requires external reconciliation before replay.
@@ -111,13 +114,24 @@ func (c *StrictIngressClient) Admit(ctx context.Context, frame CorpusFrame) (Str
 		if reply.Ack.Status.Identity != c.identity || reply.Ack.Status.ManifestHash != c.manifest || reply.Ack.Status.Epoch != c.epoch {
 			return reply, errors.New("strict ingress ACK status binding mismatch")
 		}
+		if reply.Kind != "retry" && reply.RetryReason != "" {
+			return reply, errors.New("unexpected strict ingress retry reason")
+		}
 		return reply, nil
+	}
+	retry := func(reply ingressReply) (StrictIngressAck, error) {
+		if reply.RetryReason != ingressRetrySnapshot || reply.Ack.NewlyAdmitted != 0 || reply.Ack.Duplicates != 0 {
+			return unknown(errors.New("invalid zero-admission snapshot retry"))
+		}
+		return reply.Ack, ErrIngressSnapshotChanged
 	}
 	reply, err := read()
 	if err != nil {
 		return unknown(err)
 	}
 	switch reply.Kind {
+	case "retry":
+		return retry(reply)
 	case "busy":
 		if reply.Ack.NewlyAdmitted != 0 || reply.Ack.Duplicates != 0 {
 			return unknown(errors.New("busy ACK carried admission"))
@@ -148,6 +162,9 @@ func (c *StrictIngressClient) Admit(ctx context.Context, frame CorpusFrame) (Str
 	reply, err = read()
 	if err != nil {
 		return unknown(err)
+	}
+	if reply.Kind == "retry" {
+		return retry(reply)
 	}
 	if reply.Kind == "rejected" && reply.Ack.NewlyAdmitted == 0 && reply.Ack.Duplicates == 0 {
 		c.broken = true
