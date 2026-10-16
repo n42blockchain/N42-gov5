@@ -652,6 +652,9 @@ func (s *Store) ScanFillableReady(grace time.Duration, fn func(h types.Hash, e E
 	}
 }
 
+// Recovering reports whether a sender recoverer is attached.
+func (s *Store) Recovering() bool { return s.recoverer.Load() != nil }
+
 func (s *Store) scan(fillable bool, fn func(h types.Hash, e Entry) bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
