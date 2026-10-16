@@ -81,3 +81,45 @@ and reject unknown/preimage-mismatched/noncanonical values, an existing plain
 row, malformed storage, wrong genesis, missing ancestry and non-validator
 beneficiaries. Physical-site validation of this revised policy is still pending;
 no repair has been applied.
+
+## Physical copied-database audit passed: 18:57 UTC
+
+The fixed `6cc411ae2c74d05871a5ea8543f60192ba57730a` tool completed the v2
+read-only audit against the same retained working copy at 18:57:51 UTC. All
+nine command-package tests passed under the race detector (package time
+1.275 seconds), the Make binary build exited 0, and the actual audit exited 0.
+The controller published the result only after the claim context exited
+normally. All five owned claim paths were absent afterward, and worker 648158
+exited. The old `last_wait_reason` in its status is historical; final phase is
+`passed`.
+
+Artifacts:
+
+- Directory: `/data/blockchain/gov5-work/validation/20261016-gov5-qmdb-beneficiary-audit-6cc411ae`
+- Promoted report: `audit-result.json`, SHA256 `492e5064bfafd738bdd9025f7589423231cb888b2086090afaf98e3f688c0e8d`
+- Tool binary SHA256: `0d7279f136ad0ddc25c95d3f3f5b0880e4627063b3c4400801ea93678f02cb2f`
+- Working-copy SHA256 before and after: `203f76c0cf66626792e884fab38cdd44f960d6f77127daa06a0aeced2a8cdead`
+
+The canonical and actual-applied anchors both equal height **254**, hash
+`0x62bbcf53ba1c0e26f93dc2a1e2c3a0bbe8ca44abdcc342899fb893069ae3258b`,
+root `0x7e70c926394f2565ab7a8de990fbaf5ecc95959527f4c4b50730a6cea00c612d`.
+The reconstructed forest has 10,415 live keys and 16,957 append slots. All
+frozen-leaf, bitmap, live-entry, complete-index, population, header/root and
+PlainState checks passed under the explicitly reported two-beneficiary policy.
+The exact two retained empty-account exceptions are the addresses and slots in
+the table above; there is no general allowance for missing or zero-valued keys.
+
+The missing frozen genesis leaf candidates are:
+
+| Twig | Encoded bytes | SHA256 |
+| --- | ---: | --- |
+| 0 | 65794 | `f17ccf776f239b498c7eb8688539b5a9db3c9572e65cf4a516eec84f5df6d55e` |
+| 1 | 65794 | `f5b9ef356b75755628d1d44e42412e71b80df87497f3cf04af294c8106bc5f87` |
+
+They were supplied only through the audit's in-memory overlay. **No database
+has been repaired.** The original and unopened backup SHA observations still
+refer to the first copy turn's 17:34 UTC postcheck; later tools opened only the
+working copy read-only. They must be rehashed before any candidate restoration.
+This proves copied-state consistency with the two reconstructed missing blobs;
+it does not yet prove physical reload after restoration, seven-process recovery,
+nonce-vector reconciliation, old unknown-ACK resolution, or any new chain TPS.
