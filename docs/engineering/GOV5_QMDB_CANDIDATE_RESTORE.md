@@ -5,7 +5,8 @@ exactly two missing sealed genesis leaf blobs and two explicitly bound empty
 beneficiaries. Its report SHA256 is
 `492e5064bfafd738bdd9025f7589423231cb888b2086090afaf98e3f688c0e8d`.
 See `GOV5_QMDB_COPY_AUDIT_FIRST_RESULT.md` for the actual roots, blob digests and
-scope. No restoration has yet been run against that retained data.
+scope. A new candidate copy was restored and physically reopened successfully
+on 2026-10-16 at 19:42 UTC; the original database remains unchanged.
 
 The existing `gov5-qmdb-audit --copy-db ...` entry remains read-only. The
 separate `restore-candidate-copy` subcommand writes only a new, owned, private
@@ -72,6 +73,50 @@ Validation so far: all 15 command-package tests passed with
 reclaimed old genesis entries, a retained empty beneficiary, a single two-row
 transaction and a physical close/reopen. They also cover injected second-write
 failure/rollback, other-table and sequence changes, existing target rows,
-changed proof/blob metadata, path aliases and hardlinks. Claimed race/build and
-retained-data candidate restoration remain pending. A later original-database
-application would be a separate reviewed operation; this slice does not do it.
+changed proof/blob metadata, path aliases and hardlinks.
+
+The retained-data candidate run used clean source
+`522cdd2031c0461ff01edb2ae364e00294db7668` and binary SHA256
+`3b5f3876215358e154affc9005ed6e13cfe04f8ea0e375404e5d9e9ea4119f6b`.
+Three quiet samples (load 4.27, 2.58, 1.56; available memory 99.77, 100.00,
+100.16 GiB) and the standard claim checks preceded the bounded turn. The
+targeted race suite passed (package time 1.940 s), the Make audit-tool build
+passed, and the actual clone/restore/reopen command exited 0. The controller
+promoted the result only after normal claim exit and released its owned claims.
+No acknowledgment appeared in the shared handoff request; obtaining this turn
+does not establish an agreed fair queue.
+
+The complete artifact is
+`/data/blockchain/gov5-work/validation/20261016-gov5-qmdb-candidate-522cdd20`.
+Its promoted `restore-result.json` has SHA256
+`52c637a0442bdfd59e55cd63f0dee91b28fe8f2c1875924f7c0ead7682d86c82`.
+The directory also retains the controller, runner hashes, stage logs,
+`candidate-clone.json`, fsynced intent, source postcheck and unpromoted
+observation. The candidate is retained at
+`restore-candidate/chaindata/mdbx.dat`, mode 0400, device/inode
+`66305/5465480066`.
+
+| Actual check | Result |
+| --- | --- |
+| Candidate physical preimage | `203f76c0cf66626792e884fab38cdd44f960d6f77127daa06a0aeced2a8cdead` |
+| Candidate physical postimage | `59ce4a664241731dfa1a4ba0290820cc3eb9e855d073a4a8cb1278553e2b8d4f` |
+| Logical tables compared | All 80, including row fingerprints and sequences |
+| Only logical changes | `qmdbTwigLeaves` keys 0 and 1 added; seven other leaf rows unchanged |
+| Physical read-only reopen | Passed with no overlay or missing genesis leaf candidates |
+| Canonical and applied anchor | Height 254, hash `0x62bbcf53ba1c0e26f93dc2a1e2c3a0bbe8ca44abdcc342899fb893069ae3258b` |
+| Reopened root | `0x7e70c926394f2565ab7a8de990fbaf5ecc95959527f4c4b50730a6cea00c612d` |
+| Forest population | 10,415 live keys, next slot 16,957, genesis slots 6,000 |
+| Representation exceptions | Exactly the same two previously proved empty beneficiaries at slots 6,016 and 15,347 |
+
+The original runtime, untouched backup and preserved audit copy were rehashed
+before and after this actual run. Every identity, size, modification/change
+time, mode and SHA256 matched. All three remained at the physical preimage
+digest above, with distinct inodes `3088445986`, `9999553335`, and `10139408920`.
+Neither the original nor backup was MDBX-opened; the preserved audit copy was
+only hashed during this turn. Only the new candidate entered a writable MDBX
+environment. The two blob digests remain those in the promoted v2 proof.
+
+This proves the candidate's two-row restoration and reload consistency. It is
+not an original-database repair, seven-process recovery, complete sender nonce
+audit, transaction replay authorization, or a new TPS result. A later original
+application requires a separate reviewed operation; no such operation ran here.
