@@ -121,7 +121,8 @@ also contains those unchanged files. Next build only the replay binary and
 reuse the three proven startup binaries with explicit source/SHA provenance.
 Provision a separate runtime from the exact `s192a` genesis/validator identities;
 preserve both existing runtime roots and all source corpus bytes. Obtain each
-hardware turn afresh. No schema-2 strict observation or new chain TPS exists.
+hardware turn afresh. The first schema-2 strict observation subsequently ran and failed; see below.
+No new valid chain TPS exists.
 
 Raw supply qualification reached 6,499,988.64 unique wires/s for 20.000034967 s;
 this excludes online signature verification and on-chain execution. Historical
@@ -130,6 +131,17 @@ validator's canonical counter, a full twenty-second window and independent
 drain, never the sum of seven counters. Its default disk planning estimate
 needs 796.422 GiB free for the 192M source plus reserve; recheck at admission.
 Do not delete source corpus or runtime evidence to force the disk check to pass.
+
+The first actual schema-2 run `s192r1/strict-q1` verified all source SHA values,
+entered the measured window and stopped on an unknown ingress outcome before
+WindowEnd. It produced no valid TPS. Its last checker count was 47,500 at height
+253, but owner canonicalized height 254 during cleanup; the stopped state must
+be reconciled before any nonce-based resume. Owner admitted 2,032,000 versus
+2,008,500 client final ACKs and retained 1,984,500 pending transactions at the
+last observation. The controller stopped, preserved data and released claims.
+See [the retained first strict failure](GOV5_STRICT_S192R1_FIRST_OBSERVATION.md).
+Afterward about 791.75GiB remained, below the same default disk gate. Next is
+same-data recovery without dispatch, not automatic replay or a replacement root.
 
 An additional sealed-job reference RPC is committed as `56d50aa0` on the main
 branch, with targeted tests and vet passing. Replica/CLI activation remains off;
