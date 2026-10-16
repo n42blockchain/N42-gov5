@@ -77,8 +77,35 @@ temporary original restoration, same inode/mode preservation, unchanged
 protected copies, proof/inode/ctime/SHA rejection before open, and a real commit
 followed by injected physical-reopen failure retaining both rows and the intent.
 The existing two-write rollback, non-target row/sequence, malformed proof and
-path-alias regressions cover the shared primitive. Actual original-site
-restoration has not yet run.
+path-alias regressions cover the shared primitive.
+
+The stopped-original operation passed on 2026-10-16 at 21:54 UTC, from clean
+source `97d591ae1e95f97d4f03ad511f21e356e7aeb806`. Its promoted result is
+`/data/blockchain/gov5-work/validation/20261016-gov5-qmdb-original-97d591ae/original-result.json`,
+SHA256 `89796a91799813ddaf246802f8d8808720afae06cbec2865b4aaa58fd1bdcb7f`.
+The audit binary SHA256 is
+`db71c2fdac7004924c3708c87c97d20f7eadffaad05aab17fe78f03cebdd9cc0`.
+The claimed turn ran the 19-test targeted race suite (test execution 3.317s),
+the Make audit-tool build, and the original restoration; all three returned 0.
+The worker and all three process groups exited, and the owned BOX claims were
+released before promotion.
+
+Independent result verification compared all 80 logical table records against
+the successful candidate proof. Only `qmdbTwigLeaves` target rows changed from
+zero to two. Its other seven rows, every other table's rows and all sequences
+remained identical. The original retained device/inode `66305/3088445986`,
+2,147,483,648 bytes and mode 0600. Its new physical file SHA256 is
+`13ee1715089c496e943fc80debf1b7993c67da4ce00faaa6206e194d1310affc`;
+MDBX commit metadata can change the physical hash beyond the two logical rows.
+All three protected copies retained their full original observations and hashes.
+
+Fresh physical read-only reopen required no missing-leaf overlay. Canonical and
+applied both remained height 254, hash
+`0x62bbcf53ba1c0e26f93dc2a1e2c3a0bbe8ca44abdcc342899fb893069ae3258b`,
+root `0x7e70c926394f2565ab7a8de990fbaf5ecc95959527f4c4b50730a6cea00c612d`.
+The forest retained 10,415 live keys, next slot 16,957 and exactly the same two
+chain-bound empty-beneficiary representation exceptions. No node runtime,
+transaction dispatch, nonce replay or TPS measurement ran in this turn.
 
 After a successful original restoration, a separately gated Miner=false,
 no-dispatch same-root recovery must reconcile canonical evidence and read all
