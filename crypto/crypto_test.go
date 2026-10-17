@@ -78,6 +78,23 @@ func TestKeccak256Hash(t *testing.T) {
 	}
 }
 
+// TestKeccak256HashNoAlloc: the pooled scratch keeps the result off the
+// heap, and multi-part and repeated calls agree with Keccak256.
+func TestKeccak256HashNoAlloc(t *testing.T) {
+	a, b := []byte("hello"), []byte("world")
+	for i := 0; i < 3; i++ {
+		if h := Keccak256Hash(a, b); !bytes.Equal(h[:], Keccak256(a, b)) {
+			t.Fatal("multi-part Keccak256Hash differs from Keccak256")
+		}
+	}
+	if h := Keccak256Hash(); hex.EncodeToString(h[:]) != "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470" {
+		t.Fatal("empty Keccak256Hash wrong")
+	}
+	if n := testing.AllocsPerRun(100, func() { _ = Keccak256Hash(a) }); n != 0 {
+		t.Fatalf("Keccak256Hash allocates %v per call", n)
+	}
+}
+
 func TestKeccak512(t *testing.T) {
 	data := []byte("test data")
 	hash := Keccak512(data)

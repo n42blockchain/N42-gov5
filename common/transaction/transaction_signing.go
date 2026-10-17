@@ -218,7 +218,7 @@ func RecoverSenderFromSig(signer Signer, tx *Transaction) (types.Address, error)
 
 func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 	if sc := tx.from.Load(); sc != nil {
-		sigCache := sc.(sigCache)
+		sigCache := *sc
 		// If the signer used to derive from in a previous
 		// call is not the same as used current, invalidate
 		// the cache.
@@ -234,7 +234,7 @@ func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 	// another ecdsa recovery; see sender_cache.go.
 	hash := tx.Hash()
 	if addr, ok := senderCacheGet(hash, signer); ok {
-		tx.from.Store(sigCache{signer: signer, from: addr})
+		tx.storeSenderMemo(signer, addr)
 		return addr, nil
 	}
 
@@ -242,7 +242,7 @@ func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 	if err != nil {
 		return types.Address{}, err
 	}
-	tx.from.Store(sigCache{signer: signer, from: addr})
+	tx.storeSenderMemo(signer, addr)
 	senderCachePut(hash, signer, addr)
 	return addr, nil
 }
@@ -257,7 +257,7 @@ func (tx *Transaction) CacheSender(signer Signer, from types.Address) {
 	if signer == nil {
 		return
 	}
-	tx.from.Store(sigCache{signer: signer, from: from})
+	tx.storeSenderMemo(signer, from)
 	senderCachePut(tx.Hash(), signer, from)
 }
 
@@ -272,7 +272,7 @@ func (tx *Transaction) SetSenderMemo(signer Signer, from types.Address) {
 	if signer == nil {
 		return
 	}
-	tx.from.Store(sigCache{signer: signer, from: from})
+	tx.storeSenderMemo(signer, from)
 }
 
 // Signer encapsulates transaction signature handling. The name of this type is slightly
@@ -780,5 +780,19 @@ func (tx *Transaction) HasSenderMemo(signer Signer) bool {
 	if sc == nil {
 		return false
 	}
-	return sc.(sigCache).signer.Equal(signer)
+	return sc.signer.Equal(signer)
+}
+
+// storeSenderMemo publishes the per-object sender memo. The first memo of a
+// transaction is written into its own slot (claimed once, so a reader
+// holding the slot's pointer never sees it change); a later memo, under
+// another signer, gets its own allocation. Boxing every memo into an
+// interface was one allocation per transaction on every import (P14).
+func (tx *Transaction) storeSenderMemo(signer Signer, from types.Address) {
+	if tx.fromSlotUsed.CompareAndSwap(false, true) {
+		tx.fromSlot = sigCache{signer: signer, from: from}
+		tx.from.Store(&tx.fromSlot)
+		return
+	}
+	tx.from.Store(&sigCache{signer: signer, from: from})
 }
