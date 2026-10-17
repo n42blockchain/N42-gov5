@@ -48,9 +48,10 @@ The endpoint slice adds the client and existence metadata. The separate
 checks a complete canonical-bound nonce vector against all seven counters.
 It requires the retained failed result, permits the documented late canonical
 commit without count/height regression, and never opens an admission transport.
-A changed batch tuple discards the entire vector. The separate recovery-only fleet launcher is implemented; a same-data actual
-recovery with account-vector collection remains pending. No runtime feature, signature policy,
-consensus certificate or default native/ETH behavior is relaxed.
+A changed batch tuple discards the entire vector. The separate recovery-only
+fleet launcher is implemented; its completed same-data account collection is
+recorded below. No runtime feature, signature policy, consensus certificate or
+default native/ETH behavior is relaxed.
 
 Validation: three `TestCanonicalAccounts*` tests passed under nice19/ionice idle,
 GOMAXPROCS=2 and -p=1 (0.061s). Real QMDB plus Unix RPC tests distinguish a funded
@@ -62,7 +63,8 @@ JSON, closed owner, altered responses and maximum-width 1000-account responses.
 
 `go vet ./internal/sharedexec ./internal` and `git diff --check` passed. The
 targeted race, full Make build and updated owner/audit binaries subsequently
-passed in the hardware turn recorded below. Actual same-data recovery is pending.
+passed in the hardware turn recorded below. Recovery was still pending at that
+build checkpoint; the later same-data result is recorded below.
 
 The recovery command has a 45-second bound and records its failed-run hash,
 nonce vector/hash, canonical nonce sum, owner/validator observations, and zero
@@ -73,7 +75,8 @@ Three `TestRecovery*` tests passed (0.015s) with GOMAXPROCS=2/-p=1, covering a
 1001-account two-batch snapshot, whole-vector rejection on a changed second
 batch, typed snapshot conflict, invalid sender state, late commit acceptance,
 immutable same-block count, nonregression and zero-activity session binding.
-Replay vet passed. Actual same-data account collection is not yet run.
+Replay vet passed. These unit results preceded the actual account collection
+recorded below.
 
 ## Producer-disabled replay launcher
 
@@ -135,6 +138,82 @@ window; `recovery-q1` did not exist. No canonical nonce vector or recovery resul
 had been collected. This build checkpoint is not a recovery pass or TPS result.
 The later request-deadline fix described below is excluded from these frozen
 binaries and remains unverified in the runtime.
+
+## Same-data no-dispatch recovery, 2026-10-17
+
+The first `recovery-q1` later failed while the owner loaded missing sealed
+genesis leaf blobs. The copy audit, candidate restoration and precise original
+two-row repair are documented in `GOV5_QMDB_ORIGINAL_TWO_LEAF_RESTORE.md`.
+The completed original-repair proof SHA256 is
+`89796a91799813ddaf246802f8d8808720afae06cbec2865b4aaa58fd1bdcb7f`.
+Neither failed attempt was replaced or discarded.
+
+At 00:28 UTC the separate `recovery-q2` passed on the same `s192r1` data with
+the three frozen binaries listed above. No rebuild, initialization, transaction
+dispatch or original configuration change ran. A reviewed child shim wrapped
+only the frozen runner's `fleet.claim`: complete original/protected-copy
+identity and SHA256 checks preceded any attempt creation, and complete postchecks
+followed clean child shutdown, inside the same delegated BOX claim. The frozen
+six runner files remained byte-identical to a81bb5a5. The outer controller and
+shim SHA256 values are respectively
+`eec87b263d6be0d5ad05bfcfe5bebc77fb090433a6f2be0a12ca8c3cef5efa2f` and
+`5685ad07f04ee58c878dad111a5d6ee4b59eec82790ad664b97ece4cf43371d6`.
+
+Artifact directory:
+`/data/blockchain/gov5-work/validation/20261016-gov5-strict-recovery-q2-after-97d591ae`.
+
+| Evidence | SHA256 |
+| --- | --- |
+| Promoted outer `recovery-result.json` | cd72e20f725b004cf539408b0e699ea1cf35fca6240224d28fc101e923ad29e5 |
+| `s192r1/strict-attempts/recovery-q2/recovery.json` | ae75ad7c49111e41bbf54ec12f9a949d17781caea105992e9397df61d56ff5fe |
+| `s192r1/attempts/recovery-q2/recovery-fleet-result.json` | 99b410b1af2f0a66ec896f2b7c1ad55d684c903a2d2b03380d799a0103418baa |
+| `try-0291-preproof.json` | d6f15a541127e9a711fb02b73334ad8ff56a24e10e7b7f29db5d2e9892d11dc3 |
+| `try-0291-postproof.json` | fd8d68a702a5c0342039505ff04101bec7e74a965704dcfe8ed5acffdb77ae49 |
+
+Independent acceptance reran the frozen evidence checks, verified all input and
+controller digests, required both pre/post proofs from the same claim, and
+recomputed the complete ordered account-vector JSON digest. Owner, seven
+validators and audit all exited 0 without forced termination or surviving
+process groups. The worker and child exited, and owned claims were released
+before promotion. The preceding 290 tries were resource-only refusals with
+neither runtime attempt present; they did not start the repaired database.
+
+All seven initial and final samples and the owner agreed on canonical height
+254, block hash
+`0x62bbcf53ba1c0e26f93dc2a1e2c3a0bbe8ca44abdcc342899fb893069ae3258b`.
+Each validator's single canonical executed counter was **210,500**; the seven
+copies are not added together. All seven producers were disabled. The new
+owner epoch had zero new/crypto attempts, pending/reserved transactions and
+retained/reserved bytes, with reconciling false. Dispatched transactions were
+zero. The owner log loaded 10,415 QMDB live keys and next slot 16,957 successfully.
+
+All 6000 funded existing EOAs were read at the same canonical tuple, with zero
+snapshot retries. Their nonce sum was **210,500** and account-vector SHA256 was
+`a8550361fcc18205b30a0ee7628e8242ddc2386e544e8e79b19f66215f9fdd5c`.
+
+| Canonical nonce | Accounts |
+| --- | ---: |
+| 0 | 2000 |
+| 41 | 1010 |
+| 42 | 2895 |
+| 500 | 95 |
+
+Thus **3905 accounts are not aligned to a 500-transaction source frame**.
+The vector uses sorted public addresses, not the source's logical sender-index
+order. A future explicit partial-frame recovery design must bind that mapping,
+the complete source/proofs, canonical baseline and a new empty session. The v1
+frame must not be arbitrarily cropped, rounded up, re-signed, assigned new
+nonces or replayed unchanged across its already-canonical prefix. No such
+replay was attempted here, and the old 23,500 unknown ACK outcomes are not
+reclassified as duplicate or accepted.
+
+The original remained device/inode `66305/3088445986`, 2GiB and mode 0600.
+Its normal startup/QC-replay physical SHA256 changed from the repaired
+`13ee1715089c496e943fc80debf1b7993c67da4ce00faaa6206e194d1310affc` to
+`c805609d2598cfbf63f5614b40ae26d8f6b7f62f2ac25ad08073ddaff0ab1b53`;
+all three protected copies retained their complete identities and hashes.
+This is a successful same-data startup and canonical nonce audit, not new
+transaction liveness, full WAL replay proof, a new TPS result or the 5M goal.
 
 ## Known-zero backpressure and request deadlines
 
