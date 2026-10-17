@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"github.com/n42blockchain/N42/crypto"
 	"math/big"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -91,10 +92,23 @@ type Transaction struct {
 	time  time.Time
 
 	// caches
-	hash atomic.Pointer[types.Hash] // typed pointer avoids interface boxing
-	size atomic.Value
-	from atomic.Value
-	enc  atomic.Pointer[[]byte] // canonical Ethereum wire encoding
+	//
+	// The hash lives in the transaction itself: hashState goes 0 -> 1 (one
+	// goroutine claimed the computation) -> 2 (hashVal published). A
+	// heap-boxed hash behind an atomic pointer cost one allocation per
+	// transaction on every import (P14). See Hash for the claim.
+	hashState atomic.Uint32
+	hashVal   types.Hash
+	size      atomic.Value
+	from      atomic.Pointer[sigCache]
+	// fromSlot is the first sender memo's storage, claimed once through
+	// fromSlotUsed (later memos under another signer allocate).
+	fromSlotUsed atomic.Bool
+	fromSlot     sigCache
+	enc          atomic.Pointer[[]byte] // canonical Ethereum wire encoding
+	// encSlot holds the encoding a decoder attached before the transaction
+	// was published (cacheEncodedOwned), so it needs no separate header.
+	encSlot []byte
 }
 
 func NewTx(inner TxData) *Transaction {
@@ -457,6 +471,15 @@ func (tx *Transaction) cacheEncoded(enc []byte) {
 	tx.size.Store(len(enc))
 }
 
+// cacheEncodedOwned is cacheEncoded for a decoder that has not published tx
+// yet (no other goroutine can see it): the encoding goes into the
+// transaction's own slot instead of a separately allocated header.
+func (tx *Transaction) cacheEncodedOwned(enc []byte) {
+	tx.encSlot = enc
+	tx.enc.Store(&tx.encSlot)
+	tx.size.Store(len(enc))
+}
+
 func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.inner.rawSignatureValues()
 }
@@ -573,10 +596,53 @@ func (tx *Transaction) Cost() *uint256.Int {
 }
 
 func (tx *Transaction) Hash() types.Hash {
-	if h := tx.hash.Load(); h != nil {
-		return *h
+	if tx.hashState.Load() == hashReady {
+		return tx.hashVal
 	}
-	var h types.Hash
+	// Claim the computation before doing it. Computing first and publishing
+	// whichever result landed first let every goroutine that reached the
+	// transaction before the first one finished hash it again: the hash
+	// prewarm, the sender job and the run's preparation walk a block's
+	// transactions concurrently from the same end, and a frame block's
+	// import computed 1.0-1.8 hashes per transaction, ~1.3 on average (P14,
+	// counted over a resolved 4,000-transaction frame block). A goroutine
+	// that finds the computation claimed waits the ~0.2 us it takes.
+	if !tx.hashState.CompareAndSwap(hashNone, hashWriting) {
+		if h, ok := tx.awaitHash(); ok {
+			return h
+		}
+		// The claimant did not publish in time (descheduled, or it
+		// panicked): compute without publishing.
+		return tx.computeHash()
+	}
+	h := tx.computeHash()
+	tx.hashVal = h
+	tx.hashState.Store(hashReady)
+	return h
+}
+
+// hashAwaitSpins bounds awaitHash: the first spins only re-load the state,
+// the rest also yield the processor.
+const (
+	hashAwaitSpins     = 256
+	hashAwaitBusySpins = 64
+)
+
+// awaitHash waits, bounded, for another goroutine's claimed hash
+// computation to publish.
+func (tx *Transaction) awaitHash() (types.Hash, bool) {
+	for i := 0; i < hashAwaitSpins; i++ {
+		if tx.hashState.Load() == hashReady {
+			return tx.hashVal, true
+		}
+		if i >= hashAwaitBusySpins {
+			runtime.Gosched()
+		}
+	}
+	return types.Hash{}, false
+}
+
+func (tx *Transaction) computeHash() types.Hash {
 	if p := tx.enc.Load(); p != nil && len(*p) > 0 && hashFromEncoding(tx.Type()) {
 		// The cached consensus encoding (kept by the wire decoder, or filled by
 		// the first encode) IS what the field hash re-derives: keccak of the
@@ -584,13 +650,17 @@ func (tx *Transaction) Hash() types.Hash {
 		// non-canonical RLP, so the bytes equal a fresh encode. Re-encoding
 		// was half of every transaction-hash computation on a follower
 		// (appendLegacyTxRLP 4.0 s of 7.9 s in a 25 s profile).
-		h = crypto.Keccak256Hash(*p)
-	} else {
-		h = tx.inner.hash()
+		return crypto.Keccak256Hash(*p)
 	}
-	tx.hash.Store(&h)
-	return h
+	return tx.inner.hash()
 }
+
+// States of Transaction.hashState.
+const (
+	hashNone uint32 = iota
+	hashWriting
+	hashReady
+)
 
 // hashFromEncoding lists the transaction types whose hash is exactly keccak
 // of their cached consensus encoding. Blob transactions are excluded: their

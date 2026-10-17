@@ -34,6 +34,7 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"sync"
 
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
@@ -113,15 +114,34 @@ func Keccak256(data ...[]byte) []byte {
 	return b
 }
 
+// keccakHashScratch is a hasher with its own output buffer. Reading the
+// digest through the KeccakState interface straight into the caller's
+// result made the result escape: one 32-byte heap allocation per
+// Keccak256Hash call (a transaction hash, an account or slot key, a frame
+// hash), on top of the hashing itself. Reading into the pooled buffer and
+// copying out keeps the result on the caller's stack.
+type keccakHashScratch struct {
+	st  KeccakState
+	out types.Hash
+}
+
+var keccakHashScratchPool = sync.Pool{
+	New: func() any {
+		return &keccakHashScratch{st: sha3.NewLegacyKeccak256().(KeccakState)}
+	},
+}
+
 // Keccak256Hash calculates and returns the Keccak256 hash of the input data,
 // converting it to an internal Hash data structure.
 func Keccak256Hash(data ...[]byte) (h types.Hash) {
-	d := NewKeccakState()
-	defer ReturnKeccakState(d)
+	s := keccakHashScratchPool.Get().(*keccakHashScratch)
+	s.st.Reset()
 	for _, b := range data {
-		d.Write(b)
+		s.st.Write(b) //nolint:errcheck
 	}
-	d.Read(h[:]) //nolint:errcheck
+	s.st.Read(s.out[:]) //nolint:errcheck
+	h = s.out
+	keccakHashScratchPool.Put(s)
 	return h
 }
 
