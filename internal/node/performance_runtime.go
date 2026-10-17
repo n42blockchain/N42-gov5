@@ -219,10 +219,21 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 		return nil, err
 	}
 	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
-	_, err = rt.client.AppliedChild(probeCtx, sharedexec.AppliedChildRequest{Identity: rt.client.Identity(), ParentHash: gb.Hash(), Number: 1, View: hotstuff.ViewNumber(^uint64(0))})
+	// Use the retained canonical checkpoint, not genesis: a healthy owner can
+	// have advanced beyond the bounded ancestry window since initialization.
+	// CanonicalProbeAnchor also validates the actual retained local header in
+	// the same transaction. Missing/corrupt metadata must not fall back to genesis.
+	progress, progressErr := rt.replica.CanonicalProbeAnchor(probeCtx)
+	if progressErr != nil {
+		err = progressErr
+	} else if progress.BlockHash == (types.Hash{}) || progress.Number == ^uint64(0) {
+		err = errors.New("performance canonical probe anchor is zero or overflows")
+	} else {
+		_, err = rt.client.AppliedChild(probeCtx, sharedexec.AppliedChildRequest{Identity: rt.client.Identity(), ParentHash: progress.BlockHash, Number: progress.Number + 1, View: hotstuff.ViewNumber(^uint64(0))})
+	}
 	probeCancel()
-	// A synced owner can be beyond the retained lineage window. Fail closed
-	// until historical catch-up evidence is implemented instead of hiding it.
+	// Owners behind, on a different fork, or beyond this checkpoint's retained
+	// lineage window still fail closed until historical catch-up is implemented.
 	if err != nil {
 		return nil, fmt.Errorf("performance owner identity/lineage probe: %w", err)
 	}
