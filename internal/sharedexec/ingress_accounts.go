@@ -27,6 +27,7 @@ type CanonicalAccountsRequest struct {
 	CanonicalHash   types.Hash      `json:"canonical_hash"`
 	CanonicalNumber uint64          `json:"canonical_number"`
 	Addresses       []types.Address `json:"addresses"`
+	IncludeRoots    bool            `json:"include_roots,omitempty"`
 }
 
 type CanonicalAccount struct {
@@ -37,6 +38,13 @@ type CanonicalAccount struct {
 	CodeHash types.Hash    `json:"code_hash"`
 }
 
+// CanonicalRoots binds the verified canonical header and the currently loaded
+// QMDB tree at the exact account snapshot. It is returned only on explicit opt-in.
+type CanonicalRoots struct {
+	Root        types.Hash `json:"root"`
+	AppliedRoot types.Hash `json:"applied_root"`
+}
+
 type CanonicalAccountsResult struct {
 	Identity        Identity           `json:"identity"`
 	Epoch           [16]byte           `json:"epoch"`
@@ -44,6 +52,7 @@ type CanonicalAccountsResult struct {
 	CanonicalHash   types.Hash         `json:"canonical_hash"`
 	CanonicalNumber uint64             `json:"canonical_number"`
 	Accounts        []CanonicalAccount `json:"accounts"`
+	Roots           *CanonicalRoots    `json:"roots,omitempty"`
 }
 
 func validCanonicalAccountsRequest(request CanonicalAccountsRequest, identity Identity) bool {
@@ -113,6 +122,9 @@ func (s *Server) CanonicalAccounts(ctx context.Context, request CanonicalAccount
 		return out, ErrIngressSnapshotChanged
 	}
 	out = CanonicalAccountsResult{Identity: s.identity, Epoch: q.epoch, ManifestHash: q.manifestHash, CanonicalHash: snapshot.Hash, CanonicalNumber: snapshot.Number, Accounts: make([]CanonicalAccount, len(request.Addresses))}
+	if request.IncludeRoots {
+		out.Roots = &CanonicalRoots{Root: snapshot.Root, AppliedRoot: snapshot.AppliedRoot}
+	}
 	for i, address := range request.Addresses {
 		a := snapshot.Accounts[address]
 		out.Accounts[i] = CanonicalAccount{Address: address, Exists: snapshot.Exists[address], Nonce: a.Nonce, Balance: a.Balance.Dec(), CodeHash: a.CodeHash}
@@ -183,6 +195,13 @@ func (c *Client) CanonicalAccounts(ctx context.Context, request CanonicalAccount
 	}
 	if err := d.Decode(new(any)); err != io.EOF || out.Identity != request.Identity || out.Epoch != request.Epoch || out.ManifestHash != request.ManifestHash || out.CanonicalHash != request.CanonicalHash || out.CanonicalNumber != request.CanonicalNumber || len(out.Accounts) != len(request.Addresses) {
 		return CanonicalAccountsResult{}, errors.New("canonical account response binding mismatch")
+	}
+	if request.IncludeRoots {
+		if out.Roots == nil || out.Roots.Root == (types.Hash{}) || out.Roots.AppliedRoot != out.Roots.Root {
+			return CanonicalAccountsResult{}, errors.New("canonical account header/QMDB root mismatch")
+		}
+	} else if out.Roots != nil {
+		return CanonicalAccountsResult{}, errors.New("unexpected canonical account root evidence")
 	}
 	empty := account.NewAccount()
 	for i, a := range out.Accounts {

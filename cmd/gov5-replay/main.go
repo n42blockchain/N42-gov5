@@ -18,11 +18,29 @@ import (
 
 func runSupply(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan [options]")
+		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|resume-four-frame [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	root := flags.String("root", "", "absolute fresh private corpus directory")
 	switch args[0] {
+	case "resume-four-frame":
+		runtime := flags.String("runtime-manifest", "", "Retained schema-2 runtime; owner must already be independently armed")
+		attempt := flags.String("attempt", "", "New evidence basename; never replay an existing attempt")
+		plan := flags.String("plan", "", "Fixed original four-frame plan file")
+		planSHA := flags.String("plan-sha256", "", "Exact plan file SHA256")
+		planID := flags.String("expected-plan-id", "", "Locally selected expected plan ID")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		digest, err := resumeHashText(*planSHA)
+		if err != nil {
+			return err
+		}
+		id, err := resumeHashText(*planID)
+		if err != nil || flags.NArg() != 0 || *plan == "" || *runtime == "" || *attempt == "" {
+			return errors.New("four-frame resume requires explicit plan/hash/ID/runtime/new attempt")
+		}
+		return runResumeFourFrame(ctx, *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, id)
 	case "resume-plan":
 		runtime := flags.String("runtime-manifest", "", "fixed schema-2 runtime metadata; no runtime is started")
 		outer := flags.String("recovery-outer", "", "fixed promoted historical recovery report")
@@ -56,13 +74,14 @@ func runSupply(ctx context.Context, args []string) error {
 		runtime := flags.String("runtime-manifest", "", "retained schema-2 runtime; no transaction dispatch")
 		attempt := flags.String("attempt", "", "new recovery evidence basename")
 		baseline := flags.String("baseline-result", "", "failed strict result in this same runtime")
+		roots := flags.Bool("require-canonical-roots", false, "Require matching header/QMDB roots in every canonical account batch and a final reread")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if flags.NArg() != 0 || *runtime == "" || *baseline == "" {
 			return errors.New("recover requires explicit runtime/baseline and no positional arguments")
 		}
-		return runStrictRecovery(ctx, *root, *runtime, *attempt, *baseline)
+		return runStrictRecoveryWithRoots(ctx, *root, *runtime, *attempt, *baseline, *roots)
 	case "prepare":
 		template := flags.String("genesis-template", "", "explicit private n42 performance genesis template")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -96,7 +115,7 @@ func runSupply(ctx context.Context, args []string) error {
 		}
 		return qualifySupply(ctx, *root, *attempt, *rate, 4*time.Second, 20*time.Second)
 	default:
-		return errors.New("supported commands are prepare, qualify, strict, recover and resume-plan")
+		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan and resume-four-frame")
 	}
 }
 
