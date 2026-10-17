@@ -76,6 +76,8 @@ type Server struct {
 	wg               sync.WaitGroup
 	imports          atomic.Uint64
 	closed           bool
+	started          bool // mu: external or direct execution use has begun
+	resumeArming     bool // mu: exclusive long-running startup verification
 	execute          sync.Mutex
 	commitOwner      [32]byte
 	builds           map[importKey]*buildJob
@@ -173,10 +175,11 @@ func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResul
 	}
 	key := importKey{s.identity, b.Hash()}
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.resumeArming {
 		s.mu.Unlock()
 		return ImportResult{}, errors.New("execution service closed")
 	}
+	s.started = true
 	job, found := s.jobs[key]
 	if !found {
 		for len(s.jobs) >= s.capacity && len(s.completed) > 0 {
@@ -306,6 +309,15 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.closed || s.resumeArming {
+		s.mu.Unlock()
+		http.Error(w, "execution owner closed or initializing resume", http.StatusServiceUnavailable)
+		return
+	}
+	s.started = true
+	s.mu.Unlock()
+
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/import-ref" {
 		s.serveImportRef(w, r)
 		return
@@ -370,6 +382,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ListenUnix refuses symlinked/public directories and existing socket paths.
 // Filesystem permissions authorize local clients; no public TCP listener exists.
 func (s *Server) ListenUnix(path string) (*http.Server, net.Listener, error) {
+	s.mu.Lock()
+	if s.closed || s.resumeArming {
+		s.mu.Unlock()
+		return nil, nil, errors.New("execution owner closed or initializing resume")
+	}
+	s.started = true
+	s.mu.Unlock()
+
 	listener, err := listenPrivateExecutionUnix(path)
 	if err != nil {
 		return nil, nil, err
