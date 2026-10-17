@@ -155,7 +155,12 @@ type lagPipeline struct {
 	launched  atomic.Uint64
 	used      atomic.Uint64
 	discarded atomic.Uint64
-	openTxs   atomic.Int64
+	// Discards by reason (each also counts in discarded), and the ahead
+	// wall time of discarded runs that carried transactions.
+	discErr, discNotApplicable, discParent, discHash, discHead atomic.Uint64
+	discFail, discReset, discForget, discSuperseded            atomic.Uint64
+	discFull, discWorkMs                                       atomic.Uint64
+	openTxs                                                    atomic.Int64
 
 	// Parents written without a child executed ahead, by the reason the
 	// last launch attempt for them gave up (counted once per parent).
@@ -342,6 +347,12 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 	p := &bc.lagPipe
 	return []interface{}{
 		"aheadAtt", p.launched.Load(), "aheadUsed", p.used.Load(), "aheadDisc", p.discarded.Load(),
+		"aheadDiscErr", p.discErr.Load(), "aheadDiscNotApplicable", p.discNotApplicable.Load(),
+		"aheadDiscParent", p.discParent.Load(), "aheadDiscHash", p.discHash.Load(),
+		"aheadDiscHead", p.discHead.Load(), "aheadDiscFail", p.discFail.Load(),
+		"aheadDiscReset", p.discReset.Load(), "aheadDiscForget", p.discForget.Load(),
+		"aheadDiscSuperseded", p.discSuperseded.Load(),
+		"aheadDiscFull", p.discFull.Load(), "aheadDiscWorkMs", p.discWorkMs.Load(),
 		"aheadSkipNotAvail", p.skipNotAvail.Load(), "aheadSkipParent", p.skipParent.Load(),
 		"aheadSkipBusy", p.skipBusy.Load(), "aheadSkipOff", p.skipOff.Load(),
 		"aheadLate", p.late.Load(), "aheadTakeLaunch", p.takeLaunch.Load(),
@@ -410,7 +421,7 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
 	if s := p.spec; s != nil && s.parent != h {
 		// An ahead execution on another parent cannot be used any more.
 		p.spec = nil
-		p.discardLocked(s)
+		p.discardLocked(s, &p.discSuperseded)
 	}
 	p.mu.Unlock()
 	if d := lagPipeChildWaitForTest; d > 0 {
@@ -681,19 +692,29 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 	p.mu.Unlock()
 	<-a.done
 	reason := ""
+	var cnt *atomic.Uint64
 	switch {
 	case a.err != nil:
 		reason = a.err.Error()
+		cnt = &p.discErr
+		if errors.Is(a.err, ErrParallelNotApplicable) {
+			cnt = &p.discNotApplicable
+		}
 	case !parentOK:
 		reason = "parent not written by its publishing import"
+		cnt = &p.discParent
 	case a.parent != blk.ParentHash():
 		reason = "different parent"
+		cnt = &p.discHash
 	case !bc.lagAppliedIs(a.parent, number-1):
 		reason = "applied head is not the parent"
+		cnt = &p.discHead
 	}
 	if reason != "" {
 		log.Debug("lag pipeline: ahead execution discarded", "number", number, "hash", blk.Hash().Hex()[:12], "reason", reason)
 		p.discarded.Add(1)
+		cnt.Add(1)
+		p.addDiscWork(a)
 		a.release()
 		p.awaitDrained(blk.Hash(), nil)
 		bc.dropAheadPrep(blk.Hash())
@@ -705,10 +726,24 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 
 // discardLocked drops an ahead execution (p.mu held): its transaction is
 // closed once its goroutine finishes.
-func (p *lagPipeline) discardLocked(a *aheadExec) {
+func (p *lagPipeline) discardLocked(a *aheadExec, reason *atomic.Uint64) {
 	p.discarded.Add(1)
+	reason.Add(1)
 	p.draining = append(p.draining, a)
-	go a.release()
+	go func() {
+		a.release()
+		p.addDiscWork(a)
+	}()
+}
+
+// addDiscWork accumulates the wall time of a discarded run that carried
+// transactions (diagnostics); it waits for the run to finish.
+func (p *lagPipeline) addDiscWork(a *aheadExec) {
+	<-a.done
+	if len(a.blk.Transactions()) > 0 {
+		p.discFull.Add(1)
+		p.discWorkMs.Add(uint64(a.took.Milliseconds()))
+	}
 }
 
 // drainingLocked returns a discarded execution of hash still running, and
@@ -774,7 +809,7 @@ func (bc *BlockChain) lagPipeSettle(h types.Hash, written bool) {
 			a.parentOK = true
 		} else {
 			p.spec = nil
-			p.discardLocked(a)
+			p.discardLocked(a, &p.discFail)
 		}
 	}
 }
@@ -791,7 +826,7 @@ func (bc *BlockChain) lagPipeForget(hash types.Hash) {
 	p.forgetOlderLocked(hash)
 	if a := p.spec; a != nil && (a.parent == hash || a.blk.Hash() == hash) {
 		p.spec = nil
-		p.discardLocked(a)
+		p.discardLocked(a, &p.discForget)
 		if par := p.parent; par != nil && par.hash == a.parent && a.blk.Hash() == hash {
 			// The orphan's sibling may still run ahead on this snapshot.
 			par.launched = false
@@ -810,7 +845,7 @@ func (bc *BlockChain) lagPipeReset() {
 	p.older = nil
 	if a := p.spec; a != nil {
 		p.spec = nil
-		p.discardLocked(a)
+		p.discardLocked(a, &p.discReset)
 	}
 }
 
