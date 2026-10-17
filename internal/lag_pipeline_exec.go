@@ -140,6 +140,12 @@ type lagPipeline struct {
 	parent *lagPipeParent
 	// spec: the one ahead execution.
 	spec *aheadExec
+	// older: the snapshots of the last written parents before parent,
+	// newest first, at most aheadBaseDepth-1: a child's base prefill read
+	// below its parent layers them (aheadLayersLocked). Each is a block's
+	// published dirty set, kept alive one block or a few longer than the
+	// write that held it.
+	older []*lagPipeParent
 	// draining: discarded ahead executions whose goroutines may still run.
 	// They share the block's transaction objects (the sender cache), so no
 	// other execution of the same block starts until they finish.
@@ -172,6 +178,9 @@ func (p *lagPipeline) dropParentLocked() {
 		return
 	}
 	p.parent = nil
+	if par.written && par.post != nil {
+		p.keepOlderLocked(par)
+	}
 	if !par.written || par.launched {
 		return
 	}
@@ -183,6 +192,68 @@ func (p *lagPipeline) dropParentLocked() {
 	default:
 		p.skipNotAvail.Add(1)
 	}
+}
+
+// keepOlderLocked records a written parent's snapshot among the older ones
+// (p.mu held), dropping the oldest beyond aheadBaseDepth-1.
+func (p *lagPipeline) keepOlderLocked(par *lagPipeParent) {
+	keep := aheadBaseDepth - 1
+	if keep <= 0 {
+		p.older = nil
+		return
+	}
+	o := make([]*lagPipeParent, 0, keep)
+	o = append(o, par)
+	for _, e := range p.older {
+		if len(o) == keep {
+			break
+		}
+		if e.hash != par.hash {
+			o = append(o, e)
+		}
+	}
+	p.older = o
+}
+
+// forgetOlderLocked drops hash's snapshot from the older ones (p.mu held).
+func (p *lagPipeline) forgetOlderLocked(hash types.Hash) {
+	o := p.older[:0:0]
+	for _, e := range p.older {
+		if e.hash != hash {
+			o = append(o, e)
+		}
+	}
+	p.older = o
+}
+
+// aheadLayersLocked returns the post-states of the blocks of par's chain
+// from par's parent down to height at+1, newest first, the block at at+1
+// being a child of atHash -- what a reader over par's post-state needs
+// layered for base values read on the tree in state at (p.mu held). ok is
+// false when one of them is not kept; at >= par.number-1 needs none.
+func (p *lagPipeline) aheadLayersLocked(par *lagPipeParent, at uint64, atHash types.Hash) (layers []*state.PostState, ok bool) {
+	if par == nil || par.header == nil || at > par.number {
+		return nil, false
+	}
+	if at == par.number {
+		return nil, par.hash == atHash
+	}
+	want, num := par.header.ParentHash, par.number-1
+	for num > at {
+		var e *lagPipeParent
+		for _, o := range p.older {
+			if o.hash == want && o.number == num {
+				e = o
+				break
+			}
+		}
+		if e == nil || e.post == nil || e.header == nil {
+			return nil, false
+		}
+		layers = append(layers, e.post)
+		want, num = e.header.ParentHash, num-1
+	}
+	return layers, want == atHash
 }
 
 // Reasons a launch attempt for a published parent gave up.
@@ -494,6 +565,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	// transactions may wait for read permits -- and the run adopts the rest.
 	claim := &aheadClaim{}
 	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
+	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
+		layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
+	}
 	if fn := lagPipeAheadClaimedForTest; fn != nil {
 		fn(bc, a.blk)
 	}
@@ -535,6 +609,37 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	}
 	a.ibs, a.reader, a.run = ibs, prefetch, run
 }
+
+// aheadBaseLayers returns the run's layers for its base prefill ab (claimed,
+// finished): read on the tree at par's height or its parent's, layers as
+// they are; read deeper, par's post-state over the kept post-states of
+// every block down to ab.at+1 (P15b) -- they also answer every key of a
+// grandparent write still pending. When one is not kept the prefill is
+// dropped (ab.pf = nil): the run reads through the tree per lookup.
+func (p *lagPipeline) aheadBaseLayers(ab *aheadBase, par *lagPipeParent, layers []*state.PostState) []*state.PostState {
+	if ab.at+1 >= par.number {
+		if (ab.at == par.number && ab.atHash == par.hash) || (ab.at+1 == par.number && ab.atHash == par.header.ParentHash) {
+			return layers
+		}
+		ab.pf, ab.skip = nil, "tree off the chain at the claim"
+		return layers
+	}
+	if fn := lagPipeAheadLayersForTest; fn != nil {
+		fn(p)
+	}
+	p.mu.Lock()
+	older, ok := p.aheadLayersLocked(par, ab.at, ab.atHash)
+	p.mu.Unlock()
+	if !ok {
+		ab.pf, ab.skip = nil, "an ancestor's post-state is not kept"
+		return layers
+	}
+	return append([]*state.PostState{par.post}, older...)
+}
+
+// lagPipeAheadLayersForTest runs before a deep prefill's layers are looked
+// up (tests: forget a kept post-state).
+var lagPipeAheadLayersForTest func(p *lagPipeline)
 
 // lagPipeTake hands blk's ahead execution to its import, or nil when there
 // is none or it cannot be used (then it is discarded and the import runs
@@ -683,6 +788,7 @@ func (bc *BlockChain) lagPipeForget(hash types.Hash) {
 	if p.parent != nil && p.parent.hash == hash {
 		p.dropParentLocked()
 	}
+	p.forgetOlderLocked(hash)
 	if a := p.spec; a != nil && (a.parent == hash || a.blk.Hash() == hash) {
 		p.spec = nil
 		p.discardLocked(a)
@@ -701,6 +807,7 @@ func (bc *BlockChain) lagPipeReset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.dropParentLocked()
+	p.older = nil
 	if a := p.spec; a != nil {
 		p.spec = nil
 		p.discardLocked(a)

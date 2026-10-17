@@ -18,6 +18,7 @@ package internal
 
 import (
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,14 +45,23 @@ import (
 // layer answers every key N did change (commitment/qmdb_base_prefill.go),
 // so the child's base values may come from either state. Once the child's
 // preparation (ahead_prep.go) is computed, its base prefill waits for the
-// tree to hold N-1 or N of the child's own chain (a labelled root,
-// commitment.QMDBRootComputer.AppliedState), reads the accounts every
-// transaction sends from and to, the fee recipients and the keys the
-// block-start system calls read, and checks afterwards that nothing but N's
-// own root changed the tree meanwhile; otherwise it is dropped. The ahead
-// run's tree reads -- its state, its workers, the block-start calls --
-// answer the prefilled keys without the tree's lock; the rest read through
-// it as before. N42_AHEAD_BASE_PREFETCH=0 disables it.
+// tree to hold a block h of the child's own chain with N-K <= h <= N (a
+// labelled root, commitment.QMDBRootComputer.AppliedState; K is
+// N42_AHEAD_BASE_DEPTH, default 2), reads the accounts every transaction
+// sends from and to, the fee recipients and the keys the block-start system
+// calls read, and checks afterwards that only the roots of the child's
+// ancestors above h changed the tree meanwhile (AppliedSince); otherwise it
+// is dropped. A value read at h is the child's base value once every block
+// in (h, N] has its post-state layered on the child's reader (P15b, as
+// n42-rs stacks its unlanded ancestors): the ahead run (runAhead) layers
+// the written ancestors' post-states the pipeline keeps (lagPipeline.older)
+// under N's, newest outermost, and drops the prefill when one is missing --
+// never a prefill over a partial stack. The ahead run's tree reads -- its
+// state, its workers, the block-start calls -- answer the prefilled keys
+// without the tree's lock; the rest read through it as before. The claim
+// does not wait for a fill still reading: it stops it at the next key and
+// takes the keys read so far (N42_AHEAD_BASE_CLAIM_WAIT=1 waits for the
+// whole fill). N42_AHEAD_BASE_PREFETCH=0 disables it.
 
 // aheadBasePrefetchOn is N42_AHEAD_BASE_PREFETCH (default on; "0", "false"
 // or "off" disables).
@@ -65,9 +75,47 @@ func SetAheadBasePrefetchForTest(on bool) func() {
 	return func() { aheadBasePrefetchOn = prev }
 }
 
+// aheadBaseDepth is N42_AHEAD_BASE_DEPTH, K: a prefill reads the tree at a
+// block h of the child's chain with N-K <= h <= N (N the child's parent).
+// Default 2, clamped to [1, aheadBaseMaxDepth]; each step keeps one more
+// written block's post-state alive (lagPipeline.older).
+var aheadBaseDepth = parseAheadBaseDepth(os.Getenv("N42_AHEAD_BASE_DEPTH"))
+
+const aheadBaseMaxDepth = 4
+
+func parseAheadBaseDepth(v string) int {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 2
+	}
+	if n > aheadBaseMaxDepth {
+		n = aheadBaseMaxDepth
+	}
+	return n
+}
+
+// SetAheadBaseDepthForTest sets K and returns the restore.
+func SetAheadBaseDepthForTest(k int) func() {
+	prev := aheadBaseDepth
+	aheadBaseDepth = k
+	return func() { aheadBaseDepth = prev }
+}
+
+// aheadBaseClaimWaitsFill is N42_AHEAD_BASE_CLAIM_WAIT=1: the claim waits
+// for a fill still reading instead of stopping it (the P15 behaviour).
+var aheadBaseClaimWaitsFill = os.Getenv("N42_AHEAD_BASE_CLAIM_WAIT") == "1"
+
+// SetAheadBaseClaimWaitForTest sets whether the claim waits for a fill
+// still reading, and returns the restore.
+func SetAheadBaseClaimWaitForTest(wait bool) func() {
+	prev := aheadBaseClaimWaitsFill
+	aheadBaseClaimWaitsFill = wait
+	return func() { aheadBaseClaimWaitsFill = prev }
+}
+
 // aheadBaseMaxWait bounds a prefill's wait for the tree to reach the
 // child's grandparent (the claim of the preparation ends it sooner).
-const aheadBaseMaxWait = 10 * time.Second
+var aheadBaseMaxWait = 10 * time.Second
 
 // aheadBase is one child's base prefill.
 type aheadBase struct {
@@ -79,16 +127,22 @@ type aheadBase struct {
 	// (skip says why).
 	pf     *commitment.BasePrefill
 	at     uint64        // the labelled height of the tree the fill started on
-	waited time.Duration // for the tree to reach the grandparent
+	atHash types.Hash    // the block the tree held there
+	depth  uint64        // N - at, N the child's parent
+	waited time.Duration // for the tree to reach a usable state
 	took   time.Duration // the fill itself
 	skip   string
+	// cut: the claim stopped the fill; pf holds the keys read before.
+	cut atomic.Bool
 
 	// claimWait: the claim's wait for the prefill to finish (set by the
 	// claimer).
 	claimWait time.Duration
 }
 
-// halt ends a prefill's wait for the tree and waits until it finished.
+// halt ends a prefill's wait for the tree, stops a fill still reading at
+// its next key (unless aheadBaseClaimWaitsFill), and waits until it
+// finished.
 func (ab *aheadBase) halt() {
 	if ab == nil {
 		return
@@ -108,18 +162,26 @@ func (pr *aheadPrep) prefill() *aheadBase {
 }
 
 // Ahead runs whose tree reads had a base prefill, those of them whose
-// prefill was read on the grandparent's tree, and the lookups the prefills
-// answered (process-wide, since start).
-var aheadBaseUsed, aheadBaseOnGrandparent, aheadBaseHits atomic.Uint64
+// prefill was read on the grandparent's tree, those read deeper (depth 2 or
+// more: older post-states layered), and the lookups the prefills answered
+// (process-wide, since start).
+var aheadBaseUsed, aheadBaseOnGrandparent, aheadBaseDeep, aheadBaseHits atomic.Uint64
 
 func noteAheadBaseUsed(ab *aheadBase, number uint64, pf *commitment.BasePrefill) {
 	aheadBaseUsed.Add(1)
 	if ab.at+2 == number {
 		aheadBaseOnGrandparent.Add(1)
 	}
+	if ab.depth >= 2 {
+		aheadBaseDeep.Add(1)
+	}
 	hits, _ := pf.Stats()
 	aheadBaseHits.Add(hits)
 }
+
+// AheadBaseDeepStats returns the ahead runs whose prefill was read two or
+// more blocks below their parent (since start).
+func AheadBaseDeepStats() uint64 { return aheadBaseDeep.Load() }
 
 // AheadBasePrefillStats returns the ahead runs that read through a base
 // prefill, those whose prefill came from the grandparent's tree, and the
@@ -169,14 +231,50 @@ func (bc *BlockChain) lagParentHashOf(hash types.Hash, number uint64) (types.Has
 	return types.Hash{}, false
 }
 
-// aheadBaseTreeOK reports whether st is a tree state the child (number n,
-// on parent) may take base values from: its parent's post-state or its
-// grandparent's (grand, when known).
-func aheadBaseTreeOK(st commitment.QMDBAppliedState, n uint64, parent, grand types.Hash, haveGrand bool) bool {
-	if !st.Labelled {
-		return false
+// aheadBaseChain is a child's ancestry for its prefill: hash[d] is the
+// block at height parent-d (hash[0] the parent), as far as it is known and
+// at most aheadBaseDepth levels down.
+type aheadBaseChain struct {
+	top  uint64 // the parent's height
+	hash []types.Hash
+}
+
+func (bc *BlockChain) aheadBaseChainOf(hdr *block.Header, depth int) aheadBaseChain {
+	n := hdr.Number.Uint64()
+	c := aheadBaseChain{top: n - 1, hash: []types.Hash{hdr.ParentHash}}
+	for d := 1; d <= depth && uint64(d) <= c.top; d++ {
+		ph, ok := bc.lagParentHashOf(c.hash[d-1], c.top-uint64(d-1))
+		if !ok {
+			break
+		}
+		c.hash = append(c.hash, ph)
 	}
-	return (st.Number == n-1 && st.Hash == parent) || (haveGrand && st.Number == n-2 && st.Hash == grand)
+	return c
+}
+
+// holds reports whether st is the tree in the state of one of the chain's
+// blocks; d is its depth below the parent.
+func (c aheadBaseChain) holds(st commitment.QMDBAppliedState) (d uint64, ok bool) {
+	if !st.Labelled || st.Number > c.top {
+		return 0, false
+	}
+	d = c.top - st.Number
+	return d, d < uint64(len(c.hash)) && c.hash[d] == st.Hash
+}
+
+// aheadBaseMovedOK reports whether the mutations since gen (states, oldest
+// first, from AppliedSince) are all roots of the chain's blocks above at,
+// in height order: values read before, between and after them are each the
+// state of a block in [at, parent] of the child's chain.
+func aheadBaseMovedOK(c aheadBaseChain, at uint64, states []commitment.QMDBAppliedState) bool {
+	prev := at
+	for _, st := range states {
+		if _, ok := c.holds(st); !ok || st.Number != prev+1 {
+			return false
+		}
+		prev = st.Number
+	}
+	return true
 }
 
 func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*transaction.Transaction, prepared []preparedTx, sp *StateProcessor, abort func() bool) {
@@ -190,63 +288,76 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	rc := bc.qmdbRootComputer
 	n := hdr.Number.Uint64()
 	defer func() {
-		log.Debug("ahead base prefill", "number", n, "keys", ab.pf.Len(), "treeAt", ab.at,
-			"waitMs", ab.waited.Milliseconds(), "fillMs", ab.took.Milliseconds(), "skip", ab.skip)
+		log.Debug("ahead base prefill", "number", n, "keys", ab.pf.Len(), "treeAt", ab.at, "depth", ab.depth,
+			"waitMs", ab.waited.Milliseconds(), "fillMs", ab.took.Milliseconds(), "cut", ab.cut.Load(), "skip", ab.skip)
 	}()
 	if n < 2 {
 		ab.skip = "genesis child"
 		return
 	}
-	parent := hdr.ParentHash
-	grand, haveGrand := bc.lagParentHashOf(parent, n-1)
+	chain := bc.aheadBaseChainOf(hdr, aheadBaseDepth)
 
-	// Wait for the tree to hold the grandparent (or the parent).
+	// Wait for the tree to hold a block of the chain within the depth.
 	t0 := time.Now()
 	tick := time.NewTicker(250 * time.Microsecond)
 	defer tick.Stop()
 	var st0 commitment.QMDBAppliedState
 	for {
 		st0 = rc.AppliedState()
-		if aheadBaseTreeOK(st0, n, parent, grand, haveGrand) {
+		if d, ok := chain.holds(st0); ok {
+			ab.depth = d
 			break
 		}
-		if st0.Labelled && st0.Number >= n-1 {
-			// The parent's height holds another block, or the tree passed
-			// it: nothing this child reads comes from there.
+		if st0.Labelled && st0.Number+uint64(len(chain.hash)) > chain.top {
+			// The tree holds another block at a height the child's layers
+			// could cover, or it passed the parent: nothing this child reads
+			// comes from there.
 			ab.skip = "tree off the parent"
 			return
 		}
 		if time.Since(t0) > aheadBaseMaxWait {
-			ab.skip = "tree below the grandparent"
+			ab.skip = "tree below the chain"
 			return
 		}
 		select {
 		case <-ab.stop:
-			ab.skip = "claimed before the tree reached the grandparent"
+			ab.skip = "claimed before the tree reached the chain"
 			return
 		case <-tick.C:
 		}
 	}
 	ab.waited = time.Since(t0)
-	ab.at = st0.Number
+	ab.at, ab.atHash = st0.Number, st0.Hash
 
+	stop := func() bool {
+		if abort() {
+			return true
+		}
+		if aheadBaseClaimWaitsFill {
+			return false
+		}
+		select {
+		case <-ab.stop:
+			ab.cut.Store(true)
+			return true
+		default:
+			return false
+		}
+	}
 	tFill := time.Now()
 	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)
-	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), abort)
+	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
 	ab.took = time.Since(tFill)
 	if err != nil {
 		ab.skip = "fill: " + err.Error()
 		return
 	}
-	// Only the parent's own root may have run while the fill read: the
-	// values then come from the grandparent's state or the parent's, never
-	// from a state the child's layers do not account for.
-	st1 := rc.AppliedState()
-	switch {
-	case st1.Gen == st0.Gen:
-	case st1.Gen == st0.Gen+1 && st1.Labelled && st1.Number == n-1 && st1.Hash == parent:
-	default:
-		if st1.Labelled && st1.Number > n-1 {
+	// Only the roots of the chain's blocks above the start may have run
+	// while the fill read: each value is then the state of a block in
+	// [at, parent], which the child's layers account for.
+	states, ok := rc.AppliedSince(st0.Gen)
+	if !ok || !aheadBaseMovedOK(chain, st0.Number, states) {
+		if st1 := rc.AppliedState(); st1.Labelled && st1.Number > chain.top {
 			log.Warn("ahead base prefill: the tree passed the child's parent while it read",
 				"number", n, "treeAt", st1.Number)
 		}

@@ -79,6 +79,10 @@ type QMDBRootComputer struct {
 	applied atomic.Pointer[QMDBAppliedState]
 	// nextLabel is the label the next ComputeRoot of that dirty set takes.
 	nextLabel atomic.Pointer[rootLabel]
+	// appliedLog holds the last appliedLogLen applied states by Gen
+	// (AppliedSince), under appliedMu.
+	appliedMu  sync.Mutex
+	appliedLog [appliedLogLen]QMDBAppliedState
 }
 
 // evictLagFromEnv parses N42_QMDB_EVICT_LAG_BLOCKS (unset, invalid or <= 0
