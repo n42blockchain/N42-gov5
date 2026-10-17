@@ -1,8 +1,9 @@
 # Offline source-bound resume plan
 
 Status: targeted normal/race tests, package vet and the full Make Go-package
-build passed on 2026-10-17. No target corpus scan or transaction dispatch has run
-for this change. The next gate is the separately controlled real source scan.
+build passed on 2026-10-17. The separately controlled real source scan also
+passed. Owner activation, resume transport and transaction dispatch remain
+unimplemented; this is neither a fresh chain-state audit nor a TPS result.
 
 `gov5-replay resume-plan` is an explicit offline command. It requires the exact
 SHA256 pins of the finalized source manifest, retained runtime metadata, promoted
@@ -73,3 +74,32 @@ claims, settle, foreign workload checks, full process-group cleanup and final
 ownership checks were retained. The 80GiB floor also applied during execution.
 Repository/fleet/source-scan defaults were not changed. All recorded processes
 and groups exited and all five owned claim paths were absent at acceptance.
+
+The real source run used clean source
+`6215f96b8b861e958cdd8746a5ffb1157066621f` and dedicated replay binary SHA256
+`e54f46efa5d957fc829879c88dec0e091ba6f56ce81677a23865b2d9f8f8ea30`.
+Build and scan returned zero in 2.643s and 24.569s. All 64 finalized shards
+(20,379,691,444 bytes) passed full SHA256 checks before public mapping recovery;
+6,000 mapping signatures and 2,000 selected-frame signatures were checked.
+These counts describe the two verification stages, not 8,000 unique signatures
+or a new full-signature audit of all 192 million source transactions.
+
+The actual selected logical indices were 0, 64, 69 and 3803. Their fixed
+canonical skips are 500, 42, 41 and 0; prospective new counts are 0, 458, 459
+and 500. The plan keeps all four original 500-transaction frames intact.
+The mapping digest is
+`70744b4336bbba0a7fc72b589ec081904fe3470221a71e941354f47b7e046284`;
+PlanID is `79afc62975fbf5c0df56b295a1f477bd3834cc523ca93c12bf82e0eaadcbbe7e`.
+
+Independent Sol acceptance is
+`/data/blockchain/gov5-work/validation/20261017-gov5-resume-plan-real-source-6215f96b/acceptance.json`
+(SHA256 `beda62f000b0a3d66e0edfc7f97c90ef729613642052728bf1fee42336ccbc5f`).
+It independently re-encodes both binary IDs with Python, checks the artifact
+hash chain and historical account vector, unchanged source metadata, actual
+stage logs, empty recorded process groups and released claims. The promoted
+result SHA256 is `08685cb953cff983b5a56dc6d2dc07e0e53877f8bdc0ab0fb54cb50745d10b78`.
+The run used a separate controller-local source-scan policy with the same raw
+80GiB floor, quiet/claim/cleanup checks, 64GiB disk low-water mark and one 600s
+budget for build plus scan. No corpus copy, retained database, socket, owner
+session or dispatch was involved; the existing genesis calculation used its
+small temporary MDBX. The 90GiB real-chain launch floor remains unchanged.
