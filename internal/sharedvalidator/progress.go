@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/sharedexec"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -139,4 +140,57 @@ func (r *Replica) CanonicalProgress(ctx context.Context) (CanonicalProgress, err
 	var progress CanonicalProgress
 	err := r.db.View(ctx, func(tx kv.Tx) error { var err error; progress, err = readCanonicalProgress(tx, r.identity); return err })
 	return progress, err
+}
+
+// CanonicalProbeAnchor validates the retained local header as well as progress.
+// It is a startup-only check: normal counter reads need no extra header decode.
+// Read the local row directly so an ancient-store fallback cannot hide a missing
+// metadata anchor. This does not repair metadata or authenticate execution.
+func (r *Replica) CanonicalProbeAnchor(ctx context.Context) (CanonicalProgress, error) {
+	var progress CanonicalProgress
+	err := r.db.View(ctx, func(tx kv.Tx) error {
+		candidate, err := readCanonicalProgress(tx, r.identity)
+		if err != nil {
+			return err
+		}
+		if candidate.BlockHash == (types.Hash{}) || candidate.Number == ^uint64(0) {
+			return errors.New("canonical probe anchor is zero or overflows")
+		}
+		raw, err := tx.GetOne(modules.Headers, modules.HeaderKey(candidate.Number, candidate.BlockHash))
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			return errors.New("canonical probe local header missing")
+		}
+		header, err := decodeCanonicalProbeHeader(raw)
+		if err != nil {
+			return err
+		}
+		if header.Number == nil || !header.Number.IsUint64() || header.Number.Uint64() != candidate.Number || header.Hash() != candidate.BlockHash {
+			return errors.New("canonical probe local header does not match progress")
+		}
+		progress = candidate
+		return nil
+	})
+	if err != nil {
+		return CanonicalProgress{}, err
+	}
+	return progress, nil
+}
+
+func decodeCanonicalProbeHeader(raw []byte) (header *block.Header, err error) {
+	// The native protobuf decoder assumes complete nested fixed-width fields.
+	// A corrupt retained row must reject startup rather than panic the process.
+	defer func() {
+		if recover() != nil {
+			header = nil
+			err = errors.New("canonical probe local header malformed")
+		}
+	}()
+	header = new(block.Header)
+	if err = header.Unmarshal(raw); err != nil {
+		return nil, err
+	}
+	return header, nil
 }
