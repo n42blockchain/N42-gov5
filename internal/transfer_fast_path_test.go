@@ -308,13 +308,30 @@ func TestTransferFastPathMatchesEVM(t *testing.T) {
 				tookIBS := fastTransfers.Load() - before
 				require.Greater(t, tookIBS, uint64(0), "the fast run never took the fast path")
 				require.Less(t, tookIBS, uint64(len(onIBS.included)), "every included tx took the fast path: the fallbacks were not exercised")
-				before = fastTransfers.Load()
+				// The direct path from the message (N42_TRANSFER_FAST2=0),
+				// then from the transfer plan: both must equal the fast
+				// path on the IntraBlockState.
+				restore := setTransferFast2ForTest(false)
 				directBefore := directTransfers.Load()
+				planBefore0 := planTransfers.Load()
+				direct1 := runFastPathBlockMode(t, db, c.cfg, header, txs, true, true)
+				require.Equal(t, planBefore0, planTransfers.Load(), "the fast2=0 run applied a plan")
+				tookDirect1 := directTransfers.Load() - directBefore
+				restore()
+				require.Greater(t, tookDirect1, uint64(0), "the fast2=0 direct run never took the direct path")
+				require.Equal(t, onIBS, direct1, "the fast2=0 direct path differs from the fast path on the IntraBlockState")
+				restore = setTransferFast2ForTest(true)
+				before = fastTransfers.Load()
+				directBefore = directTransfers.Load()
+				planBefore := planTransfers.Load()
 				fast := runFastPathBlockMode(t, db, c.cfg, header, txs, true, true)
+				require.Greater(t, planTransfers.Load()-planBefore, uint64(0), "the fast2 run never applied a plan")
 				took := fastTransfers.Load() - before
 				tookDirect := directTransfers.Load() - directBefore
-				require.Greater(t, tookDirect, uint64(0), "the direct run never took the direct path")
-				require.Equal(t, onIBS, fast, "the direct path differs from the fast path on the IntraBlockState")
+				restore()
+				// Counts include re-executions, which vary between runs.
+				require.Greater(t, tookDirect, uint64(0), "the fast2 direct run never took the direct path")
+				require.Equal(t, onIBS, fast, "the fast2 direct path differs from the fast path on the IntraBlockState")
 
 				require.Equal(t, slow.included, fast.included, "included transactions")
 				require.Equal(t, slow.failed, fast.failed, "failed count")

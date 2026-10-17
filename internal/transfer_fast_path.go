@@ -47,6 +47,21 @@ var transferFastPath = os.Getenv("N42_TRANSFER_FAST_PATH") != "0"
 // N42_TRANSFER_DIRECT=0 keeps the fast path on the IntraBlockState (A/B).
 var transferDirectPath = os.Getenv("N42_TRANSFER_DIRECT") != "0"
 
+// transferFast2 is N42_TRANSFER_FAST2 (default on; "0" keeps the previous
+// direct path): the direct transfer runs from the transaction's transfer
+// plan (transferPlan, built with its message before the wave) instead of
+// its message, and skips the work the plan or the path makes redundant.
+var transferFast2 = os.Getenv("N42_TRANSFER_FAST2") != "0"
+
+// setTransferFast2ForTest sets transferFast2 (and the store's matching
+// switch) and returns the restore.
+func setTransferFast2ForTest(on bool) func() {
+	prev := transferFast2
+	transferFast2 = on
+	restoreParallel := parallel.SetFast2ForTest(on)
+	return func() { transferFast2 = prev; restoreParallel() }
+}
+
 // fastTransfers counts the transactions the fast path applied (process
 // lifetime; tests and diagnostics). A worker counts into its scratch and
 // adds the total here when it is done (flush): one shared atomic add per
@@ -57,15 +72,23 @@ var fastTransfers atomic.Uint64
 // tryDirectTransfer (a subset of fastTransfers; tests and diagnostics).
 var directTransfers atomic.Uint64
 
+// planTransfers counts the direct transfers applied from their plan
+// (tryDirectTransferPlan; a subset of directTransfers).
+var planTransfers atomic.Uint64
+
 // fastTransferScratch holds a worker's per-transaction values for the fast
 // path, reused across its transactions (the IntraBlockState copies every
 // amount it is handed, and the result is read before the next transaction).
 type fastTransferScratch struct {
 	mgval, balanceCheck, zero, tip, amount, burn uint256.Int
-	result                                       ExecutionResult
-	applied                                      uint64 // not yet added to fastTransfers
-	appliedDirect                                uint64 // not yet added to directTransfers
-	direct                                       directTransferAccounts
+	// The plan's amounts as 256-bit values (tryDirectTransferPlan), and
+	// TxGas as one.
+	planFeeCap, planTip, planValue, planGas uint256.Int
+	result                                  ExecutionResult
+	applied                                 uint64 // not yet added to fastTransfers
+	appliedDirect                           uint64 // not yet added to directTransfers
+	appliedPlan                             uint64 // not yet added to planTransfers
+	direct                                  directTransferAccounts
 }
 
 // directTransferAccounts are tryDirectTransfer's two accounts, as read
@@ -83,6 +106,10 @@ func (sc *fastTransferScratch) flush() {
 	if sc.appliedDirect != 0 {
 		directTransfers.Add(sc.appliedDirect)
 		sc.appliedDirect = 0
+	}
+	if sc.appliedPlan != 0 {
+		planTransfers.Add(sc.appliedPlan)
+		sc.appliedPlan = 0
 	}
 }
 
@@ -331,6 +358,172 @@ func tryDirectTransfer(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *paral
 	sc.applied++
 	sc.appliedDirect++
 	sc.result = ExecutionResult{UsedGas: sh.gas, BlockGasUsed: sh.gas}
+	return &sc.result, true
+}
+
+// transferPlan is what the direct transfer reads of a transaction, built
+// with its message before the wave (txAffinityKey), while the message is in
+// cache: the checks of fastTransferShape that read only the message, and
+// the few message fields the transfer uses, 88 bytes next to the
+// transaction's hash. A worker visits its transactions in sender order,
+// and the message (six cache lines), the recipient it points to and the
+// transaction's type were separate cache misses per transfer (r35zzzco:
+// fastTransferShape 11.5 s and Transaction.Type 3.5 s of executeSingle's
+// 76 s).
+type transferPlan struct {
+	from, to types.Address
+	// ok: the message is a plain value transfer the direct path may apply
+	// as far as the message alone decides -- a call with no data, access
+	// list, authorizations or blobs, not free, nonce-checked, TxGas gas, a
+	// non-zero value, a recipient other than the sender -- and its value,
+	// gas price, fee cap and tip fit in 64 bits (anything else takes the
+	// message path, tryDirectTransfer). With 64-bit amounts gas*price and
+	// gas*feeCap+value cannot overflow.
+	ok                           bool
+	txType                       uint8
+	nonce                        uint64
+	value, gasPrice, feeCap, tip uint64
+}
+
+// makeTransferPlan builds tx's plan from its prepared message msg.
+func makeTransferPlan(pl *transferPlan, msg *transaction.Message, tx *transaction.Transaction) {
+	to := msg.To()
+	if to == nil || len(msg.Data()) != 0 || len(msg.AccessList()) != 0 || len(msg.AuthList()) != 0 ||
+		len(msg.BlobHashes()) != 0 || msg.IsFree() || !msg.CheckNonce() || msg.Gas() != params.TxGas {
+		return
+	}
+	gasPrice, feeCap, tip, value := msg.ExecutionValues()
+	from := msg.From()
+	if value.IsZero() || *to == from || !value.IsUint64() || !gasPrice.IsUint64() || !feeCap.IsUint64() || !tip.IsUint64() {
+		return
+	}
+	*pl = transferPlan{from: from, to: *to, ok: true, txType: tx.Type(), nonce: msg.Nonce(),
+		value: value.Uint64(), gasPrice: gasPrice.Uint64(), feeCap: feeCap.Uint64(), tip: tip.Uint64()}
+}
+
+// tryDirectTransferPlan is tryDirectTransfer from the transaction's plan:
+// the message is not read. The state-free checks that depend on the block
+// (fork rules, the EVM configuration, the precompiles, the base fee) run
+// here as fastTransferShape runs them; the rest is tryDirectTransfer's,
+// without its MarkBalanceInsensitive call, which never changes a read of
+// this path (the sender's balance is observed, and the recipient's read is
+// recorded balance-insensitive already). It requires London rules (the fee
+// arithmetic below is London's); any other block returns false, and the
+// caller runs tryDirectTransfer.
+func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *parallel.ParallelStateWriter, rw *parallel.ReadWriteSet,
+	pl *transferPlan, gasLimit uint64, sink FeeSink, sc *fastTransferScratch) (*ExecutionResult, bool) {
+	if sink == nil {
+		return nil, false
+	}
+	cfg := evm.Config()
+	if cfg.Debug || cfg.RestoreState || dbgNonceBlock > 0 || dbgRefundBlock > 0 {
+		return nil, false
+	}
+	rules := evm.ChainRules()
+	if !rules.IsLondon || rules.IsGlamsterdam {
+		return nil, false
+	}
+	policy := newTransitionChainPolicy(evm.ChainConfig())
+	if policy.shouldForceGasBailout() {
+		return nil, false
+	}
+	const gas = params.TxGas
+	if (rules.IsPrague && vm2.FloorDataGas(nil) > gas) || gas > gasLimit {
+		return nil, false
+	}
+	if evm.IsPrecompile(pl.to) {
+		return nil, false
+	}
+	blockCtx := evm.Context()
+	feeCap, tip, value := &sc.planFeeCap, &sc.planTip, &sc.planValue
+	feeCap.SetUint64(pl.feeCap)
+	tip.SetUint64(pl.tip)
+	value.SetUint64(pl.value)
+	if !cfg.NoBaseFee || pl.feeCap != 0 || pl.tip != 0 {
+		// CheckEip1559TxGasFeeCap for a message that is not free.
+		if pl.feeCap < pl.tip || (blockCtx.BaseFee != nil && feeCap.Lt(blockCtx.BaseFee)) {
+			return nil, false
+		}
+	}
+	// buyGas's debit gas*gasPrice and the balance the sender must hold,
+	// gas*feeCap+value (64-bit operands: no overflow).
+	mgval, balanceCheck := &sc.mgval, &sc.balanceCheck
+	sc.planGas.SetUint64(gas)
+	mgval.SetUint64(pl.gasPrice)
+	mgval.Mul(mgval, &sc.planGas)
+	balanceCheck.Mul(feeCap, &sc.planGas)
+	balanceCheck.Add(balanceCheck, value)
+	nReads := len(rw.Reads)
+	fail := func() (*ExecutionResult, bool) {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+
+	// The sender (preCheck reads its nonce first).
+	acc, err := rd.ReadAccountData(pl.from)
+	if err != nil || acc == nil {
+		return fail()
+	}
+	s := &sc.direct
+	s.fromOrig = *acc // the reader's buffer is overwritten by the next read
+	s.from = s.fromOrig
+	normaliseLoaded(&s.from)
+	nonce := s.from.Nonce
+	if nonce != pl.nonce || nonce+1 < nonce {
+		return fail()
+	}
+	if ch := s.from.CodeHash; ch != emptyCodeHash && ch != (types.Hash{}) {
+		return fail()
+	}
+	if s.from.Balance.Lt(balanceCheck) {
+		return fail()
+	}
+	// The recipient (evm.Call's Exist), read ignoring its balance.
+	acc, err = rd.ReadAccountIgnoringBalance(pl.to)
+	if err != nil || acc == nil {
+		return fail()
+	}
+	s.toOrig = *acc
+	s.to = s.toOrig
+	normaliseLoaded(&s.to)
+	if ch := s.to.CodeHash; ch != emptyCodeHash && ch != (types.Hash{}) {
+		return fail()
+	}
+	// buyGas, the nonce bump, the transfer, the zero refund.
+	s.from.Balance.Sub(&s.from.Balance, mgval)
+	s.from.Nonce = nonce + 1
+	s.from.Balance.Sub(&s.from.Balance, value)
+	s.to.Balance.Add(&s.to.Balance, value)
+	if s.to.Balance.IsZero() {
+		return fail() // wrapped: leave it to the EVM path's semantics
+	}
+
+	// FinalizeTx: the dirty accounts in address order.
+	if bytes.Compare(pl.from[:], pl.to[:]) < 0 {
+		wr.UpdateAccountDataEligible(pl.from, &s.fromOrig, &s.from, false)
+		wr.UpdateAccountDataEligible(pl.to, &s.toOrig, &s.to, true)
+	} else {
+		wr.UpdateAccountDataEligible(pl.to, &s.toOrig, &s.to, true)
+		wr.UpdateAccountDataEligible(pl.from, &s.fromOrig, &s.from, false)
+	}
+
+	// creditTransferFees under London.
+	effectiveTip := u256.Num0
+	if feeCap.Gt(blockCtx.BaseFee) {
+		effectiveTip = cmath.Min256(tip, sc.tip.Sub(feeCap, blockCtx.BaseFee))
+	}
+	amount := sc.amount.SetUint64(gas)
+	amount.Mul(amount, effectiveTip)
+	sink(policy.priorityFeeRecipient(blockCtx.Coinbase), amount)
+	if rules.IsEip1559FeeCollector {
+		burnAmount := sc.burn.SetUint64(gas)
+		burnAmount.Mul(burnAmount, blockCtx.BaseFee)
+		sink(*evm.ChainConfig().Eip1559FeeCollector, burnAmount)
+	}
+	sc.applied++
+	sc.appliedDirect++
+	sc.appliedPlan++
+	sc.result = ExecutionResult{UsedGas: gas, BlockGasUsed: gas}
 	return &sc.result, true
 }
 

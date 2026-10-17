@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	_ "unsafe" // go:linkname
 
 	"github.com/n42blockchain/N42/log"
 )
@@ -343,7 +344,7 @@ type workerStat struct {
 	// writes (or the worker started): the next transaction's start, so a
 	// transaction reads the clock twice instead of five times (the reads
 	// were ~2.5% of the exec wave's CPU at 163k transfers).
-	clock time.Time
+	clock int64 // monoNow
 	// keyCount counts the worker's queued transactions per affinity key
 	// (P10): a sender's account gets one version per transaction of its
 	// chain, and its version list is sized for all of them at the first.
@@ -363,6 +364,7 @@ type WorkerStatsSummary struct {
 	QMin          int
 	SetupMs       int64
 	MvsWriteMs    int64
+	MvsWriteNs    int64 // MvsWriteMs unrounded
 	MvsDeleteMs   int64
 	SlowestWorker int
 	Keys          int // S83: distinct affinity keys (LPT mode only)
@@ -406,6 +408,7 @@ func (e *Executor) WorkerStats() WorkerStatsSummary {
 	s.WallMeanMs = float64(sumWallNs) / float64(len(e.workerStats)) / 1e6
 	s.SetupMs = setupNs / 1e6
 	s.MvsWriteMs = mvsWriteNs / 1e6
+	s.MvsWriteNs = mvsWriteNs
 	s.MvsDeleteMs = mvsDeleteNs / 1e6
 	return s
 }
@@ -747,7 +750,7 @@ func (e *Executor) executeParallel(txIndices []int) {
 					defer teardown()
 				}
 			}
-			ws.clock = time.Now()
+			ws.clock = monoNow()
 			run := func(txIndex int) {
 				if setupErr != nil {
 					// A kept set would carry the previous block's reads into
@@ -987,6 +990,15 @@ func affinityKeysOn(numTxs int, txIndices []int, key func(int) uint64, g int) []
 	return keys
 }
 
+// monoNow is the monotonic clock in nanoseconds: the executor's per
+// transaction timings (two reads a transaction) without time.Now's wall
+// clock read, half of each read's cost (r35zzzco: time.Now 2 s of
+// executeSingle's 76 s).
+func monoNow() int64 { return nanotime() }
+
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
+
 // executeSingle executes a single transaction. ws is the calling worker's
 // S82 stat slot, or nil from runSequential (which has no worker to charge).
 func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
@@ -1020,7 +1032,7 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 			}
 			if ws != nil {
 				ws.mvsDeleteNs += int64(time.Since(tDelete))
-				ws.clock = time.Now()
+				ws.clock = monoNow()
 			}
 		}
 		rw.Clear()
@@ -1030,23 +1042,31 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 
 	// Execute the transaction. A worker's call starts when its previous
 	// transaction ended (ws.clock).
-	var tCall time.Time
+	var tCall int64
 	if ws != nil {
 		tCall = ws.clock
 	} else {
-		tCall = time.Now()
+		tCall = monoNow()
 	}
 	err := e.exec(ctx, txIndex, rw)
-	tWrite := time.Now()
-	busy := int64(tWrite.Sub(tCall))
+	tWrite := monoNow()
+	busy := tWrite - tCall
 	if ws != nil {
 		ws.busyNs += busy
 	} else {
 		e.busyNanos.Add(busy)
 	}
 
-	e.results[txIndex] = TxResult{Err: err}
-	e.rwSets[txIndex] = rw
+	// Store only what changed: neighbouring transactions run on other
+	// workers at the same time, and a store of the value already there
+	// still takes the cache line from them (r35zzzco: the load of
+	// rwSets[txIndex] 2.1 s of executeSingle's 76 s, the lines bouncing).
+	if err != nil || e.results[txIndex].Err != nil {
+		e.results[txIndex] = TxResult{Err: err}
+	}
+	if e.rwSets[txIndex] != rw {
+		e.rwSets[txIndex] = rw
+	}
 
 	// Apply writes to MVS with incarnation tag.
 	inc := e.incarnation[txIndex]
@@ -1061,12 +1081,20 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		default:
 			// The state writer encodes every other value fresh and nothing
 			// mutates a recorded write: the store adopts it.
-			e.writeEntry(rw, &wd.Key).writeOwnedHint(txIndex, inc, wd.Value, e.versionHint(ws, txIndex, &wd.Key))
+			// The hint sizes only an empty version list: an entry with a
+			// full write has a non-empty one, so it is computed only for an
+			// entry without (its lookups were a cache miss per write).
+			ent := e.writeEntry(rw, &wd.Key)
+			hint := 0
+			if ent.noFullWrites() {
+				hint = e.versionHint(ws, txIndex, &wd.Key)
+			}
+			ent.writeOwnedHint(txIndex, inc, wd.Value, hint)
 		}
 	}
 	if ws != nil {
-		ws.clock = time.Now()
-		ws.mvsWriteNs += int64(ws.clock.Sub(tWrite))
+		ws.clock = monoNow()
+		ws.mvsWriteNs += ws.clock - tWrite
 	}
 
 	e.status[txIndex] = StatusExecuted
@@ -1163,21 +1191,34 @@ func (e *Executor) validateExecuted() []bool {
 	if workers > e.numTxs {
 		workers = e.numTxs
 	}
+	// Workers take contiguous chunks: with strides every verdict a worker
+	// stored shared a cache line with its neighbours' verdicts and reads.
+	var next atomic.Int64
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func(start int) {
+		go func() {
 			defer wg.Done()
-			for i := start; i < e.numTxs; i += workers {
-				if e.status[i] == StatusExecuted {
-					valid[i] = Validate(e.mvs, e.rwSets[i])
+			for {
+				lo := int(next.Add(validateChunk)) - validateChunk
+				if lo >= e.numTxs {
+					return
+				}
+				hi := min(lo+validateChunk, e.numTxs)
+				for i := lo; i < hi; i++ {
+					if e.status[i] == StatusExecuted {
+						valid[i] = Validate(e.mvs, e.rwSets[i])
+					}
 				}
 			}
-		}(w)
+		}()
 	}
 	wg.Wait()
 	return valid
 }
+
+// validateChunk is the transactions a validation worker takes at a time.
+const validateChunk = 512
 
 // traceFailure logs why transaction i failed validation (N42_PARALLEL_TRACE).
 func (e *Executor) traceFailure(i int) {

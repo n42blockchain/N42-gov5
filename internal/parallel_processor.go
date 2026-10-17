@@ -611,6 +611,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// accounts it touches (~163k reads for ~23k accounts at the bench's
 		// block size).
 		wc.reader.SetBaseCache(baseCache)
+		wc.reader.EnableEntryCache()
 		// Its only consumer is the worker's IntraBlockState, which copies
 		// every account it reads.
 		wc.reader.ReuseAccountBuffer()
@@ -648,6 +649,17 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		r := &txResults[txIndex]
 		wc.scratch.msgReady = false
 		if pm := &prepared[txIndex]; pm.ok {
+			if transferFast2 && transferFastPath && transferDirectPath && pm.plan.ok {
+				if res, ok := tryDirectTransferPlan(wc.evm, wc.reader, wc.writer, rw, &pm.plan, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
+					var receipt *block.Receipt
+					if !cfg.NoReceipts {
+						receipt = wc.scratch.transferReceipt(pm.plan.txType, pm.hash, res, concreteHeader, uint(txIndex))
+					}
+					r.receipt, r.gasUsed, r.err, r.logs = receipt, res.BlockGasUsed, nil, nil
+					r.setFees(wc.fees)
+					return nil
+				}
+			}
 			if transferFastPath && transferDirectPath {
 				// A plain transfer straight on the reader and writer,
 				// without the IntraBlockState (tryDirectTransfer).
@@ -761,7 +773,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			return nil, fmt.Errorf("ProcessParallel: read span: %w", err)
 		}
 	}
+	var waveCPU0 time.Duration
+	if waveCPUMeter != nil {
+		waveCPU0 = waveCPUMeter()
+	}
 	results := executor.Run()
+	if waveCPUMeter != nil {
+		waveCPUNs.Add(int64(waveCPUMeter() - waveCPU0))
+	}
 	if span != nil {
 		span.End()
 		span = nil
@@ -777,6 +796,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 	waveBusyMs := executor.BusyNanos() / 1e6
 	wkStats := executor.WorkerStats() // S82: per-worker wall/queue/setup/mvs timings for this block's waves
+	waveWorkNs.Add(executor.BusyNanos() + wkStats.MvsWriteNs)
 
 	// Strict: any transaction failure fails the block. Lenient: a failed
 	// candidate wrote nothing (the failure is a pre-check, before FinalizeTx),
@@ -1089,11 +1109,26 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 	return state.LayerPostStates(postLayers, base)
 }
 
-// preparedTx is a transaction's message and hash, built before the wave.
+// waveWorkNs sums, over every parallel run of the process, the wall time
+// the workers spent inside transaction bodies and their store writes
+// (benchmarks: the exec wave's work without the scheduling gaps).
+var waveWorkNs atomic.Int64
+
+// waveCPUMeter, when set (benchmarks), reads the process CPU; every
+// parallel run then adds its executor run's CPU to waveCPUNs.
+var (
+	waveCPUMeter func() time.Duration
+	waveCPUNs    atomic.Int64
+)
+
+// preparedTx is a transaction's message and hash, built before the wave,
+// and its transfer plan (first: a direct transfer reads the plan and the
+// hash, adjacent, and not the message).
 type preparedTx struct {
-	msg  transaction.Message
+	plan transferPlan
 	hash types.Hash
 	ok   bool
+	msg  transaction.Message
 }
 
 // parallelTxScratch is a Block-STM worker's reusable per-transaction state
@@ -1156,6 +1191,19 @@ func (sc *parallelTxScratch) fillReceipt(owned bool, tx *transaction.Transaction
 	if len(logs) != 0 {
 		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
 	} // else the zero bloom, which is what CreateBloom returns for no logs
+	receipt.BlockNumber = header.Number
+	receipt.TransactionIndex = txIndex
+	return receipt
+}
+
+// transferReceipt is fillReceipt for a successful direct transfer (no
+// logs, not a creation) of type txType.
+func (sc *parallelTxScratch) transferReceipt(txType uint8, txHash types.Hash, result *ExecutionResult, header *block.Header, txIndex uint) *block.Receipt {
+	receipt := sc.newReceipt()
+	receipt.Type = txType
+	receipt.Status = block.ReceiptStatusSuccessful
+	receipt.TxHash = txHash
+	receipt.GasUsed = result.UsedGas
 	receipt.BlockNumber = header.Number
 	receipt.TransactionIndex = txIndex
 	return receipt

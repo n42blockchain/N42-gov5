@@ -55,25 +55,39 @@ type baseEntry struct {
 	hash uint64
 	acc  *account.StateAccount
 	enc  []byte
+	// accVal holds the account acc points to: in the entry's own
+	// allocation, next to the address the lookup compared, rather than a
+	// separate object and another cache miss per read.
+	accVal account.StateAccount
 }
 
 // baseTable is an insert-only linear-probing table (see mvTable).
 type baseTable struct {
 	mask  uint64
-	slots []atomic.Pointer[baseEntry]
+	slots []baseSlot
 }
 
+// baseSlot is a slot with its entry's hash (see mvSlot).
+type baseSlot struct {
+	hash atomic.Uint64
+	e    atomic.Pointer[baseEntry]
+}
+
+// Load returns the slot's entry (nil when free).
+func (s *baseSlot) Load() *baseEntry { return s.e.Load() }
+
 func newBaseTable(size int) *baseTable {
-	return &baseTable{mask: uint64(size - 1), slots: make([]atomic.Pointer[baseEntry], size)}
+	return &baseTable{mask: uint64(size - 1), slots: make([]baseSlot, size)}
 }
 
 func (t *baseTable) find(addr *types.Address, h uint64) *baseEntry {
 	for i := h & t.mask; ; i = (i + 1) & t.mask {
-		e := t.slots[i].Load()
+		s := &t.slots[i]
+		e := s.e.Load()
 		if e == nil {
 			return nil
 		}
-		if e.hash == h && e.addr == *addr {
+		if s.hash.Load() == h && e.addr == *addr {
 			return e
 		}
 	}
@@ -81,8 +95,9 @@ func (t *baseTable) find(addr *types.Address, h uint64) *baseEntry {
 
 func (t *baseTable) place(e *baseEntry) {
 	for i := e.hash & t.mask; ; i = (i + 1) & t.mask {
-		if t.slots[i].Load() == nil {
-			t.slots[i].Store(e)
+		if s := &t.slots[i]; s.e.Load() == nil {
+			s.hash.Store(e.hash)
+			s.e.Store(e)
 			return
 		}
 	}
@@ -178,9 +193,9 @@ func (c *BaseCache) insert(addr types.Address, acc *account.StateAccount) *baseE
 	}
 	e := &baseEntry{addr: addr, hash: h}
 	if acc != nil {
-		cp := *acc
-		e.acc = &cp
-		e.enc = cp.MarshalV2()
+		e.accVal = *acc
+		e.acc = &e.accVal
+		e.enc = e.accVal.MarshalV2()
 	}
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
