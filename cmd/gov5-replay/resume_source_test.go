@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -174,6 +173,46 @@ func TestResumeSourceRecoversOriginalLogicalMappingAfterAllShardHashes(t *testin
 	if skipped != 583 || newly != 1417 || got.Frames[1].NewlyAdmitted != 459 || got.Frames[2].NewlyAdmitted != 458 || got.Frames[3].NewlyAdmitted != 0 {
 		t.Fatal("original partial prefixes were cropped/rounded")
 	}
+	// Freeze the pre-extraction CLI document layout. The owner and offline
+	// tool must reproduce identical source-proof bytes, including the newline.
+	manifestRaw, err := os.ReadFile(filepath.Join(f.root, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, encoded, err := sharedexec.EncodeResumeSourceProof(manifestRaw, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type legacyWitness struct {
+		SenderIndex      uint32                   `json:"sender_index"`
+		Address          types.Address            `json:"address"`
+		FirstFrame       sharedexec.CorpusFrameID `json:"first_frame"`
+		PayloadHash      types.Hash               `json:"payload_sha256"`
+		PayloadBytes     uint32                   `json:"payload_bytes"`
+		FirstTransaction types.Hash               `json:"first_transaction_sha256"`
+	}
+	witnesses := make([]legacyWitness, len(got.Witnesses))
+	for i, w := range got.Witnesses {
+		witnesses[i] = legacyWitness{w.SenderIndex, w.Address, w.FirstFrame, w.PayloadHash, w.PayloadBytes, w.FirstTransaction}
+	}
+	legacy := struct {
+		Kind      string                   `json:"kind"`
+		Identity  sharedexec.Identity      `json:"identity"`
+		Manifest  types.Hash               `json:"manifest_sha256"`
+		CorpusID  types.Hash               `json:"corpus_id"`
+		Genesis   types.Hash               `json:"genesis_file_sha256"`
+		Shards    []sharedexec.CorpusShard `json:"shards"`
+		Witnesses []legacyWitness          `json:"witnesses"`
+		Mapping   types.Hash               `json:"mapping_sha256"`
+	}{"gov5-resume-source-mapping-v1", f.manifest.Descriptor.Identity, f.manifest.Digest, f.manifest.CorpusID, f.manifest.Descriptor.GenesisFileHash, f.manifest.Shards, witnesses, got.MappingSHA256}
+	want, err := resumeJSONBytes(legacy)
+	if err != nil || !bytes.Equal(want, encoded) {
+		t.Fatal("extraction changed the original source-proof encoding", err)
+	}
+	written, err := resumeJSONBytes(proof)
+	if err != nil || !bytes.Equal(written, encoded) {
+		t.Fatal("typed proof and canonical bytes differ", err)
+	}
 }
 
 func rewriteResumeTestFrame(t *testing.T, f resumeSourceFixture, m supplyManifest, logical uint32, edit func(*sharedexec.CorpusFrame, [][]byte)) supplyManifest {
@@ -329,78 +368,6 @@ func TestResumeSourceRejectsChangedOrUnauthorizedOriginalBytes(t *testing.T) {
 			}
 			if strings.Contains(tc.name, "unselected tail") && !strings.Contains(err.Error(), "full source shard integrity") {
 				t.Fatal("mapping ran before all shard hashes", err)
-			}
-		})
-	}
-}
-
-func TestResumeSourceMetadataRejectsAliasesAndRestoredModificationTime(t *testing.T) {
-	f := makeResumeSourceFixture(t)
-	for _, name := range []string{"path replaced", "write restored mtime", "symlink", "hardlink"} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(f.root, f.manifest.Shards[0].File)
-			info, err := os.Lstat(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			before, err := resumeSourceStat(path, info)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files, err := openStrictSources(context.Background(), f.root, f.manifest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer closeStrictSources(files)
-			all := make([]resumeSourceMetadata, len(files))
-			all[0] = before
-			for i := 1; i < len(files); i++ {
-				p := filepath.Join(f.root, f.manifest.Shards[i].File)
-				info, err := os.Lstat(p)
-				if err != nil {
-					t.Fatal(err)
-				}
-				all[i], err = resumeSourceStat(p, info)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			switch name {
-			case "path replaced", "symlink":
-				saved := path + ".saved"
-				if err := os.Rename(path, saved); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Remove(path); _ = os.Rename(saved, path) })
-				if name == "symlink" {
-					err = os.Symlink(saved, path)
-				} else {
-					err = os.WriteFile(path, raw, 0600)
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-			case "hardlink":
-				alias := path + ".alias"
-				if err := os.Link(path, alias); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Remove(alias) })
-			case "write restored mtime":
-				time.Sleep(2 * time.Millisecond)
-				if err := os.WriteFile(path, raw, 0600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := checkResumeSources(files, all); err == nil {
-				t.Fatal("changed path/ctime/link identity accepted")
 			}
 		})
 	}

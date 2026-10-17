@@ -68,16 +68,7 @@ type resumeOriginalReport struct {
 
 // No self hash, PlanID, session, path or timestamp is included in this semantic
 // document. Its actual newline-terminated bytes are bound by the later plan.
-type resumeSourceProof struct {
-	Kind          string                   `json:"kind"`
-	Identity      sharedexec.Identity      `json:"identity"`
-	Manifest      types.Hash               `json:"manifest_sha256"`
-	CorpusID      types.Hash               `json:"corpus_id"`
-	Genesis       types.Hash               `json:"genesis_file_sha256"`
-	Shards        []sharedexec.CorpusShard `json:"shards"`
-	Witnesses     []resumeSourceWitness    `json:"witnesses"`
-	MappingSHA256 types.Hash               `json:"mapping_sha256"`
-}
+type resumeSourceProof = sharedexec.ResumeSourceProof
 
 type resumePlanDocument struct {
 	Kind   string                `json:"kind"`
@@ -366,12 +357,11 @@ func runResumePlanOnlyPublication(ctx context.Context, inputs resumePlanInputs, 
 	if err := publication.sync(filepath.Dir(output)); err != nil {
 		return err
 	}
-	scan, err := scanResumeSources(ctx, inputs.SourceRoot, m, genesisRaw, baseline.Accounts)
+	scan, err := sharedexec.ScanResumeSources(ctx, inputs.SourceRoot, manifestRaw, genesisRaw, baseline.Accounts)
 	if err != nil {
 		return err
 	}
-	proof := resumeSourceProof{Kind: "gov5-resume-source-mapping-v1", Identity: m.Descriptor.Identity, Manifest: m.Digest, CorpusID: m.CorpusID, Genesis: m.Descriptor.GenesisFileHash, Shards: m.Shards, Witnesses: scan.Witnesses, MappingSHA256: scan.MappingSHA256}
-	proofBytes, err := resumeJSONBytes(proof)
+	proof, proofBytes, err := sharedexec.EncodeResumeSourceProof(manifestRaw, scan)
 	if err != nil {
 		return err
 	}

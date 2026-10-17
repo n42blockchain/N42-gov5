@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/hmac"
@@ -70,9 +69,7 @@ func supplyKey(seed []byte, index uint32) (*ecdsa.PrivateKey, error) {
 }
 
 func supplyRecipient(index, count uint32) types.Address {
-	var encoded [4]byte
-	binary.LittleEndian.PutUint32(encoded[:], index%count)
-	return types.BytesToAddress(crypto.Keccak256([]byte(sharedexec.CorpusRecipientRule), encoded[:])[12:])
+	return sharedexec.CorpusRecipient(index, count)
 }
 
 func reservedSupplyAddress(address types.Address) bool {
@@ -87,17 +84,7 @@ func reservedSupplyAddress(address types.Address) bool {
 }
 
 func validateSupplyGenesis(g *conf.Genesis) error {
-	if g == nil || g.Config == nil || g.Config.Performance == nil || g.Config.HotStuff == nil {
-		return errors.New("explicit private performance genesis required")
-	}
-	profile, _ := params.ResolveExecutionProfile("n42")
-	if err := g.Config.ValidatePerformanceSelection("private", profile); err != nil {
-		return err
-	}
-	if g.Timestamp != params.PerformanceGenesisTime || !bytes.Equal(g.ExtraData, []byte(params.PerformanceGenesisMarker)) || g.Config.DeferredExecutionTime != nil || g.Config.HotStuff.InteropV4 || g.Config.HotStuff.CommitteePool != nil {
-		return errors.New("unsupported supply genesis mode/marker")
-	}
-	return nil
+	return sharedexec.ValidateCorpusGenesis(g)
 }
 
 // All senders are checked, including their actual encoded genesis account,
