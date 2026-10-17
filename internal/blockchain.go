@@ -2783,6 +2783,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// rooted and written; aheadWait is what this import waited
 				// for it, aheadRun its whole run.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took, "aheadPre", ahead.pre,
+					"aheadLockWait", time.Duration(ahead.lookupWait.Load()),
 					"queueWaitMs", ahead.queueWait.Milliseconds(),
 					"setupAff", procPhases.SetupAffinity, "setupSys", procPhases.SetupBlockStart)
 			}
@@ -2791,7 +2792,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			// apply, the snapshot publish, and the credits the root took
 			// detached (P4b) against those it materialised as objects.
 			if cr := commitment.LastComputeRootPhases(); cr != nil {
-				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply)
+				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply, "rootExcl", cr.Exclusive)
 			}
 			if det, mat := state.LastRootCredits(); det+mat > 0 {
 				fields = append(fields, "creditsDetached", det, "creditsMaterialised", mat)

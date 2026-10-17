@@ -291,7 +291,8 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	n := hdr.Number.Uint64()
 	defer func() {
 		log.Debug("ahead base prefill", "number", n, "keys", ab.pf.Len(), "treeAt", ab.at, "depth", ab.depth,
-			"waitMs", ab.waited.Milliseconds(), "fillMs", ab.took.Milliseconds(), "cut", ab.cut.Load(), "skip", ab.skip)
+			"waitMs", ab.waited.Milliseconds(), "fillMs", ab.took.Milliseconds(), "lockWait", ab.pf.FillWait(),
+			"cut", ab.cut.Load(), "skip", ab.skip)
 	}()
 	if n < 2 {
 		ab.skip = "genesis child"

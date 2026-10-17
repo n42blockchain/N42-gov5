@@ -67,6 +67,17 @@ type QMDBRootComputer struct {
 	// Uncontended when no source is installed.
 	readers sync.RWMutex
 
+	// writeMu serialises the tree's mutators (lockW). It is taken BEFORE
+	// readers. ComputeRoot under N42_QMDB_READ_SNAPSHOT holds it alone while
+	// it prepares its ops and while it folds, and holds readers exclusively
+	// only for the ordered mutation in between, so value reads (Lookup,
+	// LookupLocked) run alongside the rest of the root.
+	writeMu sync.Mutex
+	// foldDone, non-nil while such a ComputeRoot folds outside the readers
+	// lock, is closed when the fold ends. RootLocked (a reader reading twig
+	// state) waits on it.
+	foldDone atomic.Pointer[chan struct{}]
+
 	// evictLag (N42_QMDB_EVICT_LAG_BLOCKS) keeps flushed entries and twig
 	// leaves resident for K blocks after their flush (qmdb.EvictLag).
 	// K = 0 evicts everything flushed, as before.
@@ -85,6 +96,30 @@ type QMDBRootComputer struct {
 	appliedLog [appliedLogLen]QMDBAppliedState
 }
 
+// lockW takes the tree exclusively: the mutator lock, then the readers.
+func (r *QMDBRootComputer) lockW() {
+	r.writeMu.Lock()
+	r.readers.Lock()
+}
+
+func (r *QMDBRootComputer) unlockW() {
+	r.readers.Unlock()
+	r.writeMu.Unlock()
+}
+
+// qmdbReadSnapshot (N42_QMDB_READ_SNAPSHOT, default on; "0" restores the
+// whole-root exclusive lock) narrows ComputeRoot's exclusive section to the
+// ordered mutation of the index and entry window (see computeRootNarrow).
+var qmdbReadSnapshot = os.Getenv("N42_QMDB_READ_SNAPSHOT") != "0"
+
+// SetReadSnapshot overrides N42_QMDB_READ_SNAPSHOT (tests/benchmarks) and
+// returns the previous setting.
+func SetReadSnapshot(on bool) bool {
+	prev := qmdbReadSnapshot
+	qmdbReadSnapshot = on
+	return prev
+}
+
 // evictLagFromEnv parses N42_QMDB_EVICT_LAG_BLOCKS (unset, invalid or <= 0
 // means 0: today's evict-everything-flushed behaviour).
 func evictLagFromEnv() int {
@@ -98,8 +133,8 @@ func evictLagFromEnv() int {
 // SetEvictLag overrides the residency lag (tests/benchmarks) and resets the
 // ring of recorded cursors.
 func (r *QMDBRootComputer) SetEvictLag(k int) {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	if k < 0 {
 		k = 0
 	}
@@ -119,10 +154,19 @@ func (r *QMDBRootComputer) evictLaggedLocked(through uint64) {
 // transaction predates the flush that wrote it -- so the caller can retry
 // with a fresh transaction.
 func (r *QMDBRootComputer) Lookup(keyHash qmdb.Hash, cold qmdb.Getter) (value []byte, found bool, evicted bool) {
+	return r.lookup(keyHash, cold, nil)
+}
+
+// lookup is Lookup adding a wait above the noise floor to sink as well
+// (a LookupSource's own accounting) when sink is non-nil.
+func (r *QMDBRootComputer) lookup(keyHash qmdb.Hash, cold qmdb.Getter, sink *atomic.Int64) (value []byte, found bool, evicted bool) {
 	t0 := time.Now()
 	r.readers.RLock()
 	if w := time.Since(t0); w > 50*time.Microsecond {
 		qmdbLookupWaitNanos.Add(w.Nanoseconds())
+		if sink != nil {
+			sink.Add(w.Nanoseconds())
+		}
 	}
 	defer r.readers.RUnlock()
 	var cr qmdb.ColdReader = noColdReader{}
@@ -148,6 +192,11 @@ func (r *QMDBRootComputer) LockReaders() func() {
 // 35zzq: the deferred check did exactly that and the fleet produced one block
 // in eighteen minutes).
 func (r *QMDBRootComputer) RootLocked() types.Hash {
+	// A narrowed ComputeRoot may still be folding twig state outside the
+	// readers lock; its values are already applied, so wait for its root.
+	if ch := r.foldDone.Load(); ch != nil {
+		<-*ch
+	}
 	return types.Hash(r.t.Root())
 }
 
@@ -164,9 +213,14 @@ func (r *QMDBRootComputer) LookupLocked(keyHash qmdb.Hash, cold qmdb.Getter) (va
 // for the tree's exclusive lock, building and sorting the op list, ApplyOps
 // (index probes, appends, leaf hashing and the twig fold) and the final
 // upper-tree fold in Root.
+//
+// Exclusive is how long the readers lock was held exclusively: the whole
+// root on the old path, only the ordered mutation under
+// N42_QMDB_READ_SNAPSHOT (the reads it can block).
 type ComputeRootPhases struct {
 	Ops                            int
 	LockWait, Collect, Apply, Fold time.Duration
+	Exclusive                      time.Duration
 }
 
 var lastComputeRoot atomic.Pointer[ComputeRootPhases]
@@ -184,6 +238,10 @@ var qmdbLookupWaitNanos atomic.Int64
 // the previous "qmdb root phases" line, so each line reports the reads since
 // the one before (about one block: the build and the write of it).
 var lastLoggedColdReads, lastLoggedResidentHits atomic.Uint64
+
+// lastLoggedLookupWait is QMDBLookupWaitNanos at the previous "qmdb root
+// phases" line.
+var lastLoggedLookupWait atomic.Int64
 
 // QMDBLookupWaitNanos reports the process-wide accumulated Lookup wait.
 func QMDBLookupWaitNanos() int64 { return qmdbLookupWaitNanos.Load() }
@@ -238,8 +296,8 @@ type pendingBuild struct {
 // the tree already IS v's post-state. Returns false if there is nothing to
 // chain on.
 func (r *QMDBRootComputer) ChainPendingBuild() bool {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	if r.lastUndo == nil {
 		return false
 	}
@@ -260,8 +318,8 @@ func (r *QMDBRootComputer) PendingBuilds() int {
 // and the pending stack from the newest down. The caller reloads afterwards
 // on any error.
 func (r *QMDBRootComputer) PeelAll() error {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.noteMutationLocked(nil)
 	if u := r.lastUndo; u != nil {
 		r.lastUndo = nil
@@ -293,8 +351,8 @@ func (r *QMDBRootComputer) PeelAll() error {
 // deeper unwinds). tx must be the same RwTx the subsequent re-execution
 // flushes through.
 func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.noteMutationLocked(nil)
 	// Re-point the cold entry reader + leaf store at THIS tx first: the tree's
 	// attached readers still reference whatever tx the last execution ran with
@@ -333,8 +391,8 @@ func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 // followers rejected. cold is the read transaction the peel may fault
 // boundary-twig leaves through. Called on the build goroutine only.
 func (r *QMDBRootComputer) RewindForUndo(cold kv.Getter, u *qmdb.BlockUndo) error {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.noteMutationLocked(nil)
 	if u == nil || r.indexTrusted == 0 || r.indexTrusted <= u.PrevNextSlot {
 		return nil // never loaded that block: nothing of it is in this tree
@@ -368,8 +426,8 @@ func (r *QMDBRootComputer) LastUndo() *qmdb.BlockUndo { return r.lastUndo }
 // never recomputed (nil = state unchanged → synthesize an empty record) instead
 // of re-writing a stale one.
 func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	u := r.lastUndo
 	r.lastUndo = nil
 	return u
@@ -387,8 +445,8 @@ func (r *QMDBRootComputer) VoidIndexTrust() { r.indexTrusted = 0 }
 
 // ApplyUndo peels a block's appends off the tree under the reader lock.
 func (r *QMDBRootComputer) ApplyUndo(undo *qmdb.BlockUndo) error {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.noteMutationLocked(nil)
 	return r.t.ApplyUndo(undo)
 }
@@ -398,8 +456,8 @@ func (r *QMDBRootComputer) Tree() *qmdb.Tree { return r.t }
 
 // Root returns the current world root without applying a dirty set.
 func (r *QMDBRootComputer) Root() types.Hash {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	return types.Hash(r.t.Root())
 }
 
@@ -408,8 +466,8 @@ func (r *QMDBRootComputer) Root() types.Hash {
 // replay positions, not rebuild from the key set). flushedThrough advances to the
 // reloaded cursor so the next flush is incremental.
 func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	return r.loadFromLocked(g)
 }
 
@@ -464,8 +522,8 @@ var reloadVerify = os.Getenv("N42_QMDB_RELOAD_VERIFY") == "1"
 // (peel failure, reconciliation mismatch, root mismatch, first use) drops to the
 // next tier automatically, so a tier-1 miss costs latency, never correctness.
 func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.noteMutationLocked(nil)
 	if r.mdbxIdx != nil || r.indexTrusted == 0 {
 		return r.loadFromLocked(g) // persistent index / first load: already right
@@ -627,8 +685,8 @@ func (r *QMDBRootComputer) verifyReloadIndex(ref *qmdb.Tree, path string) bool {
 // leave flushedThrough pointing past rows that never reached disk, silently
 // skipping them on every later flush.
 func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	// Settle the batch's accumulated death-stamp deltas first (one
 	// read-modify-write per touched twig per batch), same tx as the flush.
 	if err := r.t.FlushHistory(); err != nil {
@@ -662,8 +720,8 @@ func (r *QMDBRootComputer) FlushPersistsAll() bool {
 // covers slots below the ADOPTED cursor, so an uncommitted flush never has its
 // rows dropped from RAM.
 func (r *QMDBRootComputer) CommitFlushed() {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	if r.stagedValid {
 		r.flushedThrough = r.stagedFlushed
 		r.stagedValid = false
@@ -676,8 +734,8 @@ func (r *QMDBRootComputer) CommitFlushed() {
 // peeling the failed block's appends (TakeUndo + ApplyUndo) so the peel sees
 // the restored bookkeeping.
 func (r *QMDBRootComputer) AbortFlushed() {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	// Bookkeeping only (the dead-row reclaim list): the tree's values stay
 	// (no noteMutationLocked; the peel that follows a real abort counts).
 	r.abortFlushedLocked()
@@ -693,8 +751,8 @@ func (r *QMDBRootComputer) abortFlushedLocked() {
 // attaches the leaf-blob store (same backing tx) so an evicted twig rehydrates in
 // one read. The engine re-points both at the current batch's tx each batch.
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.setColdLocked(g)
 }
 
@@ -716,8 +774,8 @@ func (r *QMDBRootComputer) setColdLocked(g qmdb.Getter) {
 // survives restarts. Call once on the fresh computer BEFORE LoadFrom, with the
 // first batch's tx. Re-point per batch with SetIndexTx.
 func (r *QMDBRootComputer) UseMDBXIndex(tx kv.RwTx) {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.noteMutationLocked(nil)
 	r.mdbxIdx = newQMDBMDBXIndex(tx)
 	r.t.SetIndex(r.mdbxIdx)
@@ -738,8 +796,8 @@ func (r *QMDBRootComputer) ValueSource() *qmdb.Tree { return r.t }
 // SetIndexTx re-points the MDBX index at the current batch's tx (no-op for the
 // in-RAM index). Call each batch alongside SetCold.
 func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	if r.mdbxIdx != nil {
 		r.mdbxIdx.setTx(tx)
 	}
@@ -777,8 +835,8 @@ func (r *QMDBRootComputer) FlushedThrough() uint64 {
 // nothing changes and the caller takes the peel-and-reload path. The dead-row
 // list and the resident entries are released as after a flush of our own.
 func (r *QMDBRootComputer) AdoptOwnAppends(liveNext, liveFlushed uint64) bool {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	if liveFlushed > liveNext {
 		return false
 	}
@@ -824,8 +882,8 @@ func (r *QMDBRootComputer) HasUnwrittenBuild() bool {
 }
 
 func (r *QMDBRootComputer) EvictFlushed() {
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	r.evictLaggedLocked(r.flushedThrough)
 }
 
@@ -850,9 +908,12 @@ func (r *QMDBRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
+	if qmdbReadSnapshot {
+		return r.computeRootNarrow(accounts, storage)
+	}
 	tLock := time.Now()
-	r.readers.Lock()
-	defer r.readers.Unlock()
+	r.lockW()
+	defer r.unlockW()
 	dLock := time.Since(tLock)
 	var label *rootLabel
 	if l := r.nextLabel.Swap(nil); l != nil && l.post.HoldsAccounts(accounts) {
@@ -860,24 +921,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 	}
 	r.noteMutationLocked(label)
 	tOps := time.Now()
-	// An op with a nil Value is a delete (ApplyOps' convention); every
-	// live value here is non-empty (an encoded account or a 32-byte word).
-	ops := buildAccountOps(accounts, len(storage))
-	for addr, slots := range storage {
-		for slot, val := range slots {
-			kh := qmdb.Hash(StorageKeyHash(addr, slot))
-			if val == nil || val.IsZero() {
-				ops = append(ops, qmdb.Op{KeyHash: kh})
-			} else {
-				var buf [32]byte
-				val.WriteToSlice(buf[:])
-				v := make([]byte, 32)
-				copy(v, buf[:])
-				ops = append(ops, qmdb.Op{KeyHash: kh, Value: v})
-			}
-		}
-	}
-	sortOpsByKey(ops)
+	ops := buildRootOps(accounts, storage)
 	dOps := time.Since(tOps)
 	if r.undoRecording {
 		r.t.StartUndoRecording()
@@ -897,7 +941,8 @@ func (r *QMDBRootComputer) ComputeRoot(
 	dApply := time.Since(tApply)
 	tFold := time.Now()
 	root := types.Hash(r.t.Root())
-	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: time.Since(tFold)})
+	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: time.Since(tFold),
+		Exclusive: time.Since(tLock) - dLock})
 	// Split the two halves of a root computation.
 	//
 	// QMDB is a BINARY tree, not a Patricia trie: an entry is appended to the
@@ -918,14 +963,155 @@ func (r *QMDBRootComputer) ComputeRoot(
 	//
 	// Observability only; logged at the same threshold as the other block
 	// phases, and only for blocks big enough to matter.
-	if len(ops) > 1000 {
-		cold, hits := qmdb.ReadCounters()
-		dCold := cold - lastLoggedColdReads.Swap(cold)
-		dHits := hits - lastLoggedResidentHits.Swap(hits)
-		log.Info("qmdb root phases", "ops", len(ops), "applyWorkers", qmdb.ParallelApplyWorkers,
-			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds(),
-			"coldReads", dCold, "residentHits", dHits, "evictLag", r.evictLag.K)
+	logRootPhases(len(ops), dApply, time.Since(tFold), 0, r.evictLag.K)
+	return root, nil
+}
+
+// logRootPhases is the "qmdb root phases" line, for blocks big enough to
+// matter. exclusive is how long the readers lock was held exclusively (0 on
+// the whole-root path, where it is the entire root). lookupWaitNs is the
+// Lookup wait accumulated since the previous line (QMDBLookupWaitNanos).
+func logRootPhases(ops int, apply, fold, exclusive time.Duration, evictLag int) {
+	if ops <= 1000 {
+		return
 	}
+	cold, hits := qmdb.ReadCounters()
+	dCold := cold - lastLoggedColdReads.Swap(cold)
+	dHits := hits - lastLoggedResidentHits.Swap(hits)
+	wait := qmdbLookupWaitNanos.Load()
+	fields := []any{"ops", ops, "applyWorkers", qmdb.ParallelApplyWorkers,
+		"applyNs", apply.Nanoseconds(), "foldNs", fold.Nanoseconds(),
+		"coldReads", dCold, "residentHits", dHits, "evictLag", evictLag,
+		"readSnapshot", qmdbReadSnapshot, "lookupWaitNs", wait - lastLoggedLookupWait.Swap(wait)}
+	if exclusive > 0 {
+		fields = append(fields, "exclNs", exclusive.Nanoseconds())
+	}
+	log.Info("qmdb root phases", fields...)
+}
+
+// buildRootOps is the dirty set as a key-sorted op list (a nil Value is a
+// delete, ApplyOps' convention; every live value is non-empty: an encoded
+// account or a 32-byte word). A pure function of its inputs.
+func buildRootOps(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+) []qmdb.Op {
+	ops := buildAccountOps(accounts, len(storage))
+	for addr, slots := range storage {
+		for slot, val := range slots {
+			kh := qmdb.Hash(StorageKeyHash(addr, slot))
+			if val == nil || val.IsZero() {
+				ops = append(ops, qmdb.Op{KeyHash: kh})
+			} else {
+				var buf [32]byte
+				val.WriteToSlice(buf[:])
+				v := make([]byte, 32)
+				copy(v, buf[:])
+				ops = append(ops, qmdb.Op{KeyHash: kh, Value: v})
+			}
+		}
+	}
+	sortOpsByKey(ops)
+	return ops
+}
+
+// Test hooks of computeRootNarrow: after the prepare (readers free, tree at
+// N-1) and after the exclusive section (readers free, values at N, fold
+// pending). Nil outside tests.
+var testHookNarrowPrepared, testHookNarrowFolding func()
+
+// computeRootNarrow is ComputeRoot with the readers lock held exclusively
+// only for the ordered mutation of the index and the entry window -- what a
+// value read observes. The tree's mutators are excluded throughout by
+// writeMu; the readers are not:
+//
+//  1. building and sorting the ops reads only the caller's maps;
+//  2. PrepareOps (index probes, undo copies, leaf hashes) only reads the
+//     tree, alongside the readers, who therefore see the values before this
+//     root (state N-1) -- what the old lock gave a reader that got in before
+//     the owner;
+//  3. CommitPrepared mutates the index and the entry window under the
+//     exclusive lock, and the applied state advances inside it, so a reader
+//     sees N-1 or N whole, never a torn mix, and AppliedState names it;
+//  4. FinishBatch hashes the leaves and folds twigs and the upper tree after
+//     the lock is released: it writes no state a value read touches, so
+//     readers already see N's values while it runs. RootLocked, which reads
+//     twig state, waits for it through foldDone.
+//
+// Batches the prepared path does not take (an MDBX-backed index) hold the
+// exclusive lock across the whole apply and fold, as before.
+func (r *QMDBRootComputer) computeRootNarrow(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+) (types.Hash, error) {
+	tLock := time.Now()
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	dLock := time.Since(tLock)
+	var label *rootLabel
+	if l := r.nextLabel.Swap(nil); l != nil && l.post.HoldsAccounts(accounts) {
+		label = l
+	}
+	tOps := time.Now()
+	ops := buildRootOps(accounts, storage)
+	dOps := time.Since(tOps)
+
+	tApply := time.Now()
+	workers := qmdb.ParallelApplyWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	// With one worker and AVX-512 the commit defers the leaf hashes to the
+	// fold's 16-wide pass, which runs outside the exclusive section too.
+	p := r.t.PrepareOps(ops, r.undoRecording, workers, workers > 1 || !qmdb.HaveAVX512())
+	if h := testHookNarrowPrepared; h != nil {
+		h()
+	}
+	tExcl := time.Now()
+	r.readers.Lock()
+	dExclWait := time.Since(tExcl)
+	r.noteMutationLocked(label)
+	if r.undoRecording {
+		r.t.StartUndoRecording()
+	}
+	if p == nil || r.t.CommitPrepared(p) != nil {
+		// Not preparable (CommitPrepared's staleness guard cannot trip under
+		// writeMu, and it refuses before mutating): the whole apply, locked.
+		r.t.ApplyOps(ops)
+		if r.undoRecording {
+			r.lastUndo = r.t.StopUndoRecording()
+		}
+		dApply := time.Since(tApply)
+		tFold := time.Now()
+		root := types.Hash(r.t.Root())
+		dFold := time.Since(tFold)
+		r.readers.Unlock()
+		dExcl := time.Since(tExcl) - dExclWait
+		lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock + dExclWait, Collect: dOps, Apply: dApply,
+			Fold: dFold, Exclusive: dExcl})
+		logRootPhases(len(ops), dApply, dFold, dExcl, r.evictLag.K)
+		return root, nil
+	}
+	if r.undoRecording {
+		r.lastUndo = r.t.StopUndoRecording()
+	}
+	done := make(chan struct{})
+	r.foldDone.Store(&done)
+	r.readers.Unlock()
+	dExcl := time.Since(tExcl) - dExclWait
+	dApply := time.Since(tApply)
+
+	if h := testHookNarrowFolding; h != nil {
+		h()
+	}
+	tFold := time.Now()
+	root := types.Hash(r.t.FinishBatch())
+	r.foldDone.Store(nil)
+	close(done)
+	dFold := time.Since(tFold)
+	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock + dExclWait, Collect: dOps, Apply: dApply,
+		Fold: dFold, Exclusive: dExcl})
+	logRootPhases(len(ops), dApply, dFold, dExcl, r.evictLag.K)
 	return root, nil
 }
 

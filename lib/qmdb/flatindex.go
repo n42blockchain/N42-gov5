@@ -120,6 +120,31 @@ func (f *flatIndex) prefetch(k Hash) {
 	prefetcht0(unsafe.Pointer(&f.keys[i]))
 }
 
+// grownFor returns a rehashed copy of f that takes `inserts` more keys
+// without a rehash, or nil when f already can. Read-only on f, so it may run
+// alongside f's readers (not its writers).
+func (f *flatIndex) grownFor(inserts int) *flatIndex {
+	if uint64(f.used+inserts+1)*16 <= (f.mask+1)*13 {
+		return nil
+	}
+	newCap := f.mask + 1
+	for uint64(f.live+inserts+1)*16 > newCap*13 {
+		newCap *= 2
+	}
+	g := &flatIndex{
+		ctrl:  make([]byte, newCap),
+		keys:  make([]Hash, newCap),
+		slots: make([]uint64, newCap),
+		mask:  newCap - 1,
+	}
+	for i := range f.ctrl {
+		if f.ctrl[i] >= 0x80 {
+			g.Put(f.keys[i], f.slots[i])
+		}
+	}
+	return g
+}
+
 // rehash doubles capacity (or rebuilds in place size when tombstones dominate)
 // and reinserts the live set.
 func (f *flatIndex) rehash() {

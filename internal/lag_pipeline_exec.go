@@ -297,6 +297,9 @@ type aheadExec struct {
 	tx     kv.Tx
 	err    error
 	took   time.Duration
+	// lookupWait: the run's tree reads' wait for the reader lock (the
+	// parent's root holding it exclusively).
+	lookupWait atomic.Int64
 
 	once sync.Once
 	pipe *lagPipeline
@@ -583,7 +586,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	}
 	var base state.StateReader = state.NewPlainStateReader(tx)
 	if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff {
-		src := commitment.NewLookupSourceRefreshing(bc.qmdbRootComputer, tx, bc.ChainDB)
+		src := commitment.NewLookupSourceRefreshing(bc.qmdbRootComputer, tx, bc.ChainDB).SetWaitSink(&a.lookupWait)
 		if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 			src.SetPrefill(ab.pf)
 		}
