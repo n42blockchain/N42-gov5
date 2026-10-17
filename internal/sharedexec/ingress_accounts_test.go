@@ -36,6 +36,20 @@ func TestCanonicalAccountsUnixRequiresActualCanonicalState(t *testing.T) {
 	if !initial.Accounts[0].Exists || initial.Accounts[0].Nonce != 0 || initial.Accounts[0].Balance == "0" || !initial.Accounts[1].Exists || initial.Accounts[2].Exists || initial.Accounts[2].Nonce != 0 || initial.Accounts[2].Balance != "0" {
 		t.Fatalf("existing zero nonce and absent account conflated: %+v", initial)
 	}
+	if initial.Roots != nil {
+		t.Fatal("default response unexpectedly includes optional roots")
+	}
+	defaultRaw, _ := json.Marshal(initial)
+	requestRaw, _ := json.Marshal(request)
+	if bytes.Contains(defaultRaw, []byte(`"roots"`)) || bytes.Contains(requestRaw, []byte(`"include_roots"`)) {
+		t.Fatal("default wire schema changed")
+	}
+	withRoots := request
+	withRoots.IncludeRoots = true
+	rooted, err := client.CanonicalAccounts(ctx, withRoots)
+	if err != nil || rooted.Roots == nil || rooted.Roots.Root == (types.Hash{}) || rooted.Roots.Root != rooted.Roots.AppliedRoot {
+		t.Fatalf("explicit roots not bound to actual canonical tree: %+v %v", rooted.Roots, err)
+	}
 	for _, frame := range f.frames {
 		if _, err := f.server.AdmitStrictFrame(ctx, f.server.Identity(), status.Epoch, frame); err != nil {
 			t.Fatal(err)
@@ -67,6 +81,12 @@ func TestCanonicalAccountsUnixRequiresActualCanonicalState(t *testing.T) {
 	got, err := client.CanonicalAccounts(ctx, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	withRoots = request
+	withRoots.IncludeRoots = true
+	committedRoots, err := client.CanonicalAccounts(ctx, withRoots)
+	if err != nil || committedRoots.Roots == nil || committedRoots.Roots.Root != sealed.Header().(*block.Header).Root || committedRoots.Roots.AppliedRoot != committedRoots.Roots.Root {
+		t.Fatalf("committed root/account tuple differs: %+v %v", committedRoots.Roots, err)
 	}
 	for i := 0; i < 2; i++ {
 		if !got.Accounts[i].Exists || got.Accounts[i].Nonce != 3 || got.Accounts[i].Balance == initial.Accounts[i].Balance {
@@ -154,5 +174,27 @@ func TestCanonicalAccountsClientBoundsAndBinding(t *testing.T) {
 	payload = []byte(strings.Repeat("x", canonicalAccountsResponseBytes+1))
 	if _, err := client.CanonicalAccounts(context.Background(), request); err == nil {
 		t.Fatal("oversize response accepted")
+	}
+}
+
+func TestCanonicalAccountsOptionalRootsFailClosed(t *testing.T) {
+	identity := corpusDescriptorForTest().Identity
+	request := CanonicalAccountsRequest{Identity: identity, Epoch: [16]byte{1}, ManifestHash: types.Hash{2}, CanonicalHash: identity.GenesisHash, Addresses: []types.Address{{1}}, IncludeRoots: true}
+	response := CanonicalAccountsResult{Identity: identity, Epoch: request.Epoch, ManifestHash: request.ManifestHash, CanonicalHash: request.CanonicalHash, Accounts: []CanonicalAccount{{Address: request.Addresses[0], Exists: true, Balance: "1"}}, Roots: &CanonicalRoots{Root: types.Hash{3}, AppliedRoot: types.Hash{3}}}
+	var payload []byte
+	client := &Client{identity: identity, http: &http.Client{Transport: canonicalAccountsRoundTrip(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(payload))}, nil
+	})}}
+	payload, _ = json.Marshal(response)
+	if got, err := client.CanonicalAccounts(context.Background(), request); err != nil || got.Roots == nil {
+		t.Fatalf("matching explicit roots rejected: %+v %v", got, err)
+	}
+	for _, roots := range []*CanonicalRoots{nil, {}, {Root: types.Hash{3}, AppliedRoot: types.Hash{4}}} {
+		response.Roots = roots
+		payload, _ = json.Marshal(response)
+		got, err := client.CanonicalAccounts(context.Background(), request)
+		if err == nil || errors.Is(err, ErrIngressSnapshotChanged) || len(got.Accounts) != 0 || got.Roots != nil {
+			t.Fatalf("missing/mismatched roots accepted or retryable: %+v %v", got, err)
+		}
 	}
 }
