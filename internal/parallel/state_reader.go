@@ -17,6 +17,9 @@
 package parallel
 
 import (
+	"encoding/binary"
+	"os"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -42,6 +45,52 @@ type ParallelStateReader struct {
 	accBuf       account.StateAccount
 	// slab, when set, holds the encodings the reader records (SetSlab).
 	slab *ValueSlab
+	// ents, when set, remembers the store entries ReadAccountData found
+	// (EnableEntryCache).
+	ents *entryCache
+}
+
+// entryCacheSlots is the size of a reader's entry cache (a power of two).
+const entryCacheSlots = 2048
+
+// entryCache is a reader's direct-mapped cache of account store entries,
+// by address. A store entry, once created, is its location's for the whole
+// block (entries are never removed, a table's growth keeps them), so a
+// cached entry is the one a lookup would return.
+type entryCache [entryCacheSlots]struct {
+	addr types.Address
+	e    *mvEntry
+}
+
+// EnableEntryCache makes ReadAccountData find an account's store entry in
+// a per-reader cache before the store's index (fast2 only). A worker runs a
+// sender's transactions in order, so from the chain's second transaction on
+// the sender's entry is the one its previous transaction read and wrote;
+// the index lookup was a cache miss per transfer (r35zzzco: MVS.lookup
+// 8.5 s of executeSingle's 76 s, half of it the senders').
+func (r *ParallelStateReader) EnableEntryCache() {
+	if fast2 {
+		r.ents = new(entryCache)
+	}
+}
+
+// accountEntry is r.mvs.lookup(key) for an account key, through the entry
+// cache when there is one.
+func (r *ParallelStateReader) accountEntry(key *LocationKey) *mvEntry {
+	c := r.ents
+	if c == nil {
+		return r.mvs.lookup(key)
+	}
+	a := &key.Address
+	sl := &c[(binary.LittleEndian.Uint32(a[0:4])^binary.LittleEndian.Uint32(a[16:20]))&(entryCacheSlots-1)]
+	if sl.e != nil && sl.addr == *a {
+		return sl.e
+	}
+	e := r.mvs.lookup(key)
+	if e != nil {
+		sl.addr, sl.e = *a, e
+	}
+	return e
 }
 
 // SetSlab makes the reader record its composed account encodings from s,
@@ -74,7 +123,23 @@ func (r *ParallelStateReader) SetBaseCache(c *BaseCache) { r.baseCache = c }
 // when there is one. It returns the account (nil when absent) and its V2
 // encoding; both are shared with the cache and must not be mutated.
 func (r *ParallelStateReader) baseAccount(address types.Address) (*account.StateAccount, []byte, error) {
+	return r.baseAccountVia(nil, address)
+}
+
+// baseAccountVia is baseAccount for an account whose store entry is mv (nil
+// when it has none): with fast2 the entry's link to the base-cache entry
+// serves the read, and a read that looks the account up sets the link.
+func (r *ParallelStateReader) baseAccountVia(mv *mvEntry, address types.Address) (*account.StateAccount, []byte, error) {
+	link := fast2 && mv != nil && r.baseCache != nil
+	if link {
+		if e := mv.base.Load(); e != nil {
+			return e.acc, e.enc, nil
+		}
+	}
 	if e := r.baseCache.lookup(address); e != nil {
+		if link {
+			mv.base.Store(e)
+		}
 		return e.acc, e.enc, nil
 	}
 	acc, err := r.base.ReadAccountData(address)
@@ -89,6 +154,9 @@ func (r *ParallelStateReader) baseAccount(address types.Address) (*account.State
 		return acc, enc, nil
 	}
 	e := r.baseCache.insert(address, acc)
+	if link {
+		mv.base.Store(e)
+	}
 	return e.acc, e.enc, nil
 }
 
@@ -115,7 +183,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	key := LocationKey{Address: address, Field: FieldBalance}
 
 	var deltaBuf uint256.Int
-	e := r.mvs.lookup(&key)
+	e := r.accountEntry(&key)
 	full, fullTx, fullInc, found, hasDelta := e.readAccount(r.txIndex, &deltaBuf)
 	var delta *uint256.Int
 	if hasDelta {
@@ -156,7 +224,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	// preceding transaction validates by value, and add the deltas. The base
 	// account and its encoding come from the block's cache (shared, so the
 	// caller gets a copy).
-	base, enc, err := r.baseAccount(address)
+	base, enc, err := r.baseAccountVia(e, address)
 	if err != nil {
 		r.rw.RecordRead(key, -1, 0, true)
 		return nil, err
@@ -197,7 +265,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
 	if e := r.mvs.lookup(&key); e.noFullWrites() {
-		base, enc, err := r.baseAccount(address)
+		base, enc, err := r.baseAccountVia(e, address)
 		if err != nil {
 			r.rw.RecordRead(key, -1, 0, true)
 			return nil, err
@@ -296,4 +364,18 @@ func DecodeAccount(data []byte) (*account.StateAccount, error) {
 // encodeAccount encodes a StateAccount using V2 variable-length format.
 func encodeAccount(acc *account.StateAccount) ([]byte, error) {
 	return acc.MarshalV2(), nil
+}
+
+// fast2 is N42_TRANSFER_FAST2 (default on; "0" disables) on the reader's
+// side: an account's store entry remembers the base-cache entry its first
+// base read found, so later reads of the account through the entry skip
+// the cache's lookup.
+var fast2 = os.Getenv("N42_TRANSFER_FAST2") != "0"
+
+// SetFast2ForTest sets the reader's N42_TRANSFER_FAST2 switch and returns
+// the restore.
+func SetFast2ForTest(on bool) func() {
+	prev := fast2
+	fast2 = on
+	return func() { fast2 = prev }
 }

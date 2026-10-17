@@ -20,6 +20,7 @@ package internal
 import (
 	"context"
 	"crypto/ecdsa"
+	"math/rand"
 	"os"
 	"strconv"
 	"sync"
@@ -72,69 +73,106 @@ func transferBlockRecipient(i int) types.Address {
 // transactions dominates setup and is not what is measured).
 func buildTransferBlockFixture(tb testing.TB) *transferBlockFixture {
 	transferFixtureOnce.Do(func() {
-		nTxs := benchEnvInt("N42_BENCH_TXS", 163200)
-		nSenders := benchEnvInt("N42_BENCH_SENDERS", 8000)
-		nRecipients := benchEnvInt("N42_BENCH_RECIPIENTS", 22857)
-		cfg := params.MainnetQMDBChainConfig
-		header := &block.Header{
-			Number:     uint256.NewInt(1),
-			Time:       uint64(time.Now().Unix()),
-			Difficulty: uint256.NewInt(0),
-			BaseFee:    uint256.NewInt(7),
-			GasLimit:   uint64(nTxs) * 21000 * 2,
-			Coinbase:   types.Address{0xC0, 0x1B, 0xAE},
-		}
-		signer := transaction.MakeSignerWithTimestamp(cfg, header.Number.ToBig(), header.Time)
-		keys := make([]*ecdsa.PrivateKey, nSenders)
-		senders := make([]types.Address, nSenders)
-		for i := range keys {
-			k, err := crypto.GenerateKey()
-			if err != nil {
-				panic(err)
-			}
-			keys[i] = k
-			senders[i] = crypto.PubkeyToAddress(k.PublicKey)
-		}
-		recipients := make([]types.Address, nRecipients)
-		for i := range recipients {
-			recipients[i] = transferBlockRecipient(i)
-		}
-		txs := make([]*transaction.Transaction, nTxs)
-		var wg sync.WaitGroup
-		const signers = 4
-		for w := 0; w < signers; w++ {
-			wg.Add(1)
-			go func(w int) {
-				defer wg.Done()
-				for i := w; i < nTxs; i += signers {
-					s := i % nSenders
-					to := recipients[(i*7919)%nRecipients]
-					inner := &transaction.LegacyTx{
-						Nonce:    uint64(i / nSenders),
-						GasPrice: uint256.NewInt(1_000_000_000),
-						Gas:      21000,
-						To:       &to,
-						Value:    uint256.NewInt(1 + uint64(i%1000)),
-					}
-					signed, err := transaction.SignTx(transaction.NewTx(inner), signer, keys[s])
-					if err != nil {
-						panic(err)
-					}
-					txs[i] = signed
-				}
-			}(w)
-		}
-		wg.Wait()
-		transferFixture = &transferBlockFixture{cfg: cfg, txs: txs, senders: senders, recipients: recipients, header: header}
+		transferFixture = newTransferBlockFixture(
+			benchEnvInt("N42_BENCH_TXS", 163200),
+			benchEnvInt("N42_BENCH_SENDERS", 8000),
+			benchEnvInt("N42_BENCH_RECIPIENTS", 22857),
+			0, 0)
 	})
 	return transferFixture
+}
+
+// newTransferBlockFixture signs nTxs legacy transfers from nSenders senders
+// (interleaved: tx i is sender i%nSenders's nonce i/nSenders) to
+// nRecipients recipients. zipf 0 picks recipient (i*7919)%nRecipients;
+// zipf > 1 draws it from a Zipf distribution of that exponent and offset
+// zipfV >= 1 (P(k) ~ (zipfV+k)^-zipf; seeded, so the block is the same on
+// every call).
+func newTransferBlockFixture(nTxs, nSenders, nRecipients int, zipf, zipfV float64) *transferBlockFixture {
+	cfg := params.MainnetQMDBChainConfig
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       uint64(time.Now().Unix()),
+		Difficulty: uint256.NewInt(0),
+		BaseFee:    uint256.NewInt(7),
+		GasLimit:   uint64(nTxs) * 21000 * 2,
+		Coinbase:   types.Address{0xC0, 0x1B, 0xAE},
+	}
+	signer := transaction.MakeSignerWithTimestamp(cfg, header.Number.ToBig(), header.Time)
+	keys := make([]*ecdsa.PrivateKey, nSenders)
+	senders := make([]types.Address, nSenders)
+	var kwg sync.WaitGroup
+	const keyGens = 4
+	for w := 0; w < keyGens; w++ {
+		kwg.Add(1)
+		go func(w int) {
+			defer kwg.Done()
+			for i := w; i < nSenders; i += keyGens {
+				k, err := crypto.GenerateKey()
+				if err != nil {
+					panic(err)
+				}
+				keys[i] = k
+				senders[i] = crypto.PubkeyToAddress(k.PublicKey)
+			}
+		}(w)
+	}
+	kwg.Wait()
+	recipients := make([]types.Address, nRecipients)
+	for i := range recipients {
+		recipients[i] = transferBlockRecipient(i)
+	}
+	toIdx := make([]int, nTxs)
+	if zipf > 1 && nRecipients > 1 {
+		z := rand.NewZipf(rand.New(rand.NewSource(7)), zipf, max(zipfV, 1), uint64(nRecipients-1))
+		for i := range toIdx {
+			toIdx[i] = int(z.Uint64())
+		}
+	} else {
+		for i := range toIdx {
+			toIdx[i] = (i * 7919) % nRecipients
+		}
+	}
+	txs := make([]*transaction.Transaction, nTxs)
+	var wg sync.WaitGroup
+	const signers = 4
+	for w := 0; w < signers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := w; i < nTxs; i += signers {
+				s := i % nSenders
+				to := recipients[toIdx[i]]
+				inner := &transaction.LegacyTx{
+					Nonce:    uint64(i / nSenders),
+					GasPrice: uint256.NewInt(1_000_000_000),
+					Gas:      21000,
+					To:       &to,
+					Value:    uint256.NewInt(1 + uint64(i%1000)),
+				}
+				signed, err := transaction.SignTx(transaction.NewTx(inner), signer, keys[s])
+				if err != nil {
+					panic(err)
+				}
+				txs[i] = signed
+			}
+		}(w)
+	}
+	wg.Wait()
+	return &transferBlockFixture{cfg: cfg, txs: txs, senders: senders, recipients: recipients, header: header}
 }
 
 // fundTransferBlockState writes the funded senders, the existing hot
 // recipients and filler accounts into db.
 func fundTransferBlockState(tb testing.TB, db kv.RwDB, fx *transferBlockFixture) {
 	tb.Helper()
-	filler := benchEnvInt("N42_BENCH_FILLER", 200000)
+	fundTransferBlockStateFiller(tb, db, fx, benchEnvInt("N42_BENCH_FILLER", 200000))
+}
+
+// fundTransferBlockStateFiller is fundTransferBlockState with filler
+// accounts.
+func fundTransferBlockStateFiller(tb testing.TB, db kv.RwDB, fx *transferBlockFixture, filler int) {
+	tb.Helper()
 	err := db.Update(context.Background(), func(tx kv.RwTx) error {
 		writer := state.NewPlainStateWriter(tx, tx, 1)
 		ibs := state.New(state.NewPlainState(tx, 1))

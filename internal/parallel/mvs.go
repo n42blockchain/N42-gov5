@@ -87,6 +87,11 @@ type mvEntry struct {
 	// knows no transaction has stored a full value here -- only deltas,
 	// or nothing -- without the lock or a scan of the versions.
 	fulls atomic.Int32
+	// base is the block's base-cache entry of the account (FieldBalance
+	// keys), once a read through this entry looked it up (fast2): later
+	// base reads of the account skip the cache's lookup. The base state does
+	// not change during the block, so the link never goes stale.
+	base atomic.Pointer[baseEntry]
 }
 
 // noFullWrites reports whether no transaction has stored a full value at
@@ -131,21 +136,35 @@ type mvsShard struct {
 // any read that raced a lower transaction's write.
 type mvTable struct {
 	mask  uint64
-	slots []atomic.Pointer[mvEntry]
+	slots []mvSlot
 }
 
+// mvSlot is one table slot: the entry and its key's hash. The hash sits in
+// the slot so a probe passes the slots of other keys without loading their
+// entries -- each of those loads was a cache miss, and at the table's load
+// factor a lookup probes about two slots, an absent key's about three. It
+// is stored before the entry, so a reader that sees the entry sees it.
+type mvSlot struct {
+	hash atomic.Uint64
+	e    atomic.Pointer[mvEntry]
+}
+
+// Load returns the slot's entry (nil when free).
+func (s *mvSlot) Load() *mvEntry { return s.e.Load() }
+
 func newMVTable(size int) *mvTable {
-	return &mvTable{mask: uint64(size - 1), slots: make([]atomic.Pointer[mvEntry], size)}
+	return &mvTable{mask: uint64(size - 1), slots: make([]mvSlot, size)}
 }
 
 // find returns the entry for key, or nil.
 func (t *mvTable) find(key *LocationKey, h uint64) *mvEntry {
 	for i := h & t.mask; ; i = (i + 1) & t.mask {
-		e := t.slots[i].Load()
+		s := &t.slots[i]
+		e := s.e.Load()
 		if e == nil {
 			return nil
 		}
-		if e.hash == h && e.key == *key {
+		if s.hash.Load() == h && e.key == *key {
 			return e
 		}
 	}
@@ -155,8 +174,9 @@ func (t *mvTable) find(key *LocationKey, h uint64) *mvEntry {
 // and has checked e's key is absent).
 func (t *mvTable) place(e *mvEntry) {
 	for i := e.hash & t.mask; ; i = (i + 1) & t.mask {
-		if t.slots[i].Load() == nil {
-			t.slots[i].Store(e)
+		if s := &t.slots[i]; s.e.Load() == nil {
+			s.hash.Store(e.hash)
+			s.e.Store(e)
 			return
 		}
 	}
@@ -249,9 +269,22 @@ func (e *mvEntry) before(txIndex int) int {
 		}
 		return n
 	}
-	return sort.Search(n, func(i int) bool {
-		return e.versions[i].txIndex >= txIndex
-	})
+	return e.search(txIndex)
+}
+
+// search is sort.Search for the first version at or after txIndex, without
+// the closure call per probe (e.mu held).
+func (e *mvEntry) search(txIndex int) int {
+	lo, hi := 0, len(e.versions)
+	for lo < hi {
+		m := int(uint(lo+hi) >> 1)
+		if e.versions[m].txIndex < txIndex {
+			lo = m + 1
+		} else {
+			hi = m
+		}
+	}
+	return lo
 }
 
 // Write records that transaction txIndex (at given incarnation) wrote value to the given location.
@@ -314,9 +347,7 @@ func (e *mvEntry) slot(txIndex int) int {
 	if n == 0 || e.versions[n-1].txIndex < txIndex {
 		return n
 	}
-	return sort.Search(n, func(i int) bool {
-		return e.versions[i].txIndex >= txIndex
-	})
+	return e.search(txIndex)
 }
 
 // WriteDelta records that transaction txIndex added delta to the account at
@@ -341,11 +372,21 @@ func (e *mvEntry) writeDelta(txIndex int, incarnation uint32, delta *uint256.Int
 		v.isDelta = true
 		v.delta.Set(delta)
 	} else {
+		if fast2 && cap(e.versions) == 0 {
+			// A credited account is usually credited again in the block:
+			// start its list at deltaListCap instead of growing it from one.
+			e.versions = make([]versionedValue, 0, deltaListCap)
+		}
 		e.versions = append(e.versions, versionedValue{})
 		copy(e.versions[idx+1:], e.versions[idx:])
 		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, isDelta: true, delta: *delta}
 	}
 }
+
+// deltaListCap is the capacity of a version list started by a balance
+// delta (fast2): the bench's recipients take ~7 credits a block, and the
+// list grew 1, 2, 4, 8 -- four allocations and three copies.
+const deltaListCap = 4
 
 // ReadAccount returns the latest full write before txIndex (value, writer,
 // incarnation, found) and the sum of the balance deltas written between

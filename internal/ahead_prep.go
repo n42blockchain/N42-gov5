@@ -312,6 +312,7 @@ func (p *StateProcessor) txAffinityKey(txs []*transaction.Transaction, prepared 
 		if tx.AsMessageInto(&pm.msg, signer, baseFee) == nil {
 			NormalizeExecutionMessage(&pm.msg, stateless, p.engine != nil)
 			pm.hash = tx.Hash()
+			makeTransferPlan(&pm.plan, &pm.msg, tx)
 			pm.ok = true
 		}
 	}
