@@ -26,6 +26,7 @@ package qmdb
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strconv"
 	"sync"
@@ -75,7 +76,15 @@ func (t *Tree) parallelApplyEligible(ops []Op) bool {
 
 // precompute fills pre[lo:hi]. Read-only on the tree: the index (pure-read
 // shapes only, see parallelApplyEligible) and the resident entry window.
-func (t *Tree) precompute(ops []Op, pre []preOp, lo, hi int, undo bool) {
+// hashLeaves=false leaves the leaf hash to the commit (writeLeafEntry, which
+// defers it to the batch fold's 16-wide pass under AVX-512).
+func (t *Tree) precompute(ops []Op, pre []preOp, lo, hi int, undo, hashLeaves bool) {
+	if fi, ok := t.idx.(*flatIndex); ok {
+		// Warm the probe lines first so the dependent misses overlap.
+		for i := lo; i < hi; i++ {
+			fi.prefetch(ops[i].KeyHash)
+		}
+	}
 	for i := lo; i < hi; i++ {
 		p := &pre[i]
 		kh := ops[i].KeyHash
@@ -88,22 +97,61 @@ func (t *Tree) precompute(ops []Op, pre []preOp, lo, hi int, undo bool) {
 				p.undoOK = true
 			}
 		}
-		if len(ops[i].Value) != 0 {
+		if hashLeaves && len(ops[i].Value) != 0 {
 			p.leaf = hashLeaf(kh, ops[i].Value)
 		}
 	}
 }
 
-// applyOpsParallel is ApplyOps with the pre-pass fanned out over `workers`.
-func (t *Tree) applyOpsParallel(ops []Op, workers int) {
+// PreparedOps is a sorted, distinct-key op batch whose order-independent
+// inputs (old slots, undo copies, optionally leaf hashes) were computed by
+// PrepareOps without mutating the tree. CommitPrepared applies it; the tree
+// must not change in between (the caller serialises its writers; the cursor
+// is checked as a guard).
+type PreparedOps struct {
+	ops        []Op
+	pre        []preOp
+	nextSlot   uint64
+	hashLeaves bool
+
+	// Allocations the commit would otherwise make while it holds the tree,
+	// done ahead from read-only state (the caller excludes other mutators):
+	// vals are the set values copied into one batch chunk (allocVal's arena
+	// semantics: views append-ordered like their slots); entries is the
+	// resident window copied into a backing array that fits the batch's
+	// appends (nil when it already does); idx is the flat index rehashed to
+	// take the batch's inserts without a rehash (nil when it already can).
+	vals    [][]byte
+	entries []entry
+	entLen  int
+	idx     *flatIndex
+}
+
+// ErrPreparedStale is CommitPrepared's refusal of a batch prepared against a
+// tree that has changed since (nothing was applied).
+var ErrPreparedStale = errors.New("qmdb: prepared ops are stale (tree changed since PrepareOps)")
+
+// CanPrepare reports whether ops can take PrepareOps/CommitPrepared: a
+// pure-read in-RAM index and strictly ascending keys.
+func (t *Tree) CanPrepare(ops []Op) bool { return t.parallelApplyEligible(ops) }
+
+// PrepareOps computes ops' order-independent inputs on `workers` goroutines.
+// It only READS the tree (index and resident entries), so it may run
+// concurrently with other readers -- but not with any mutation. undo says
+// whether the commit will run under undo recording (the deactivated values
+// are copied here). hashLeaves computes the leaf hashes here instead of in
+// the commit/fold. Returns nil if !CanPrepare(ops).
+func (t *Tree) PrepareOps(ops []Op, undo bool, workers int, hashLeaves bool) *PreparedOps {
+	if !t.parallelApplyEligible(ops) {
+		return nil
+	}
 	pre := make([]preOp, len(ops))
-	undo := t.rec != nil
 	chunks := (len(ops) + parallelApplyMinChunk - 1) / parallelApplyMinChunk
 	if workers > chunks {
 		workers = chunks
 	}
 	if workers <= 1 {
-		t.precompute(ops, pre, 0, len(ops), undo)
+		t.precompute(ops, pre, 0, len(ops), undo, hashLeaves)
 	} else {
 		var wg sync.WaitGroup
 		per := (len(ops) + workers - 1) / workers
@@ -112,39 +160,123 @@ func (t *Tree) applyOpsParallel(ops []Op, workers int) {
 			wg.Add(1)
 			go func(lo, hi int) {
 				defer wg.Done()
-				t.precompute(ops, pre, lo, hi, undo)
+				t.precompute(ops, pre, lo, hi, undo, hashLeaves)
 			}(lo, hi)
 		}
 		wg.Wait()
 	}
+	p := &PreparedOps{ops: ops, pre: pre, nextSlot: t.nextSlot, hashLeaves: hashLeaves}
+	t.prepareAllocs(p)
+	return p
+}
 
-	// Ordered commit: Set/Delete with the precomputed inputs.
-	t.BeginLeafBatch()
-	for i := range ops {
-		p := &pre[i]
-		kh := ops[i].KeyHash
-		if p.hasOld {
-			if p.undoOK {
-				t.rec.Entries = append(t.rec.Entries, UndoEntry{Slot: p.old, KeyHash: kh, Value: p.undoVal})
-			} else {
-				t.recordDeactivation(p.old, kh)
+// prepareAllocs makes the commit's allocations ahead (PreparedOps).
+func (t *Tree) prepareAllocs(p *PreparedOps) {
+	sets, inserts, bytesTotal := 0, 0, 0
+	for i := range p.ops {
+		if n := len(p.ops[i].Value); n != 0 {
+			sets++
+			bytesTotal += n
+			if !p.pre[i].hasOld {
+				inserts++
 			}
-			t.deactivate(p.old)
 		}
-		if len(ops[i].Value) == 0 {
-			if p.hasOld {
+	}
+	if sets == 0 {
+		return
+	}
+	buf := make([]byte, bytesTotal)
+	p.vals = make([][]byte, len(p.ops))
+	off := 0
+	for i := range p.ops {
+		if v := p.ops[i].Value; len(v) != 0 {
+			n := copy(buf[off:], v)
+			p.vals[i] = buf[off : off+n : off+n]
+			off += n
+		}
+	}
+	// setEntry places slot s at s-entriesBase; the batch ends at nextSlot+sets.
+	if need := int(t.nextSlot-t.entriesBase) + sets; need > cap(t.entries) {
+		e := make([]entry, need+need/4)
+		copy(e, t.entries)
+		// Touch the tail too: a fresh large allocation is untouched OS
+		// memory, and its first-write page faults would land in the commit.
+		clear(e[len(t.entries):])
+		p.entries, p.entLen = e[:len(t.entries)], len(t.entries)
+	}
+	if fi, ok := t.idx.(*flatIndex); ok {
+		p.idx = fi.grownFor(inserts)
+	}
+}
+
+// CommitPrepared runs the ordered mutation half of ApplyOps for a prepared
+// batch: slot assignment, undo/death bookkeeping, appends, liveness bits and
+// index updates -- everything a value read (Get/GetVia) observes. It opens
+// the leaf batch and leaves it open: the leaf hashing and the twig/upper
+// fold are FinishBatch's, which touches no state a value read uses.
+func (t *Tree) CommitPrepared(p *PreparedOps) error {
+	if p == nil || p.nextSlot != t.nextSlot {
+		return ErrPreparedStale
+	}
+	if p.entries != nil {
+		if len(t.entries) != p.entLen {
+			return ErrPreparedStale
+		}
+		t.entries = p.entries
+	}
+	if p.idx != nil {
+		t.idx = p.idx
+	}
+	t.BeginLeafBatch()
+	for i := range p.ops {
+		pp := &p.pre[i]
+		kh := p.ops[i].KeyHash
+		if pp.hasOld {
+			if pp.undoOK && t.rec != nil {
+				t.rec.Entries = append(t.rec.Entries, UndoEntry{Slot: pp.old, KeyHash: kh, Value: pp.undoVal})
+			} else {
+				t.recordDeactivation(pp.old, kh)
+			}
+			t.deactivate(pp.old)
+		}
+		if len(p.ops[i].Value) == 0 {
+			if pp.hasOld {
 				t.idx.Delete(kh)
 			}
 			continue
 		}
-		t.appendLive(kh, ops[i].Value, p.leaf)
+		v := p.ops[i].Value
+		if p.vals != nil {
+			v = p.vals[i]
+		}
+		t.appendLiveView(kh, v, pp.leaf, p.hashLeaves)
 	}
-	t.EndLeafBatch()
-	t.Root()
+	return nil
 }
 
-// appendLive is the append half of Set with the leaf hash supplied.
-func (t *Tree) appendLive(keyHash Hash, value []byte, leaf Hash) {
+// FinishBatch closes the leaf batch CommitPrepared opened -- deferred leaf
+// hashes, the touched twig paths, the liveness-bitmap roots -- and folds the
+// upper tree, returning the root. It writes only twig/upper/root state, never
+// the index or the entry window, so value reads (GetVia) may run concurrently
+// with it; anything reading twig state (Root, proofs) may not.
+func (t *Tree) FinishBatch() Hash {
+	t.EndLeafBatch()
+	return t.Root()
+}
+
+// applyOpsParallel is ApplyOps with the pre-pass fanned out over `workers`.
+func (t *Tree) applyOpsParallel(ops []Op, workers int) {
+	p := t.PrepareOps(ops, t.rec != nil, workers, true)
+	if err := t.CommitPrepared(p); err != nil {
+		panic(err) // prepared against this very tree a moment ago
+	}
+	t.FinishBatch()
+}
+
+// appendLiveView is the append half of Set for a value already copied into
+// stable storage (the arena, or a prepared batch chunk), with the leaf hash
+// supplied (haveLeaf) or left to writeLeafEntry.
+func (t *Tree) appendLiveView(keyHash Hash, v []byte, leaf Hash, haveLeaf bool) {
 	slot := t.nextSlot
 	t.nextSlot++
 	if t.rec != nil {
@@ -153,9 +285,12 @@ func (t *Tree) appendLive(keyHash Hash, value []byte, leaf Hash) {
 	tw := t.twigFor(slot)
 	local := slot % TwigSize
 	id := int(slot / TwigSize)
-	v := t.allocVal(value)
 	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
-	t.writeLeaf(tw, id, local, leaf)
+	if haveLeaf {
+		t.writeLeaf(tw, id, local, leaf)
+	} else {
+		t.writeLeafEntry(tw, id, local, slot, keyHash, v)
+	}
 	t.setTwigBit(tw, id, local, true)
 	tw.live++
 	t.markUpperDirty(id)
@@ -167,3 +302,7 @@ func (t *Tree) appendLive(keyHash Hash, value []byte, leaf Hash) {
 	}
 	t.rootDirty = true
 }
+
+// HaveAVX512 reports whether the leaf hashes run 16 per AVX-512 pass (the
+// batch fold's deferred path).
+func HaveAVX512() bool { return haveAVX512 }

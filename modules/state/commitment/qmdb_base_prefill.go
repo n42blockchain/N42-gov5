@@ -31,6 +31,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -135,6 +136,18 @@ type BasePrefill struct {
 	hits   atomic.Uint64
 	_      [56]byte // keep the counters on separate cache lines
 	misses atomic.Uint64
+
+	// fillWait is the fill's reader-lock wait for the tree's owner.
+	fillWait atomic.Int64
+}
+
+// FillWait is how long the fill's lookups waited for the tree's reader lock
+// (the owner's ComputeRoot/flush holding it exclusively).
+func (p *BasePrefill) FillWait() time.Duration {
+	if p == nil {
+		return 0
+	}
+	return time.Duration(p.fillWait.Load())
 }
 
 func (p *BasePrefill) shard(k qmdb.Hash) map[qmdb.Hash]prefillValue {
@@ -200,7 +213,7 @@ func (r *QMDBRootComputer) FillBasePrefill(db kv.RoDB, keys [][]qmdb.Hash, worke
 				return
 			}
 			defer tx.Rollback()
-			src := NewLookupSourceRefreshing(r, tx, db)
+			src := NewLookupSourceRefreshing(r, tx, db).SetWaitSink(&p.fillWait)
 			n := 0
 			for _, ks := range keys {
 				for _, k := range ks {

@@ -128,6 +128,16 @@ type LookupSource struct {
 	fresh kv.RoDB
 	// prefill, when set, answers the keys it holds (SetPrefill, P15).
 	prefill *BasePrefill
+	// waitSink, when set, accumulates the reader-lock waits of this
+	// source's lookups (SetWaitSink).
+	waitSink *atomic.Int64
+}
+
+// SetWaitSink makes s add its lookups' reader-lock waits (those above
+// Lookup's 50 us floor: waits for the tree's owner) to sink. Returns s.
+func (s *LookupSource) SetWaitSink(sink *atomic.Int64) *LookupSource {
+	s.waitSink = sink
+	return s
 }
 
 // NewLookupSourceRefreshing is NewLookupSource for a reader whose
@@ -167,11 +177,11 @@ func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
 	if s.locked {
 		v, found, evicted = s.rc.LookupLocked(keyHash, s.cold)
 	} else {
-		v, found, evicted = s.rc.Lookup(keyHash, s.cold)
+		v, found, evicted = s.rc.lookup(keyHash, s.cold, s.waitSink)
 	}
 	if !found && evicted && s.fresh != nil && !s.locked {
 		if tx, err := kv.BeginRoNested(context.Background(), s.fresh); err == nil {
-			v, found, evicted = s.rc.Lookup(keyHash, tx)
+			v, found, evicted = s.rc.lookup(keyHash, tx, s.waitSink)
 			tx.Rollback()
 			lookupRefreshes.Add(1)
 		}
