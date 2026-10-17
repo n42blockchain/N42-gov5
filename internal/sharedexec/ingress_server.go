@@ -125,6 +125,12 @@ func (s *Server) serveStrictIngressConnection(q *strictIngressQueue, conn net.Co
 	if _, err := io.ReadFull(conn, magic[:]); err != nil {
 		return err
 	}
+	if magic == [4]byte{'G', 'S', 'R', '1'} {
+		return s.serveResumeIngressConnection(q, conn)
+	}
+	if q.resume != nil {
+		return errors.New("sealed resume owner requires explicit GSR1 protocol")
+	}
 	if magic != [4]byte{'G', 'S', 'I', '1'} {
 		return errors.New("unsupported strict ingress protocol")
 	}

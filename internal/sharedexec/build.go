@@ -49,10 +49,11 @@ func (s *Server) Build(ctx context.Context, request BuildRequest) (BuildResult, 
 	}
 	key := importKey{s.identity, request.TemplateHash}
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.resumeArming {
 		s.mu.Unlock()
 		return BuildResult{}, errors.New("execution service closed")
 	}
+	s.started = true
 	if s.builds == nil {
 		s.builds = make(map[importKey]*buildJob)
 	}

@@ -7,7 +7,7 @@ import "errors"
 func (s *Server) EnableOwnBuildReuse() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || len(s.jobs) != 0 || len(s.builds) != 0 || s.chain.Config().HotStuff == nil || len(s.chain.Config().HotStuff.Validators) != 7 {
+	if s.closed || s.resumeArming || len(s.jobs) != 0 || len(s.builds) != 0 || s.chain.Config().HotStuff == nil || len(s.chain.Config().HotStuff.Validators) != 7 {
 		return errors.New("own-build reuse requires idle fixed-seven performance owner")
 	}
 	s.reuseOwnBuild = true
