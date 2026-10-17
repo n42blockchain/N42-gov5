@@ -18,8 +18,10 @@ package frame
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -44,14 +46,39 @@ func HashOf(raw []byte) (types.Hash, error) {
 	return crypto.Keccak256Hash(raw[:HeaderSize+int(h.PayloadLen)]), nil
 }
 
-// decodeTx decodes one frame entry according to the frame's tx type.
-func decodeTx(txType uint8, b []byte) (*transaction.Transaction, error) {
+// EnvTxDecodePool is N42_TX_DECODE_POOL: frame transactions decode into
+// per-frame slabs with their encodings aliasing the frame (P14), and
+// admission recovery reuses its decode objects. Default on; "0" decodes
+// every transaction on its own, as before.
+const EnvTxDecodePool = "N42_TX_DECODE_POOL"
+
+var txDecodePoolOn atomic.Bool
+
+func init() { txDecodePoolOn.Store(os.Getenv(EnvTxDecodePool) != "0") }
+
+// TxDecodePoolEnabled reports N42_TX_DECODE_POOL.
+func TxDecodePoolEnabled() bool { return txDecodePoolOn.Load() }
+
+// SetTxDecodePoolForTest switches the slab decode and returns the restore.
+func SetTxDecodePoolForTest(on bool) func() {
+	prev := txDecodePoolOn.Swap(on)
+	return func() { txDecodePoolOn.Store(prev) }
+}
+
+// decodeTx decodes one frame entry according to the frame's tx type. With
+// dec (an Ethereum frame under N42_TX_DECODE_POOL) the transaction comes
+// from dec's slab and its cached encoding aliases b, which frames allow:
+// a frame's bytes are never modified once encoded.
+func decodeTx(txType uint8, b []byte, dec *transaction.EthBatchDecoder) (*transaction.Transaction, error) {
 	if txType == TxTypeNative {
 		tx := new(transaction.Transaction)
 		if err := tx.Unmarshal(b); err != nil {
 			return nil, err
 		}
 		return tx, nil
+	}
+	if dec != nil {
+		return dec.DecodeAliased(b)
 	}
 	return transaction.DecodeEthereumTransaction(b)
 }
@@ -61,15 +88,26 @@ func decodeTx(txType uint8, b []byte) (*transaction.Transaction, error) {
 // decodes the same bytes with the same codec, so the dropped set is the
 // same everywhere and the block's transaction list stays deterministic.
 // Only a frame whose layout is invalid is an error.
+//
+// The transactions may share one allocation and alias raw (see
+// transaction.EthBatchDecoder): raw must not be modified afterwards.
 func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
 	f, err := Decode(raw)
 	if err != nil {
 		return nil, 0, err
 	}
+	var dec *transaction.EthBatchDecoder
+	if f.TxType == TxTypeEthereum && TxDecodePoolEnabled() {
+		dec = transaction.NewEthBatchDecoder(int(f.TxCount))
+	}
 	txs := make([]*transaction.Transaction, 0, f.TxCount)
+	return decodeFrameInto(f, dec, txs)
+}
+
+func decodeFrameInto(f *Frame, dec *transaction.EthBatchDecoder, txs []*transaction.Transaction) ([]*transaction.Transaction, int, error) {
 	dropped := 0
 	_ = walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
-		tx, err := decodeTx(f.TxType, b)
+		tx, err := decodeTx(f.TxType, b, dec)
 		if err != nil {
 			dropped++
 			return
@@ -158,7 +196,7 @@ func GasEstimate(f *Frame) uint64 {
 				return
 			}
 		}
-		if tx, err := decodeTx(f.TxType, b); err == nil {
+		if tx, err := decodeTx(f.TxType, b, nil); err == nil {
 			gas += tx.Gas()
 		}
 	})

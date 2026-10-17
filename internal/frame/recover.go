@@ -238,10 +238,22 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 // RecoverSenders decodes one frame and recovers its transactions' senders
 // under signer, aligned with DecodeTxs. It returns how many did not recover
 // (zero address in the result).
+//
+// The decoded transactions die here (only their senders are kept), so
+// under N42_TX_DECODE_POOL their storage is pooled across frames.
 func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int, error) {
-	txs, _, err := DecodeTxs(raw)
+	f, err := Decode(raw)
 	if err != nil {
 		return nil, 0, err
+	}
+	var rd *recoverDecode
+	var txs []*transaction.Transaction
+	if f.TxType == TxTypeEthereum && TxDecodePoolEnabled() {
+		rd = recoverDecodePool.Get().(*recoverDecode)
+		rd.dec.Reset(int(f.TxCount))
+		txs, _, _ = decodeFrameInto(f, &rd.dec, rd.txs[:0])
+	} else {
+		txs, _, _ = decodeFrameInto(f, nil, make([]*transaction.Transaction, 0, f.TxCount))
 	}
 	ss := &store.Senders{Signer: signer, Addrs: make([]types.Address, len(txs))}
 	failed := 0
@@ -257,8 +269,24 @@ func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int,
 		}
 		ss.Addrs[i] = addr
 	}
+	if rd != nil {
+		// Nothing below holds a transaction: Sender returned and only the
+		// addresses were kept. Transactions the general decoder made (not
+		// from the slab) are dropped with the slice's contents.
+		clear(txs)
+		rd.txs = txs[:0]
+		recoverDecodePool.Put(rd)
+	}
 	return ss, failed, nil
 }
+
+// recoverDecode is admission recovery's reusable decode state.
+type recoverDecode struct {
+	dec transaction.EthBatchDecoder
+	txs []*transaction.Transaction
+}
+
+var recoverDecodePool = sync.Pool{New: func() any { return new(recoverDecode) }}
 
 // ApplySenders attaches cached senders to a frame's decoded transactions
 // (txs must be that frame's DecodeTxs output) and returns how many it

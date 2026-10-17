@@ -164,95 +164,108 @@ type dynamicFeeAlloc struct {
 
 // fastDecodeLegacy decodes a legacy transaction list.
 func fastDecodeLegacy(data []byte) (*Transaction, bool) {
+	a := new(legacyAlloc)
+	if !fastDecodeLegacyInto(a, data) {
+		return nil, false
+	}
+	return NewTxOwned(&a.tx), true
+}
+
+// fastDecodeLegacyInto is fastDecodeLegacy into caller-provided, zeroed
+// storage. On false a is partly written and must be zeroed before reuse.
+func fastDecodeLegacyInto(a *legacyAlloc, data []byte) bool {
 	b, ok := fastOuterList(data)
 	if !ok {
-		return nil, false
+		return false
 	}
-	a := new(legacyAlloc)
 	t := &a.tx
 	if t.Nonce, b, ok = fastUint64(b); !ok {
-		return nil, false
+		return false
 	}
 	if b, ok = fastUint256(&a.u[0], b); !ok {
-		return nil, false
+		return false
 	}
 	t.GasPrice = &a.u[0]
 	if t.Gas, b, ok = fastUint64(b); !ok {
-		return nil, false
+		return false
 	}
 	if t.To, b, ok = fastTo(&a.to, b); !ok {
-		return nil, false
+		return false
 	}
 	if b, ok = fastUint256(&a.u[1], b); !ok {
-		return nil, false
+		return false
 	}
 	t.Value = &a.u[1]
 	if t.Data, b, ok = fastBytes(b); !ok {
-		return nil, false
+		return false
 	}
 	for i, p := range []**uint256.Int{&t.V, &t.R, &t.S} {
 		if b, ok = fastUint256(&a.u[2+i], b); !ok {
-			return nil, false
+			return false
 		}
 		*p = &a.u[2+i]
 	}
-	if len(b) != 0 {
-		return nil, false
-	}
-	return NewTxOwned(t), true
+	return len(b) == 0
 }
 
 // fastDecodeDynamicFee decodes an EIP-1559 payload (after the type byte)
 // whose access list is empty.
 func fastDecodeDynamicFee(data []byte) (*Transaction, bool) {
-	b, ok := fastOuterList(data)
-	if !ok {
+	a := new(dynamicFeeAlloc)
+	if !fastDecodeDynamicFeeInto(a, data) {
 		return nil, false
 	}
-	a := new(dynamicFeeAlloc)
+	return NewTxOwned(&a.tx), true
+}
+
+// fastDecodeDynamicFeeInto is fastDecodeDynamicFee into caller-provided,
+// zeroed storage. On false a is partly written and must be zeroed before
+// reuse.
+func fastDecodeDynamicFeeInto(a *dynamicFeeAlloc, data []byte) bool {
+	b, ok := fastOuterList(data)
+	if !ok {
+		return false
+	}
 	t := &a.tx
 	if b, ok = fastUint256(&a.u[0], b); !ok {
-		return nil, false
+		return false
 	}
 	t.ChainID = &a.u[0]
 	if t.Nonce, b, ok = fastUint64(b); !ok {
-		return nil, false
+		return false
 	}
 	if b, ok = fastUint256(&a.u[1], b); !ok {
-		return nil, false
+		return false
 	}
 	t.GasTipCap = &a.u[1]
 	if b, ok = fastUint256(&a.u[2], b); !ok {
-		return nil, false
+		return false
 	}
 	t.GasFeeCap = &a.u[2]
 	if t.Gas, b, ok = fastUint64(b); !ok {
-		return nil, false
+		return false
 	}
 	if t.To, b, ok = fastTo(&a.to, b); !ok {
-		return nil, false
+		return false
 	}
 	if b, ok = fastUint256(&a.u[3], b); !ok {
-		return nil, false
+		return false
 	}
 	t.Value = &a.u[3]
 	if t.Data, b, ok = fastBytes(b); !ok {
-		return nil, false
+		return false
 	}
 	// Only the empty access list: rlp decodes it to a non-nil empty slice.
 	if len(b) == 0 || b[0] != 0xc0 {
-		return nil, false
+		return false
 	}
 	b = b[1:]
 	t.AccessList = AccessList{}
 	for i, p := range []**uint256.Int{&t.V, &t.R, &t.S} {
 		if b, ok = fastUint256(&a.u[4+i], b); !ok {
-			return nil, false
+			return false
 		}
 		*p = &a.u[4+i]
 	}
-	if len(b) != 0 {
-		return nil, false
-	}
-	return NewTxOwned(t), true
+	return len(b) == 0
 }
