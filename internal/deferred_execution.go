@@ -156,25 +156,47 @@ func compareDeferredResult(header *block.Header, want rawdb.ExecutedResult) erro
 // rule ValidateState checks against: the native concat root, or the
 // Ethereum receipt trie on Ethereum-EL chains past Byzantium.
 func ReceiptsRootFor(config *params.ChainConfig, number uint64, receipts []*block.Receipt) types.Hash {
-	if config != nil && config.EthereumReceiptEncoding() && config.IsByzantium(number) {
+	if ethereumReceiptRoot(config, number) {
 		return block.EthereumReceiptRoot(receipts, true)
 	}
-	return DeriveSha(block.Receipts(receipts))
+	root, _, _ := block.ReceiptsDigest(receipts, true, false)
+	return root
+}
+
+// ethereumReceiptRoot reports whether ReceiptsRootFor uses the Ethereum
+// receipt trie (rather than the native concat root) for block number.
+func ethereumReceiptRoot(config *params.ChainConfig, number uint64) bool {
+	return config != nil && config.EthereumReceiptEncoding() && config.IsByzantium(number)
+}
+
+// receiptsResultAndRow is ExecutedResultFor (Root unset) plus, when
+// wantRow, the block's Receipts row, from a single pass over receipts
+// where the encodings allow it.
+func receiptsResultAndRow(config *params.ChainConfig, number uint64, receipts []*block.Receipt, wantRow bool) (rawdb.ExecutedResult, []byte) {
+	native := !ethereumReceiptRoot(config, number)
+	compact := wantRow && rawdb.CompactReceiptWrites
+	root, bloom, row := block.ReceiptsDigest(receipts, native, compact)
+	if !native {
+		root = block.EthereumReceiptRoot(receipts, true)
+	}
+	if wantRow && !compact {
+		if enc, err := rawdb.EncodeReceiptsForStorage(receipts); err == nil {
+			row = enc
+		}
+	}
+	var gasUsed uint64
+	if n := len(receipts); n > 0 {
+		gasUsed = receipts[n-1].CumulativeGasUsed
+	}
+	return rawdb.ExecutedResult{ReceiptHash: root, Bloom: bloom, GasUsed: gasUsed}, row
 }
 
 // ExecutedResultFor assembles the stored result of a block from what
 // executing it produced.
 func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Hash, receipts []*block.Receipt) rawdb.ExecutedResult {
-	var gasUsed uint64
-	if n := len(receipts); n > 0 {
-		gasUsed = receipts[n-1].CumulativeGasUsed
-	}
-	return rawdb.ExecutedResult{
-		Root:        root,
-		ReceiptHash: ReceiptsRootFor(config, number, receipts),
-		Bloom:       block.CreateBloom(receipts),
-		GasUsed:     gasUsed,
-	}
+	r, _ := receiptsResultAndRow(config, number, receipts, false)
+	r.Root = root
+	return r
 }
 
 // receiptsResultFuture is ExecutedResultFor's receipts part (receipts root,
@@ -182,8 +204,8 @@ func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Has
 // the receipts are final. At 163k transactions it is ~45 ms of hashing that
 // otherwise ran serially inside the write.
 //
-// It also encodes the block's Receipts row first (~15 ms at 163k), which
-// the write appends before anything else.
+// It also encodes the block's Receipts row, which the write appends before
+// anything else, in the same pass over the receipts.
 type receiptsResultFuture struct {
 	hash     types.Hash
 	receipts []*block.Receipt
@@ -201,11 +223,10 @@ func startReceiptsResult(config *params.ChainConfig, number uint64, hash types.H
 	f := &receiptsResultFuture{hash: hash, receipts: receipts, done: make(chan struct{}), encodedDone: make(chan struct{})}
 	go func() {
 		defer close(f.done)
-		if enc, err := rawdb.EncodeReceiptsForStorage(receipts); err == nil {
-			f.encoded = enc
-		}
+		// One pass yields the row, root and bloom together: three
+		// separate walks over 163k receipts were cache-miss bound.
+		f.result, f.encoded = receiptsResultAndRow(config, number, receipts, true)
 		close(f.encodedDone)
-		f.result = ExecutedResultFor(config, number, types.Hash{}, receipts)
 	}()
 	return f
 }

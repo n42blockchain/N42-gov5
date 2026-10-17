@@ -322,3 +322,73 @@ func TestMultiSegmentLookupNeedsVerifier(t *testing.T) {
 		t.Fatalf("with a verifier: %d transactions still resolved to the wrong block", wrong)
 	}
 }
+
+// TestSegmentParamsMixResolve: segments sealed with the previous RecSplit
+// parameters (bucket 2000, leaf 5 or 8) and the current ones sit in one
+// store; each index carries its own parameters, so every transaction must
+// resolve to its block whichever parameters built its segment.
+func TestSegmentParamsMixResolve(t *testing.T) {
+	dir := t.TempDir()
+	want := map[types.Hash]uint64{}
+	blockHashes := map[uint64][]types.Hash{}
+	build := func(start, blocks uint64, txPerBlock, bucket int, leaf uint16) {
+		pb, pl := sourceBucketSize, sourceLeafSize
+		sourceBucketSize, sourceLeafSize = bucket, leaf
+		defer func() { sourceBucketSize, sourceLeafSize = pb, pl }()
+		perBlock := make([][]types.Hash, blocks)
+		for b := uint64(0); b < blocks; b++ {
+			num := start + b
+			for i := 0; i < txPerBlock+int(b%7); i++ {
+				h := hashFor(num, i)
+				perBlock[b] = append(perBlock[b], h)
+				want[h] = num
+				blockHashes[num] = append(blockHashes[num], h)
+			}
+		}
+		if err := BuildSegmentFromSource(context.Background(), dir,
+			start, start+blocks, memSource(start, perBlock)); err != nil {
+			t.Fatalf("build %d+%d: %v", start, blocks, err)
+		}
+	}
+	build(2_000, 10, 3_000, 2000, 8)
+	build(2_010, 10, 3_000, 2000, 5)
+	build(2_020, 10, 3_000, sourceBucketSize, sourceLeafSize)
+	build(2_030, 3, 1, sourceBucketSize, sourceLeafSize) // fewer keys than a bucket
+
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	if svc.SegmentCount() != 4 {
+		t.Fatalf("segment count = %d, want 4", svc.SegmentCount())
+	}
+	svc.SetVerifier(func(blockNum uint64, txHash types.Hash) (uint64, bool) {
+		for i, h := range blockHashes[blockNum] {
+			if h == txHash {
+				return uint64(i), true
+			}
+		}
+		return 0, false
+	})
+	for h, wantBlock := range want {
+		got, err := svc.Lookup(nil, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || *got != wantBlock {
+			t.Fatalf("lookup %s = %v, want block %d", h, got, wantBlock)
+		}
+	}
+	for i := 0; i < 2048; i++ {
+		var h types.Hash
+		h[0], h[1], h[30], h[31] = 0xfe, byte(i), byte(i>>8), 0xfe
+		got, err := svc.Lookup(nil, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Fatalf("unknown hash %s resolved to block %d", h, *got)
+		}
+	}
+}
