@@ -11,17 +11,47 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
 
 func runSupply(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: gov5-replay prepare|qualify|strict|recover [options]")
+		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	root := flags.String("root", "", "absolute fresh private corpus directory")
 	switch args[0] {
+	case "resume-plan":
+		runtime := flags.String("runtime-manifest", "", "fixed schema-2 runtime metadata; no runtime is started")
+		outer := flags.String("recovery-outer", "", "fixed promoted historical recovery report")
+		recovery := flags.String("recovery-result", "", "fixed full historical canonical account-vector report")
+		original := flags.String("original-result", "", "fixed promoted original restoration report")
+		output := flags.String("output", "", "fresh validation artifact's plan-output directory")
+		manifestHash := flags.String("manifest-sha256", "", "exact finalized source manifest SHA256")
+		runtimeHash := flags.String("runtime-sha256", "", "exact runtime metadata SHA256")
+		outerHash := flags.String("recovery-outer-sha256", "", "exact promoted recovery report SHA256")
+		recoveryHash := flags.String("recovery-sha256", "", "exact full account-vector report SHA256")
+		originalHash := flags.String("original-sha256", "", "exact original restoration report SHA256")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || !stringsHasPrefixPath(*root, supplyRoot) {
+			return errors.New("resume-plan requires an explicit isolated source and no positional arguments")
+		}
+		inputs := resumePlanInputs{SourceRoot: *root}
+		paths := []string{filepath.Join(*root, "manifest.json"), *runtime, *outer, *recovery, *original}
+		hashes := []string{*manifestHash, *runtimeHash, *outerHash, *recoveryHash, *originalHash}
+		pins := []*resumePinnedInput{&inputs.Manifest, &inputs.Runtime, &inputs.Outer, &inputs.Recovery, &inputs.Original}
+		for i, pin := range pins {
+			hash, err := resumeHashText(hashes[i])
+			if err != nil || paths[i] == "" {
+				return errors.New("resume-plan requires all explicit report paths and SHA256 pins")
+			}
+			*pin = resumePinnedInput{Path: paths[i], SHA256: hash}
+		}
+		return runResumePlanOnly(ctx, inputs, *output, strictRuntimeBase, "/data/blockchain/gov5-work/validation")
 	case "recover":
 		runtime := flags.String("runtime-manifest", "", "retained schema-2 runtime; no transaction dispatch")
 		attempt := flags.String("attempt", "", "new recovery evidence basename")
@@ -66,7 +96,7 @@ func runSupply(ctx context.Context, args []string) error {
 		}
 		return qualifySupply(ctx, *root, *attempt, *rate, 4*time.Second, 20*time.Second)
 	default:
-		return errors.New("supported commands are prepare, qualify, strict and recover")
+		return errors.New("supported commands are prepare, qualify, strict, recover and resume-plan")
 	}
 }
 
