@@ -143,11 +143,6 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", header.GasUsed, usedGas)
 	}
 
-	rbloom := block.CreateBloom(receipts)
-	if rbloom != header.Bloom {
-		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
-	}
-
 	// The receipt root must be derived the way the block's producer derived
 	// it: Ethereum encoding only on Ethereum-EL chains (see ChainConfig.EthereumReceiptEncoding).
 	ethereumReceiptEncoding := v.config.EthereumReceiptEncoding()
@@ -155,9 +150,14 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	// Pre-Byzantium Ethereum receipts encode the intermediate state root after
 	// each transaction. N42 receipts retain the post-Byzantium status field, so
 	// that historical value is not available for an RLP import. Gas and bloom
-	// remain validated above; the canonical block header is retained verbatim.
+	// are still validated; the canonical block header is retained verbatim.
 	skipReceiptRoot := ethereumReceiptEncoding && !postByzantium
-	receiptSha := DeriveSha(receipts)
+
+	// One pass over the receipts gives the bloom and the native root.
+	receiptSha, rbloom, _ := block.ReceiptsDigest(receipts, !ethereumReceiptEncoding, false)
+	if rbloom != header.Bloom {
+		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
+	}
 	if ethereumReceiptEncoding && !skipReceiptRoot {
 		receiptSha = block.EthereumReceiptRoot(receipts, true)
 	}

@@ -59,35 +59,7 @@ func (rs *Receipts) MarshalCompact() []byte {
 	out = append(out, compactReceiptsMarker, compactReceiptsVersion)
 	out = rcAppendUvarint(out, uint64(len(*rs)))
 	for _, r := range *rs {
-		out = append(out, r.Type)
-		var flags byte
-		if len(r.PostState) == 32 {
-			flags |= rcfPostState
-		}
-		hasContract := r.ContractAddress != (types.Address{})
-		if hasContract {
-			flags |= rcfContract
-		}
-		out = append(out, flags)
-		if flags&rcfPostState != 0 {
-			out = append(out, r.PostState...)
-		} else {
-			out = rcAppendUvarint(out, r.Status)
-		}
-		if hasContract {
-			out = append(out, r.ContractAddress[:]...)
-		}
-		out = rcAppendUvarint(out, r.CumulativeGasUsed)
-		out = rcAppendUvarint(out, uint64(len(r.Logs)))
-		for _, lg := range r.Logs {
-			out = append(out, lg.Address[:]...)
-			out = rcAppendUvarint(out, uint64(len(lg.Topics)))
-			for _, tp := range lg.Topics {
-				out = append(out, tp[:]...)
-			}
-			out = rcAppendUvarint(out, uint64(len(lg.Data)))
-			out = append(out, lg.Data...)
-		}
+		out = appendCompactReceipt(out, r)
 	}
 	return out
 }

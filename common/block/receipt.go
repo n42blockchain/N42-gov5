@@ -106,19 +106,8 @@ func (rs Receipts) Len() int { return len(rs) }
 // CumulativeGasUsed, Logs — no Type, no Bloom). NOT compatible with
 // Ethereum's standard receipt trie root.
 func (rs Receipts) EncodeIndex(i int, w *bytes.Buffer) {
-	r := rs[i]
-
-	logs := make([]*storedLog, len(r.Logs))
-
-	for k, log := range r.Logs {
-		logs[k] = &storedLog{
-			Address: log.Address,
-			Topics:  log.Topics,
-			Data:    log.Data,
-		}
-	}
-	data := &storedReceipt{r.Status, r.CumulativeGasUsed, logs}
-	rlp.Encode(w, data)
+	var tmp [64]byte
+	w.Write(appendNativeReceipt(tmp[:0], rs[i])) //nolint:errcheck
 }
 
 func (rs *Receipts) FromProtoMessage(receipts *types_pb.Receipts) error {
@@ -145,7 +134,6 @@ type Receipt struct {
 	PostState         []byte `json:"root"`
 	Status            uint64 `json:"status"`
 	CumulativeGasUsed uint64 `json:"cumulativeGasUsed" gencodec:"required"`
-	Bloom             Bloom  `json:"logsBloom"         gencodec:"required"`
 	Logs              []*Log `json:"logs"              gencodec:"required"`
 
 	TxHash          types.Hash    `json:"transactionHash" gencodec:"required"`
@@ -155,6 +143,11 @@ type Receipt struct {
 	BlockHash        types.Hash   `json:"blockHash,omitempty"`
 	BlockNumber      *uint256.Int `json:"blockNumber,omitempty"`
 	TransactionIndex uint         `json:"transactionIndex"`
+
+	// Bloom is last: the per-block passes over receipts (root, bloom,
+	// compact row) read the fields above, and the 256 bytes in between
+	// would put each receipt's hot fields on separate cache lines.
+	Bloom Bloom `json:"logsBloom" gencodec:"required"`
 }
 
 func (r *Receipt) Marshal() ([]byte, error) {
