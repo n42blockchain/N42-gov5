@@ -34,10 +34,11 @@ func (s *Server) AppliedChild(ctx context.Context, request AppliedChildRequest) 
 		return result, errors.New("invalid applied child identity/parent/height/view")
 	}
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.resumeArming {
 		s.mu.Unlock()
 		return result, errors.New("execution service closed")
 	}
+	s.started = true
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()

@@ -65,10 +65,11 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 		return CommitResult{}, errors.New("commit chain identity, hash or height mismatch")
 	}
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.resumeArming {
 		s.mu.Unlock()
 		return CommitResult{}, errors.New("execution service closed")
 	}
+	s.started = true
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
