@@ -38,7 +38,24 @@ type strictRecoveryResult struct {
 	NonceSum        uint64                         `json:"canonical_nonce_sum"`
 	VectorSHA256    types.Hash                     `json:"account_vector_sha256"`
 	ReadOnlyRetries uint64                         `json:"readonly_snapshot_retries"`
+	Roots           *recoveryRootEvidence          `json:"canonical_roots,omitempty"`
 	Limitation      string                         `json:"limitation"`
+}
+
+type recoveryRootEvidence struct {
+	CanonicalHash   types.Hash                `json:"canonical_hash"`
+	CanonicalNumber uint64                    `json:"canonical_number"`
+	Roots           sharedexec.CanonicalRoots `json:"roots"`
+	AccountBatches  uint64                    `json:"account_batches"`
+	FinalRead       bool                      `json:"final_read"`
+}
+
+func sameRecoveryRoots(previous, current *sharedexec.CanonicalRoots) (*sharedexec.CanonicalRoots, error) {
+	if current == nil || current.Root == (types.Hash{}) || current.AppliedRoot != current.Root || (previous != nil && *previous != *current) {
+		return nil, errors.New("recovery canonical roots differ across batches")
+	}
+	value := *current
+	return &value, nil
 }
 
 func recoveryNonregressing(current, previous sharedvalidator.StatusResult) bool {
@@ -94,7 +111,11 @@ func readRecoveryAccounts(ctx context.Context, request sharedexec.CanonicalAccou
 // runStrictRecovery never opens an admission transport or submits transactions.
 // It audits one retained failed run after external, producer-disabled QC replay.
 // This is state reconciliation evidence, not permission to replay unknown ACKs.
-func runStrictRecovery(parent context.Context, root, runtimePath, attempt, baselinePath string) (returnErr error) {
+func runStrictRecovery(parent context.Context, root, runtimePath, attempt, baselinePath string) error {
+	return runStrictRecoveryWithRoots(parent, root, runtimePath, attempt, baselinePath, false)
+}
+
+func runStrictRecoveryWithRoots(parent context.Context, root, runtimePath, attempt, baselinePath string, requireRoots bool) (returnErr error) {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !stringsHasPrefixPath(root, supplyRoot) {
 		return errors.New("explicit isolated recovery corpus required")
 	}
@@ -224,11 +245,32 @@ func runStrictRecovery(parent context.Context, root, runtimePath, attempt, basel
 		}
 		if ready {
 			request := sharedexec.CanonicalAccountsRequest{Identity: runtime.Identity, Epoch: epoch, ManifestHash: m.Digest, CanonicalHash: status.CanonicalHash, CanonicalNumber: status.CanonicalNumber}
-			accounts, sum, err := readRecoveryAccounts(ctx, request, addresses, m.Descriptor.NoncesPerSender, statuses[0].CommittedExecutedTransactions, owner.CanonicalAccounts)
+			request.IncludeRoots = requireRoots
+			var roots *sharedexec.CanonicalRoots
+			var batches uint64
+			read := func(ctx context.Context, query sharedexec.CanonicalAccountsRequest) (sharedexec.CanonicalAccountsResult, error) {
+				response, err := owner.CanonicalAccounts(ctx, query)
+				if err != nil || !requireRoots {
+					return response, err
+				}
+				roots, err = sameRecoveryRoots(roots, response.Roots)
+				if err != nil {
+					return sharedexec.CanonicalAccountsResult{}, err
+				}
+				batches++
+				return response, nil
+			}
+			accounts, sum, err := readRecoveryAccounts(ctx, request, addresses, m.Descriptor.NoncesPerSender, statuses[0].CommittedExecutedTransactions, read)
 			if err != nil && !errors.Is(err, sharedexec.ErrIngressSnapshotChanged) {
 				return err
 			}
 			if err == nil {
+				if requireRoots {
+					request.Addresses = addresses[:1]
+					if _, err := read(ctx, request); err != nil {
+						return err
+					}
+				}
 				finalOwner, err := owner.StrictIngressStatus(ctx)
 				if err != nil {
 					return err
@@ -237,6 +279,19 @@ func runStrictRecovery(parent context.Context, root, runtimePath, attempt, basel
 					return err
 				}
 				if strictQueueEmpty(finalOwner) && finalOwner.CanonicalHash == request.CanonicalHash && finalOwner.CanonicalNumber == request.CanonicalNumber {
+					if requireRoots {
+						finalStatuses, err := strictStatuses(ctx, clients, m, epoch)
+						if err != nil {
+							return err
+						}
+						for _, current := range finalStatuses {
+							if current.ProducerRunning || current.Number != request.CanonicalNumber || current.BlockHash != request.CanonicalHash || current.CommittedExecutedTransactions != sum {
+								return errors.New("recovery validators changed during final root read")
+							}
+						}
+						result.Final = finalStatuses
+						result.Roots = &recoveryRootEvidence{CanonicalHash: request.CanonicalHash, CanonicalNumber: request.CanonicalNumber, Roots: *roots, AccountBatches: batches - 1, FinalRead: true}
+					}
 					result.Accounts, result.NonceSum, result.OwnerFinal = accounts, sum, finalOwner
 					encoded, _ := json.Marshal(accounts)
 					result.VectorSHA256 = types.Hash(sha256.Sum256(encoded))

@@ -145,3 +145,24 @@ func TestRecoveryNonregressionAndEmptySession(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryExplicitRootBatchesAndFinalReadCannotChangeAnchor(t *testing.T) {
+	first := &sharedexec.CanonicalRoots{Root: types.Hash{1}, AppliedRoot: types.Hash{1}}
+	tracked, err := sameRecoveryRoots(nil, first)
+	if err != nil || tracked == first || *tracked != *first {
+		t.Fatal("first explicit root snapshot not copied")
+	}
+	for _, incoming := range []*sharedexec.CanonicalRoots{nil, {}, {Root: types.Hash{2}, AppliedRoot: types.Hash{2}}, {Root: types.Hash{1}, AppliedRoot: types.Hash{2}}} {
+		for _, phase := range []string{"next-account-batch", "final-root-reread"} {
+			t.Run(phase, func(t *testing.T) {
+				got, err := sameRecoveryRoots(tracked, incoming)
+				if err == nil || errors.Is(err, sharedexec.ErrIngressSnapshotChanged) || got != nil {
+					t.Fatalf("root change became retry/partial success: %+v %v", got, err)
+				}
+			})
+		}
+	}
+	if _, err := sameRecoveryRoots(tracked, first); err != nil {
+		t.Fatal(err)
+	}
+}
