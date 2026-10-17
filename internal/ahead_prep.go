@@ -229,7 +229,8 @@ var aheadPrepDoneForTest func(pr *aheadPrep)
 
 // claimAheadPrep removes h's preparation for its import: one not started is
 // cancelled (nil), one running is waited for, and so is its base prefill
-// (one still waiting for the tree is ended). The wait is returned.
+// (one still waiting for the tree is ended, one still reading stops at its
+// next key and keeps what it read, aheadBase.halt). The wait is returned.
 func (bc *BlockChain) claimAheadPrep(h types.Hash) (*aheadPrep, time.Duration) {
 	if bc == nil {
 		return nil, 0

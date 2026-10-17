@@ -15,9 +15,11 @@
 // its dirty set, and N's post-state holds that same dirty set (its accounts
 // and storage maps ARE the maps the root is handed), so the child's
 // post-state layer answers every key N changed -- written, deleted, wiped --
-// before the base is consulted. A BasePrefill holds tree values read ahead,
-// while the tree is in either state, and a LookupSource with it attached
-// answers them without the lock. Which state the tree holds is
+// before the base is consulted. The same holds for any state h below N whose
+// descendants h+1..N each have their post-state layered on the child's
+// reader, newest outermost (P15b). A BasePrefill holds tree values read
+// ahead, while the tree is in any of those states, and a LookupSource with
+// it attached answers them without the lock. Which state the tree holds is
 // AppliedState: a ComputeRoot labelled for its block (LabelNextRoot, bound
 // to the post-state of the dirty set it applies), and a mutation count that
 // every other change of the tree's values advances, so a prefill can tell
@@ -84,7 +86,38 @@ func (r *QMDBRootComputer) noteMutationLocked(label *rootLabel) {
 	if label != nil {
 		s.Labelled, s.Number, s.Hash, s.ParentHash = true, label.number, label.hash, label.parentHash
 	}
+	r.appliedMu.Lock()
+	r.appliedLog[s.Gen%appliedLogLen] = *s
 	r.applied.Store(s)
+	r.appliedMu.Unlock()
+}
+
+// appliedLogLen is how many applied states AppliedSince can return.
+const appliedLogLen = 16
+
+// AppliedSince returns the applied states after mutation gen, oldest first,
+// through the current one: what every mutation since gen left the tree as.
+// ok is false when the log no longer reaches back to gen+1 (more than
+// appliedLogLen mutations ran since). A prefill read across mutations
+// checks with it that each one was a root its layers account for.
+func (r *QMDBRootComputer) AppliedSince(gen uint64) (states []QMDBAppliedState, ok bool) {
+	r.appliedMu.Lock()
+	defer r.appliedMu.Unlock()
+	cur := r.AppliedState().Gen
+	if cur < gen {
+		return nil, false
+	}
+	if cur-gen > appliedLogLen {
+		return nil, false
+	}
+	for g := gen + 1; g <= cur; g++ {
+		st := r.appliedLog[g%appliedLogLen]
+		if st.Gen != g {
+			return nil, false
+		}
+		states = append(states, st)
+	}
+	return states, true
 }
 
 // prefillValue is one key's tree value; found=false records an absent key.
@@ -177,7 +210,7 @@ func (r *QMDBRootComputer) FillBasePrefill(db kv.RoDB, keys [][]qmdb.Hash, worke
 					if _, dup := m[k]; dup {
 						continue
 					}
-					if n&255 == 0 && stop != nil && stop() {
+					if n&15 == 0 && stop != nil && stop() {
 						return
 					}
 					n++

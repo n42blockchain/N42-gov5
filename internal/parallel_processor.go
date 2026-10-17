@@ -421,7 +421,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// its keys without the tree's lock.
 	base := prep.prefill()
 	var basePF *commitment.BasePrefill
-	if ahead && base != nil {
+	if ahead && base != nil && (claim != nil || base.depth <= 1) {
+		// A prefill read two or more blocks below the parent needs the
+		// layers the lag pipeline's claim sets up (aheadBaseLayers).
 		basePF = base.pf
 	}
 	tStart := time.Now()
@@ -1039,11 +1041,15 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
 		execNs, valNs := executor.WaveTimes()
 		baseHits, baseMisses := basePF.Stats()
-		var baseTook, baseClaimWait time.Duration
+		var baseTook, baseClaimWait, baseTreeWait time.Duration
 		var baseAt uint64
-		baseSkip := ""
+		baseDepth := int64(-1)
+		baseSkip, baseCut := "", false
 		if base != nil {
-			baseTook, baseClaimWait, baseAt, baseSkip = base.took, base.claimWait, base.at, base.skip
+			baseTook, baseClaimWait, baseTreeWait, baseAt, baseSkip, baseCut = base.took, base.claimWait, base.waited, base.at, base.skip, base.cut.Load()
+			if basePF != nil {
+				baseDepth = int64(base.depth)
+			}
 		}
 		if lenient && failed > 0 {
 			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
@@ -1051,7 +1057,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(),
-			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillSkip", baseSkip,
+			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillDepth", baseDepth, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillTreeWaitMs", baseTreeWait.Milliseconds(), "basePrefillCut", baseCut, "basePrefillSkip", baseSkip,
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,

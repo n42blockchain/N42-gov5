@@ -112,7 +112,11 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	)
 	defer SetFrameBlocksForTest(true)()
 	defer block.SetVoteOnAvailabilityForTest(true)()
-	defer block.SetDeferredDepthForTest(2, 0)()
+	depth := uint64(2)
+	if lagPipeDeferDepthForTest > 0 {
+		depth = uint64(lagPipeDeferDepthForTest)
+	}
+	defer block.SetDeferredDepthForTest(int(depth), 0)()
 	defer commitment.SetQMDBStateReadModeForTest(commitment.QMDBReadOn)()
 	defer SetLagPipelineForTest(true)()
 	prevWait := lagPipeChildWaitForTest
@@ -215,6 +219,27 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 				if lagPipeAwaitBaseForTest {
 					awaitAheadBase(t, piped.bc, child.Hash())
 				}
+				if lagPipeAwaitGrandBaseForTest {
+					// The grandchild's prefill reads the tree before this
+					// block's root: two blocks below its parent.
+					var grand *block.Block
+					for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+						if grand = piped.bc.lagQueuedChild(child.Hash()); grand != nil {
+							break
+						}
+					}
+					if grand != nil {
+						for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+							piped.bc.aheadPreps.mu.Lock()
+							pr := piped.bc.aheadPreps.m[grand.Hash()]
+							piped.bc.aheadPreps.mu.Unlock()
+							if pr == nil || pr.state.Load() != prepPending {
+								break
+							}
+						}
+						awaitAheadBase(t, piped.bc, grand.Hash())
+					}
+				}
 			}
 		}
 		defer func() { lagPipeBeforePublishForTest = nil }()
@@ -248,16 +273,20 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		if lagPipeRotateToForTest {
 			// A recipient the parent did not write: the child reads it
 			// from the base (written two blocks earlier).
-			fb.To = types.Address{0xee, byte(n % 3)}
+			mod := uint64(3)
+			if lagPipeRotateModForTest > 0 {
+				mod = uint64(lagPipeRotateModForTest)
+			}
+			fb.To = types.Address{0xee, byte(n % mod)}
 		}
 		raws, hashes, _ := fb.Frames(t, frames, perFrame)
 		for i := range raws {
 			require.True(t, pipedStore.Put(hashes[i], raws[i]))
 			require.True(t, serialStore.Put(hashes[i], raws[i]))
 		}
-		// The leader gate: block n carries the result of n-2.
-		if n >= 3 {
-			waitLag(piped, n-2)
+		// The leader gate: block n carries the result of n-depth.
+		if n > depth {
+			waitLag(piped, n-depth)
 		}
 		hdr := &block.Header{ParentHash: parent.Hash(), Number: parent.Number.Clone(), GasLimit: parent.GasLimit,
 			Time: parent.Time + 10, BaseFee: parent.BaseFee, Difficulty: parentDifficulty(parent),
