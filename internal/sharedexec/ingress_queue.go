@@ -96,6 +96,7 @@ type strictIngressQueue struct {
 	admitted                                  uint64
 	transportListening                        bool
 	transportServing                          bool
+	resume                                    *resumeIngressSession // immutable startup plan; counters under mu
 }
 
 // EnableStrictIngress is startup-only. The server must exclusively own all
@@ -116,7 +117,7 @@ func (s *Server) EnableStrictIngress(options StrictIngressOptions) error {
 	s.execute.Lock()
 	defer s.execute.Unlock()
 	s.mu.Lock()
-	idle := !s.closed && s.ingress == nil && len(s.jobs) == 0 && len(s.builds) == 0
+	idle := !s.closed && !s.resumeArming && s.ingress == nil && len(s.jobs) == 0 && len(s.builds) == 0
 	s.mu.Unlock()
 	if !idle {
 		return errors.New("strict ingress requires unused owner")
@@ -137,8 +138,8 @@ func (s *Server) EnableStrictIngress(options StrictIngressOptions) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
-		return errors.New("execution service closed")
+	if s.closed || s.resumeArming {
+		return errors.New("execution service closed or initializing resume")
 	}
 	s.ingress = q
 	return nil
@@ -212,7 +213,7 @@ func (q *strictIngressQueue) ingressFrameLocked(frame CorpusFrame, size int) (in
 func (s *Server) AdmitStrictFrame(ctx context.Context, identity Identity, epoch [16]byte, frame CorpusFrame) (StrictIngressAck, error) {
 	s.mu.Lock()
 	q := s.ingress
-	if s.closed || q == nil || identity != s.identity {
+	if s.closed || q == nil || q.resume != nil || identity != s.identity {
 		s.mu.Unlock()
 		return StrictIngressAck{}, errors.New("strict ingress disabled or identity mismatch")
 	}
@@ -247,7 +248,7 @@ func (s *Server) reserveStrictIngress(q *strictIngressQueue, epoch [16]byte, fra
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if epoch != q.epoch || q.closed || s.ctx.Err() != nil {
+	if epoch != q.epoch || q.closed || q.resume != nil || s.ctx.Err() != nil {
 		return nil, nil, errors.New("strict ingress epoch unavailable")
 	}
 	if q.reconciling {

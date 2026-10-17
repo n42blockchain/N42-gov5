@@ -26,6 +26,8 @@ var ErrPerformanceCanonicalNotApplied = errors.New("canonical accounts are not a
 type PerformanceCanonicalAccounts struct {
 	Hash        types.Hash
 	Number      uint64
+	Root        types.Hash
+	AppliedRoot types.Hash
 	Accounts    map[types.Address]account.StateAccount
 	Exists      map[types.Address]bool
 	NextBaseFee uint256.Int
@@ -73,8 +75,12 @@ func (bc *BlockChain) ReadPerformanceCanonicalAccounts(ctx context.Context, addr
 		return out, ErrPerformanceCanonicalNotApplied
 	}
 	parent := rawdb.ReadHeader(tx, out.Hash, out.Number)
-	if parent == nil || out.Number == ^uint64(0) || (bc.chainConfig.IsLondon(out.Number) && parent.BaseFee == nil) {
+	if parent == nil || parent.Number == nil || !parent.Number.IsUint64() || parent.Number.Uint64() != out.Number || parent.Hash() != out.Hash || out.Number == ^uint64(0) || (bc.chainConfig.IsLondon(out.Number) && parent.BaseFee == nil) {
 		return out, errors.New("canonical accounts fee parent missing")
+	}
+	out.Root = parent.Root
+	if bc.qmdbRootComputer != nil {
+		out.AppliedRoot = bc.qmdbRootComputer.Root()
 	}
 	if bc.chainConfig.IsLondon(out.Number + 1) {
 		fee, overflow := uint256.FromBig(misc.CalcBaseFee(bc.chainConfig, parent))
