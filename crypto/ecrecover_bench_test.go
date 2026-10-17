@@ -6,6 +6,8 @@
 package crypto
 
 import (
+	"runtime"
+	"sync/atomic"
 	"testing"
 
 	"github.com/erigontech/secp256k1"
@@ -58,4 +60,34 @@ func BenchmarkCgoCallFloor(b *testing.B) {
 			b.Fatal("zero signature recovered")
 		}
 	}
+}
+
+// BenchmarkEcrecoverGoroutines32 runs 32 goroutines (whatever GOMAXPROCS)
+// over 256 distinct signers: ns/op is wall time per recovery across all of
+// them, the shape of the frame admission pool.
+func BenchmarkEcrecoverGoroutines32(b *testing.B) {
+	const n = 256
+	msgs, sigs := make([][]byte, n), make([][]byte, n)
+	for i := range sigs {
+		key, _ := GenerateKey()
+		msgs[i] = Keccak256([]byte{byte(i), byte(i >> 8)})
+		sig, err := Sign(msgs[i], key)
+		if err != nil {
+			b.Fatal(err)
+		}
+		sigs[i] = sig
+	}
+	procs := runtime.GOMAXPROCS(0)
+	b.SetParallelism((32 + procs - 1) / procs)
+	var next atomic.Uint64
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := int(next.Add(1))
+		for pb.Next() {
+			i++
+			if _, err := Ecrecover(msgs[i%n], sigs[i%n]); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
