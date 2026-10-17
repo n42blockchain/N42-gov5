@@ -265,8 +265,8 @@ func TestAheadBaseChainMoves(t *testing.T) {
 	require.False(t, aheadBaseMovedOK(c, 8, []commitment.QMDBAppliedState{lab(2, 9, types.Hash{1})}), "a sibling's root")
 	require.False(t, aheadBaseMovedOK(c, 8, []commitment.QMDBAppliedState{{Gen: 2}}), "an unlabelled mutation")
 	require.False(t, aheadBaseMovedOK(c, 10, []commitment.QMDBAppliedState{lab(2, 11, h(11))}), "past the parent")
-	require.Equal(t, 2, parseAheadBaseDepth(""))
+	require.Equal(t, 1, parseAheadBaseDepth(""))
 	require.Equal(t, 3, parseAheadBaseDepth("3"))
 	require.Equal(t, aheadBaseMaxDepth, parseAheadBaseDepth("9"))
-	require.Equal(t, 2, parseAheadBaseDepth("0"))
+	require.Equal(t, 1, parseAheadBaseDepth("0"))
 }

@@ -47,7 +47,7 @@ import (
 // preparation (ahead_prep.go) is computed, its base prefill waits for the
 // tree to hold a block h of the child's own chain with N-K <= h <= N (a
 // labelled root, commitment.QMDBRootComputer.AppliedState; K is
-// N42_AHEAD_BASE_DEPTH, default 2), reads the accounts every transaction
+// N42_AHEAD_BASE_DEPTH, default 1), reads the accounts every transaction
 // sends from and to, the fee recipients and the keys the block-start system
 // calls read, and checks afterwards that only the roots of the child's
 // ancestors above h changed the tree meanwhile (AppliedSince); otherwise it
@@ -59,9 +59,11 @@ import (
 // never a prefill over a partial stack. The ahead run's tree reads -- its
 // state, its workers, the block-start calls -- answer the prefilled keys
 // without the tree's lock; the rest read through it as before. The claim
-// does not wait for a fill still reading: it stops it at the next key and
-// takes the keys read so far (N42_AHEAD_BASE_CLAIM_WAIT=1 waits for the
-// whole fill). N42_AHEAD_BASE_PREFETCH=0 disables it.
+// waits for a fill still reading; N42_AHEAD_BASE_CLAIM_WAIT=0 stops it at
+// the next key and takes the keys read so far. N42_AHEAD_BASE_PREFETCH=0
+// disables it. S113 (35zzzcm): depth 2 with the cut claim bought no cycle
+// time (cut fills answered no lookups) and its leg stalled for over a
+// minute, so both are opt-in.
 
 // aheadBasePrefetchOn is N42_AHEAD_BASE_PREFETCH (default on; "0", "false"
 // or "off" disables).
@@ -77,7 +79,7 @@ func SetAheadBasePrefetchForTest(on bool) func() {
 
 // aheadBaseDepth is N42_AHEAD_BASE_DEPTH, K: a prefill reads the tree at a
 // block h of the child's chain with N-K <= h <= N (N the child's parent).
-// Default 2, clamped to [1, aheadBaseMaxDepth]; each step keeps one more
+// Default 1, clamped to [1, aheadBaseMaxDepth]; each step keeps one more
 // written block's post-state alive (lagPipeline.older).
 var aheadBaseDepth = parseAheadBaseDepth(os.Getenv("N42_AHEAD_BASE_DEPTH"))
 
@@ -86,7 +88,7 @@ const aheadBaseMaxDepth = 4
 func parseAheadBaseDepth(v string) int {
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 1 {
-		return 2
+		return 1
 	}
 	if n > aheadBaseMaxDepth {
 		n = aheadBaseMaxDepth
@@ -101,9 +103,9 @@ func SetAheadBaseDepthForTest(k int) func() {
 	return func() { aheadBaseDepth = prev }
 }
 
-// aheadBaseClaimWaitsFill is N42_AHEAD_BASE_CLAIM_WAIT=1: the claim waits
-// for a fill still reading instead of stopping it (the P15 behaviour).
-var aheadBaseClaimWaitsFill = os.Getenv("N42_AHEAD_BASE_CLAIM_WAIT") == "1"
+// aheadBaseClaimWaitsFill is N42_AHEAD_BASE_CLAIM_WAIT (default on, the P15
+// behaviour): the claim waits for a fill still reading; "0" stops it.
+var aheadBaseClaimWaitsFill = os.Getenv("N42_AHEAD_BASE_CLAIM_WAIT") != "0"
 
 // SetAheadBaseClaimWaitForTest sets whether the claim waits for a fill
 // still reading, and returns the restore.
