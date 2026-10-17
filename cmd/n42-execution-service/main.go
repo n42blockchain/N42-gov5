@@ -47,6 +47,11 @@ func run(ctx context.Context, args []string) error {
 	reuseOwnBuild := flags.Bool("reuse-own-build", false, "Reuse one matching owner-local candidate execution after public sealed-header validation (live root replay remains)")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
 	ingressManifest := flags.String("strict-ingress-manifest", "", "Explicit finalized performance corpus manifest; enables private strict ingress and owner queue")
+	resumePlan := flags.String("resume-ingress-plan", "", "Explicit four-frame resume plan; mutually exclusive with strict ingress")
+	resumeProof := flags.String("resume-ingress-source-proof", "", "Exact original-source mapping proof; independently reconstructed by this owner")
+	resumeSource := flags.String("resume-ingress-source", "", "Original immutable signed corpus root; owner rehashes all shards")
+	resumeManifest := flags.String("resume-ingress-manifest", "", "Exact finalized manifest for explicit resume ingress")
+	resumePlanID := flags.String("resume-ingress-plan-id", "", "Locally pinned expected four-frame plan ID")
 	ingressMaxTx := flags.Int("ingress-max-transactions", 0, "Strict queue global credits (0 selects 2000000; maximum 2000000)")
 	ingressMaxBytes := flags.Int("ingress-max-encoded-bytes", 0, "Strict queue encoded credits (0 selects 512MiB; maximum 512MiB)")
 	if err := flags.Parse(args); err != nil {
@@ -67,10 +72,21 @@ func run(ctx context.Context, args []string) error {
 			capsSpecified = true
 		}
 	})
-	if *ingressManifest == "" && capsSpecified {
-		return errors.New("ingress credits require explicit --strict-ingress-manifest")
+	resumeRequested := *resumePlan != "" || *resumeProof != "" || *resumeSource != "" || *resumeManifest != "" || *resumePlanID != ""
+	if resumeRequested && *ingressManifest != "" {
+		return errors.New("strict and resume ingress are mutually exclusive")
 	}
-	ingressOptions, err := strictIngressOptions(*ingressManifest, *ingressMaxTx, *ingressMaxBytes)
+	if *ingressManifest == "" && !resumeRequested && capsSpecified {
+		return errors.New("ingress credits require explicit strict or resume ingress")
+	}
+	var ingressOptions *sharedexec.StrictIngressOptions
+	var resumeOptions *sharedexec.ResumeIngressOptions
+	var err error
+	if resumeRequested {
+		resumeOptions, err = resumeIngressOptions(*resumePlan, *resumeProof, *resumeSource, *resumeManifest, *resumePlanID, *ingressMaxTx, *ingressMaxBytes)
+	} else {
+		ingressOptions, err = strictIngressOptions(*ingressManifest, *ingressMaxTx, *ingressMaxBytes)
+	}
 	if err != nil {
 		return err
 	}
@@ -121,6 +137,9 @@ func run(ctx context.Context, args []string) error {
 		if manifest.Descriptor.Identity != expected {
 			return errors.New("strict ingress manifest differs from actual owner genesis")
 		}
+	}
+	if resumeOptions != nil {
+		resumeOptions.GenesisRaw = raw
 	}
 	if err := node.ValidateDataDirNetworkBinding(cfg, genesis.Config, &genesisHash); err != nil {
 		return err
@@ -224,9 +243,14 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	if resumeOptions != nil {
+		if err := server.EnableResumeIngress(ctx, *resumeOptions); err != nil {
+			return err
+		}
+	}
 	socketDir := filepath.Join(*datadir, "execution-rpc")
 	if err := os.Mkdir(socketDir, 0700); err != nil && !os.IsExist(err) {
 		return err
 	}
-	return server.ServePrivateUnix(ctx, socketDir, ingressOptions != nil)
+	return server.ServePrivateUnix(ctx, socketDir, ingressOptions != nil || resumeOptions != nil)
 }
