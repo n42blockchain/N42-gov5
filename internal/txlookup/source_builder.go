@@ -157,7 +157,7 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 
 	rs, err := recsplit.NewRecSplit(recsplit.RecSplitArgs{
 		KeyCount:   totalTx,
-		BucketSize: 2000,
+		BucketSize: sourceBucketSize,
 		LeafSize:   sourceLeafSize,
 		// Enums halves the index: the per-key ordinal becomes an Elias-Fano
 		// enumeration instead of a fixed-width field. LessFalsePositives keeps
@@ -273,10 +273,25 @@ func SealedEnd(dir string) uint64 {
 	return end
 }
 
-// sourceLeafSize is the RecSplit leaf size of sealer-built segments. The
-// leaf bijection search grows as m^m/m!: 8 -> 5 builds a 1.14M-key segment
-// at 672 instead of 2,190 ns/key (P9 BenchmarkBuildSegmentFileLeaf) for
-// +0.2 bits/key on ~36 (the per-key ordinal and existence byte dominate).
-// The leaf size is in each index's header, so segments of either size are
+// sourceLeafSize and sourceBucketSize are the RecSplit parameters of
+// sealer-built segments, chosen for build speed: the index is ~36 bits a
+// key and almost all of it is the per-key ordinal and the existence byte,
+// so the MPHF's own ~2 bits barely move with either.
+//
+// The leaf bijection search grows as m^m/m!. Above the leaves a bucket of
+// m keys is cut in halves by salt search, ~sqrt(pi*m/2) trials of m hashes
+// each, so that cost per key grows with sqrt(bucket size); with 2000-key
+// buckets those binary splits were ~85% of a seal. On a 1.14M-key segment
+// (BenchmarkBuildSegmentFileBucket / Leaf):
+//
+//	bucket 2000, leaf 8: 2,190 ns/key
+//	bucket 2000, leaf 5:   677 ns/key, 36.06 bits/key
+//	bucket  100, leaf 5:   306 ns/key, 36.16 bits/key
+//	bucket  100, leaf 4:   240 ns/key, 36.36 bits/key
+//
+// Both are in each index's header, so segments built with any of them are
 // read side by side.
-var sourceLeafSize = uint16(5)
+var (
+	sourceLeafSize   = uint16(4)
+	sourceBucketSize = 100
+)
