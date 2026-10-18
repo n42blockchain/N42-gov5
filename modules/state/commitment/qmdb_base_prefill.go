@@ -29,6 +29,7 @@ package commitment
 
 import (
 	"context"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -120,36 +121,53 @@ func (r *QMDBRootComputer) AppliedSince(gen uint64) (states []QMDBAppliedState, 
 	return states, true
 }
 
-// prefillValue is one key's tree value; found=false records an absent key.
+// prefillValue is one key's tree value, n bytes at off of its shard's
+// value arena; found=false records an absent key. Pointer-free, so a
+// shard's map is never scanned by the collector (r31a).
 type prefillValue struct {
-	v     []byte
+	off   uint32
+	n     uint32
 	found bool
+}
+
+// prefillShard is one worker's keys and the bytes of their values.
+type prefillShard struct {
+	m    map[qmdb.Hash]prefillValue
+	vals []byte
 }
 
 // BasePrefill is an immutable set of tree values read ahead, sharded by key
 // hash. Its counters count the lookups it answered and those it did not.
 type BasePrefill struct {
-	shards []map[qmdb.Hash]prefillValue
+	shards []prefillShard
 	n      int
 
 	hits   atomic.Uint64
 	_      [56]byte // keep the counters on separate cache lines
 	misses atomic.Uint64
+
+	released atomic.Bool
 }
 
-func (p *BasePrefill) shard(k qmdb.Hash) map[qmdb.Hash]prefillValue {
-	return p.shards[int(k[0])%len(p.shards)]
-}
-
-// get returns k's prefilled value; ok=false when k was not prefilled.
+// get returns k's prefilled value; ok=false when k was not prefilled. The
+// value is valid as a tree value read through a transaction is: until the
+// run that reads through the prefill ends (Release).
 func (p *BasePrefill) get(k qmdb.Hash) (v []byte, found, ok bool) {
-	pv, ok := p.shard(k)[k]
+	if len(p.shards) == 0 {
+		// Released (or empty): the caller reads the tree.
+		return nil, false, false
+	}
+	sh := &p.shards[int(k[0])%len(p.shards)]
+	pv, ok := sh.m[k]
 	if !ok {
 		p.misses.Add(1)
 		return nil, false, false
 	}
 	p.hits.Add(1)
-	return pv.v, pv.found, true
+	if pv.n == 0 {
+		return nil, pv.found, true
+	}
+	return sh.vals[pv.off : pv.off+pv.n : pv.off+pv.n], pv.found, true
 }
 
 // Len is the number of keys prefilled.
@@ -169,6 +187,72 @@ func (p *BasePrefill) Stats() (hits, misses uint64) {
 	return p.hits.Load(), p.misses.Load()
 }
 
+// prefillScratchPool is N42_BLOCK_SCRATCH_POOL (default on; "0" allocates
+// every prefill's maps fresh): a released prefill's maps and value arenas
+// are cleared and kept for the next block's fill.
+var prefillScratchPool = os.Getenv("N42_BLOCK_SCRATCH_POOL") != "0"
+
+// SetPrefillScratchPoolForTest switches the reuse and returns the restore.
+func SetPrefillScratchPoolForTest(on bool) func() {
+	prev := prefillScratchPool
+	prefillScratchPool = on
+	return func() { prefillScratchPool = prev }
+}
+
+// prefillFree keeps released prefills' shards: a fill's maps were sized
+// for every key of the block (duplicates included), ~23 MB a 160k-transfer
+// block, 2.6 GB per 20 s of a follower's import -- 5% of what it allocated.
+var prefillFree struct {
+	mu   sync.Mutex
+	list [][]prefillShard
+}
+
+const prefillFreeMax = 2
+
+// takePrefillShards returns workers cleared shards, kept ones when a
+// released prefill had as many.
+func takePrefillShards(workers, hint int) []prefillShard {
+	if prefillScratchPool {
+		prefillFree.mu.Lock()
+		for i := len(prefillFree.list) - 1; i >= 0; i-- {
+			if sh := prefillFree.list[i]; len(sh) == workers {
+				prefillFree.list = append(prefillFree.list[:i], prefillFree.list[i+1:]...)
+				prefillFree.mu.Unlock()
+				return sh
+			}
+		}
+		prefillFree.mu.Unlock()
+	}
+	sh := make([]prefillShard, workers)
+	for w := range sh {
+		sh[w].m = make(map[qmdb.Hash]prefillValue, hint)
+	}
+	return sh
+}
+
+// Release hands p's maps back for the next fill. The caller guarantees
+// nothing reads through p any more: every lookup source it was set on is
+// done (their transactions are closed, so no value they returned is in
+// use either). p answers nothing afterwards. Idempotent.
+func (p *BasePrefill) Release() {
+	if p == nil || !prefillScratchPool || !p.released.CompareAndSwap(false, true) {
+		return
+	}
+	shards := p.shards
+	p.shards = nil
+	go func() {
+		for i := range shards {
+			clear(shards[i].m)
+			shards[i].vals = shards[i].vals[:0]
+		}
+		prefillFree.mu.Lock()
+		defer prefillFree.mu.Unlock()
+		if len(prefillFree.list) < prefillFreeMax {
+			prefillFree.list = append(prefillFree.list, shards)
+		}
+	}()
+}
+
 // FillBasePrefill reads every key of keys (one slice per producer;
 // duplicates are read once) through the tree on workers goroutines, each
 // with its own read transaction on db and the per-call reader lock, an
@@ -181,18 +265,16 @@ func (r *QMDBRootComputer) FillBasePrefill(db kv.RoDB, keys [][]qmdb.Hash, worke
 	if workers < 1 {
 		workers = 1
 	}
-	p := &BasePrefill{shards: make([]map[qmdb.Hash]prefillValue, workers)}
 	total := 0
 	for _, ks := range keys {
 		total += len(ks)
 	}
+	p := &BasePrefill{shards: takePrefillShards(workers, total/workers+16)}
 	errs := make([]error, workers)
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
-		m := make(map[qmdb.Hash]prefillValue, total/workers+16)
-		p.shards[w] = m
 		wg.Add(1)
-		go func(w int, m map[qmdb.Hash]prefillValue) {
+		go func(w int, sh *prefillShard) {
 			defer wg.Done()
 			tx, err := db.BeginRo(context.Background())
 			if err != nil {
@@ -201,6 +283,7 @@ func (r *QMDBRootComputer) FillBasePrefill(db kv.RoDB, keys [][]qmdb.Hash, worke
 			}
 			defer tx.Rollback()
 			src := NewLookupSourceRefreshing(r, tx, db)
+			m := sh.m
 			n := 0
 			for _, ks := range keys {
 				for _, k := range ks {
@@ -215,15 +298,15 @@ func (r *QMDBRootComputer) FillBasePrefill(db kv.RoDB, keys [][]qmdb.Hash, worke
 					}
 					n++
 					v, found := src.Get(k)
-					var c []byte
+					pv := prefillValue{found: found}
 					if found && len(v) > 0 {
-						c = make([]byte, len(v))
-						copy(c, v)
+						pv.off, pv.n = uint32(len(sh.vals)), uint32(len(v))
+						sh.vals = append(sh.vals, v...)
 					}
-					m[k] = prefillValue{v: c, found: found}
+					m[k] = pv
 				}
 			}
-		}(w, m)
+		}(w, &p.shards[w])
 	}
 	wg.Wait()
 	for _, err := range errs {
@@ -231,8 +314,8 @@ func (r *QMDBRootComputer) FillBasePrefill(db kv.RoDB, keys [][]qmdb.Hash, worke
 			return nil, err
 		}
 	}
-	for _, m := range p.shards {
-		p.n += len(m)
+	for i := range p.shards {
+		p.n += len(p.shards[i].m)
 	}
 	return p, nil
 }

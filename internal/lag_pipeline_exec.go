@@ -298,10 +298,14 @@ type aheadExec struct {
 	// Set by the executing goroutine before done closes.
 	ibs    *state.IntraBlockState
 	reader state.StateReader
-	run    *parallelRun
-	tx     kv.Tx
-	err    error
-	took   time.Duration
+	// pf is the base prefill the run's tree reads answered from; released
+	// with the run (release): its lookup sources die with the run's
+	// transactions.
+	pf   *commitment.BasePrefill
+	run  *parallelRun
+	tx   kv.Tx
+	err  error
+	took time.Duration
 
 	once sync.Once
 	pipe *lagPipeline
@@ -316,6 +320,10 @@ func (a *aheadExec) release() {
 			a.tx.Rollback()
 			a.pipe.openTxs.Add(-1)
 		}
+		// Every source reading through the prefill belonged to the run:
+		// its workers' and prefetch readers ended with it, and the state's
+		// own source with the transaction just closed.
+		a.pf.Release()
 	})
 }
 
@@ -578,6 +586,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
 	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 		layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
+		a.pf = ab.pf
 	}
 	if fn := lagPipeAheadClaimedForTest; fn != nil {
 		fn(bc, a.blk)
