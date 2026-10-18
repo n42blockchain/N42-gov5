@@ -76,9 +76,17 @@ func TestBoundedResumeHistoricalAuditRequiresActualRootEvidenceAndFinalReportPin
 		}
 		return b
 	}
-	if _, _, err := boundedHistoricalBaseline(f.inputs, f.manifest, f.runtime, raw(outer), raw(f.recovery), raw(f.original)); err != nil {
-		t.Fatal(err)
+	for _, kind := range []string{"gov5-post-resume-double-physical-reopen-accepted-not-tps", "gov5-post-bounded-double-physical-reopen-accepted-not-tps"} {
+		outer.Kind = kind
+		if _, _, err := boundedHistoricalBaseline(f.inputs, f.manifest, f.runtime, raw(outer), raw(f.recovery), raw(f.original)); err != nil {
+			t.Fatalf("complete pinned audit rejected for kind %s: %v", kind, err)
+		}
 	}
+	outer.Kind = "unrecognized-audit"
+	if _, _, err := boundedHistoricalBaseline(f.inputs, f.manifest, f.runtime, raw(outer), raw(f.recovery), raw(f.original)); err == nil {
+		t.Fatal("unrecognized historical audit kind accepted")
+	}
+	outer.Kind = "gov5-post-bounded-double-physical-reopen-accepted-not-tps"
 	for _, change := range []func(*strictRecoveryResult){
 		func(r *strictRecoveryResult) { r.Roots = nil },
 		func(r *strictRecoveryResult) {
