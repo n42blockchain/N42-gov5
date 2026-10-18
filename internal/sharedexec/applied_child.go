@@ -28,8 +28,12 @@ type AppliedChildResult struct {
 
 // AppliedChild is read-only. It permits later leaders to re-propose an already
 // sealed/executed payload without building a sibling on stale world state.
-func (s *Server) AppliedChild(ctx context.Context, request AppliedChildRequest) (AppliedChildResult, error) {
-	result := AppliedChildResult{AppliedChildRequest: request}
+func (s *Server) AppliedChild(ctx context.Context, request AppliedChildRequest) (result AppliedChildResult, err error) {
+	phases := newOwnerOperationPhases("applied_child", s)
+	phases.parent, phases.number = request.ParentHash, request.Number
+	defer func() { phases.finish(err) }()
+	phases.phase("request_binding")
+	result = AppliedChildResult{AppliedChildRequest: request}
 	if request.Identity != s.identity || request.Number == 0 || request.View == 0 || request.ParentHash == (types.Hash{}) {
 		return result, errors.New("invalid applied child identity/parent/height/view")
 	}
@@ -42,18 +46,23 @@ func (s *Server) AppliedChild(ctx context.Context, request AppliedChildRequest) 
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
+	phases.phase("execute_wait")
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	phases.phase("request_context")
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
 	if err := s.ctx.Err(); err != nil {
 		return result, err
 	}
+	phases.phase("stored_child_read")
 	child, err := s.chain.PerformanceAppliedChild(ctx, request.ParentHash, request.Number, request.View)
 	if err != nil || child == nil {
 		return result, err
 	}
+	phases.hash, phases.transactions = child.Hash(), len(child.Transactions())
+	phases.phase("durable_evidence")
 	executed, err := s.durable(child)
 	if err != nil {
 		return result, err
@@ -61,6 +70,7 @@ func (s *Server) AppliedChild(ctx context.Context, request AppliedChildRequest) 
 	if executed == nil {
 		return result, errors.New("applied child lacks durable execution evidence")
 	}
+	phases.phase("marshal")
 	raw, err := child.Marshal()
 	if err != nil || len(raw) > MaxBlockBytes {
 		return result, errors.New("applied child encoding failed or exceeds limit")
@@ -70,30 +80,45 @@ func (s *Server) AppliedChild(ctx context.Context, request AppliedChildRequest) 
 }
 
 func (s *Server) serveAppliedChild(w http.ResponseWriter, r *http.Request) {
+	// This outer record includes framing serialization and JSON/base64 encoding.
+	// Its nested applied_child record overlaps it; do not add the two totals.
+	phases := newOwnerOperationPhases("applied_child_http", s)
+	var operationErr error
+	defer func() { phases.finish(operationErr) }()
+	phases.phase("build_http_wait")
 	// Large read-only payloads share Build's framing lock. Seven clients
 	// cannot create seven simultaneous owner-side base64 response buffers.
 	s.buildHTTP.Lock()
 	defer s.buildHTTP.Unlock()
 	defer r.Body.Close()
+	phases.phase("request_decode")
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	var request AppliedChildRequest
-	if err := decoder.Decode(&request); err != nil {
+	if operationErr = decoder.Decode(&request); operationErr != nil {
 		http.Error(w, "invalid applied child request", http.StatusBadRequest)
 		return
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		http.Error(w, "one applied child request required", http.StatusBadRequest)
+		operationErr = errors.New("one applied child request required")
+		http.Error(w, operationErr.Error(), http.StatusBadRequest)
 		return
 	}
+	phases.parent, phases.number = request.ParentHash, request.Number
+	phases.phase("applied_child")
 	result, err := s.AppliedChild(r.Context(), request)
 	if err != nil {
+		operationErr = err
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	if result.Executed != nil {
+		phases.hash = result.Executed.BlockHash
+	}
+	phases.phase("response_encode")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	operationErr = json.NewEncoder(w).Encode(result)
 }
 
 func (c *Client) AppliedChild(ctx context.Context, request AppliedChildRequest) (AppliedChildResult, error) {
