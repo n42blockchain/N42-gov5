@@ -53,6 +53,10 @@ type Producer struct {
 	lastError         string
 	ownerQueue        *OwnerQueueBinding
 	productionStarted bool
+	recoveryOnly      bool
+	drainDone         chan struct{}
+	drainAcknowledged bool
+	freshBuilds       uint64
 	wg                sync.WaitGroup
 }
 
@@ -453,6 +457,9 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (produced
 		}
 	}
 	if candidate == nil {
+		if err := p.admitFreshBuild(); err != nil {
+			return nil, err
+		}
 		phases.path = "newBuild"
 		var result sharedexec.BuildResult
 		if p.OwnerQueueBinding() != nil {

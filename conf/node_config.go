@@ -53,6 +53,7 @@ type NodeConfig struct {
 	// Runtime topology is process-local; all participants retain one genesis.
 	PerformanceRole                 string `json:"performance_role,omitempty" yaml:"performance_role,omitempty"`
 	PerformanceExecutionSocket      string `json:"performance_execution_socket,omitempty" yaml:"performance_execution_socket,omitempty"`
+	PerformanceRecoveryOnly         bool   `json:"performance_recovery_only,omitempty" yaml:"performance_recovery_only,omitempty"`
 	PerformanceOwnerQueue           bool   `json:"performance_owner_queue,omitempty" yaml:"performance_owner_queue,omitempty"`
 	PerformanceQueueMaxTransactions int    `json:"performance_queue_max_transactions,omitempty" yaml:"performance_queue_max_transactions,omitempty"`
 	PerformanceQueueMaxEncodedBytes int    `json:"performance_queue_max_encoded_bytes,omitempty" yaml:"performance_queue_max_encoded_bytes,omitempty"`
