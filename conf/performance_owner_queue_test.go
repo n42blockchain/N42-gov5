@@ -81,3 +81,25 @@ func TestOwnerQueueYAMLReachesActualConfiguration(t *testing.T) {
 		t.Fatal("YAML queue without runtime role accepted")
 	}
 }
+
+func TestRecoveryOnlyConfigurationRequiresActiveOwnerQueue(t *testing.T) {
+	for _, disable := range []string{"miner", "queue"} {
+		c := queueConfigForTest()
+		c.NodeCfg.Miner = true
+		c.NodeCfg.PerformanceRecoveryOnly = true
+		if disable == "miner" {
+			c.NodeCfg.Miner = false
+		} else {
+			c.NodeCfg.PerformanceOwnerQueue = false
+		}
+		if err := NormalizeNetworkSelection(c); err == nil {
+			t.Fatalf("recovery-only allowed without %s", disable)
+		}
+	}
+	c := queueConfigForTest()
+	c.NodeCfg.Miner = true
+	c.NodeCfg.PerformanceRecoveryOnly = true
+	if err := NormalizeNetworkSelection(c); err != nil {
+		t.Fatal(err)
+	}
+}
