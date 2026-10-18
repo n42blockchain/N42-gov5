@@ -18,11 +18,36 @@ import (
 
 func runSupply(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|resume-four-frame [options]")
+		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|bounded-plan|bounded-window|resume-four-frame [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	root := flags.String("root", "", "absolute fresh private corpus directory")
 	switch args[0] {
+	case "bounded-window":
+		runtime := flags.String("runtime-manifest", "", "Retained schema-2 runtime; independently armed GSR2 owner required")
+		attempt := flags.String("attempt", "", "New bounded measurement evidence basename")
+		plan := flags.String("plan", "", "Pinned original-source prefix plan v2")
+		planSHA := flags.String("plan-sha256", "", "Exact bounded plan file SHA256")
+		planID := flags.String("expected-plan-id", "", "Locally pinned expected bounded plan ID")
+		baseline := flags.String("baseline-result", "", "Pinned historical full account vector; fresh owner verification remains required")
+		baselineSHA := flags.String("baseline-sha256", "", "Exact account-vector report SHA256, also bound in plan")
+		rate := flags.Uint64("offered-tps", 6_500_000, "Offered token rate; canonical TPS measured separately over complete 20 seconds")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		digest, err := resumeHashText(*planSHA)
+		if err != nil {
+			return err
+		}
+		id, err := resumeHashText(*planID)
+		if err != nil {
+			return err
+		}
+		vectorHash, err := resumeHashText(*baselineSHA)
+		if err != nil || flags.NArg() != 0 || *runtime == "" || *attempt == "" || *plan == "" || *baseline == "" {
+			return errors.New("bounded-window requires explicit plan/hash/ID/runtime/vector/new attempt")
+		}
+		return runBoundedWindow(ctx, *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, resumePinnedInput{Path: *baseline, SHA256: vectorHash}, id, *rate)
 	case "resume-four-frame":
 		runtime := flags.String("runtime-manifest", "", "Retained schema-2 runtime; owner must already be independently armed")
 		attempt := flags.String("attempt", "", "New evidence basename; never replay an existing attempt")
@@ -41,7 +66,11 @@ func runSupply(ctx context.Context, args []string) error {
 			return errors.New("four-frame resume requires explicit plan/hash/ID/runtime/new attempt")
 		}
 		return runResumeFourFrame(ctx, *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, id)
-	case "resume-plan":
+	case "resume-plan", "bounded-plan":
+		var nonceEnd *uint64
+		if args[0] == "bounded-plan" {
+			nonceEnd = flags.Uint64("nonce-end-exclusive", 10000, "Hard original nonce prefix; production profile requires 10000")
+		}
 		runtime := flags.String("runtime-manifest", "", "fixed schema-2 runtime metadata; no runtime is started")
 		outer := flags.String("recovery-outer", "", "fixed promoted historical recovery report")
 		recovery := flags.String("recovery-result", "", "fixed full historical canonical account-vector report")
@@ -68,6 +97,12 @@ func runSupply(ctx context.Context, args []string) error {
 				return errors.New("resume-plan requires all explicit report paths and SHA256 pins")
 			}
 			*pin = resumePinnedInput{Path: paths[i], SHA256: hash}
+		}
+		if nonceEnd != nil {
+			if *nonceEnd != 10000 {
+				return errors.New("production bounded prefix requires nonce end 10000")
+			}
+			return runBoundedResumePlanOnly(ctx, inputs, *output, strictRuntimeBase, "/data/blockchain/gov5-work/validation", *nonceEnd)
 		}
 		return runResumePlanOnly(ctx, inputs, *output, strictRuntimeBase, "/data/blockchain/gov5-work/validation")
 	case "recover":
@@ -115,7 +150,7 @@ func runSupply(ctx context.Context, args []string) error {
 		}
 		return qualifySupply(ctx, *root, *attempt, *rate, 4*time.Second, 20*time.Second)
 	default:
-		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan and resume-four-frame")
+		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan, bounded-plan, bounded-window and resume-four-frame")
 	}
 }
 
