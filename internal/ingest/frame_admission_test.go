@@ -39,7 +39,11 @@ func TestFrameIngestBusyAtCap(t *testing.T) {
 	if len(frames) != 6 {
 		t.Fatalf("packed %d frames", len(frames))
 	}
-	budget := int64(len(frames[0]) + len(frames[1]) + len(frames[2]))
+	// Signed transactions vary by a byte or two (R and S lose leading
+	// zeros), so frame 3 may be longer than frame 0: size the budget so
+	// three frames fit, a fourth does not, and frames 1-3 fit once frame 0
+	// is evicted, whatever the lengths.
+	budget := int64(len(frames[1]) + len(frames[2]) + max(len(frames[0]), len(frames[3])))
 	st := store.NewWithKeep(budget, 2)
 	srv := startFrameServer(t, nil, FrameConfig{
 		Gateways: []types.Address{crypto.PubkeyToAddress(gw.PublicKey)},
@@ -99,7 +103,9 @@ func TestFramePullBypassesCap(t *testing.T) {
 	peerStore.Put(h1, raws[1])
 	peer := startFrameServer(t, nil, FrameConfig{Gateways: []types.Address{gwAddr}, Store: peerStore})
 
-	local := store.New(int64(len(raws[0])))
+	// Room for either frame alone (their lengths differ by a byte or two),
+	// never for both.
+	local := store.New(int64(max(len(raws[0]), len(raws[1]))))
 	if !local.Put(h0, raws[0]) {
 		t.Fatal("seed put")
 	}

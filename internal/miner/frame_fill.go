@@ -176,7 +176,15 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	}
 	dPick := time.Since(t0)
 	tDecode := time.Now()
-	per, dropped, err := frame.DecodeFramesEach(pick.raws, 0)
+	// Senders recovered at admission (P2a) are attached, and every hash the
+	// build's receipts need is computed, on the worker that decoded the
+	// frame, while its transactions are still in that worker's cache; the
+	// build recovers the senders that were not cached.
+	applied := make([]int, len(pick.raws))
+	per, dropped, err := frame.DecodeFramesEachWith(pick.raws, 0, func(i int, txs []*transaction.Transaction) {
+		applied[i] = frame.ApplySenders(txs, st.Senders(pick.hashes[i]))
+		frame.HashTxs(txs)
+	})
 	if err != nil {
 		// Admitted frames passed the layout check; this cannot happen
 		// short of memory corruption, and is not worth a block.
@@ -186,8 +194,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	flat := make([]*transaction.Transaction, 0, pick.txs)
 	cachedSenders := 0
 	for i, p := range per {
-		// Senders recovered at admission (P2a); the build recovers the rest.
-		cachedSenders += frame.ApplySenders(p, st.Senders(pick.hashes[i]))
+		cachedSenders += applied[i]
 		flat = append(flat, p...)
 	}
 	internal.CountLocalFillRecovered(len(flat) - cachedSenders)
