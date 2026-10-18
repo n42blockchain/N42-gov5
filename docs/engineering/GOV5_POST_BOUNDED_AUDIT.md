@@ -1,0 +1,9 @@
+# Post-bounded failed-drain audit
+
+This independent runner performs two physical reopens of the retained runtime with ordinary strict ingress, seven validators configured with `miner=false`, and zero transaction dispatch. It reuses accepted clean 1356 binaries; no Go change, initialization, source scan, old session arming or pending-transaction reinjection occurs.
+
+The failed 20-second candidate and all 64 receipt journals remain immutable. The first fresh 6000-account/root audit must be at or beyond the later reference observation (541125 transactions at height 1239 on the pinned target), and cannot exceed baseline plus known ACK admissions. Each sender nonce lies between its old nonce and old nonce plus its acknowledged increment, with the exact 21001-wei per-transfer balance change. Pending-at-shutdown is not treated as a persisted or lost count. The second complete snapshot must match the first head, root and account vector after actual clean shutdown/reopen, using a new epoch.
+
+A runtime90 BOX claim wraps both reopens and full four-file pre/post observations. The original database keeps its path/device/inode/mode, and receives a fresh pre-run SHA; the missing failed-run postproof is never synthesized. Three protected copies must remain byte-identical. All 18 processes must exit cleanly, nine sockets disappear, and captured claims release before promotion. Any actual failure stops and preserves the attempt without replay. The prior TPS attempt stays failed; this audit produces no new TPS claim.
+
+Ten pure-Python mock tests passed, including partial persistence, ACK bounds, exact second reopen, nonzero/forced exits, socket/group residue and claim-tail failures. Astra reviewed the runner and actual pinned journal inputs. No retained database has been opened by this new runner; the actual double-reopen gate remains pending.
