@@ -1,6 +1,6 @@
 # Gov5 5M unattended campaign
 
-Updated 2026-10-16. The user authorized continuous work, small commits/pushes,
+Updated 2026-10-18. The user authorized continuous work, small commits/pushes,
 and alternating hardware use with the other session. The implementation and
 evidence history is in [the main plan](GOV5_PERFORMANCE_5M_PLAN.md).
 
@@ -22,6 +22,63 @@ A subsequent normal restart advanced all seven from height 98 to 133 with
 count eight and empty queues. See [the evidence record](GOV5_E1_FIRST_FUNCTIONAL_20261015.md).
 These are functional results, not a throughput measurement. Offline Ed25519
 codec changes remain untested work in progress and did not enter either run.
+
+## Latest bounded window and persistence proof — 2026-10-18
+
+The first real GSR2 bounded-prefix attempt, `bounded-window-q1` on retained
+`s192r1`, completed a **20.001335337-second** canonical counter bracket:
+211,917 to 215,125, delta **3,208**, or **160.389291312 TPS**. This is a diagnostic
+measurement: the overall attempt **failed** its subsequent 45-second drain.
+No capacity result was promoted. The 60M original-transaction source bound
+cannot establish 5M sustained TPS for 20 seconds. The actual Go parallelism
+budget was owner 36, replay 4 and seven validators 2 each; it does not describe
+exclusive physical CPU cores. Original blocks remain capped at 163,000
+transactions / 32 MiB; the central pool remains 2M transactions / 512 MiB.
+
+All 64 immutable journals independently account for 4,430 original frames,
+2,215,000 original transactions, 233,435,154 encoded bytes, **2,003,124 known
+new ACK admissions** and 211,876 canonical skips. The source did not exhaust;
+Busy and snapshot retries occurred. CryptoVerified counts repeated signature
+attempts and is not unique transaction throughput. The last in-window count
+was not the later drain observation: reference_final was 541,125 at height
+1,239, and shutdown logs subsequently recorded another commit. No pending
+queue size was treated as a final persisted or lost count.
+
+A separate **zero-dispatch, nonproducing double physical reopen** passed on
+the same data. Both full 6,000-account vectors, canonical heads, header roots
+and loaded QMDB roots matched, with distinct empty owner epochs. The proven
+baseline is now height **1,240**, hash
+`0xe58f1eb9d4470a492df4372ebaf31cc15636f3bc6474d109ee28ed8dc0e6e7c9`,
+root `0x0062215b74827a2dfeeaa35ff1d5b90ded5bdd0afd3b0af39bef3e0bf135e9f7`,
+and canonical nonce sum **704,125**. Each sender's actual delta was within its
+known ACK bound with the exact original transfer cost. Thus **492,208** of
+this attempt's new admissions are canonical, and **1,510,916** known ACK
+admissions are not canonical. None were resent. Reusing the old plan, epoch,
+nonce-zero workload or volatile pending queue is prohibited; any future
+session needs a new plan and fresh complete canonical snapshot.
+
+The audit reused the accepted clean `1356b3a6` binaries with Python runner
+`f72ba7e9`. All 18 runtime processes exited zero without forced kills, both
+controller/child groups disappeared, nine sockets disappeared and captured
+claims released. Full hashes of the three protected copies were unchanged;
+the original retained device/inode/mode remained fixed. Its post-audit SHA is
+`53a8780c0da28004bce5974a45236b525ce7543a9fded2ae913959f75031e246`.
+
+Evidence under `/data/blockchain/gov5-work/validation/`:
+
+- `20261018-gov5-bounded-20s-target-v1/failure-acceptance.json`, SHA
+  `96ba695bf2af7af46001c973bd4470deb7b0da97d63e7b517e3338f7c9e0bd9d`.
+- `20261018-gov5-bounded-20s-target-v1/failure-reference-supplement.json`, SHA
+  `a2bd454dcc42a17af58d0f8de2dd520005a0b29105b95a83e823e01332319e99`;
+  preserves the original record and corrects its mislabeled last-window sample.
+- `20261018-gov5-post-bounded-double-reopen-v1/audit-result.json`, SHA
+  `af29dbf8f9e3d961df34cf0432d4529f247d4aa1c0cca02b8dd0833de2c68121`.
+- Its independent Sol `acceptance.json`, SHA
+  `e0867e41e815a73d5bc50416418b08bdf638da85e849ec0c63ecf895434f9c9c`.
+
+The failed measurement remains failed. The reopen establishes durable state;
+it does not turn ACK throughput, drain work or a historical raw supply test
+into canonical TPS. No gov5 runtime worker remains active after this turn.
 
 ## Hardware turns
 
