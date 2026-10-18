@@ -91,7 +91,16 @@ func executionChainUsingDB(t *testing.T, genesis *conf.Genesis, wrap func(kv.RwD
 	bc := chain.(*internal.BlockChain)
 	t.Cleanup(func() { _ = bc.Close() })
 	root := commitment.NewQMDBRootComputer()
-	if err := db.View(context.Background(), func(tx kv.Tx) error { root.SetCold(tx); return root.LoadFrom(tx) }); err != nil {
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		return loadExecutionFixtureRoot(tx, root, genesis, func(d fixtureQMDBDiagnostic) {
+			encoded, err := json.Marshal(d)
+			if err != nil {
+				t.Logf("fixture QMDB diagnostic encoding failed: %v", err)
+				return
+			}
+			t.Logf("fixture QMDB load diagnostic: %s", encoded)
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	root.SetCold(nil)
