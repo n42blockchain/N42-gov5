@@ -203,7 +203,7 @@ func (bc *BlockChain) aheadBaseUsable() bool {
 // senders settled).
 // abort reports that the block will not use it: the fill stops at the next
 // key.
-func (bc *BlockChain) startAheadBase(hdr *block.Header, txs []*transaction.Transaction, prepared []preparedTx, sp *StateProcessor, abort func() bool) *aheadBase {
+func (bc *BlockChain) startAheadBase(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) *aheadBase {
 	ab := &aheadBase{stop: make(chan struct{}), done: make(chan struct{})}
 	go bc.runAheadBase(ab, hdr, txs, prepared, sp, abort)
 	return ab
@@ -279,7 +279,7 @@ func aheadBaseMovedOK(c aheadBaseChain, at uint64, states []commitment.QMDBAppli
 	return true
 }
 
-func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*transaction.Transaction, prepared []preparedTx, sp *StateProcessor, abort func() bool) {
+func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) {
 	defer close(ab.done)
 	defer func() {
 		if r := recover(); r != nil {
@@ -349,6 +349,9 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	tFill := time.Now()
 	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)
 	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
+	// The fill copied what it read and its workers are done: nothing reads
+	// the key lists any more.
+	releaseAheadBaseKeys(keys)
 	ab.took = time.Since(tFill)
 	if err != nil {
 		ab.skip = "fill: " + err.Error()
@@ -369,12 +372,25 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	ab.pf = pf
 }
 
+// aheadKeysFree keeps the prefills' per-goroutine key lists (pointer-free,
+// written before they are read): two blocks' worth.
+var aheadKeysFree = scratchFree[qmdb.Hash]{max: 64, noZero: true}
+
+// releaseAheadBaseKeys hands aheadBaseKeys' lists back once nothing reads
+// them.
+func releaseAheadBaseKeys(keys [][]qmdb.Hash) {
+	for i, ks := range keys {
+		aheadKeysFree.give(ks)
+		keys[i] = nil
+	}
+}
+
 // aheadBaseKeys returns the tree keys a child's ahead run reads for certain:
 // every transaction's sender and recipient account, the fee recipients and
 // what the block-start system calls read. One slice per goroutine. A
 // transaction's sender and recipient come from its prepared message (the
 // preparation's, read-only here), else from the transaction.
-func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transaction, prepared []preparedTx, sp *StateProcessor) [][]qmdb.Hash {
+func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor) [][]qmdb.Hash {
 	workers := aheadPrepWorkers()
 	keys := make([][]qmdb.Hash, workers+1)
 	per := (len(txs) + workers - 1) / workers
@@ -390,15 +406,23 @@ func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transa
 		wg.Add(1)
 		go func(w, lo, hi int) {
 			defer wg.Done()
-			ks := make([]qmdb.Hash, 0, 2*(hi-lo))
+			ks := aheadKeysFree.take(2 * (hi - lo))[:0]
 			for i := lo; i < hi; i++ {
-				if i < len(prepared) && prepared[i].ok {
-					m := &prepared[i].msg
-					ks = append(ks, qmdb.Hash(commitment.AccountKeyHash(m.From())))
-					if to := m.To(); to != nil {
-						ks = append(ks, qmdb.Hash(commitment.AccountKeyHash(*to)))
+				if i < prepared.len() && prepared.txs[i].ok {
+					// A planned transfer's sender and recipient are its
+					// message's; any other prepared transaction kept its
+					// message.
+					if pm := &prepared.txs[i]; pm.plan.ok {
+						ks = append(ks, qmdb.Hash(commitment.AccountKeyHash(pm.plan.from)), qmdb.Hash(commitment.AccountKeyHash(pm.plan.to)))
+						continue
 					}
-					continue
+					if m := prepared.keptMsg(i); m != nil {
+						ks = append(ks, qmdb.Hash(commitment.AccountKeyHash(m.From())))
+						if to := m.To(); to != nil {
+							ks = append(ks, qmdb.Hash(commitment.AccountKeyHash(*to)))
+						}
+						continue
+					}
 				}
 				tx := txs[i]
 				if from := tx.From(); from != nil {

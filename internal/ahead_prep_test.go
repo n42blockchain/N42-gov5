@@ -55,7 +55,7 @@ func TestAheadPrepMatchesInline(t *testing.T) {
 		// Fresh wire transactions each time: the inline pass and the
 		// preparation each recover the senders themselves.
 		txs := wireTxs(t, cfg.ChainID, 30, 300)
-		inline := make([]preparedTx, len(txs))
+		inline := newPreparedSet(len(txs))
 		ex := parallel.NewExecutor(len(txs), workers, nil)
 		ex.SetAffinity(func(i int) uint64 { return sp.txAffinityKey(txs, inline, i, signer, baseFee, false) })
 		ex.PrepareAffinity()
@@ -73,10 +73,11 @@ func TestAheadPrepMatchesInline(t *testing.T) {
 
 		require.Equal(t, wantKeys, gotKeys, "steal=%v: affinity keys differ", steal)
 		require.Equal(t, wantQueues, gotQueues, "steal=%v: partition differs", steal)
-		require.Equal(t, len(inline), len(prepared))
-		for i := range inline {
-			require.True(t, inline[i].ok && prepared[i].ok, "tx %d not prepared", i)
-			require.Equal(t, inline[i], prepared[i], "steal=%v: tx %d message or hash differs", steal, i)
+		require.Equal(t, inline.len(), prepared.len())
+		for i := range inline.txs {
+			require.True(t, inline.txs[i].ok && prepared.txs[i].ok, "tx %d not prepared", i)
+			require.Equal(t, inline.txs[i], prepared.txs[i], "steal=%v: tx %d plan or hash differs", steal, i)
+			require.Equal(t, inline.keptMsg(i), prepared.keptMsg(i), "steal=%v: tx %d message differs", steal, i)
 		}
 	}
 }
@@ -89,7 +90,7 @@ func TestAheadPrepMatchRules(t *testing.T) {
 	cfg := &params.ChainConfig{ChainID: big.NewInt(1337), LondonBlock: big.NewInt(0)}
 	signer := transaction.MakeSignerWithTimestamp(cfg, big.NewInt(7), 100)
 	txs := wireTxs(t, cfg.ChainID, 1, 50)
-	pr := &aheadPrep{ok: true, txs: txs, signer: signer, baseFee: uint256.NewInt(7), prepared: make([]preparedTx, len(txs))}
+	pr := &aheadPrep{ok: true, txs: txs, signer: signer, baseFee: uint256.NewInt(7), prepared: newPreparedSet(len(txs))}
 	require.True(t, pr.matches(txs, signer, uint256.NewInt(7), false))
 	require.False(t, pr.matches(txs, signer, uint256.NewInt(8), false), "another base fee")
 	require.False(t, pr.matches(txs, signer, nil, false), "no base fee")

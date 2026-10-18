@@ -576,13 +576,27 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	//
 	// An ahead run adopts the ones its preparation built for these
 	// transactions (ahead_prep.go).
-	var prepared []preparedTx
+	//
+	// The run owns its preparation: a claimed one (adopted or not) is no
+	// longer read by its base prefill (the claim waited for it), and the
+	// transaction array goes back for reuse once the run returns
+	// (preparedSet.release).
+	var prepared *preparedSet
 	prepAdopted := prep.matches(txs, signer, concreteHeader.BaseFee, p.engine != nil) && !cfg.StatelessExec
-	if prepAdopted {
-		prepared = prep.prepared
-	} else {
-		prepared = make([]preparedTx, numTxs)
+	if prep != nil {
+		if prep.prepared != nil {
+			if prepAdopted {
+				prepared = prep.prepared
+			} else {
+				defer prep.prepared.release()
+			}
+		}
+		prep.prepared = nil
 	}
+	if prepared == nil {
+		prepared = newPreparedSet(numTxs)
+	}
+	defer prepared.release()
 	// One base-read cache for this block, shared by every worker (see
 	// parallel.BaseCache). Sized for the distinct accounts a block touches:
 	// the bench's blocks are ~163k transfers over ~23k recipients.
@@ -648,7 +662,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		wc.fees = wc.fees[:0]
 		r := &txResults[txIndex]
 		wc.scratch.msgReady = false
-		if pm := &prepared[txIndex]; pm.ok {
+		if pm := &prepared.txs[txIndex]; pm.ok {
 			if transferFast2 && transferFastPath && transferDirectPath && pm.plan.ok {
 				if res, ok := tryDirectTransferPlan(wc.evm, wc.reader, wc.writer, rw, &pm.plan, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
 					var receipt *block.Receipt
@@ -660,22 +674,32 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 					return nil
 				}
 			}
-			if transferFastPath && transferDirectPath {
-				// A plain transfer straight on the reader and writer,
-				// without the IntraBlockState (tryDirectTransfer).
-				if res, ok := tryDirectTransfer(wc.evm, wc.reader, wc.writer, rw, &pm.msg, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
-					var receipt *block.Receipt
-					if !cfg.NoReceipts {
-						receipt = wc.scratch.fillReceipt(false, tx, pm.hash, res, &pm.msg, nil, concreteHeader, uint(txIndex), wc.evm)
-					}
-					r.receipt, r.gasUsed, r.err, r.logs = receipt, res.BlockGasUsed, nil, nil
-					r.setFees(wc.fees)
-					return nil
-				}
+			// The message: kept by the preparation, else rebuilt into the
+			// worker's scratch exactly as the preparation built it.
+			msg := prepared.keptMsg(txIndex)
+			if msg == nil && p.buildPreparedMessage(&wc.scratch.msg, tx, signer, concreteHeader.BaseFee, cfg.StatelessExec) {
+				msg = &wc.scratch.msg
 			}
-			// The EVM path may adjust its message: it gets a copy.
-			wc.scratch.msg = pm.msg
-			wc.scratch.msgReady = true
+			if msg != nil {
+				if transferFastPath && transferDirectPath {
+					// A plain transfer straight on the reader and writer,
+					// without the IntraBlockState (tryDirectTransfer).
+					if res, ok := tryDirectTransfer(wc.evm, wc.reader, wc.writer, rw, msg, concreteHeader.GasLimit, wc.sink, &wc.scratch.fast); ok {
+						var receipt *block.Receipt
+						if !cfg.NoReceipts {
+							receipt = wc.scratch.fillReceipt(false, tx, pm.hash, res, msg, nil, concreteHeader, uint(txIndex), wc.evm)
+						}
+						r.receipt, r.gasUsed, r.err, r.logs = receipt, res.BlockGasUsed, nil, nil
+						r.setFees(wc.fees)
+						return nil
+					}
+				}
+				// The EVM path may adjust its message: it gets a copy.
+				if msg != &wc.scratch.msg {
+					wc.scratch.msg = *msg
+				}
+				wc.scratch.msgReady = true
+			}
 		}
 		// The IntraBlockState is reset only once a transaction has used it
 		// since its last reset: direct transfers leave it untouched.
@@ -1121,14 +1145,16 @@ var (
 	waveCPUNs    atomic.Int64
 )
 
-// preparedTx is a transaction's message and hash, built before the wave,
-// and its transfer plan (first: a direct transfer reads the plan and the
-// hash, adjacent, and not the message).
+// preparedTx is a transaction's hash, built before the wave, and its
+// transfer plan (first: a direct transfer reads the plan and the hash,
+// adjacent, and not the message). Pointer-free: its message, when kept,
+// is in the preparedSet's msgs.
 type preparedTx struct {
 	plan transferPlan
 	hash types.Hash
 	ok   bool
-	msg  transaction.Message
+	// msgKept: the preparation kept the message (preparedSet.keptMsg).
+	msgKept bool
 }
 
 // parallelTxScratch is a Block-STM worker's reusable per-transaction state
