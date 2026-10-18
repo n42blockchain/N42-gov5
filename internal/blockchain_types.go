@@ -200,7 +200,7 @@ type BlockChain struct {
 
 	insertLock    chan struct{}
 	latestBlockCh chan block.IBlock
-	lock          sync.Mutex
+	lock          sync.RWMutex
 
 	peers map[peer.ID]bool
 
