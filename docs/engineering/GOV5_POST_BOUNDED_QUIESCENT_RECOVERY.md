@@ -42,3 +42,18 @@ fixture lacked the real logfmt prefix; correcting that fixture made the two new
 log-projection tests exercise their intended paths. No retained recovery runtime
 has been launched for this new runner. Failure preserves its unique attempt;
 there is no automatic fallback to production or another recovery attempt.
+
+The first retained-child runtime stopped at the status counter check, before a
+live rooted snapshot or physical reopen. All eight runtime processes returned
+zero and seven private recovery-only ACKs explicitly reported zero fresh builds;
+that cleanup does not make the attempt successful. Failure acceptance
+`0a242f31` preserves the attempt and seven complete metadata logs. The node status
+API serializes `fresh_builds` with `omitempty`, while the ACK schema includes it
+unconditionally. The original checker incorrectly required the status field to
+be present. The raw rejected status was not preserved, so that explanation is a
+source-backed inference, separate from the sealed runtime outcome. The corrected
+status checker accepts an omitted zero counter and still rejects booleans,
+nonzero or malformed values. The private ACK checker continues to require explicit
+zero. A new regression covers both floor and target statuses without the field.
+Any further recovery requires a separately pinned attempt and the newest sealed
+original-file stat; neither the failed runtime nor its admission state is replayed.
