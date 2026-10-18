@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"unsafe"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -101,12 +102,15 @@ func Committee(h types.Hash, n, size int) []int {
 
 // Digest is keccak256 of the concatenated 20-byte senders in transaction
 // order (a zero address marks an entry whose signature did not recover).
+//
+// The senders are hashed where they lie: a []types.Address is the
+// concatenation of its 20-byte entries, so no copy is built (it was ~30
+// bytes per imported transaction, the frame's sender list once more).
 func Digest(addrs []types.Address) types.Hash {
-	buf := make([]byte, 0, len(addrs)*types.AddressLength)
-	for _, a := range addrs {
-		buf = append(buf, a[:]...)
+	if len(addrs) == 0 {
+		return crypto.Keccak256Hash(nil)
 	}
-	return crypto.Keccak256Hash(buf)
+	return crypto.Keccak256Hash(unsafe.Slice(&addrs[0][0], len(addrs)*types.AddressLength))
 }
 
 // Entry attests one frame: its hash, the digest of its senders and, when
