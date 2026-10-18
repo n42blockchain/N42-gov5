@@ -460,7 +460,11 @@ func TestQueueBuildRejectsInvalidSelectionBeforeBindingView(t *testing.T) {
 			}
 		})
 	}
-	// A valid selection remains possible after every malformed request.
+	// A valid nonempty selection remains possible after every malformed request.
+	status, _ := f.server.StrictIngressStatus()
+	if _, err := f.server.AdmitStrictFrame(ctx, f.server.Identity(), status.Epoch, f.frames[0]); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.server.BuildFromQueue(ctx, request); err != nil {
 		t.Fatal(err)
 	}
