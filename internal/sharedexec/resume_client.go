@@ -13,11 +13,24 @@ import (
 // ResumeIngressClient never reconnects or replays an ambiguous original frame.
 // It pins the locally chosen plan and epoch before transmitting the first frame.
 type ResumeIngressClient struct {
-	base   *StrictIngressClient
-	planID types.Hash
+	base        *StrictIngressClient
+	planID      types.Hash
+	boundedPlan *BoundedResumePlan
 }
 
 func DialResumeIngress(ctx context.Context, path string, identity Identity, manifest, planID types.Hash, epoch [16]byte, shard uint16) (*ResumeIngressClient, error) {
+	return dialResumeIngress(ctx, path, identity, manifest, planID, epoch, shard, nil)
+}
+
+func DialBoundedResumeIngress(ctx context.Context, path string, plan BoundedResumePlan, planID types.Hash, epoch [16]byte, shard uint16) (*ResumeIngressClient, error) {
+	if plan.Version != 2 || plan.MaxSourceFrames == 0 || plan.MaxSourceTransactions == 0 || plan.SourceEncodedBytes == 0 {
+		return nil, errors.New("explicit bounded resume client plan required")
+	}
+	plan.Senders = append([]ResumeSender(nil), plan.Senders...)
+	return dialResumeIngress(ctx, path, plan.Identity, plan.ManifestSHA256, planID, epoch, shard, &plan)
+}
+
+func dialResumeIngress(ctx context.Context, path string, identity Identity, manifest, planID types.Hash, epoch [16]byte, shard uint16, bounded *BoundedResumePlan) (*ResumeIngressClient, error) {
 	if ctx == nil {
 		return nil, errors.New("active sealed resume dial context required")
 	}
@@ -36,7 +49,11 @@ func DialResumeIngress(ctx context.Context, path string, identity Identity, mani
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	fail := func(err error) (*ResumeIngressClient, error) { _ = conn.Close(); return nil, err }
-	if err := writeIngressBytes(conn, []byte("GSR1")); err != nil {
+	magic := "GSR1"
+	if bounded != nil {
+		magic = "GSR2"
+	}
+	if err := writeIngressBytes(conn, []byte(magic)); err != nil {
 		return fail(err)
 	}
 	if err := writeIngressMetadata(conn, resumeHello{Identity: identity, ManifestHash: manifest, PlanID: planID, Epoch: epoch, Shard: shard}); err != nil {
@@ -49,7 +66,11 @@ func DialResumeIngress(ctx context.Context, path string, identity Identity, mani
 	if reply.Kind != "welcome" || reply.Identity != identity || reply.ManifestHash != manifest || reply.PlanID != planID || reply.Epoch != epoch || reply.Ack.PlanID != planID || reply.Ack.Status.Identity != identity || reply.Ack.Status.ManifestHash != manifest || reply.Ack.Status.Epoch != epoch || !zeroResumeCounts(reply.Ack) || reply.Error != "" || reply.RetryReason != "" {
 		return fail(errors.New("sealed resume welcome binding differs"))
 	}
-	return &ResumeIngressClient{base: base, planID: planID}, nil
+	client := &ResumeIngressClient{base: base, planID: planID, boundedPlan: bounded}
+	if err := client.checkLifetime(reply.Ack); err != nil {
+		return fail(err)
+	}
+	return client, nil
 }
 func zeroResumeCounts(ack ResumeIngressAck) bool {
 	return ack.CanonicalSkipped == 0 && ack.NewlyAdmitted == 0 && ack.PriorAdmission == 0 && !ack.Duplicate
@@ -96,6 +117,9 @@ func (c *ResumeIngressClient) Admit(ctx context.Context, frame CorpusFrame, sele
 		}
 		if reply.Identity != b.identity || reply.ManifestHash != b.manifest || reply.PlanID != c.planID || reply.Epoch != b.epoch || reply.FrameID != frame.CorpusFrameID || reply.PayloadHash != frame.PayloadHash || reply.Ack.PlanID != c.planID || reply.Ack.Status.Identity != b.identity || reply.Ack.Status.ManifestHash != b.manifest || reply.Ack.Status.Epoch != b.epoch {
 			return reply, errors.New("sealed resume ACK binding differs")
+		}
+		if err := c.checkLifetime(reply.Ack); err != nil {
+			return reply, err
 		}
 		if reply.Kind != "retry" && reply.RetryReason != "" {
 			return reply, errors.New("unexpected sealed resume retry reason")

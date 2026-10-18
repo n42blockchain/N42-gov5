@@ -32,6 +32,7 @@ type resumeIngressSession struct {
 	// Online counters exclude source-scan verification and historical prefixes.
 	canonicalSkipped uint64
 	receipts         map[CorpusFrameID]resumeFrameReceipt
+	window           *boundedResumeSession // nil for original four-frame-v1; counters under queue.mu
 }
 
 // EnableResumeIngress is startup-only and mutually exclusive with legacy GSI1.

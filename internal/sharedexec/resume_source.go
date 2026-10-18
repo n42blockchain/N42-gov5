@@ -182,53 +182,57 @@ func openResumeSourceScan(ctx context.Context, root string, manifestRaw, genesis
 	return lease, nil
 }
 
-func (l *resumeSourceLease) scan(ctx context.Context) (out ResumeSourceScan, err error) {
+func (l *resumeSourceLease) scanMapping(ctx context.Context) (out ResumeSourceScan, offsets []int64, err error) {
 	defer func() {
 		if err != nil {
 			out = ResumeSourceScan{}
+			offsets = nil
 		}
 	}()
 	if ctx == nil {
-		return out, errors.New("resume source requires a context")
+		return out, nil, errors.New("resume source requires a context")
 	}
 	if err = ctx.Err(); err != nil {
-		return out, err
+		return out, nil, err
 	}
 	if _, err = l.checkUnchanged(); err != nil {
-		return out, err
+		return out, nil, err
 	}
 	m, files, before, accounts := l.manifest, l.files, l.before, l.accounts
 	d := m.Descriptor
 	chainID, ok := new(big.Int).SetString(d.Identity.ChainID, 10)
 	if !ok {
-		return out, errors.New("resume source chain ID invalid")
+		return out, nil, errors.New("resume source chain ID invalid")
 	}
 	signer := transaction.NewEIP155Signer(chainID)
 	out.Senders = make([]ResumeSender, d.SenderCount)
 	out.Witnesses = make([]ResumeSourceWitness, d.SenderCount)
-	offsets := make([]int64, d.SenderCount)
+	offsets = make([]int64, d.SenderCount)
 	seen := make(map[types.Address]bool, d.SenderCount)
 	reader := bufio.NewReaderSize(files[0].file, 8<<20)
 	var scratch []byte
 	for shard, source := range files {
+		if _, err = source.file.Seek(0, io.SeekStart); err != nil {
+			return out, nil, err
+		}
 		reader.Reset(source.file)
 		var offset int64
 		count := (d.SenderCount-1-uint32(shard))/uint32(d.ShardCount) + 1
 		for sequence := uint64(0); sequence < uint64(count); sequence++ {
 			if err = ctx.Err(); err != nil {
-				return out, err
+				return out, nil, err
 			}
 			frame, reusable, e := ReadCorpusFrame(reader, scratch)
 			scratch = reusable
 			if e != nil {
-				return out, e
+				return out, nil, e
 			}
 			index, nonce, ntx, e := d.FrameRange(uint16(shard), sequence)
 			if e != nil || nonce != 0 || ntx != 500 || frame.Shard != uint16(shard) || frame.Sequence != sequence {
-				return out, errors.New("resume source first-round frame differs")
+				return out, nil, errors.New("resume source first-round frame differs")
 			}
 			if err = frame.Validate(d); err != nil {
-				return out, err
+				return out, nil, err
 			}
 			var first []byte
 			if err = WalkCorpusPayload(frame.Payload, frame.Transactions, func(raw []byte) error {
@@ -237,15 +241,15 @@ func (l *resumeSourceLease) scan(ctx context.Context) (out ResumeSourceScan, err
 				}
 				return nil
 			}); err != nil {
-				return out, err
+				return out, nil, err
 			}
 			address, e := resumeSourceSender(first, d, signer, index, 0)
 			if e != nil {
-				return out, e
+				return out, nil, e
 			}
 			account, exists := accounts[address]
 			if !exists || seen[address] {
-				return out, errors.New("resume source signer set is not the exact unique alloc/baseline set")
+				return out, nil, errors.New("resume source signer set is not the exact unique alloc/baseline set")
 			}
 			seen[address] = true
 			out.MappingSignatureChecks++
@@ -257,12 +261,40 @@ func (l *resumeSourceLease) scan(ctx context.Context) (out ResumeSourceScan, err
 		out.FullSourceBytes += m.Shards[shard].Bytes
 	}
 	if len(seen) != len(accounts) {
-		return out, errors.New("resume source omitted a canonical sender")
+		return out, nil, errors.New("resume source omitted a canonical sender")
 	}
 	out.MappingSHA256, err = ResumeMappingID(out.Senders)
 	if err != nil {
-		return out, err
+		return out, nil, err
 	}
+	out.FilesAfter, err = checkResumeSources(files, before)
+	if err != nil {
+		return out, nil, err
+	}
+	out.FilesBefore = before
+	out.FullSourceShards = uint16(len(files))
+	return out, offsets, nil
+}
+
+// scan preserves the original four-frame-v1 source policy. The mapping-only
+// helper does not select or authorize any prefix plan.
+func (l *resumeSourceLease) scan(ctx context.Context) (out ResumeSourceScan, err error) {
+	defer func() {
+		if err != nil {
+			out = ResumeSourceScan{}
+		}
+	}()
+	out, offsets, err := l.scanMapping(ctx)
+	if err != nil {
+		return ResumeSourceScan{}, err
+	}
+	d, files, before := l.manifest.Descriptor, l.files, l.before
+	chainID, ok := new(big.Int).SetString(d.Identity.ChainID, 10)
+	if !ok {
+		return ResumeSourceScan{}, errors.New("resume source chain ID invalid")
+	}
+	signer := transaction.NewEIP155Signer(chainID)
+	var scratch []byte
 	selected := make(map[uint64]uint32)
 	for _, sender := range out.Senders {
 		switch sender.Nonce {
