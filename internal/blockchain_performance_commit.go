@@ -47,8 +47,8 @@ func (bc *BlockChain) VerifyCertifiedCanonicalExecution(qc *hotstuff.QuorumCerti
 }
 
 func (bc *BlockChain) verifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertificate, checkExecution bool) (CertifiedCanonicalExecution, bool, error) {
-	bc.lock.Lock()
-	defer bc.lock.Unlock()
+	bc.lock.RLock()
+	defer bc.lock.RUnlock()
 	engine, ok := bc.engine.(*hotstuff.HotStuff)
 	if !ok || bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled || qc == nil {
 		return CertifiedCanonicalExecution{}, false, errors.New("certified canonical prefix requires performance HotStuff QMDB executor")

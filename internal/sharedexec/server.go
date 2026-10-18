@@ -25,6 +25,9 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+// Bound concurrently decoded certified duplicate bodies and receipts.
+const maxCertifiedDuplicateReaders = 2
+
 const MaxBlockBytes = 64 << 20
 const MaxTransactions = 200000
 const maxRequestBytes = MaxBlockBytes*4/3 + 4096
@@ -65,32 +68,33 @@ type importJob struct {
 }
 
 type Server struct {
-	chain            *internal.BlockChain
-	identity         Identity
-	capacity         int
-	ctx              context.Context
-	cancel           context.CancelFunc
-	mu               sync.Mutex
-	jobs             map[importKey]*importJob
-	completed        []importKey
-	wg               sync.WaitGroup
-	imports          atomic.Uint64
-	closed           bool
-	started          bool // mu: external or direct execution use has begun
-	resumeArming     bool // mu: exclusive long-running startup verification
-	execute          sync.Mutex
-	commitOwner      [32]byte
-	builds           map[importKey]*buildJob
-	buildCompleted   []importKey
-	buildBytes       int
-	buildCalls       atomic.Uint64
-	buildHTTP        sync.Mutex
-	reuseOwnBuild    bool
-	prepared         *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
-	ownBuildReuses   atomic.Uint64
-	ingress          *strictIngressQueue                     // configured before serving; immutable pointer
-	queuePlans       map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
-	queueExpiredView hotstuff.ViewNumber                     // execute
+	chain              *internal.BlockChain
+	identity           Identity
+	capacity           int
+	ctx                context.Context
+	cancel             context.CancelFunc
+	mu                 sync.Mutex
+	jobs               map[importKey]*importJob
+	completed          []importKey
+	wg                 sync.WaitGroup
+	imports            atomic.Uint64
+	closed             bool
+	started            bool // mu: external or direct execution use has begun
+	resumeArming       bool // mu: exclusive long-running startup verification
+	execute            sync.RWMutex
+	certifiedReadSlots chan struct{}
+	commitOwner        [32]byte
+	builds             map[importKey]*buildJob
+	buildCompleted     []importKey
+	buildBytes         int
+	buildCalls         atomic.Uint64
+	buildHTTP          sync.Mutex
+	reuseOwnBuild      bool
+	prepared           *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
+	ownBuildReuses     atomic.Uint64
+	ingress            *strictIngressQueue                     // configured before serving; immutable pointer
+	queuePlans         map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
+	queueExpiredView   hotstuff.ViewNumber                     // execute
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -112,7 +116,8 @@ func New(chain *internal.BlockChain, capacity int) (*Server, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{chain: chain, identity: Identity{Version: 1, Namespace: cfg.Performance.NetworkNamespace, ChainID: cfg.ChainID.String(), GenesisHash: chain.GenesisBlock().Hash()},
-		capacity: capacity, ctx: ctx, cancel: cancel, jobs: make(map[importKey]*importJob)}, nil
+		capacity: capacity, ctx: ctx, cancel: cancel, jobs: make(map[importKey]*importJob),
+		certifiedReadSlots: make(chan struct{}, min(capacity, maxCertifiedDuplicateReaders))}, nil
 }
 
 func (s *Server) Identity() Identity  { return s.identity }
