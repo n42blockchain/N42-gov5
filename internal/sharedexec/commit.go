@@ -61,6 +61,10 @@ func (s *Server) Commit(ctx context.Context, request CommitRequest, owner [32]by
 }
 
 func (s *Server) commit(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate) (result CommitResult, err error) {
+	phases := newOwnerOperationPhases("commit", s)
+	phases.hash, phases.parent, phases.number = request.BlockHash, request.ParentHash, request.Number
+	defer func() { phases.finish(err) }()
+	phases.phase("request_binding")
 	if request.Identity != s.identity || request.Number == 0 || request.BlockHash == (types.Hash{}) {
 		return CommitResult{}, errors.New("commit chain identity, hash or height mismatch")
 	}
@@ -73,8 +77,10 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
+	phases.phase("execute_wait")
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	phases.phase("request_context")
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, err
 	}
@@ -83,6 +89,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	}
 	var b *block.Block
 	var duplicate bool
+	phases.phase("stored_block_read")
 	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
 		var err error
 		b, err = rawdb.ReadBlockByHash(tx, request.BlockHash)
@@ -138,6 +145,8 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	if err != nil {
 		return CommitResult{}, err
 	}
+	phases.duplicate, phases.transactions = duplicate, len(b.Transactions())
+	phases.phase("durable_evidence")
 	verified, err := s.durable(b)
 	if err != nil {
 		return CommitResult{}, err
@@ -145,6 +154,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	if verified == nil {
 		return CommitResult{}, errors.New("commit requires actual durable execution")
 	}
+	phases.phase("ingress_gate")
 	if q := s.ingress; q != nil {
 		q.mu.Lock()
 		q.reconciling = true
@@ -153,11 +163,14 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 		// The request may be canceled after canonical mutation. Always reconcile
 		// with the owner lifetime, retaining the dirty gate on any read failure.
 		defer func() {
-			if reconcileErr := s.reconcileStrictIngress(); reconcileErr != nil && err == nil {
+			phases.phase("ingress_reconcile")
+			if reconcileErr := s.reconcileStrictIngress(phases); reconcileErr != nil && err == nil {
 				err = reconcileErr
 			}
+			phases.pause()
 		}()
 	}
+	phases.phase("canonical_commit")
 	if certificate != nil {
 		if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
 			return CommitResult{}, err
@@ -172,6 +185,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 		}
 	}
 	result = CommitResult{CommitRequest: request}
+	phases.phase("canonical_durability_read")
 	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
 		hash, err := rawdb.ReadCanonicalHash(tx, request.Number)
 		if err != nil {
