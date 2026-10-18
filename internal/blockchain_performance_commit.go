@@ -24,14 +24,37 @@ type CertifiedCanonicalHead struct {
 // A false result leaves legacy canonicalization/repair to the existing writer.
 // This method never joins lag writes or mutates the database.
 func (bc *BlockChain) VerifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertificate) (CertifiedCanonicalHead, bool, error) {
+	proof, existing, err := bc.verifyCertifiedCanonicalPrefix(qc, false)
+	return CertifiedCanonicalHead{HeadHash: proof.HeadHash, HeadNumber: proof.HeadNumber}, existing, err
+}
+
+// CertifiedCanonicalExecution is a scalar observation from one fresh database
+// snapshot. It contains no reusable execution capability or decoded block.
+type CertifiedCanonicalExecution struct {
+	HeadHash     types.Hash
+	HeadNumber   uint64
+	BlockHash    types.Hash
+	ParentHash   types.Hash
+	Number       uint64
+	Transactions int
+}
+
+// VerifyCertifiedCanonicalExecution also verifies durable receipts using the
+// block read by the chain itself. Block decoding and transaction hashes are
+// reused only within this request, never across requests or certificates.
+func (bc *BlockChain) VerifyCertifiedCanonicalExecution(qc *hotstuff.QuorumCertificate) (CertifiedCanonicalExecution, bool, error) {
+	return bc.verifyCertifiedCanonicalPrefix(qc, true)
+}
+
+func (bc *BlockChain) verifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertificate, checkExecution bool) (CertifiedCanonicalExecution, bool, error) {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
 	engine, ok := bc.engine.(*hotstuff.HotStuff)
 	if !ok || bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled || qc == nil {
-		return CertifiedCanonicalHead{}, false, errors.New("certified canonical prefix requires performance HotStuff QMDB executor")
+		return CertifiedCanonicalExecution{}, false, errors.New("certified canonical prefix requires performance HotStuff QMDB executor")
 	}
 	if bc.lagWrite.inflight != nil {
-		return CertifiedCanonicalHead{}, false, nil
+		return CertifiedCanonicalExecution{}, false, nil
 	}
 	var header *block.Header
 	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
@@ -39,12 +62,12 @@ func (bc *BlockChain) VerifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertific
 		header, err = rawdb.ReadHeaderByHash(tx, qc.BlockHash)
 		return err
 	}); err != nil {
-		return CertifiedCanonicalHead{}, false, err
+		return CertifiedCanonicalExecution{}, false, err
 	}
 	if err := engine.VerifyPerformanceCommitCertificate(bc, header, qc); err != nil {
-		return CertifiedCanonicalHead{}, false, err
+		return CertifiedCanonicalExecution{}, false, err
 	}
-	var proof CertifiedCanonicalHead
+	var proof CertifiedCanonicalExecution
 	var existing bool
 	err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
 		b, err := rawdb.ReadBlockByHash(tx, qc.BlockHash)
@@ -117,6 +140,23 @@ func (bc *BlockChain) VerifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertific
 		if curN != number || cur != qc.BlockHash {
 			return errors.New("certified block is outside applied lineage")
 		}
+		if checkExecution {
+			senders, err := rawdb.ReadSenders(tx, b.Hash(), number)
+			if err != nil {
+				return err
+			}
+			receipts, err := rawdb.ReadReceiptsWithError(tx, b, senders)
+			if err != nil {
+				return err
+			}
+			if len(receipts) != len(b.Transactions()) {
+				return errors.New("certified canonical execution receipt count mismatch")
+			}
+			executed := ExecutedResultFor(bc.chainConfig, number, header.Root, receipts)
+			if executed.ReceiptHash != header.ReceiptHash || executed.GasUsed != header.GasUsed || executed.Bloom != header.Bloom {
+				return errors.New("certified canonical durable execution does not match stored header")
+			}
+		}
 		if bc.txIndexer == nil {
 			want := b.Number64().Bytes()
 			for _, txn := range b.Transactions() {
@@ -129,11 +169,11 @@ func (bc *BlockChain) VerifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertific
 				}
 			}
 		}
-		proof, existing = CertifiedCanonicalHead{HeadHash: head, HeadNumber: *hn}, true
+		proof, existing = CertifiedCanonicalExecution{HeadHash: head, HeadNumber: *hn, BlockHash: b.Hash(), ParentHash: b.ParentHash(), Number: number, Transactions: len(b.Transactions())}, true
 		return nil
 	})
 	if err != nil {
-		return CertifiedCanonicalHead{}, false, err
+		return CertifiedCanonicalExecution{}, false, err
 	}
 	return proof, existing, nil
 }
