@@ -362,14 +362,19 @@ func (p *Producer) candidateTransactions(parent *block.Header) ([]*transaction.T
 
 // Produce is a real one-view attempt, also used by the async BlockProducer
 // loop. It may be retried after unavailable-parent or transport failures.
-func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.Block, error) {
+func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (produced *block.Block, produceErr error) {
+	phases := newOperationPhases("produce", p.replica)
+	phases.parent = parentHash
+	defer func() { phases.finish(produceErr) }()
 	opCtx, cancel := context.WithCancel(p.ctx)
 	defer cancel()
 	stop := context.AfterFunc(ctx, cancel)
 	defer stop()
 	ctx = opCtx
+	phases.phase("produce_mu_wait")
 	p.produceMu.Lock()
 	defer p.produceMu.Unlock()
+	phases.phase("parent_evidence")
 	p.mu.Lock()
 	p.productionStarted = true
 	p.mu.Unlock()
@@ -382,6 +387,7 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	engine := p.replica.engine
 	ce := engine.Engine()
 	view := ce.CurrentView()
+	phases.view = uint64(view)
 	if !engine.IsCurrentLeader() {
 		return nil, errors.New("remote producer is not current leader")
 	}
@@ -396,6 +402,8 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	if !ok || parent == nil || parent.Number == nil || !p.replica.BlockApplied(parentHash, parent.Number.Uint64()) {
 		return nil, errors.New("remote producer parent lacks bound execution evidence")
 	}
+	phases.parent, phases.number = parentHash, parent.Number.Uint64()+1
+	phases.phase("candidate_wal_read")
 	var candidate *block.Block
 	if err := p.replica.db.View(ctx, func(tx kv.Tx) error {
 		raw, err := tx.GetOne(modules.HotStuffState, candidateKey(view))
@@ -423,13 +431,21 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	}); err != nil {
 		return nil, err
 	}
+	if candidate != nil {
+		phases.path = "ownWAL"
+	}
 	persistCandidate := candidate == nil
 	if candidate == nil {
+		phases.phase("applied_child_rpc")
 		applied, err := p.replica.client.AppliedChild(ctx, sharedexec.AppliedChildRequest{Identity: p.replica.identity, ParentHash: parentHash, Number: parent.Number.Uint64() + 1, View: view})
 		if err != nil {
 			return nil, err
 		}
+		phases.pause()
 		if len(applied.BlockRLP) > 0 {
+			phases.path = "appliedChild"
+			phases.rawBytes = len(applied.BlockRLP)
+			phases.phase("applied_child_unmarshal")
 			candidate = new(block.Block)
 			if err := candidate.Unmarshal(applied.BlockRLP); err != nil {
 				return nil, err
@@ -437,8 +453,10 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 		}
 	}
 	if candidate == nil {
+		phases.path = "newBuild"
 		var result sharedexec.BuildResult
 		if p.OwnerQueueBinding() != nil {
+			phases.phase("queue_request")
 			request, err := p.ownerQueueRequest(ctx, view, parent)
 			if err != nil {
 				return nil, err
@@ -449,12 +467,14 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			phases.phase("queue_build_rpc")
 			built, err := p.replica.client.BuildFromQueue(ctx, request)
 			if err != nil {
 				return nil, err
 			}
 			result = built.BuildResult
 		} else {
+			phases.phase("local_template")
 			txs, err := p.candidateTransactions(parent)
 			if err != nil {
 				return nil, err
@@ -472,21 +492,26 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 			if err != nil {
 				return nil, err
 			}
+			phases.phase("build_rpc")
 			result, err = p.replica.client.Build(ctx, sharedexec.BuildRequest{Identity: p.replica.identity, TemplateHash: crypto.Keccak256Hash(raw), TemplateRLP: raw})
 			if err != nil {
 				return nil, err
 			}
 		}
+		phases.phase("unsigned_binding")
 		if ce.CurrentView() != view || !engine.IsCurrentLeader() {
 			return nil, errors.New("remote candidate view changed before signing")
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		phases.rawBytes = len(result.BlockRLP)
+		phases.phase("unsigned_unmarshal")
 		var unsigned block.Block
 		if err := unsigned.Unmarshal(result.BlockRLP); err != nil {
 			return nil, err
 		}
+		phases.phase("seal_wait")
 		sealed := make(chan block.IBlock, 1)
 		if err := engine.Seal(p.replica, &unsigned, sealed, ctx.Done()); err != nil {
 			return nil, err
@@ -498,6 +523,8 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 			return nil, ctx.Err()
 		}
 	}
+	phases.hash, phases.transactions = candidate.Hash(), len(candidate.Transactions())
+	phases.phase("candidate_header_verify")
 	if persistCandidate {
 		if err := engine.VerifyPerformanceSealedHeader(p.replica, candidate.Header().(*block.Header)); err != nil {
 			return nil, err
@@ -506,6 +533,7 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 		if err != nil {
 			return nil, err
 		}
+		phases.phase("candidate_wal_write")
 		if err := p.replica.db.Update(ctx, func(tx kv.RwTx) error {
 			if existing, err := tx.GetOne(modules.HotStuffState, candidateKey(view)); err != nil {
 				return err
@@ -526,6 +554,7 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 			return nil, err
 		}
 	}
+	phases.phase("sealed_header_verify")
 	if err := engine.VerifyPerformanceSealedHeader(p.replica, candidate.Header().(*block.Header)); err != nil {
 		return nil, err
 	}
@@ -533,14 +562,19 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	if err != nil || hotstuff.ViewNumber(sealedView) > view {
 		return nil, errors.New("own candidate header is from a future view")
 	}
+	phases.phase("candidate_marshal")
 	raw, err := candidate.Marshal()
 	if err != nil {
 		return nil, err
 	}
+	phases.rawBytes = len(raw)
+	phases.phase("replica_import")
 	result, err := p.replica.Import(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
+	phases.durable = result.Durable
+	phases.phase("proposal_gate")
 	if !result.Durable {
 		return nil, errors.New("remote candidate import remains accepted; retry")
 	}
@@ -550,6 +584,7 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	phases.phase("notify_sealed")
 	if err := engine.NotifyPerformanceBlockSealed(view, candidate.Hash(), candidate.TxHash(), parentHash); err != nil {
 		return nil, err
 	}
@@ -557,5 +592,6 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (*block.B
 	p.published = view
 	p.lastProduced = time.Now()
 	p.mu.Unlock()
+	phases.pause()
 	return candidate, nil
 }
