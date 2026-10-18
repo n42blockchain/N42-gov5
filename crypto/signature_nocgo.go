@@ -37,6 +37,15 @@ func Ecrecover(hash, sig []byte) ([]byte, error) {
 	return pub.SerializeUncompressed(), nil
 }
 
+// EcrecoverInto is Ecrecover appending the public key to pkbuf.
+func EcrecoverInto(hash, sig, pkbuf []byte) ([]byte, error) {
+	pub, err := Ecrecover(hash, sig)
+	if err != nil {
+		return nil, err
+	}
+	return append(pkbuf, pub...), nil
+}
+
 func sigToPub(hash, sig []byte) (*btcec.PublicKey, error) {
 	if len(sig) != SignatureLength {
 		return nil, errors.New("invalid signature")
