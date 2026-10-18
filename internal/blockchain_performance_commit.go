@@ -1,14 +1,142 @@
 package internal
 
 import (
+	"bytes"
 	"errors"
-	"github.com/n42blockchain/N42/common/block"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
+
+// CertifiedCanonicalHead identifies the canonical prefix checked under bc.lock.
+// It is an observation, not a reusable authorization or cached certificate.
+type CertifiedCanonicalHead struct {
+	HeadHash   types.Hash
+	HeadNumber uint64
+}
+
+// VerifyCertifiedCanonicalPrefix freshly verifies the public CommitQC and all
+// existing canonical, finality, applied-lineage and transaction-index evidence.
+// A false result leaves legacy canonicalization/repair to the existing writer.
+// This method never joins lag writes or mutates the database.
+func (bc *BlockChain) VerifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertificate) (CertifiedCanonicalHead, bool, error) {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	engine, ok := bc.engine.(*hotstuff.HotStuff)
+	if !ok || bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled || qc == nil {
+		return CertifiedCanonicalHead{}, false, errors.New("certified canonical prefix requires performance HotStuff QMDB executor")
+	}
+	if bc.lagWrite.inflight != nil {
+		return CertifiedCanonicalHead{}, false, nil
+	}
+	var header *block.Header
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		var err error
+		header, err = rawdb.ReadHeaderByHash(tx, qc.BlockHash)
+		return err
+	}); err != nil {
+		return CertifiedCanonicalHead{}, false, err
+	}
+	if err := engine.VerifyPerformanceCommitCertificate(bc, header, qc); err != nil {
+		return CertifiedCanonicalHead{}, false, err
+	}
+	var proof CertifiedCanonicalHead
+	var existing bool
+	err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		b, err := rawdb.ReadBlockByHash(tx, qc.BlockHash)
+		if err != nil {
+			return err
+		}
+		if header == nil || header.Number == nil || !header.Number.IsUint64() || b == nil || b.Hash() != qc.BlockHash || b.Number64() == nil || !b.Number64().IsUint64() || b.Number64().Uint64() != header.Number.Uint64() || b.ParentHash() != header.ParentHash || header.Hash() != qc.BlockHash {
+			return errors.New("certified canonical stored block identity differs")
+		}
+		number := header.Number.Uint64()
+		head := rawdb.ReadHeadBlockHash(tx)
+		hn := rawdb.ReadHeaderNumber(tx, head)
+		if hn == nil || head == (types.Hash{}) {
+			return errors.New("certified canonical head missing")
+		}
+		canonical, err := rawdb.ReadCanonicalHash(tx, *hn)
+		if err != nil {
+			return err
+		}
+		validHeader := func(hash types.Hash, n uint64) bool {
+			h := rawdb.ReadHeader(tx, hash, n)
+			return h != nil && h.Number != nil && h.Number.IsUint64() && h.Number.Uint64() == n && h.Hash() == hash
+		}
+		if canonical != head || !validHeader(head, *hn) {
+			return errors.New("certified canonical head is inconsistent")
+		}
+		if number > *hn {
+			return nil
+		}
+		canonical, err = rawdb.ReadCanonicalHash(tx, number)
+		if err != nil {
+			return err
+		}
+		if canonical != qc.BlockHash || !validHeader(qc.BlockHash, number) {
+			return errors.New("certified block conflicts with canonical prefix")
+		}
+		finalized := rawdb.ReadHotStuffCommittedHead(tx)
+		if finalized == (types.Hash{}) {
+			return nil
+		}
+		fn := rawdb.ReadHeaderNumber(tx, finalized)
+		if fn == nil || *fn > *hn || !validHeader(finalized, *fn) {
+			return errors.New("certified canonical finality marker is inconsistent")
+		}
+		canonical, err = rawdb.ReadCanonicalHash(tx, *fn)
+		if err != nil {
+			return err
+		}
+		if canonical != finalized {
+			return errors.New("certified canonical finality marker is off prefix")
+		}
+		if *fn < number {
+			return nil
+		}
+		an, ah, present, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return err
+		}
+		if !present || an < number {
+			return errors.New("certified canonical applied marker missing or behind block")
+		}
+		cur, curN := types.Hash(ah), an
+		for curN > number && an-curN < 256 {
+			h := rawdb.ReadHeader(tx, cur, curN)
+			if h == nil || h.Number == nil || !h.Number.IsUint64() || h.Number.Uint64() != curN || h.Hash() != cur {
+				return errors.New("certified canonical applied lineage header differs")
+			}
+			cur, curN = h.ParentHash, curN-1
+		}
+		if curN != number || cur != qc.BlockHash {
+			return errors.New("certified block is outside applied lineage")
+		}
+		if bc.txIndexer == nil {
+			want := b.Number64().Bytes()
+			for _, txn := range b.Transactions() {
+				entry, err := tx.GetOne(modules.TxLookup, txn.Hash().Bytes())
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(entry, want) {
+					return nil
+				}
+			}
+		}
+		proof, existing = CertifiedCanonicalHead{HeadHash: head, HeadNumber: *hn}, true
+		return nil
+	})
+	if err != nil {
+		return CertifiedCanonicalHead{}, false, err
+	}
+	return proof, existing, nil
+}
 
 // CommitExecutedExtension is the performance executor's append-only commit.
 // It serializes the final applied-lineage check and canonicalization with all
