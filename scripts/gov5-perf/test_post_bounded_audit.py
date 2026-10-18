@@ -66,6 +66,75 @@ class PostBoundedAuditTest(unittest.TestCase):
             with patch.object(recovery_fleet,'evidence',lambda *a:count):
                 with self.assertRaises(ValueError):post_bounded_audit.first_audit_evidence(value,self.doc,historical,self.m,{},self.h.failed,'00'*32,candidate)
 
+    def failed_inputs_fixture(self, error, mutate_candidate=None, mutate_acceptance=None, journal_error=False):
+        reference = self.h.status(2, 700, '44', self.epoch)
+        reference['producer_running'] = True
+        reference['owner_queue']['manifest_hash'] = self.plan['ManifestSHA256']
+        candidate = {
+            'kind': 'gov5-bounded-resume-20s-window-and-drain-candidate-not-capacity-v2',
+            'passed': False, 'error': error, 'identity': self.m['identity'],
+            'plan_id': self.plan_id, 'owner_initial': {'Epoch': self.epoch},
+            'owner_final': {'NewlyAdmitted': 200}, 'reference_final': reference,
+            'window_end': {'single_validator_canonical': self.h.status(1, 583, '33', self.epoch)},
+            'sender_new_transactions': [100, 60, 40, 0],
+        }
+        if mutate_candidate:
+            mutate_candidate(candidate)
+        candidate_path = self.root/'failed-window.json'
+        self.write(candidate_path, candidate)
+        candidate_sha = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        totals = dict(frames=1, original=500, bytes=52000, new=200, skip=300)
+        accepted = {
+            'failure_verified': True, 'functional_gate_passed': False,
+            'capacity_5m_proven': False, 'candidate_sha256': candidate_sha,
+            'all_owned_processes_gone': True, 'owned_claims_released': True,
+            'physical_reopen_performed': False, 'journal_totals': totals,
+        }
+        if mutate_acceptance:
+            mutate_acceptance(accepted)
+        failure_path = self.root/'sealed-failure.json'
+        self.write(failure_path, accepted)
+        failure_sha = hashlib.sha256(failure_path.read_bytes()).hexdigest()
+        supplement = {
+            'kind': 'gov5-bounded-window-failure-reference-correction-v2',
+            'failure_acceptance_sha256': failure_sha, 'candidate_sha256': candidate_sha,
+            'last_drain_reference': reference,
+            'recovery_canonical_count_lower_bound': 700,
+            'recovery_canonical_count_upper_bound': 783,
+        }
+        supplement_path = self.root/'reference-supplement.json'
+        self.write(supplement_path, supplement)
+        supplement_sha = hashlib.sha256(supplement_path.read_bytes()).hexdigest()
+        # This targets the failure predicate and mandatory downstream gates.
+        # Full journal/signature parsing keeps its independent coverage.
+        with patch.object(post_bounded_audit.bounded_fleet, 'source_ready_evidence', return_value=self.epoch), patch.object(post_bounded_audit.bounded_fleet, 'journal_evidence', side_effect=ValueError('missing ACK journal') if journal_error else None, return_value=totals) as journals:
+            result = post_bounded_audit.failed_window_inputs(candidate_path, candidate_sha, failure_path, failure_sha, supplement_path, supplement_sha, self.doc, {}, self.m)
+            self.assertEqual(journals.call_count, 1)
+            return result
+
+    def test_failed_inputs_accept_exact_drain_errors_without_rewriting_candidate(self):
+        for error in ('bounded acknowledged prefix did not drain before deadline', 'Post "http://unix/v1/status": context deadline exceeded'):
+            with self.subTest(error=error):
+                candidate, totals = self.failed_inputs_fixture(error)
+                self.assertEqual(candidate['error'], error)
+                self.assertEqual(totals['new'], 200)
+
+    def test_failed_inputs_reject_unrelated_http_unsealed_and_incomplete_evidence(self):
+        exact = 'Post "http://unix/v1/status": context deadline exceeded'
+        for error in ('Post "http://unix/v1/admit": context deadline exceeded', 'Post "http://unix/v1/status": EOF', 'context deadline exceeded', ''):
+            with self.subTest(error=error), self.assertRaises((ValueError, KeyError)):
+                self.failed_inputs_fixture(error)
+        for mutate in (lambda x:x.update(passed=True), lambda x:x.pop('reference_final'), lambda x:x.update(sender_new_transactions=[]), lambda x:x['reference_final'].update(committed_executed_transactions=900)):
+            with self.subTest(candidate=mutate), self.assertRaises((ValueError, KeyError)):
+                self.failed_inputs_fixture(exact, mutate_candidate=mutate)
+        for mutate in (lambda x:x.update(failure_verified=False), lambda x:x.update(functional_gate_passed=True), lambda x:x.update(physical_reopen_performed=True), lambda x:x.update(owned_claims_released=False), lambda x:x.update(candidate_sha256='00'*32), lambda x:x.update(journal_totals={})):
+            with self.subTest(acceptance=mutate), self.assertRaises(ValueError):
+                self.failed_inputs_fixture(exact, mutate_acceptance=mutate)
+
+    def test_failed_inputs_status_timeout_still_requires_all_ack_journals(self):
+        with self.assertRaisesRegex(ValueError, 'missing ACK journal'):
+            self.failed_inputs_fixture('Post "http://unix/v1/status": context deadline exceeded', journal_error=True)
+
     def run_fixture(self,fault=None):
         processes=[];outer=self
         class Process:
