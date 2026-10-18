@@ -221,10 +221,13 @@ func (p *Pool) Recovered(h types.Hash, ss *store.Senders) {
 		p.fallback.Add(1)
 		return
 	}
+	e := Entry{Frame: h, Digest: Digest(ss.Addrs), Senders: ss.Addrs}
+	// The list is known now: the other members' attestations of the same
+	// digest count without hashing their copies of it again (hasList).
+	p.know(h, e.Digest, ss.Addrs)
 	if p.cfg.Sign == nil || p.cfg.Send == nil {
 		return
 	}
-	e := Entry{Frame: h, Digest: Digest(ss.Addrs), Senders: ss.Addrs}
 	p.outMu.Lock()
 	p.out = append(p.out, e)
 	full := len(p.out) >= MaxEntries
@@ -302,6 +305,11 @@ func (p *Pool) Add(b *Batch) error {
 			}
 			continue
 		}
+		if e.Senders != nil {
+			// DecodeBody's lists alias the wire buffer: the pool keeps its
+			// own copy of a list it records.
+			e.Senders = append([]types.Address(nil), e.Senders...)
+		}
 		if addrs := p.record(e, b.Attester, need); addrs != nil {
 			done = append(done, acc{e.Frame, addrs})
 		}
@@ -333,25 +341,52 @@ func (p *Pool) hasList(h, d types.Hash) bool {
 	return dv != nil && dv.list != nil
 }
 
+// know records addrs as the verified list of frame h's digest d (this
+// node recovered it and computed d) without counting a vote.
+func (p *Pool) know(h, d types.Hash, addrs []types.Address) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fv := p.frameLocked(h)
+	if fv.accepted != nil {
+		return
+	}
+	dv := fv.digests[d]
+	if dv == nil {
+		dv = &digestVotes{}
+		fv.digests[d] = dv
+	}
+	if dv.list == nil {
+		dv.list = addrs
+	}
+}
+
+// frameLocked returns frame h's votes, creating them (and evicting the
+// oldest frames past Cap) when absent.
+func (p *Pool) frameLocked(h types.Hash) *frameVotes {
+	fv := p.frames[h]
+	if fv != nil {
+		return fv
+	}
+	fv = &frameVotes{digests: make(map[types.Hash]*digestVotes, 1)}
+	p.frames[h] = fv
+	p.order = append(p.order, h)
+	for len(p.frames) > p.cfg.Cap && p.head < len(p.order) {
+		delete(p.frames, p.order[p.head])
+		p.head++
+	}
+	if p.head > len(p.order)/2 && p.head > 1024 {
+		p.order = append([]types.Hash(nil), p.order[p.head:]...)
+		p.head = 0
+	}
+	return fv
+}
+
 // record adds one attestation and returns the senders when it completes
 // f+1 matching attestations with a known list.
 func (p *Pool) record(e Entry, by types.Address, need int) []types.Address {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	fv := p.frames[e.Frame]
-	if fv == nil {
-		fv = &frameVotes{digests: make(map[types.Hash]*digestVotes, 1)}
-		p.frames[e.Frame] = fv
-		p.order = append(p.order, e.Frame)
-		for len(p.frames) > p.cfg.Cap && p.head < len(p.order) {
-			delete(p.frames, p.order[p.head])
-			p.head++
-		}
-		if p.head > len(p.order)/2 && p.head > 1024 {
-			p.order = append([]types.Hash(nil), p.order[p.head:]...)
-			p.head = 0
-		}
-	}
+	fv := p.frameLocked(e.Frame)
 	if fv.accepted != nil {
 		return nil
 	}

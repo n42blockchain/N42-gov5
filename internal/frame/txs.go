@@ -92,8 +92,8 @@ func decodeTx(txType uint8, b []byte, dec *transaction.EthBatchDecoder) (*transa
 // The transactions may share one allocation and alias raw (see
 // transaction.EthBatchDecoder): raw must not be modified afterwards.
 func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
-	f, err := Decode(raw)
-	if err != nil {
+	var f Frame
+	if err := decodeEnvelope(raw, &f); err != nil {
 		return nil, 0, err
 	}
 	var dec *transaction.EthBatchDecoder
@@ -101,12 +101,15 @@ func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
 		dec = transaction.NewEthBatchDecoder(int(f.TxCount))
 	}
 	txs := make([]*transaction.Transaction, 0, f.TxCount)
-	return decodeFrameInto(f, dec, txs)
+	return decodeFrameInto(&f, dec, txs)
 }
 
+// decodeFrameInto decodes f's entries into txs while it checks the payload
+// layout, so a frame's payload is walked once. A layout error returns nil
+// transactions: whatever was decoded before it is discarded.
 func decodeFrameInto(f *Frame, dec *transaction.EthBatchDecoder, txs []*transaction.Transaction) ([]*transaction.Transaction, int, error) {
 	dropped := 0
-	_ = walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
+	err := walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
 		tx, err := decodeTx(f.TxType, b, dec)
 		if err != nil {
 			dropped++
@@ -114,7 +117,21 @@ func decodeFrameInto(f *Frame, dec *transaction.EthBatchDecoder, txs []*transact
 		}
 		txs = append(txs, tx)
 	})
+	if err != nil {
+		return nil, 0, err
+	}
 	return txs, dropped, nil
+}
+
+// HashTxs memoises the hash of every transaction of txs (nil entries are
+// skipped). Called on a decode worker right after the decode (see
+// DecodeFramesEachWith) it hashes encodings and objects still in cache.
+func HashTxs(txs []*transaction.Transaction) {
+	for _, tx := range txs {
+		if tx != nil {
+			tx.Hash()
+		}
+	}
 }
 
 // DecodeFrames decodes frames across up to workers goroutines (<= 0 means
@@ -139,6 +156,17 @@ func DecodeFrames(frames [][]byte, workers int) ([]*transaction.Transaction, int
 
 // DecodeFramesEach is DecodeFrames keeping each frame's transactions apart.
 func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transaction, int, error) {
+	return DecodeFramesEachWith(frames, workers, nil)
+}
+
+// DecodeFramesEachWith is DecodeFramesEach that hands each frame's
+// transactions to after (when non-nil) on the worker that decoded them,
+// right after the decode: per-transaction work done there (attaching cached
+// senders, hashing) finds the transactions still in the worker's cache
+// instead of walking the whole block again afterwards. after is called
+// concurrently for different frames and only for frames whose layout is
+// valid.
+func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []*transaction.Transaction)) ([][]*transaction.Transaction, int, error) {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
@@ -148,23 +176,30 @@ func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transactio
 	per := make([][]*transaction.Transaction, len(frames))
 	drops := make([]int, len(frames))
 	errs := make([]error, len(frames))
+	one := func(i int) {
+		per[i], drops[i], errs[i] = DecodeTxs(frames[i])
+		if after != nil && errs[i] == nil {
+			after(i, per[i])
+		}
+	}
 	if workers <= 1 {
-		for i, raw := range frames {
-			per[i], drops[i], errs[i] = DecodeTxs(raw)
+		for i := range frames {
+			one(i)
 		}
 	} else {
 		var wg sync.WaitGroup
-		next := make(chan int, len(frames))
-		for i := range frames {
-			next <- i
-		}
-		close(next)
+		var next atomic.Int64
+		n := int64(len(frames))
 		for w := 0; w < workers; w++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for i := range next {
-					per[i], drops[i], errs[i] = DecodeTxs(frames[i])
+				for {
+					i := next.Add(1) - 1
+					if i >= n {
+						return
+					}
+					one(int(i))
 				}
 			}()
 		}
@@ -189,18 +224,21 @@ func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transactio
 // drops it.
 func GasEstimate(f *Frame) uint64 {
 	var gas uint64
-	_ = walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
-		if f.TxType == TxTypeEthereum {
-			if g, ok := ethGasLimit(b); ok {
-				gas += g
-				return
-			}
-		}
-		if tx, err := decodeTx(f.TxType, b, nil); err == nil {
-			gas += tx.Gas()
-		}
-	})
+	_ = walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) { gas += entryGas(f.TxType, b) })
 	return gas
+}
+
+// entryGas is one entry's share of GasEstimate.
+func entryGas(txType uint8, b []byte) uint64 {
+	if txType == TxTypeEthereum {
+		if g, ok := ethGasLimit(b); ok {
+			return g
+		}
+	}
+	if tx, err := decodeTx(txType, b, nil); err == nil {
+		return tx.Gas()
+	}
+	return 0
 }
 
 // ethGasLimit reads the gas limit of an Ethereum-encoded transaction:

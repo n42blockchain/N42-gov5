@@ -102,15 +102,27 @@ func Committee(h types.Hash, n, size int) []int {
 
 // Digest is keccak256 of the concatenated 20-byte senders in transaction
 // order (a zero address marks an entry whose signature did not recover).
-//
-// The senders are hashed where they lie: a []types.Address is the
-// concatenation of its 20-byte entries, so no copy is built (it was ~30
-// bytes per imported transaction, the frame's sender list once more).
 func Digest(addrs []types.Address) types.Hash {
+	return crypto.Keccak256Hash(addressBytes(addrs))
+}
+
+// addressBytes views addrs as the concatenation of its 20-byte addresses
+// (an array of [20]byte has no padding), so a digest hashes the list in
+// place instead of copying it into a fresh buffer first.
+func addressBytes(addrs []types.Address) []byte {
 	if len(addrs) == 0 {
-		return crypto.Keccak256Hash(nil)
+		return nil
 	}
-	return crypto.Keccak256Hash(unsafe.Slice(&addrs[0][0], len(addrs)*types.AddressLength))
+	return unsafe.Slice((*byte)(unsafe.Pointer(&addrs[0])), len(addrs)*types.AddressLength) // #nosec G103 -- [20]byte elements, contiguous
+}
+
+// bytesAddresses views b (a multiple of 20 bytes) as addresses without
+// copying; the result aliases b. types.Address has alignment 1.
+func bytesAddresses(b []byte) []types.Address {
+	if len(b) == 0 {
+		return nil
+	}
+	return unsafe.Slice((*types.Address)(unsafe.Pointer(&b[0])), len(b)/types.AddressLength) // #nosec G103 -- alignment 1, length checked by the caller
 }
 
 // Entry attests one frame: its hash, the digest of its senders and, when
@@ -176,7 +188,10 @@ func EncodeWire(b *Batch) []byte {
 
 var errShort = errors.New("attest: short batch")
 
-// DecodeBody parses EncodeBody's output.
+// DecodeBody parses EncodeBody's output. The entries' Senders alias body
+// (no per-entry copy: most carried lists are only hashed, or skipped
+// because the list is already known), so body must not be modified while
+// the batch is in use; Pool.Add copies the lists it keeps.
 func DecodeBody(body []byte) (*Batch, error) {
 	if len(body) > MaxBody {
 		return nil, fmt.Errorf("attest: batch of %d bytes", len(body))
@@ -209,10 +224,7 @@ func DecodeBody(body []byte) (*Batch, error) {
 			return nil, errShort
 		}
 		if n > 0 {
-			e.Senders = make([]types.Address, n)
-			for k := range e.Senders {
-				copy(e.Senders[k][:], p[k*types.AddressLength:])
-			}
+			e.Senders = bytesAddresses(p[: n*types.AddressLength : n*types.AddressLength])
 		}
 		p = p[n*types.AddressLength:]
 	}

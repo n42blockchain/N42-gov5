@@ -160,27 +160,37 @@ type Frame struct {
 // once to confirm it holds exactly TxCount well-formed entries. It never
 // panics on malformed input and does not verify the signature (see Verify).
 func Decode(raw []byte) (*Frame, error) {
+	var f Frame
+	if err := decodeEnvelope(raw, &f); err != nil {
+		return nil, err
+	}
+	if err := walkPayload(f.Payload, int(f.TxCount), nil); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// decodeEnvelope is Decode without the payload walk: the header, its
+// bounds and the total length. Every caller walks the payload after it.
+func decodeEnvelope(raw []byte, f *Frame) error {
 	h, err := ParseHeader(raw)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	n := h.Size()
 	if len(raw) < n {
-		return nil, ErrShort
+		return ErrShort
 	}
 	if len(raw) > n {
-		return nil, ErrTrailingBytes
+		return ErrTrailingBytes
 	}
-	f := &Frame{
+	*f = Frame{
 		Header:  h,
 		Raw:     raw,
 		Payload: raw[HeaderSize : HeaderSize+int(h.PayloadLen)],
 		Sig:     raw[HeaderSize+int(h.PayloadLen):],
 	}
-	if err := walkPayload(f.Payload, int(h.TxCount), nil); err != nil {
-		return nil, err
-	}
-	return f, nil
+	return nil
 }
 
 // walkPayload checks the payload layout and, when fn is non-nil, hands it

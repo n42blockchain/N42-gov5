@@ -113,16 +113,18 @@ func (r frameResult) String() string {
 }
 
 // sendOneFrame writes the magic word and the frame, then reads the reply.
+// The two go out in one writev (net.Buffers), so the frame is not copied
+// into a send buffer first: with -frame-broadcast every frame went through
+// that copy once per peer. buf is returned unused (kept for the hook's
+// signature).
 func sendOneFrame(conn net.Conn, raw []byte, buf []byte) (byte, []byte, error) {
-	buf = buf[:0]
 	var magic [4]byte
 	binary.LittleEndian.PutUint32(magic[:], ingest.FrameMagic)
-	buf = append(buf, magic[:]...)
-	buf = append(buf, raw...)
 	// One deadline covers the write and the reply wait, so a peer that stops
 	// answering cannot park the sender forever.
 	_ = conn.SetDeadline(time.Now().Add(frameReplyTimeout))
-	if _, err := conn.Write(buf); err != nil {
+	bufs := net.Buffers{magic[:], raw}
+	if _, err := bufs.WriteTo(conn); err != nil {
 		return 0, buf, err
 	}
 	var reply [ingest.FrameReplySize]byte
@@ -186,7 +188,7 @@ func (fr *frameRun) run(progress bool) frameResult {
 					conn.Close()
 				}
 			}()
-			buf := make([]byte, 0, frame.MaxFrameSize+4)
+			var buf []byte
 			for j := range chans[p] {
 				sem <- struct{}{}
 				var ok bool
@@ -201,6 +203,11 @@ func (fr *frameRun) run(progress bool) frameResult {
 					} else {
 						fr.frames.Add(1)
 						fr.txs.Add(int64(j.ntx))
+					}
+					if fr.corpus != nil {
+						// Every peer is done with it: the corpus reader
+						// reuses the buffer for a later frame.
+						fr.corpus.recycle(j.raw)
 					}
 				}
 			}
@@ -427,6 +434,27 @@ type corpusReader struct {
 	f *os.File
 	r *bufio.Reader
 	h corpusHeader
+	// free holds frame buffers every peer has finished with. Streaming
+	// allocated (and zeroed) a fresh ~56 KB buffer per frame only to
+	// overwrite it, which with the GC it drove was a fifth of a replaying
+	// generator's CPU.
+	free sync.Pool
+}
+
+// recycle hands back a frame buffer stream returned once nothing uses it.
+func (c *corpusReader) recycle(raw []byte) {
+	if cap(raw) > 0 {
+		c.free.Put(&raw)
+	}
+}
+
+// frameBuf returns a buffer of n bytes, reused when one is free. Its
+// contents are overwritten by the caller.
+func (c *corpusReader) frameBuf(n int) []byte {
+	if p, ok := c.free.Get().(*[]byte); ok && cap(*p) >= n {
+		return (*p)[:n]
+	}
+	return make([]byte, n)
 }
 
 func openCorpus(path string) (*corpusReader, error) {
@@ -468,7 +496,12 @@ func (c *corpusReader) stream(nFrames int64, streamed *atomic.Int64) <-chan buil
 				out <- builtFrame{k: k, err: err}
 				continue
 			}
-			raw := make([]byte, binary.LittleEndian.Uint32(hd[0:]))
+			n := binary.LittleEndian.Uint32(hd[0:])
+			if n > frame.MaxFrameSize {
+				out <- builtFrame{k: k, err: fmt.Errorf("corpus frame %d of %d bytes", k, n)}
+				continue
+			}
+			raw := c.frameBuf(int(n))
 			if _, err := io.ReadFull(c.r, raw); err != nil {
 				out <- builtFrame{k: k, err: err}
 				continue

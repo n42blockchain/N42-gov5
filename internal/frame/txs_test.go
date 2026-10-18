@@ -116,3 +116,76 @@ func TestDecodePoolMatchesSingleDecode(t *testing.T) {
 		t.Fatalf("bad frame: dropped %d senders %d failed %d", last.dropped, len(last.senders), last.failed)
 	}
 }
+
+// TestDecodeLayoutErrorAfterEntries: the layout is checked in the same
+// pass that decodes, so a frame whose entries decode but whose layout is
+// wrong (a count one short or one long of its payload) is still an error
+// for every decode path, with no transactions, and after is never called.
+func TestDecodeLayoutErrorAfterEntries(t *testing.T) {
+	keys := frametest.Keys(t, 4, 3)
+	b := frametest.NewBuilder(keys[0], big.NewInt(94), keys[1:])
+	raws, _, _ := b.Frames(t, 1, 3)
+	signer := transaction.LatestSignerForChainID(big.NewInt(94))
+	for _, delta := range []int{-1, 1} {
+		raw := append([]byte(nil), raws[0]...)
+		raw[30] = byte(int(raw[30]) + delta) // tx count, low byte
+		if _, err := frame.Decode(raw); err != frame.ErrPayloadLayout {
+			t.Fatalf("delta %d: Decode err %v", delta, err)
+		}
+		for _, pool := range []bool{false, true} {
+			restore := frame.SetTxDecodePoolForTest(pool)
+			txs, dropped, err := frame.DecodeTxs(raw)
+			if err != frame.ErrPayloadLayout || txs != nil || dropped != 0 {
+				t.Fatalf("delta %d pool %v: DecodeTxs %d %d %v", delta, pool, len(txs), dropped, err)
+			}
+			if ss, _, err := frame.RecoverSenders(signer, raw); err != frame.ErrPayloadLayout || ss != nil {
+				t.Fatalf("delta %d pool %v: RecoverSenders %v", delta, pool, err)
+			}
+			// The pooled state is still sound for a good frame.
+			if ss, failed, err := frame.RecoverSenders(signer, raws[0]); err != nil || failed != 0 || len(ss.Addrs) != 3 {
+				t.Fatalf("delta %d pool %v: good frame after bad: %v %d", delta, pool, err, failed)
+			}
+			calls := 0
+			if _, _, err := frame.DecodeFramesEachWith([][]byte{raws[0], raw}, 1, func(i int, _ []*transaction.Transaction) {
+				if i != 0 {
+					t.Fatalf("after called for frame %d", i)
+				}
+				calls++
+			}); err != frame.ErrPayloadLayout || calls != 1 {
+				t.Fatalf("delta %d pool %v: DecodeFramesEachWith %v calls %d", delta, pool, err, calls)
+			}
+			restore()
+		}
+	}
+}
+
+// TestDecodeFramesEachWithHashes: after runs once per frame on the
+// decoded transactions, in any worker count, and HashTxs memoises the
+// same hashes a fresh decode computes.
+func TestDecodeFramesEachWithHashes(t *testing.T) {
+	keys := frametest.Keys(t, 6, 4)
+	b := frametest.NewBuilder(keys[0], big.NewInt(94), keys[1:])
+	raws, _, txs := b.Frames(t, 5, 20)
+	for _, workers := range []int{1, 3} {
+		seen := make([]int, len(raws))
+		per, dropped, err := frame.DecodeFramesEachWith(raws, workers, func(i int, got []*transaction.Transaction) {
+			seen[i]++
+			frame.HashTxs(got)
+		})
+		if err != nil || dropped != 0 {
+			t.Fatal(err, dropped)
+		}
+		k := 0
+		for i, p := range per {
+			if seen[i] != 1 {
+				t.Fatalf("workers %d: frame %d seen %d times", workers, i, seen[i])
+			}
+			for _, tx := range p {
+				if tx.Hash() != txs[k].Hash() {
+					t.Fatalf("workers %d: tx %d hash differs", workers, k)
+				}
+				k++
+			}
+		}
+	}
+}

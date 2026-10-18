@@ -346,3 +346,83 @@ func TestDigestIsConcatenatedSenders(t *testing.T) {
 		}
 	}
 }
+// TestDecodeBodyAliasesAndPoolCopies: DecodeBody's lists view the wire
+// buffer (and hash to the same digest as a copied list), and the pool keeps
+// its own copy, so a buffer reused after Add cannot change accepted senders.
+func TestDecodeBodyAliasesAndPoolCopies(t *testing.T) {
+	fl := newFleet(t, 7, 2)
+	h := randHash(t)
+	senders := randAddrs(t, 40)
+	want := append([]types.Address(nil), senders...)
+	st := store.New(1 << 20)
+	st.Put(h, []byte{1})
+	p := newTestPool(fl, types.Address{}, st)
+	for _, m := range fl.members(h, 3) {
+		body := EncodeBody(fl.batch(m, Entry{Frame: h, Digest: Digest(senders), Senders: senders}))
+		b, err := DecodeBody(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if Digest(b.Entries[0].Senders) != Digest(want) {
+			t.Fatal("aliased list digest differs")
+		}
+		if err := p.Add(b); err != nil {
+			t.Fatal(err)
+		}
+		for i := range body {
+			body[i] ^= 0xff // the wire buffer is reused for something else
+		}
+	}
+	got := p.Senders(h, len(want))
+	if got == nil || st.Senders(h) == nil {
+		t.Fatal("not accepted")
+	}
+	for i := range want {
+		if got[i] != want[i] || st.Senders(h).Addrs[i] != want[i] {
+			t.Fatalf("sender %d changed with the wire buffer", i)
+		}
+	}
+}
+
+// TestPoolMemberKnowsOwnList: a committee member's own recovery makes its
+// list known, so the other members' attestations of the same digest count
+// without their lists being hashed, and a list that does not match the
+// digest it is sent with is still refused.
+func TestPoolMemberKnowsOwnList(t *testing.T) {
+	fl := newFleet(t, 7, 2)
+	h := randHash(t)
+	members := fl.members(h, 3)
+	senders := randAddrs(t, 30)
+	st := store.New(1 << 20)
+	st.Put(h, []byte{1})
+	p := newTestPool(fl, members[0], st)
+	p.cfg.Sign = func([]byte) ([]byte, error) { return nil, nil }
+	p.cfg.Send = func([]byte) {}
+	p.Recovered(h, &store.Senders{Addrs: senders})
+	if !p.hasList(h, Digest(senders)) {
+		t.Fatal("own list not known")
+	}
+	// A forged list under the right digest from a member: its list is not
+	// used (the known one is), and its vote counts for the digest it signed.
+	forged := randAddrs(t, 30)
+	if err := p.Add(fl.batch(members[1], Entry{Frame: h, Digest: Digest(senders), Senders: forged})); err != nil {
+		t.Fatal(err)
+	}
+	// The same forged list under its own digest is a different digest: it
+	// gathers its own votes and never the known list.
+	if err := p.Add(fl.batch(members[2], Entry{Frame: h, Digest: Digest(forged), Senders: senders})); err != nil {
+		t.Fatal(err)
+	}
+	if p.Stats().BadDigest != 1 {
+		t.Fatalf("bad digests %d", p.Stats().BadDigest)
+	}
+	if p.Senders(h, -1) != nil {
+		t.Fatal("accepted on two votes")
+	}
+	if err := p.Add(fl.batch(members[2], Entry{Frame: h, Digest: Digest(senders), Senders: senders})); err != nil {
+		t.Fatal(err)
+	}
+	if p.Senders(h, -1) != nil {
+		t.Fatal("accepted without f+1 remote votes")
+	}
+}
