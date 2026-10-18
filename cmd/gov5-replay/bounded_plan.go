@@ -41,14 +41,10 @@ type boundedPlanResult struct {
 // This consumes a pinned historical audit, not a claim that the retained state
 // is unchanged now. EnableBoundedResumeIngress repeats the fresh state checks.
 func boundedHistoricalBaseline(inputs resumePlanInputs, m supplyManifest, runtime strictRuntime, outerRaw, recoveryRaw, originalRaw []byte) (strictRecoveryResult, resumeReportAnchor, error) {
-	var outer boundedHistoricalOuter
 	var recovery strictRecoveryResult
 	var original resumeOriginalReport
 	fail := func() (strictRecoveryResult, resumeReportAnchor, error) {
 		return strictRecoveryResult{}, resumeReportAnchor{}, errors.New("bounded historical recovery/proof binding differs")
-	}
-	if err := resumeDecodeJSON(outerRaw, &outer, false); err != nil {
-		return strictRecoveryResult{}, resumeReportAnchor{}, err
 	}
 	if err := resumeDecodeJSON(recoveryRaw, &recovery, true); err != nil {
 		return strictRecoveryResult{}, resumeReportAnchor{}, err
@@ -56,12 +52,8 @@ func boundedHistoricalBaseline(inputs resumePlanInputs, m supplyManifest, runtim
 	if err := resumeDecodeJSON(originalRaw, &original, false); err != nil {
 		return strictRecoveryResult{}, resumeReportAnchor{}, err
 	}
-	allowedAudit := outer.Kind == "gov5-post-resume-double-physical-reopen-accepted-not-tps" || outer.Kind == "gov5-post-bounded-double-physical-reopen-accepted-not-tps"
-	if !allowedAudit || !outer.Passed || outer.Error != "" || outer.Dispatched != 0 || outer.TPSMeasured || len(outer.Recoveries) != 2 || len(outer.RecoveryHashes) != 2 || outer.Recoveries[1] != inputs.Recovery.Path {
-		return fail()
-	}
-	h, err := resumeHashText(outer.RecoveryHashes[1])
-	if err != nil || h != inputs.Recovery.SHA256 {
+	outer, err := decodeBoundedHistoricalOuter(inputs, m, recovery, outerRaw)
+	if err != nil {
 		return fail()
 	}
 	a := original.Audit
