@@ -77,15 +77,47 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
+	allowShared := certificate != nil
+	if certificate != nil {
+		hint, probeErr := s.canonicalDuplicateHint(ctx, request, phases)
+		if probeErr != nil {
+			return CommitResult{}, probeErr
+		}
+		if hint {
+			shared, handled, readErr := s.tryCertifiedDuplicateRead(ctx, request, certificate, phases)
+			if readErr != nil || handled {
+				return shared, readErr
+			}
+			allowShared = false
+		}
+	}
+	for {
+		var retry bool
+		result, retry, err = s.commitExclusiveAttempt(ctx, request, certificate, phases, allowShared)
+		if !retry {
+			return result, err
+		}
+		allowShared = false
+	}
+}
+
+// commitExclusiveAttempt classifies every request after all earlier writers.
+// A shared fallback is retried once by commit with no reusable observation.
+func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, allowShared bool) (result CommitResult, retry bool, err error) {
 	phases.phase("execute_wait")
 	s.execute.Lock()
-	defer s.execute.Unlock()
+	held := true
+	defer func() {
+		if held {
+			s.execute.Unlock()
+		}
+	}()
 	phases.phase("request_context")
 	if err := ctx.Err(); err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, false, err
 	}
 	if err := s.ctx.Err(); err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, false, err
 	}
 	var b *block.Block
 	var duplicate bool
@@ -157,19 +189,31 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 		return nil
 	})
 	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, false, err
 	}
 	phases.duplicate = duplicate
+	if duplicate && certificate != nil && allowShared {
+		// Never wait for a read slot while holding exclusive ownership.
+		s.execute.Unlock()
+		held = false
+		shared, handled, readErr := s.tryCertifiedDuplicateRead(ctx, request, certificate, phases)
+		if readErr != nil || handled {
+			return shared, false, readErr
+		}
+		// No proof survives this fallback. The caller repeats the complete
+		// exclusive classification and legacy verification/repair once.
+		return CommitResult{}, true, nil
+	}
 	var certifiedDuplicate bool
 	if duplicate && certificate != nil {
 		phases.phase("certified_execution_verification")
 		head, existing, verifyErr := s.chain.VerifyCertifiedCanonicalExecution(certificate)
 		if verifyErr != nil {
-			return CommitResult{}, verifyErr
+			return CommitResult{}, false, verifyErr
 		}
 		if existing {
 			if head.BlockHash != request.BlockHash || head.ParentHash != request.ParentHash || head.Number != request.Number {
-				return CommitResult{}, errors.New("certified canonical execution request binding differs")
+				return CommitResult{}, false, errors.New("certified canonical execution request binding differs")
 			}
 			phases.transactions = head.Transactions
 			if q := s.ingress; q != nil {
@@ -195,17 +239,17 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 				}
 				return nil
 			}); err != nil {
-				return CommitResult{}, err
+				return CommitResult{}, false, err
 			}
 		}
 		phases.transactions = len(b.Transactions())
 		phases.phase("durable_evidence")
 		verified, verifyErr := s.durable(b)
 		if verifyErr != nil {
-			return CommitResult{}, verifyErr
+			return CommitResult{}, false, verifyErr
 		}
 		if verified == nil {
-			return CommitResult{}, errors.New("commit requires actual durable execution")
+			return CommitResult{}, false, errors.New("commit requires actual durable execution")
 		}
 		phases.phase("ingress_gate")
 		if q := s.ingress; q != nil {
@@ -226,7 +270,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 		phases.phase("canonical_commit")
 		if certificate != nil {
 			if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
-				return CommitResult{}, err
+				return CommitResult{}, false, err
 			}
 		} else if !duplicate {
 			// Do not use CommitToCanonicalWith's bookkeeping hook for authorization:
@@ -234,39 +278,13 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 			// CommitExecutedExtension also rechecks applied state under bc.lock,
 			// covering the chain's background future-block importer.
 			if err := s.chain.CommitExecutedExtension(request.BlockHash); err != nil {
-				return CommitResult{}, err
+				return CommitResult{}, false, err
 			}
 		}
 	}
-	result = CommitResult{CommitRequest: request}
 	phases.phase("canonical_durability_read")
-	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
-		hash, err := rawdb.ReadCanonicalHash(tx, request.Number)
-		if err != nil {
-			return err
-		}
-		result.HeadHash = rawdb.ReadHeadBlockHash(tx)
-		number := rawdb.ReadHeaderNumber(tx, result.HeadHash)
-		if hash != request.BlockHash || number == nil || *number < request.Number {
-			return errors.New("commit canonical durability check failed")
-		}
-		result.HeadNumber = *number
-		finalized := rawdb.ReadHotStuffCommittedHead(tx)
-		fn := rawdb.ReadHeaderNumber(tx, finalized)
-		if fn == nil || *fn < request.Number {
-			return errors.New("commit finality marker durability check failed")
-		}
-		fh, err := rawdb.ReadCanonicalHash(tx, *fn)
-		if err != nil {
-			return err
-		}
-		if fh != finalized {
-			return errors.New("commit finality marker durability check failed")
-		}
-		result.Committed = true
-		return nil
-	})
-	return result, err
+	result, err = s.readCommitDurability(ctx, request)
+	return result, false, err
 }
 
 func (s *Server) serveCommit(w http.ResponseWriter, r *http.Request) {
