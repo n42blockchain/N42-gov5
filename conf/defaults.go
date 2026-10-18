@@ -244,6 +244,9 @@ func ValidateAndApplyDefaults(cfg *Config) error {
 // ValidatePerformanceOwnerQueue also serves programmatic constructors which do
 // not run the CLI normalization path. Zero values retain the existing mode.
 func (n NodeConfig) ValidatePerformanceOwnerQueue(chain string, profile params.ProfileDescriptor) error {
+	if n.PerformanceRecoveryOnly && (!n.PerformanceOwnerQueue || !n.Miner) {
+		return errors.New("recovery-only requires an active performance owner-queue producer")
+	}
 	if !n.PerformanceOwnerQueue && n.PerformanceQueueMaxTransactions == 0 && n.PerformanceQueueMaxEncodedBytes == 0 {
 		return nil
 	}

@@ -259,6 +259,11 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 			return nil, fmt.Errorf("performance owner queue startup: %w", err)
 		}
 	}
+	if cfg.NodeCfg.PerformanceRecoveryOnly {
+		if _, err = rt.producer.EnterRecoveryOnly(ctx); err != nil {
+			return nil, fmt.Errorf("performance recovery-only startup: %w", err)
+		}
+	}
 	if rt.api, err = sharedvalidator.NewAPI(rt.replica, rt.producer); err != nil {
 		return nil, err
 	}

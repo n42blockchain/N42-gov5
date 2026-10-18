@@ -69,6 +69,9 @@ type StatusResult struct {
 	CanonicalProgress
 	QueuedTransactions int    `json:"queued_transactions"`
 	ProducerRunning    bool   `json:"producer_running"`
+	RecoveryOnly       bool   `json:"recovery_only,omitempty"`
+	DrainAcknowledged  bool   `json:"drain_acknowledged,omitempty"`
+	FreshBuilds        uint64 `json:"fresh_builds,omitempty"`
 	LastProducerError  string `json:"last_producer_error,omitempty"`
 }
 type TransactionsRequest struct {
@@ -119,7 +122,7 @@ func (a *API) status(ctx context.Context) (StatusResult, error) {
 		copy := *a.producer.ownerQueue
 		binding = &copy
 	}
-	return StatusResult{OwnerQueue: binding, CanonicalProgress: progress, QueuedTransactions: len(a.producer.pending), ProducerRunning: a.producer.started && !a.producer.closed, LastProducerError: a.producer.lastError}, nil
+	return StatusResult{OwnerQueue: binding, CanonicalProgress: progress, QueuedTransactions: len(a.producer.pending), ProducerRunning: a.producer.started && !a.producer.closed, LastProducerError: a.producer.lastError, RecoveryOnly: a.producer.recoveryOnly, DrainAcknowledged: a.producer.drainAcknowledged, FreshBuilds: a.producer.freshBuilds}, nil
 }
 
 func decodeAPI(w http.ResponseWriter, r *http.Request, max int64, value any) error {
@@ -164,6 +167,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(result)
+		return
+	}
+	if r.URL.Path == "/v1/recovery-only" {
+		a.serveRecoveryOnly(w, r, ctx)
 		return
 	}
 	if r.URL.Path != "/v1/transactions" {
