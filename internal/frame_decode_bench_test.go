@@ -5,7 +5,11 @@ package internal
 
 import (
 	"context"
+	"runtime"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -85,12 +89,22 @@ func BenchmarkFrameImportPrep(b *testing.B) {
 	f := newFrameBenchFixture(b, true)
 	b.Run("resolve", func(b *testing.B) {
 		b.ReportAllocs()
+		defer reportCPUPerTx(b)()
 		for i := 0; i < b.N; i++ {
 			_ = f.resolve(b)
 		}
 	})
+	b.Run("resolve+hash", func(b *testing.B) {
+		b.ReportAllocs()
+		defer reportCPUPerTx(b)()
+		for i := 0; i < b.N; i++ {
+			txs := f.resolve(b)
+			prewarmTxHashesSync(txs)
+		}
+	})
 	b.Run("resolve+hash+prep", func(b *testing.B) {
 		b.ReportAllocs()
+		defer reportCPUPerTx(b)()
 		for i := 0; i < b.N; i++ {
 			txs := f.resolve(b)
 			for _, tx := range txs {
@@ -117,5 +131,38 @@ func BenchmarkFrameAdmissionRecover(b *testing.B) {
 				b.Fatal(err, failed)
 			}
 		}
+	}
+}
+
+// prewarmTxHashesSync is prewarmTxHashes waited for, on GOMAXPROCS workers.
+func prewarmTxHashesSync(txs []*transaction.Transaction) {
+	workers := runtime.GOMAXPROCS(0)
+	var wg sync.WaitGroup
+	chunk := (len(txs) + workers - 1) / workers
+	for s := 0; s < len(txs); s += chunk {
+		e := min(s+chunk, len(txs))
+		wg.Add(1)
+		go func(part []*transaction.Transaction) {
+			defer wg.Done()
+			for _, tx := range part {
+				tx.Hash()
+			}
+		}(txs[s:e])
+	}
+	wg.Wait()
+}
+
+// reportCPUPerTx reports the process CPU time (user + system, GC
+// included) per transaction of the benchmark's b.N blocks of benchFrames x
+// benchPerFrame transactions; wall time hides the CPU of parallel decode.
+func reportCPUPerTx(b *testing.B) func() {
+	cpu := func() time.Duration {
+		var ru syscall.Rusage
+		_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+		return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+	}
+	start := cpu()
+	return func() {
+		b.ReportMetric(float64((cpu()-start).Nanoseconds())/float64(b.N*benchFrames*benchPerFrame), "cpu-ns/tx")
 	}
 }

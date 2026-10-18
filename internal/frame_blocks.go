@@ -389,12 +389,35 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		}
 		return fmt.Errorf("%w: block %d misses %d of %d frames", ErrFramesUnavailable, b.Number64().Uint64(), len(missing), len(hashes))
 	}
-	per, dropped, err := frame.DecodeFramesEach(raws, 0)
+	// Senders recovered at admission (P2a): attach what the store cached;
+	// the import's recovery step recovers only the rest. They are attached
+	// on the worker that decoded the frame, while its transactions are still
+	// in that worker's cache: a second serial pass over the block's
+	// transactions after the decode was 3 s of a follower's 20 s profile.
+	// Every hash is memoised there too, for the same reason: the import
+	// hashes every transaction (receipts, lookups), and the hash prewarm's
+	// later pass over cold transactions cost a cache miss per transaction
+	// on top of the keccak. The prewarm then only finds the memos.
+	type frameSenders struct {
+		ss       *store.Senders
+		n        int
+		declared bool
+	}
+	var applied []frameSenders
+	if fs.store != nil {
+		applied = make([]frameSenders, len(hashes))
+	}
+	per, dropped, err := frame.DecodeFramesEachWith(raws, 0, func(i int, txs []*transaction.Transaction) {
+		if applied != nil {
+			ss := fs.store.Senders(hashes[i])
+			n, d := frame.ApplySendersDeclared(txs, ss)
+			applied[i] = frameSenders{ss: ss, n: n, declared: d}
+		}
+		frame.HashTxs(txs)
+	})
 	if err != nil {
 		return fmt.Errorf("frame body: block %d: %w", b.Number64().Uint64(), err)
 	}
-	// Senders recovered at admission (P2a): attach what the store cached;
-	// the import's recovery step recovers only the rest.
 	cached := 0
 	total := 0
 	// complete: every transaction got its sender here, all under one
@@ -406,17 +429,16 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	for i, p := range per {
 		total += len(p)
 		if fs.store != nil {
-			ss := fs.store.Senders(hashes[i])
-			n, d := frame.ApplySendersDeclared(p, ss)
-			cached += n
-			declared = declared || d
-			if n != len(p) {
+			a := applied[i]
+			cached += a.n
+			declared = declared || a.declared
+			if a.n != len(p) {
 				complete = false
 				owned++
 			} else if len(p) > 0 {
 				if signer == nil {
-					signer = ss.Signer
-				} else if !signer.Equal(ss.Signer) {
+					signer = a.ss.Signer
+				} else if !signer.Equal(a.ss.Signer) {
 					complete = false
 				}
 			}
