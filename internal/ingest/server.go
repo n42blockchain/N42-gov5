@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,6 +267,9 @@ func (s *Server) acceptLoop(ln net.Listener) {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
+	// The connection's attestation body buffer (readAttest): the handler
+	// consumes a body before the next one is read.
+	var attestBuf []byte
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -298,7 +302,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		if numTxs == attest.Magic {
-			if err := s.readAttest(conn); err != nil {
+			if err := s.readAttest(conn, &attestBuf); err != nil {
 				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
 					log.Debug("Ingest attestation error", "err", err)
 				}
@@ -520,7 +524,9 @@ func (s *Server) drainBatch(r io.Reader, numTxs uint32) error {
 type attestHandler struct{ fn func(body []byte) }
 
 // SetAttestHandler installs the handler of frame attestation batches
-// (attest.Magic messages, P8b); nil refuses them.
+// (attest.Magic messages, P8b); nil refuses them. body is only valid
+// during the call: the connection reads its next batch into the same
+// buffer (attest.DecodeBody copies what it keeps).
 func (s *Server) SetAttestHandler(fn func(body []byte)) {
 	if fn == nil {
 		s.attest.Store(nil)
@@ -531,7 +537,12 @@ func (s *Server) SetAttestHandler(fn func(body []byte)) {
 
 // readAttest reads one attestation batch after its magic word: body
 // length u32 | body. There is no reply.
-func (s *Server) readAttest(r io.Reader) error {
+//
+// buf is the connection's reused body buffer (nil: a fresh body per
+// batch, as with N42_BLOCK_SCRATCH_POOL=0). A fresh body per batch was ~50
+// bytes per imported transaction on a follower (the senders of every
+// frame it is attested, again).
+func (s *Server) readAttest(r io.Reader, buf *[]byte) error {
 	var l [4]byte
 	if _, err := io.ReadFull(r, l[:]); err != nil {
 		return err
@@ -544,10 +555,22 @@ func (s *Server) readAttest(r io.Reader) error {
 	if h == nil {
 		return errors.New("ingest: frame attestation disabled")
 	}
-	body := make([]byte, n)
+	var body []byte
+	if buf != nil && attestBodyReuse {
+		if uint32(cap(*buf)) < n {
+			*buf = make([]byte, n, min(max(int(n), 2*cap(*buf)), int(attest.MaxBody)))
+		}
+		body = (*buf)[:n]
+	} else {
+		body = make([]byte, n)
+	}
 	if _, err := io.ReadFull(r, body); err != nil {
 		return err
 	}
 	h.fn(body)
 	return nil
 }
+
+// attestBodyReuse is N42_BLOCK_SCRATCH_POOL (default on; "0" reads every
+// attestation batch into a fresh body).
+var attestBodyReuse = os.Getenv("N42_BLOCK_SCRATCH_POOL") != "0"

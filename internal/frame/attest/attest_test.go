@@ -10,6 +10,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/frame/store"
@@ -323,6 +324,25 @@ func BenchmarkBatchVerify(b *testing.B) {
 			if Digest(e.Senders) != e.Digest {
 				b.Fatal("digest")
 			}
+		}
+	}
+}
+
+// TestDigestIsConcatenatedSenders: Digest is keccak256 of the senders'
+// 20-byte concatenation, for no, one and many senders.
+func TestDigestIsConcatenatedSenders(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 500} {
+		addrs := make([]types.Address, n)
+		for i := range addrs {
+			addrs[i] = types.Address{byte(i), byte(i >> 8), 7, byte(n)}
+			addrs[i][19] = byte(i * 3)
+		}
+		var buf []byte
+		for _, a := range addrs {
+			buf = append(buf, a[:]...)
+		}
+		if got, want := Digest(addrs), crypto.Keccak256Hash(buf); got != want {
+			t.Fatalf("%d senders: %x, want %x", n, got, want)
 		}
 	}
 }
