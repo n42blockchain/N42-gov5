@@ -18,21 +18,24 @@ func appliedAheadQueueFixture(t *testing.T) (strictIngressFixture, *block.Block,
 	client := NewClient(startExecutionSocket(t, f.server), f.server.Identity())
 	t.Cleanup(client.Close)
 	request := queueRequest(t, f, f.template.Header().(*block.Header), 6)
-	built, err := client.BuildFromQueue(context.Background(), request)
+	// Construct retained historical empty blocks through the ordinary build
+	// API. Fresh owner-queue selection deliberately refuses an empty body.
+	built, err := client.Build(context.Background(), BuildRequest{Identity: request.Identity, TemplateHash: request.PreparedHash, TemplateRLP: request.PreparedRLP})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := queueSealImport(t, f, client, f.leader, built)
+	first := queueSealImport(t, f, client, f.leader, QueueBuildResult{BuildResult: built})
 	commit := CommitRequest{Identity: f.server.Identity(), BlockHash: first.Hash(), ParentHash: first.ParentHash(), Number: 1}
 	if _, err := client.CommitCertified(context.Background(), commit, queueQC(f.keys, first.Hash(), 1, 5)); err != nil {
 		t.Fatal(err)
 	}
 	leader, header := queueLeader(t, f, first, 2)
-	built, err = client.BuildFromQueue(context.Background(), queueRequest(t, f, header, 6))
+	request = queueRequest(t, f, header, 6)
+	built, err = client.Build(context.Background(), BuildRequest{Identity: request.Identity, TemplateHash: request.PreparedHash, TemplateRLP: request.PreparedRLP})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second := queueSealImport(t, f, client, leader, built)
+	second := queueSealImport(t, f, client, leader, QueueBuildResult{BuildResult: built})
 	f.server.Close()
 	return f, first, second
 }
