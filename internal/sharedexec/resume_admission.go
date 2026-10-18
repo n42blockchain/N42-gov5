@@ -21,17 +21,23 @@ type ResumeIngressAck struct {
 	NewlyAdmitted    int
 	PriorAdmission   int
 	Duplicate        bool
+	Lifetime         *BoundedResumeLifetime `json:",omitempty"`
 }
 
 type resumeFrameReceipt struct{ skipped, admitted int }
 
 type resumeReservation struct {
 	*ingressReservation
-	session *resumeIngressSession
-	frame   ResumeFrame
+	session      *resumeIngressSession
+	frame        ResumeFrame
+	lifetimeHeld bool
 }
 
 func (r *resumeIngressSession) frame(id CorpusFrameID) (ResumeFrame, bool) {
+	if r.window != nil {
+		f, ok := r.window.frames[id]
+		return boundedResumeOriginalFrame(f), ok
+	}
 	for _, frame := range r.plan.Frames {
 		if frame.ID == id {
 			return frame, true
@@ -44,18 +50,26 @@ func (s *Server) resumeReceiptAck(q *strictIngressQueue, r *resumeIngressSession
 	if duplicate {
 		newCount = 0
 	}
-	return ResumeIngressAck{Status: q.status(s.identity), PlanID: r.planID, CanonicalSkipped: receipt.skipped, NewlyAdmitted: newCount, PriorAdmission: receipt.admitted, Duplicate: duplicate}
+	ack := ResumeIngressAck{Status: q.status(s.identity), PlanID: r.planID, CanonicalSkipped: receipt.skipped, NewlyAdmitted: newCount, PriorAdmission: receipt.admitted, Duplicate: duplicate}
+	if r.window != nil {
+		ack.Lifetime = r.window.status()
+	}
+	return ack
 }
 
 // AdmitResumeFrame is an explicit sealed-plan path. Legacy admission never
 // accepts a canonical prefix; the whole original frame is still authenticated.
 func (s *Server) AdmitResumeFrame(ctx context.Context, identity Identity, planID types.Hash, epoch [16]byte, frame CorpusFrame) (ResumeIngressAck, error) {
+	return s.admitResumeFrame(ctx, identity, planID, epoch, frame, false)
+}
+
+func (s *Server) admitResumeFrame(ctx context.Context, identity Identity, planID types.Hash, epoch [16]byte, frame CorpusFrame, bounded bool) (ResumeIngressAck, error) {
 	if ctx == nil {
 		return ResumeIngressAck{}, errors.New("active sealed resume context required")
 	}
 	s.mu.Lock()
 	q := s.ingress
-	if s.closed || q == nil || q.resume == nil || identity != s.identity {
+	if s.closed || q == nil || q.resume == nil || (q.resume.window != nil) != bounded || identity != s.identity {
 		s.mu.Unlock()
 		return ResumeIngressAck{}, errors.New("sealed resume ingress unavailable")
 	}
@@ -89,18 +103,35 @@ func (s *Server) reserveResumeIngress(q *strictIngressQueue, planID types.Hash, 
 		return nil, ErrIngressSnapshotChanged
 	}
 	count := int(selected.NewlyAdmitted)
-	if _, known := r.receipts[frame.CorpusFrameID]; known {
+	_, known := r.receipts[frame.CorpusFrameID]
+	if known {
 		count = 0
+	}
+	if r.window != nil {
+		if err := r.window.checkReservation(selected, known); err != nil {
+			return nil, err
+		}
 	}
 	if count > q.maxTx-q.pending-q.reservedTx || size > q.maxBytes-q.bytes-q.reservedBytes {
 		return nil, ErrIngressCreditsExhausted
 	}
 	q.reservedTx += count
 	q.reservedBytes += size
-	return &resumeReservation{ingressReservation: &ingressReservation{queue: q, transactions: count, bytes: size, held: true, stamp: q.stamp}, session: r, frame: selected}, nil
+	reservation := &resumeReservation{ingressReservation: &ingressReservation{queue: q, transactions: count, bytes: size, held: true, stamp: q.stamp}, session: r, frame: selected}
+	if r.window != nil && !known {
+		r.window.reservedFrames++
+		r.window.reservedTransactions += 500
+		r.window.reservedBytes += uint64(CorpusWireHeaderSize) + uint64(selected.PayloadBytes)
+		r.window.reservedNew += uint64(selected.NewlyAdmitted)
+		reservation.lifetimeHeld = true
+	}
+	return reservation, nil
 }
 
 func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue, frame CorpusFrame, r *resumeReservation) (ResumeIngressAck, error) {
+	if frame.CorpusFrameID != r.frame.ID || frame.PayloadHash != r.frame.PayloadHash || len(frame.Payload) != int(r.frame.PayloadBytes) || frame.Transactions != 500 {
+		return ResumeIngressAck{}, errors.New("sealed resume body differs from its reserved original header")
+	}
 	if err := frame.Validate(q.descriptor); err != nil {
 		return ResumeIngressAck{}, err
 	}
@@ -108,11 +139,18 @@ func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue
 	signer := transaction.NewEIP155Signer(s.chain.Config().ChainID)
 	verified := make([]ingressVerified, 0, r.frame.NewlyAdmitted)
 	addresses := []types.Address{sender.Address}
-	var nonce uint64
+	_, firstNonce, count, rangeErr := q.descriptor.FrameRange(frame.Shard, frame.Sequence)
+	if rangeErr != nil || count != 500 || (r.session.window == nil && firstNonce != 0) {
+		return ResumeIngressAck{}, errors.New("sealed resume original range invalid")
+	}
+	nonce := firstNonce
 	offset := 0
 	err := WalkCorpusPayload(frame.Payload, frame.Transactions, func(raw []byte) error {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if r.session.window != nil && len(raw) > 102 {
+			return errors.New("bounded resume original transaction exceeds recipe byte cap")
 		}
 		from, err := resumeSourceSender(raw, q.descriptor, signer, sender.Index, nonce)
 		if err != nil || from != sender.Address {
@@ -121,7 +159,7 @@ func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue
 		q.verified.Add(1)
 		start := offset + 4
 		offset = start + len(raw)
-		if nonce >= uint64(r.frame.CanonicalSkipped) {
+		if nonce-firstNonce >= uint64(r.frame.CanonicalSkipped) {
 			tx, err := transaction.DecodeEthereumTransaction(raw)
 			if err != nil {
 				return err
@@ -135,7 +173,7 @@ func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue
 	if err != nil {
 		return ResumeIngressAck{}, err
 	}
-	if nonce != 500 || len(verified) != int(r.frame.NewlyAdmitted) {
+	if nonce-firstNonce != 500 || len(verified) != int(r.frame.NewlyAdmitted) {
 		return ResumeIngressAck{}, errors.New("sealed resume original range differs")
 	}
 	// A known receipt still requires all 500 original signatures. It does not
@@ -184,6 +222,9 @@ func (s *Server) publishResumeIngress(ctx context.Context, q *strictIngressQueue
 	if receipt, known := r.session.receipts[frame.CorpusFrameID]; known {
 		r.releaseLocked()
 		return s.resumeReceiptAck(q, r.session, receipt, true), nil
+	}
+	if r.session.window != nil {
+		return s.publishBoundedResumeLocked(q, frame, r, snapshot, verified)
 	}
 	sender := r.session.plan.Senders[r.frame.SenderIndex]
 	a, exists := snapshot.Accounts[sender.Address]

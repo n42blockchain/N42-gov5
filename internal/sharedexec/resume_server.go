@@ -21,9 +21,13 @@ func (s *Server) serveResumeIngressConnection(q *strictIngressQueue, conn net.Co
 		return errors.New("sealed resume hello identity/plan/epoch differs")
 	}
 	selected := false
-	for _, frame := range q.resume.plan.Frames {
-		if frame.ID.Shard == hello.Shard {
-			selected = true
+	if q.resume.window != nil {
+		selected = q.resume.window.shards[hello.Shard]
+	} else {
+		for _, frame := range q.resume.plan.Frames {
+			if frame.ID.Shard == hello.Shard {
+				selected = true
+			}
 		}
 	}
 	if !selected {
