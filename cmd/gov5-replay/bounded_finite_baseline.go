@@ -83,7 +83,7 @@ func decodeBoundedHistoricalOuter(inputs resumePlanInputs, m supplyManifest, rec
 		return boundedHistoricalProjection{}, err
 	}
 	switch header.Kind {
-	case "gov5-post-resume-double-physical-reopen-accepted-not-tps", "gov5-post-bounded-double-physical-reopen-accepted-not-tps":
+	case "gov5-post-resume-double-physical-reopen-accepted-not-tps", "gov5-post-bounded-double-physical-reopen-accepted-not-tps", "gov5-quiescent-retained-child-double-physical-reopen-accepted-not-tps":
 		var outer boundedHistoricalOuter
 		if err := resumeDecodeJSON(raw, &outer, false); err != nil {
 			return boundedHistoricalProjection{}, err
