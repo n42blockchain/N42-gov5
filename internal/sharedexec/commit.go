@@ -89,15 +89,29 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	}
 	var b *block.Block
 	var duplicate bool
-	phases.phase("stored_block_read")
+	if certificate != nil {
+		phases.phase("stored_header_read")
+	} else {
+		phases.phase("stored_block_read")
+	}
 	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
 		var err error
-		b, err = rawdb.ReadBlockByHash(tx, request.BlockHash)
-		if err != nil {
-			return err
-		}
-		if b == nil || b.Hash() != request.BlockHash || b.Number64().Uint64() != request.Number || b.ParentHash() != request.ParentHash {
-			return errors.New("commit stored block identity mismatch or missing block")
+		if certificate != nil {
+			header, readErr := rawdb.ReadHeaderByHash(tx, request.BlockHash)
+			if readErr != nil {
+				return readErr
+			}
+			if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Hash() != request.BlockHash || header.Number.Uint64() != request.Number || header.ParentHash != request.ParentHash {
+				return errors.New("commit stored header identity mismatch or missing header")
+			}
+		} else {
+			b, err = rawdb.ReadBlockByHash(tx, request.BlockHash)
+			if err != nil {
+				return err
+			}
+			if b == nil || b.Hash() != request.BlockHash || b.Number64().Uint64() != request.Number || b.ParentHash() != request.ParentHash {
+				return errors.New("commit stored block identity mismatch or missing block")
+			}
 		}
 		head := rawdb.ReadHeadBlockHash(tx)
 		number := rawdb.ReadHeaderNumber(tx, head)
@@ -145,23 +159,19 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	if err != nil {
 		return CommitResult{}, err
 	}
-	phases.duplicate, phases.transactions = duplicate, len(b.Transactions())
-	phases.phase("durable_evidence")
-	verified, err := s.durable(b)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	if verified == nil {
-		return CommitResult{}, errors.New("commit requires actual durable execution")
-	}
+	phases.duplicate = duplicate
 	var certifiedDuplicate bool
 	if duplicate && certificate != nil {
-		phases.phase("certified_duplicate_verification")
-		head, existing, verifyErr := s.chain.VerifyCertifiedCanonicalPrefix(certificate)
+		phases.phase("certified_execution_verification")
+		head, existing, verifyErr := s.chain.VerifyCertifiedCanonicalExecution(certificate)
 		if verifyErr != nil {
 			return CommitResult{}, verifyErr
 		}
 		if existing {
+			if head.BlockHash != request.BlockHash || head.ParentHash != request.ParentHash || head.Number != request.Number {
+				return CommitResult{}, errors.New("certified canonical execution request binding differs")
+			}
+			phases.transactions = head.Transactions
 			if q := s.ingress; q != nil {
 				q.mu.Lock()
 				certifiedDuplicate = !q.closed && !q.reconciling && !q.bootstrapPending && q.stamp.hash == head.HeadHash && q.stamp.number == head.HeadNumber
@@ -172,6 +182,31 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 		}
 	}
 	if !certifiedDuplicate {
+		if certificate != nil {
+			phases.phase("stored_block_read")
+			if err := s.chain.DB().View(ctx, func(tx kv.Tx) error {
+				var readErr error
+				b, readErr = rawdb.ReadBlockByHash(tx, request.BlockHash)
+				if readErr != nil {
+					return readErr
+				}
+				if b == nil || b.Hash() != request.BlockHash || b.Number64() == nil || !b.Number64().IsUint64() || b.Number64().Uint64() != request.Number || b.ParentHash() != request.ParentHash {
+					return errors.New("commit stored block identity mismatch or missing block")
+				}
+				return nil
+			}); err != nil {
+				return CommitResult{}, err
+			}
+		}
+		phases.transactions = len(b.Transactions())
+		phases.phase("durable_evidence")
+		verified, verifyErr := s.durable(b)
+		if verifyErr != nil {
+			return CommitResult{}, verifyErr
+		}
+		if verified == nil {
+			return CommitResult{}, errors.New("commit requires actual durable execution")
+		}
 		phases.phase("ingress_gate")
 		if q := s.ingress; q != nil {
 			q.mu.Lock()
