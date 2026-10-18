@@ -80,3 +80,33 @@ The first validation attempt remains failed and preserved: its Python negative
 permission fixture requested mode0755 under umask077 and unintentionally created
 mode0700. The fixture now explicitly sets and asserts0755. The production guard
 was unchanged, and the second attempt retained the complete test set.
+
+## Terminal production barrier and recovered baseline
+
+The retained-child recovery completed at height1246/hash9a90b0c5, nonce sum
+1104509, with complete6000-account/root agreement live, after validator stop,
+and across two nonproducing physical reopens. Its accepted outer kind is
+`gov5-quiescent-retained-child-double-physical-reopen-accepted-not-tps`; the
+plan reader explicitly recognizes that pinned double-report shape and still
+requires its second recovery path/hash and all existing inner/root checks.
+
+The next bounded window keeps the existing4-second target warmup,20-second
+conservative canonical bracket,6.5M offered pacer,36/4/2 execution budget,
+60M source prefix and45-second drain. Once the command and drain have ended,
+each validator terminally fences fresh builds while its network, WAL child
+recovery and public CommitQC remain alive. Its ACK records that validator's
+fresh-build counter, which may be positive and differ from other validators.
+Every later status must keep that counter unchanged. Seven canonical tuples
+must converge with the owner canonical=applied at the unchanged acknowledged
+transaction count; then capture the complete address-ordered account vector,
+all six root batches and final root read. Lagging peers may catch up before
+this terminal proof, while observed regressions remain fatal.
+
+After stopping the seven validators, the owner snapshot must equal that live
+quiescent snapshot before owner shutdown. The ordinary Miner=false physical
+reopen must retain the same full vector, tuple and roots. Missing ACKs, new
+fresh-build admissions, late imports or changed roots prevent promotion. These
+phases occur after the measured interval and never change its numerator or
+denominator. A verified nonce sum1104509 leaves58,895,491 possible new source
+transactions under the unchanged60M lifetime cap; it cannot prove5M sustained
+for20seconds. The next production window has not yet executed.
