@@ -165,7 +165,7 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 			r.Logs[j] = lg
 		}
 		// Bloom is a pure function of the logs — recompute exactly as execution did.
-		r.Bloom = CreateBloom(Receipts{r})
+		r.SetBloom(CreateBloom(Receipts{r}))
 		out[i] = r
 	}
 	if len(p) != 0 {

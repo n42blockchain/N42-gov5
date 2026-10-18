@@ -1189,7 +1189,7 @@ func (sc *parallelTxScratch) fillReceipt(owned bool, tx *transaction.Transaction
 	}
 	receipt.Logs = logs
 	if len(logs) != 0 {
-		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+		receipt.SetBloom(block.CreateBloom(block.Receipts{receipt}))
 	} // else the zero bloom, which is what CreateBloom returns for no logs
 	receipt.BlockNumber = header.Number
 	receipt.TransactionIndex = txIndex

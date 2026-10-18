@@ -307,7 +307,7 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 		"gasUsed":           hexutil.Uint64(receipt.GasUsed),
 		"cumulativeGasUsed": hexutil.Uint64(receipt.CumulativeGasUsed),
 		"contractAddress":   nil,
-		"logsBloom":         receipt.Bloom,
+		"logsBloom":         receipt.GetBloom(),
 		"type":              hexutil.Uint(tx.Type()),
 	}
 	// Assign the effective gas price paid

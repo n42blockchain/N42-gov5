@@ -160,7 +160,7 @@ func Execute(input *GuestInput) *GuestOutput {
 		} else {
 			receipt.Status = 1 // ReceiptStatusSuccessful
 		}
-		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+		receipt.SetBloom(block.CreateBloom(block.Receipts{receipt}))
 		receipts = append(receipts, receipt)
 	}
 
