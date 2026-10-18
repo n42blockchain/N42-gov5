@@ -42,3 +42,24 @@ This audit measures no TPS. Python mock tests cover lifecycle, exact account
 deltas, root failure, second-vector drift and prevention of promotion on
 cleanup or claim-tail failure; the retained-chain run requires separate actual
 evidence.
+
+## Actual retained-chain result, 2026-10-18
+
+The separate audit passed, including Sol's independent acceptance. Both real
+nonproducing reopens returned height `1231`, block hash
+`0xbde2b8ad5dbece1cfae46fb075952aa5941c39b2f7dc873767e7f8aa2669aa7f`,
+root `0x33ab866153bd19a4bb613cb151bea19b99754f6a38b438d6da695d9258717dee`
+and all 6000 identical account records, with nonce sum `211917`. The vector SHA
+is `ce4a6f363ecb3a46d276a8d138a9e0e072cacd6e168ff766ae2646e387152a49`.
+The exact acknowledged three-sender increment of 1417 persisted; the other
+5997 senders were unchanged. Both sessions had distinct empty epochs and zero
+dispatch. All 18 runtime/audit processes exited cleanly, the three protected
+copies were unchanged, and owned claims were released.
+
+Evidence is retained under
+`/data/blockchain/gov5-work/validation/20261018-gov5-post-resume-double-reopen-v1`:
+`audit-result.json` SHA `6304e727aee7e778ec4e26c7c5473a47234205ab1c20576af27605ca46cfb901`,
+and independent `acceptance.json` SHA
+`09841f7dcd104a36c80f6cc53b52590610d90e562cc099dce3e572c425c75178`.
+The earlier production-sampling timeout remains a failed attempt. This result
+establishes persistence of the resumed suffixes and provides no TPS result.
