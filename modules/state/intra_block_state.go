@@ -1499,6 +1499,10 @@ func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter S
 	for addr := range sdb.journal.dirties {
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	if r, ok := stateWriter.(accountWriteReserver); ok {
+		// At most one account write per dirty or wiped object below.
+		r.reserveAccountWrites(len(sdb.stateObjectsDirty) + len(sdb.storageWipes))
+	}
 	for _, addr := range sortedAddresses(sdb.stateObjects) {
 		stateObject := sdb.stateObjects[addr]
 		_, isDirty := sdb.stateObjectsDirty[addr]
