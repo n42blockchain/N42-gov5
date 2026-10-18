@@ -96,6 +96,27 @@ type StateWriteLog struct {
 
 var _ StateWriter = (*StateWriteLog)(nil)
 
+// accountWriteReserver is a writer that can size itself for n account
+// writes before MakeWriteSet makes them.
+type accountWriteReserver interface {
+	reserveAccountWrites(n int)
+}
+
+// reserveAccountWrites grows the log for n more account writes at once:
+// appended one by one, a block's ~180k accounts (240 bytes each) were
+// copied through every doubling, ~75 bytes per imported transaction.
+func (l *StateWriteLog) reserveAccountWrites(n int) {
+	if n <= 0 {
+		return
+	}
+	if need := len(l.accts) + n; cap(l.accts) < need {
+		l.accts = append(make([]stateWriteAccount, 0, need), l.accts...)
+	}
+	if need := len(l.ops) + n; cap(l.ops) < need {
+		l.ops = append(make([]stateWriteOp, 0, need), l.ops...)
+	}
+}
+
 func (l *StateWriteLog) addAccount(kind stateWriteOpKind, addr types.Address, original, acct *account.StateAccount) {
 	a := stateWriteAccount{addr: addr, origNil: original == nil}
 	if original != nil {
