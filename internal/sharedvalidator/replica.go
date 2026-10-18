@@ -109,47 +109,66 @@ func (f executionGateFetcher) BlockApplied(hash types.Hash, number uint64) bool 
 
 // Import persists availability first. A remote accepted/missing-parent response
 // is not execution evidence and never notifies import-gated voting.
-func (r *Replica) Import(ctx context.Context, raw []byte) (sharedexec.ImportResult, error) {
+func (r *Replica) Import(ctx context.Context, raw []byte) (imported sharedexec.ImportResult, importErr error) {
+	phases := newOperationPhases("import", r)
+	phases.rawBytes = len(raw)
+	defer func() { phases.finish(importErr) }()
 	if len(raw) == 0 || len(raw) > sharedexec.MaxBlockBytes {
 		return sharedexec.ImportResult{}, errors.New("shared validator block size invalid")
 	}
+	phases.phase("unmarshal")
 	var b block.Block
 	if err := b.Unmarshal(raw); err != nil {
 		return sharedexec.ImportResult{}, err
 	}
+	phases.phase("body_root_binding")
 	header, ok := b.Header().(*block.Header)
 	body, bodyOK := b.Body().(*block.Body)
 	if !ok || !bodyOK || header == nil || header.Number == nil || !header.Number.IsUint64() || body.IsFrameBody() || len(b.Transactions()) > sharedexec.MaxTransactions || b.TxHash() != block.BodyTxRoot(body, header.Time) {
 		return sharedexec.ImportResult{}, errors.New("shared validator availability body mismatch")
 	}
+	phases.hash, phases.parent, phases.transactions = b.Hash(), b.ParentHash(), len(b.Transactions())
+	phases.number = header.Number.Uint64()
+	if view, err := hotstuff.ExtractViewFromExtra(header.Extra); err == nil {
+		phases.view = uint64(view)
+	}
+	phases.phase("replica_mu_wait")
 	r.mu.Lock()
-	result, err := r.importLocked(ctx, &b, raw)
+	result, err := r.importLocked(ctx, &b, raw, phases)
+	phases.durable = result.Durable
 	service := r.service
 	r.mu.Unlock()
+	phases.pause()
 	// Service may replay pending commits through r.CommitCertificate. Never
 	// invoke it while holding r.mu (certificateMu -> r.mu is the sink order).
 	if err == nil && result.Durable && service != nil {
+		phases.phase("notify_imported")
 		service.NotifyBlockImported(b.Hash(), b.TxHash())
 	}
 	return result, err
 }
 
-func (r *Replica) importLocked(ctx context.Context, b *block.Block, raw []byte) (sharedexec.ImportResult, error) {
+func (r *Replica) importLocked(ctx context.Context, b *block.Block, raw []byte, phases *operationPhases) (sharedexec.ImportResult, error) {
+	phases.phase("header_verify")
 	header := b.Header().(*block.Header)
 	if err := r.engine.VerifyPerformanceSealedHeader(r, header); err != nil {
 		return sharedexec.ImportResult{}, err
 	}
+	phases.phase("availability_write")
 	if err := r.db.Update(ctx, func(tx kv.RwTx) error { return rawdb.WriteBlock(tx, b) }); err != nil {
 		return sharedexec.ImportResult{}, err
 	}
+	phases.phase("import_rpc")
 	result, err := r.client.Import(ctx, sharedexec.ImportRequest{Identity: r.identity, BlockHash: b.Hash(), BlockRLP: raw})
 	if err != nil || !result.Durable {
 		return result, err
 	}
+	phases.phase("evidence_encode")
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return sharedexec.ImportResult{}, err
 	}
+	phases.phase("evidence_write")
 	if err := r.db.Update(ctx, func(tx kv.RwTx) error { return tx.Put(modules.HotStuffState, evidenceKey(b.Hash()), encoded) }); err != nil {
 		return sharedexec.ImportResult{}, err
 	}
@@ -183,9 +202,16 @@ func (r *Replica) BlockApplied(hash types.Hash, number uint64) bool {
 // CommitCertificate advances local metadata only after full local availability,
 // authenticated remote execution evidence and the public remote canonical ACK.
 // A lost local transaction leaves the Service outbox pending for idempotent retry.
-func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCertificate) error {
+func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCertificate) (commitErr error) {
+	phases := newOperationPhases("commit_certificate", r)
+	defer func() { phases.finish(commitErr) }()
+	if qc != nil {
+		phases.hash, phases.view = qc.BlockHash, uint64(qc.View)
+	}
+	phases.phase("replica_mu_wait")
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	phases.phase("certificate_binding")
 	if qc == nil {
 		return errors.New("shared validator commit certificate missing")
 	}
@@ -197,15 +223,20 @@ func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCert
 	if !ok || header == nil {
 		return errors.New("shared validator committed availability missing")
 	}
+	phases.phase("certificate_verify")
 	if err := r.engine.VerifyPerformanceCommitCertificate(r, header, qc); err != nil {
 		return err
 	}
+	phases.parent, phases.number = header.ParentHash, header.Number.Uint64()
+	phases.phase("execution_evidence")
 	if !r.BlockApplied(qc.BlockHash, header.Number.Uint64()) {
 		return errors.New("shared validator remote execution evidence missing")
 	}
+	phases.phase("commit_rpc")
 	if err := r.bridge.CommitCertificate(ctx, qc); err != nil {
 		return err
 	}
+	phases.phase("canonical_metadata_write")
 	return r.db.Update(ctx, func(tx kv.RwTx) error {
 		head := rawdb.ReadHeadBlockHash(tx)
 		height := rawdb.ReadHeaderNumber(tx, head)
@@ -213,6 +244,7 @@ func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCert
 			return errors.New("shared validator canonical head missing")
 		}
 		if header.Number.Uint64() <= *height {
+			phases.path = "alreadyCanonical"
 			canonical, err := rawdb.ReadCanonicalHash(tx, header.Number.Uint64())
 			if err != nil {
 				return err
@@ -223,6 +255,7 @@ func (r *Replica) CommitCertificate(ctx context.Context, qc *hotstuff.QuorumCert
 			_, err = readCanonicalProgress(tx, r.identity)
 			return err
 		}
+		phases.path = "advanceCanonical"
 		if header.Number.Uint64() != *height+1 || header.ParentHash != head {
 			return errors.New("shared validator canonical parent must commit first")
 		}
