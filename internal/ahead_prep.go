@@ -91,7 +91,7 @@ type aheadPrep struct {
 	signer   transaction.Signer
 	baseFee  *uint256.Int
 	engine   bool
-	prepared []preparedTx
+	prepared *preparedSet
 	aff      *parallel.AffinityPrep
 	// base: the block's base prefill (ahead_base_prefill.go), started once
 	// the preparation is computed; nil when off or not started.
@@ -278,7 +278,7 @@ func AheadPrepStats() (hits, misses uint64) {
 func (pr *aheadPrep) matches(txs []*transaction.Transaction, signer transaction.Signer, baseFee *uint256.Int, engine bool) bool {
 	if pr == nil || !pr.ok || len(pr.txs) != len(txs) || len(txs) == 0 || pr.txs[0] != txs[0] ||
 		pr.txs[len(txs)-1] != txs[len(txs)-1] || signer == nil || pr.signer == nil || !pr.signer.Equal(signer) ||
-		pr.engine != engine || len(pr.prepared) != len(txs) {
+		pr.engine != engine || pr.prepared.len() != len(txs) {
 		return false
 	}
 	switch {
@@ -295,24 +295,39 @@ func (pr *aheadPrep) matches(txs []*transaction.Transaction, signer transaction.
 // every transaction's message and hash and the first wave's keys and
 // partition, keys on goroutines goroutines. aff is nil when the pass would
 // compute nothing.
-func (p *StateProcessor) prepareParallelRun(txs []*transaction.Transaction, signer transaction.Signer, baseFee *uint256.Int, workers, goroutines int) ([]preparedTx, *parallel.AffinityPrep) {
-	prepared := make([]preparedTx, len(txs))
+func (p *StateProcessor) prepareParallelRun(txs []*transaction.Transaction, signer transaction.Signer, baseFee *uint256.Int, workers, goroutines int) (*preparedSet, *parallel.AffinityPrep) {
+	prepared := newPreparedSet(len(txs))
 	aff := parallel.PrepareAffinityFor(len(txs), workers, func(i int) uint64 {
 		return p.txAffinityKey(txs, prepared, i, signer, baseFee, false)
 	}, goroutines)
 	return prepared, aff
 }
 
+// buildPreparedMessage builds tx's execution message into msg as a run's
+// preparation does; a worker rebuilding the message of a prepared
+// transaction whose message was not kept (preparedSet) gets the same one.
+func (p *StateProcessor) buildPreparedMessage(msg *transaction.Message, tx *transaction.Transaction, signer transaction.Signer, baseFee *uint256.Int, stateless bool) bool {
+	if tx.AsMessageInto(msg, signer, baseFee) != nil {
+		return false
+	}
+	NormalizeExecutionMessage(msg, stateless, p.engine != nil)
+	return true
+}
+
 // txAffinityKey is a parallel run's affinity key of txs[i]: its sender's
 // first 8 bytes, else its index. It first builds the transaction's message
-// and hash into prepared[i] (preparedTx) unless they are there.
-func (p *StateProcessor) txAffinityKey(txs []*transaction.Transaction, prepared []preparedTx, i int, signer transaction.Signer, baseFee *uint256.Int, stateless bool) uint64 {
+// and hash into prepared's entry i (preparedTx) unless they are there.
+func (p *StateProcessor) txAffinityKey(txs []*transaction.Transaction, prepared *preparedSet, i int, signer transaction.Signer, baseFee *uint256.Int, stateless bool) uint64 {
 	tx := txs[i]
-	if pm := &prepared[i]; !pm.ok && signer != nil {
-		if tx.AsMessageInto(&pm.msg, signer, baseFee) == nil {
-			NormalizeExecutionMessage(&pm.msg, stateless, p.engine != nil)
+	if pm := &prepared.txs[i]; !pm.ok && signer != nil {
+		var msg transaction.Message
+		if p.buildPreparedMessage(&msg, tx, signer, baseFee, stateless) {
 			pm.hash = tx.Hash()
-			makeTransferPlan(&pm.plan, &pm.msg, tx)
+			makeTransferPlan(&pm.plan, &msg, tx)
+			if prepared.keepMsg(pm) {
+				*prepared.msgSlot(i) = msg
+				pm.msgKept = true
+			}
 			pm.ok = true
 		}
 	}

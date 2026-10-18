@@ -97,9 +97,10 @@ func BenchmarkFrameImportPrep(b *testing.B) {
 				tx.Hash()
 			}
 			prepared, aff := f.sp.prepareParallelRun(txs, f.signer, f.header.BaseFee, 32, 1)
-			if aff == nil || !prepared[len(prepared)-1].ok {
+			if aff == nil || !prepared.txs[prepared.len()-1].ok {
 				b.Fatal("preparation computed nothing")
 			}
+			prepared.release()
 		}
 	})
 }
