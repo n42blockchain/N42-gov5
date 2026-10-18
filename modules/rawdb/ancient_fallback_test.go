@@ -20,7 +20,7 @@ import (
 // store, and returns the canonical hashes. The hot DB keeps only the
 // CanonicalHeader rows (as the seal pipeline does) — everything else
 // must come from the era.
-func buildFallbackFixture(t *testing.T) (hashes []types.Hash, span uint64) {
+func buildFallbackFixture(t *testing.T, receiptRaw ...[]byte) (hashes []types.Hash, span uint64) {
 	t.Helper()
 	span = 256
 	dir := t.TempDir()
@@ -62,6 +62,9 @@ func buildFallbackFixture(t *testing.T) (hashes []types.Hash, span uint64) {
 		// Empty block: baseTxId = 2n, txAmount = 2 (two system slots).
 		bodyRaw := modules.BodyStorageValue(2*n, 2)
 		execEntry := ancientera.BlockEntry{ancientera.TblBody: bodyRaw}
+		if len(receiptRaw) > 0 {
+			execEntry[ancientera.TblReceipts] = receiptRaw[0]
+		}
 		auxEntry := ancientera.BlockEntry{}
 
 		var h32 [32]byte
