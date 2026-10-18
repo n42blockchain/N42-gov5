@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"syscall"
 	"time"
@@ -112,91 +111,13 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 	}
 	ctx, cancel := context.WithTimeout(parent, 180*time.Second)
 	defer cancel()
-	m, err := loadSupplyManifest(root)
+	input, err := loadBoundedSenderInput(ctx, root, runtimePath, planPin, baselinePin, expectedPlan)
 	if err != nil {
 		return err
 	}
-	manifestRaw, err := strictMetadata(filepath.Join(root, "manifest.json"), sharedexec.CorpusMaxManifestBytes)
-	if err != nil {
-		return err
-	}
-	if types.Hash(sha256.Sum256(manifestRaw)) != m.Digest {
-		return errors.New("bounded source manifest changed")
-	}
-	runtimeRaw, err := strictMetadata(runtimePath, 2<<20)
-	if err != nil {
-		return err
-	}
-	var runtimeDocument strictRuntime
-	if err := resumeDecodeJSON(runtimeRaw, &runtimeDocument, true); err != nil {
-		return err
-	}
-	runtime, err := loadStrictRuntime(runtimePath, root, strictRuntimeBase, m)
-	if err != nil || !reflect.DeepEqual(runtime, runtimeDocument) {
-		return errors.New("bounded runtime differs from pinned bytes")
-	}
-	planRaw, err := readResumePin(planPin, sharedexec.ResumeMaxPlanDocumentBytes)
-	if err != nil {
-		return err
-	}
-	doc, err := sharedexec.DecodeBoundedResumePlanDocument(planRaw)
-	if err != nil {
-		return err
-	}
-	p := doc.Plan
-	if doc.PlanID != expectedPlan || p.Identity != runtime.Identity || p.ManifestSHA256 != m.Digest || p.CorpusID != m.CorpusID || p.GenesisFileSHA256 != m.Descriptor.GenesisFileHash || p.NonceEndExclusive != 10000 || p.MaxSourceTransactions != 60_000_000 || p.MaxSourceFrames != 120000 || len(p.Senders) != 6000 {
-		return errors.New("bounded production plan/source/runtime geometry differs")
-	}
-	// The historical vector is an explicit path in the plan's pinned outer
-	// audit. Resolve it from runtime evidence, never an arbitrary socket value.
-	if baselinePin.SHA256 != p.RecoverySHA256 || !stringsHasPrefixPath(baselinePin.Path, filepath.Join(runtime.Root, "strict-attempts")) {
-		return errors.New("bounded historical vector path/hash differs from local plan")
-	}
-	baselineRaw, err := readResumePin(baselinePin, 16<<20)
-	if err != nil {
-		return err
-	}
-	var baseline strictRecoveryResult
-	if err := resumeDecodeJSON(baselineRaw, &baseline, true); err != nil {
-		return err
-	}
-	if id, err := sharedexec.BoundedResumePlanID(p, manifestRaw, baseline.Accounts); err != nil || id != expectedPlan {
-		return errors.New("bounded sender complete baseline/plan ID differs")
-	}
-	genesis, err := strictMetadata(filepath.Join(root, "genesis.json"), 16<<20)
-	if err != nil {
-		return err
-	}
-	scan, err := sharedexec.ScanBoundedResumeSources(ctx, root, manifestRaw, genesis, baseline.Accounts, p.NonceEndExclusive)
-	if err != nil {
-		return err
-	}
-	_, proof, err := sharedexec.EncodeResumeSourceProof(manifestRaw, scan.Source)
-	if err != nil {
-		return err
-	}
-	if types.Hash(sha256.Sum256(proof)) != p.SourceProofSHA256 || scan.Source.MappingSHA256 != p.MappingSHA256 || scan.WhitelistSHA256 != p.WhitelistSHA256 || scan.SourceFrames != p.MaxSourceFrames || scan.SourceTransactions != p.MaxSourceTransactions || scan.SourceEncodedBytes != p.SourceEncodedBytes || scan.NewTransactions != p.MaxNewTransactions || !reflect.DeepEqual(scan.Source.Senders, p.Senders) {
-		return errors.New("bounded sender independently reconstructed source/whitelist differs")
-	}
-	sources, err := openStrictSources(ctx, root, m)
-	if err != nil {
-		return err
-	}
-	defer closeStrictSources(sources)
-	if _, err := checkBoundedSources(sources, scan.Source.FilesBefore); err != nil {
-		return err
-	}
-	owner := sharedexec.NewClient(runtime.OwnerSocket, runtime.Identity)
-	defer owner.Close()
-	probe, cancelProbe := context.WithTimeout(ctx, 2*time.Second)
-	initialOwner, err := owner.StrictIngressStatus(probe)
-	cancelProbe()
-	if err != nil {
-		return err
-	}
-	if initialOwner.Identity != p.Identity || initialOwner.ManifestHash != p.ManifestSHA256 || initialOwner.Epoch == ([16]byte{}) || initialOwner.CanonicalHash != p.Canonical.Hash || initialOwner.CanonicalNumber != p.Canonical.Number || initialOwner.NewlyAdmitted != 0 || initialOwner.CryptoVerified != 0 || !strictQueueEmpty(initialOwner) {
-		return errors.New("bounded sender requires newly armed empty epoch at exact baseline")
-	}
+	defer input.close()
+	m, runtime, runtimeRaw := input.manifest, input.runtime, input.runtimeRaw
+	p, scan, sources, owner, initialOwner := input.document.Plan, input.scan, input.sources, input.owner, input.initialOwner
 	epoch := initialOwner.Epoch
 	validators := make([]*sharedvalidator.APIClient, 7)
 	defer func() {
