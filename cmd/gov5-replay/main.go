@@ -18,11 +18,35 @@ import (
 
 func runSupply(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|bounded-plan|bounded-window|resume-four-frame [options]")
+		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|bounded-plan|bounded-window|bounded-phase-preload|resume-four-frame [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	root := flags.String("root", "", "absolute fresh private corpus directory")
 	switch args[0] {
+	case "bounded-phase-preload":
+		runtime := flags.String("runtime-manifest", "", "Retained runtime; only independently armed owner may be running")
+		attempt := flags.String("attempt", "", "New finite preload evidence basename")
+		plan := flags.String("plan", "", "Pinned original-source bounded plan v2")
+		planSHA := flags.String("plan-sha256", "", "Exact bounded plan file SHA256")
+		planID := flags.String("expected-plan-id", "", "Locally pinned expected bounded plan ID")
+		baseline := flags.String("baseline-result", "", "Pinned fresh-audit historical full vector")
+		baselineSHA := flags.String("baseline-sha256", "", "Exact account-vector report SHA256 bound in plan")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		digest, err := resumeHashText(*planSHA)
+		if err != nil {
+			return err
+		}
+		id, err := resumeHashText(*planID)
+		if err != nil {
+			return err
+		}
+		vectorHash, err := resumeHashText(*baselineSHA)
+		if err != nil || flags.NArg() != 0 || *runtime == "" || *attempt == "" || *plan == "" || *baseline == "" {
+			return errors.New("finite preload requires explicit plan/hash/ID/runtime/vector/new attempt")
+		}
+		return runBoundedFinitePreload(ctx, *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, resumePinnedInput{Path: *baseline, SHA256: vectorHash}, id)
 	case "bounded-window":
 		runtime := flags.String("runtime-manifest", "", "Retained schema-2 runtime; independently armed GSR2 owner required")
 		attempt := flags.String("attempt", "", "New bounded measurement evidence basename")
@@ -150,7 +174,7 @@ func runSupply(ctx context.Context, args []string) error {
 		}
 		return qualifySupply(ctx, *root, *attempt, *rate, 4*time.Second, 20*time.Second)
 	default:
-		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan, bounded-plan, bounded-window and resume-four-frame")
+		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan, bounded-plan, bounded-window, bounded-phase-preload and resume-four-frame")
 	}
 }
 
