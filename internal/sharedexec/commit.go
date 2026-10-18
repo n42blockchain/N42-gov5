@@ -154,34 +154,53 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	if verified == nil {
 		return CommitResult{}, errors.New("commit requires actual durable execution")
 	}
-	phases.phase("ingress_gate")
-	if q := s.ingress; q != nil {
-		q.mu.Lock()
-		q.reconciling = true
-		q.stamp.generation++
-		q.mu.Unlock()
-		// The request may be canceled after canonical mutation. Always reconcile
-		// with the owner lifetime, retaining the dirty gate on any read failure.
-		defer func() {
-			phases.phase("ingress_reconcile")
-			if reconcileErr := s.reconcileStrictIngress(phases); reconcileErr != nil && err == nil {
-				err = reconcileErr
-			}
-			phases.pause()
-		}()
-	}
-	phases.phase("canonical_commit")
-	if certificate != nil {
-		if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
-			return CommitResult{}, err
+	var certifiedDuplicate bool
+	if duplicate && certificate != nil {
+		phases.phase("certified_duplicate_verification")
+		head, existing, verifyErr := s.chain.VerifyCertifiedCanonicalPrefix(certificate)
+		if verifyErr != nil {
+			return CommitResult{}, verifyErr
 		}
-	} else if !duplicate {
-		// Do not use CommitToCanonicalWith's bookkeeping hook for authorization:
-		// hook errors are swallowed. The service owns canonical decisions;
-		// CommitExecutedExtension also rechecks applied state under bc.lock,
-		// covering the chain's background future-block importer.
-		if err := s.chain.CommitExecutedExtension(request.BlockHash); err != nil {
-			return CommitResult{}, err
+		if existing {
+			if q := s.ingress; q != nil {
+				q.mu.Lock()
+				certifiedDuplicate = !q.closed && !q.reconciling && !q.bootstrapPending && q.stamp.hash == head.HeadHash && q.stamp.number == head.HeadNumber
+				q.mu.Unlock()
+			} else {
+				certifiedDuplicate = true
+			}
+		}
+	}
+	if !certifiedDuplicate {
+		phases.phase("ingress_gate")
+		if q := s.ingress; q != nil {
+			q.mu.Lock()
+			q.reconciling = true
+			q.stamp.generation++
+			q.mu.Unlock()
+			// The request may be canceled after canonical mutation. Always reconcile
+			// with the owner lifetime, retaining the dirty gate on any read failure.
+			defer func() {
+				phases.phase("ingress_reconcile")
+				if reconcileErr := s.reconcileStrictIngress(phases); reconcileErr != nil && err == nil {
+					err = reconcileErr
+				}
+				phases.pause()
+			}()
+		}
+		phases.phase("canonical_commit")
+		if certificate != nil {
+			if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
+				return CommitResult{}, err
+			}
+		} else if !duplicate {
+			// Do not use CommitToCanonicalWith's bookkeeping hook for authorization:
+			// hook errors are swallowed. The service owns canonical decisions;
+			// CommitExecutedExtension also rechecks applied state under bc.lock,
+			// covering the chain's background future-block importer.
+			if err := s.chain.CommitExecutedExtension(request.BlockHash); err != nil {
+				return CommitResult{}, err
+			}
 		}
 	}
 	result = CommitResult{CommitRequest: request}
