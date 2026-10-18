@@ -461,6 +461,10 @@ type txArena struct {
 	status      []TxStatus
 	incarnation []uint32
 	results     []TxResult
+	// pending is collectPending's buffer (a wave's indices; dead once the
+	// wave returned): it grew by append to the block's size every wave,
+	// ~40 bytes per transaction of a follower's import.
+	pending []int
 }
 
 // arenaFree keeps released arenas across blocks. A sync.Pool was tried first
@@ -583,8 +587,10 @@ func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
 	workers = ResolveWorkers(numTxs, workers)
 
 	a := arenaFor(numTxs)
+	mvs := NewMVS()
+	mvs.va = takeVersionArena()
 	return &Executor{
-		mvs:         NewMVS(),
+		mvs:         mvs,
 		numTxs:      numTxs,
 		workers:     workers,
 		status:      a.status,
@@ -606,6 +612,9 @@ func (e *Executor) Release() {
 	a := e.arena
 	e.arena, e.rwSets, e.status, e.incarnation, e.results = nil, nil, nil, nil, nil
 	arenaGive(a)
+	// The store's version lists go back with it: the caller has applied
+	// the store (version_arena.go).
+	e.mvs.release()
 }
 
 // Run executes all transactions using wave-based Block-STM.
@@ -678,11 +687,23 @@ func (e *Executor) collectPending() []int {
 	// is provisional and gets re-VALIDATED next pass, not re-run: re-running
 	// it here rewrote its value under an unchanged incarnation, which a
 	// dependent that had recorded that incarnation could never detect.
+	//
+	// The arena's buffer holds the indices: the previous wave's are dead
+	// (executeParallel keeps none of them past its return).
 	var pending []int
+	if scratchPool && e.arena != nil {
+		if cap(e.arena.pending) < e.numTxs {
+			e.arena.pending = make([]int, 0, e.numTxs)
+		}
+		pending = e.arena.pending[:0]
+	}
 	for i := 0; i < e.numTxs; i++ {
 		if e.status[i] == StatusPending {
 			pending = append(pending, i)
 		}
+	}
+	if len(pending) == 0 {
+		return nil
 	}
 	return pending
 }
@@ -843,12 +864,45 @@ func (e *Executor) PrepareAffinity() {
 	if e.affinity == nil || e.numTxs <= 2 {
 		return
 	}
-	all := make([]int, e.numTxs)
+	all := allIndices(e.numTxs)
+	e.preKeys = e.affinityKeys(all)
+	e.prePart = e.partitionWave(all, e.preKeys)
+}
+
+// identity is the read-only list 0, 1, 2, ... that allIndices hands out
+// prefixes of; a longer one replaces it (the old one stays valid for its
+// readers).
+var identity struct {
+	mu  sync.Mutex
+	all atomic.Pointer[[]int]
+}
+
+// allIndices returns 0..n-1. The list is shared and must not be modified:
+// the first wave's index list (PrepareAffinity) was a fresh numTxs ints a
+// block, only ever read (the affinity keys and the partition copy what
+// they keep).
+func allIndices(n int) []int {
+	if !scratchPool {
+		all := make([]int, n)
+		for i := range all {
+			all[i] = i
+		}
+		return all
+	}
+	if p := identity.all.Load(); p != nil && len(*p) >= n {
+		return (*p)[:n:n]
+	}
+	identity.mu.Lock()
+	defer identity.mu.Unlock()
+	if p := identity.all.Load(); p != nil && len(*p) >= n {
+		return (*p)[:n:n]
+	}
+	all := make([]int, max(n, 1<<16))
 	for i := range all {
 		all[i] = i
 	}
-	e.preKeys = e.affinityKeys(all)
-	e.prePart = e.partitionWave(all, e.preKeys)
+	identity.all.Store(&all)
+	return all[:n:n]
 }
 
 // AffinityPrep is what PrepareAffinity computes -- every transaction's
@@ -873,10 +927,7 @@ func PrepareAffinityFor(numTxs, workers int, key func(txIndex int) uint64, gorou
 		return nil
 	}
 	w := ResolveWorkers(numTxs, workers)
-	all := make([]int, numTxs)
-	for i := range all {
-		all[i] = i
-	}
+	all := allIndices(numTxs)
 	keys := affinityKeysOn(numTxs, all, key, goroutines)
 	return &AffinityPrep{numTxs: numTxs, workers: w, lpt: waveLPT, steal: waveSteal, keys: keys, part: partitionFor(all, w, keys)}
 }
@@ -1074,7 +1125,7 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		wd := &rw.Writes[i]
 		switch {
 		case wd.Delta != nil:
-			e.writeEntry(rw, &wd.Key).writeDelta(txIndex, inc, wd.Delta)
+			e.mvs.writeDelta(e.writeEntry(rw, &wd.Key), txIndex, inc, wd.Delta)
 		case wd.Key.Field == FieldCode:
 			// Code can alias EVM memory: copied.
 			e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
@@ -1089,7 +1140,7 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 			if ent.noFullWrites() {
 				hint = e.versionHint(ws, txIndex, &wd.Key)
 			}
-			ent.writeOwnedHint(txIndex, inc, wd.Value, hint)
+			e.mvs.writeOwnedHint(ent, txIndex, inc, wd.Value, hint)
 		}
 	}
 	if ws != nil {

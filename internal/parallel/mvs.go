@@ -108,6 +108,9 @@ func (e *mvEntry) noFullWrites() bool {
 // write from a preceding transaction.
 type MVS struct {
 	shards [mvsShards]mvsShard
+	// va, when set, holds the version lists (version_arena.go): an
+	// executor's store, reused across blocks. Nil: lists grow by append.
+	va *versionArena
 }
 
 // mvsShards splits the location index so inserts of new locations rarely
@@ -303,20 +306,16 @@ func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []by
 // a slice nobody mutates afterwards (the executor's write descriptors,
 // which the state writer encodes fresh per write).
 func (m *MVS) writeOwned(key LocationKey, txIndex int, incarnation uint32, value []byte) {
-	m.getOrCreateEntry(key).writeOwned(txIndex, incarnation, value)
+	m.writeOwnedHint(m.getOrCreateEntry(key), txIndex, incarnation, value, 0)
 }
 
-// writeOwned is MVS.writeOwned on the location's entry.
-func (e *mvEntry) writeOwned(txIndex int, incarnation uint32, value []byte) {
-	e.writeOwnedHint(txIndex, incarnation, value, 0)
-}
-
-// writeOwnedHint is writeOwned that sizes an empty version list for hint
-// versions (the writes the caller expects at this location in the block).
-func (e *mvEntry) writeOwnedHint(txIndex int, incarnation uint32, value []byte, hint int) {
+// writeOwnedHint is writeOwned on the location's entry e that sizes an
+// empty version list for hint versions (the writes the caller expects at
+// this location in the block).
+func (m *MVS) writeOwnedHint(e *mvEntry, txIndex int, incarnation uint32, value []byte, hint int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if hint > 1 && cap(e.versions) == 0 {
+	if hint > 1 && cap(e.versions) == 0 && m.va == nil {
 		e.versions = make([]versionedValue, 0, hint)
 	}
 
@@ -333,7 +332,7 @@ func (e *mvEntry) writeOwnedHint(txIndex int, incarnation uint32, value []byte, 
 		v.delta.Clear()
 	} else {
 		// Insert at sorted position.
-		e.versions = append(e.versions, versionedValue{})
+		m.growVersions(e, hint)
 		copy(e.versions[idx+1:], e.versions[idx:])
 		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, value: value}
 		e.fulls.Add(1)
@@ -353,11 +352,11 @@ func (e *mvEntry) slot(txIndex int) int {
 // WriteDelta records that transaction txIndex added delta to the account at
 // key. It replaces any earlier write of txIndex at the key.
 func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta *uint256.Int) {
-	m.getOrCreateEntry(key).writeDelta(txIndex, incarnation, delta)
+	m.writeDelta(m.getOrCreateEntry(key), txIndex, incarnation, delta)
 }
 
-// writeDelta is WriteDelta on the location's entry.
-func (e *mvEntry) writeDelta(txIndex int, incarnation uint32, delta *uint256.Int) {
+// writeDelta is WriteDelta on the location's entry e.
+func (m *MVS) writeDelta(e *mvEntry, txIndex int, incarnation uint32, delta *uint256.Int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -372,12 +371,16 @@ func (e *mvEntry) writeDelta(txIndex int, incarnation uint32, delta *uint256.Int
 		v.isDelta = true
 		v.delta.Set(delta)
 	} else {
+		want := 0
 		if fast2 && cap(e.versions) == 0 {
 			// A credited account is usually credited again in the block:
 			// start its list at deltaListCap instead of growing it from one.
-			e.versions = make([]versionedValue, 0, deltaListCap)
+			if m.va == nil {
+				e.versions = make([]versionedValue, 0, deltaListCap)
+			}
+			want = deltaListCap
 		}
-		e.versions = append(e.versions, versionedValue{})
+		m.growVersions(e, want)
 		copy(e.versions[idx+1:], e.versions[idx:])
 		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, isDelta: true, delta: *delta}
 	}

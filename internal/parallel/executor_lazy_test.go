@@ -152,8 +152,13 @@ func TestExecutor_PresizesSenderVersions(t *testing.T) {
 			if e == nil || len(e.versions) != L {
 				t.Fatalf("prepare=%v sender %d: %d versions, want %d", prepare, s, len(e.versions), L)
 			}
-			if presizeVersions && cap(e.versions) != L {
-				t.Fatalf("prepare=%v sender %d: capacity %d, want %d (presized)", prepare, s, cap(e.versions), L)
+			// A store with a version arena rounds the list up to its class.
+			want := L
+			if ex.MVS().va != nil {
+				want = 1 << versionClass(L)
+			}
+			if presizeVersions && cap(e.versions) != want {
+				t.Fatalf("prepare=%v sender %d: capacity %d, want %d (presized)", prepare, s, cap(e.versions), want)
 			}
 			if v, _, _, _ := ex.MVS().Read(k, numTxs); v[0] != L {
 				t.Fatalf("prepare=%v sender %d: final %d, want %d", prepare, s, v[0], L)
