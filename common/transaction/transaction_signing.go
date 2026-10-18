@@ -27,6 +27,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -408,6 +409,50 @@ func recoverTypedSender(tx *Transaction, expectedChainID *big.Int, hashFn func()
 	return recoverPlainRS(h, R, S, V1, true)
 }
 
+// legacySenderFast is EIP155Signer.Sender (and eip2930Signer.Sender) of a
+// replay-protected legacy transaction in uint64 arithmetic, for the case
+// every real transaction is in: V, the chain id and twice the chain id fit
+// in 64 bits and V >= 2*chainId+8. ok=false leaves the transaction to the
+// big.Int path (unprotected, or any other V), which decides the same way;
+// on that path the protection check, the chain id derivation, FromBig and
+// the V arithmetic were five allocations per recovery (~40 bytes per
+// imported transaction).
+//
+// Equivalence with the big.Int path, step by step: Protected is
+// isProtectedV(V), which for V < 256 excludes 0, 1, 27 and 28 and is true
+// above; the chain id is DeriveChainId(V) = (V-35)/2 in uint64 arithmetic
+// (V is neither 27 nor 28 here), compared with FromBig(chainId) = chainId;
+// the recovery value V-chainIdMul-8 is non-negative here, so its BitLen and
+// Uint64 are those of the uint64 difference (recoverPlainV).
+func (s EIP155Signer) legacySenderFast(tx *Transaction) (addr types.Address, err error, ok bool) {
+	inner, isLegacy := tx.inner.(*LegacyTx)
+	if !isLegacy || legacySenderFastOffForTest || inner.V == nil || !inner.V.IsUint64() || s.chainId == nil || s.chainId.Sign() < 0 ||
+		!s.chainId.IsUint64() || s.chainIdMul == nil || s.chainIdMul.Sign() < 0 || !s.chainIdMul.IsUint64() {
+		return types.Address{}, nil, false
+	}
+	v := inner.V.Uint64()
+	if v < 256 && (v == 27 || v == 28 || v == 1 || v == 0) {
+		return types.Address{}, nil, false // unprotected: the Homestead path
+	}
+	mul := s.chainIdMul.Uint64()
+	if mul > math.MaxUint64-8 || v < mul+8 {
+		return types.Address{}, nil, false
+	}
+	if (v-35)/2 != s.chainId.Uint64() {
+		return types.Address{}, ErrInvalidChainId, true
+	}
+	h, herr := s.Hash(tx)
+	if herr != nil {
+		return types.Address{}, herr, true
+	}
+	addr, err = recoverPlainV(h, inner.R, inner.S, v-mul-8, true)
+	return addr, err, true
+}
+
+// legacySenderFastOffForTest sends every legacy recovery down the big.Int
+// path (tests compare the two).
+var legacySenderFastOffForTest bool
+
 func signatureValuesForTypedTx(txChainID *uint256.Int, signerChainID *big.Int, sig []byte) (R, S, V *big.Int, err error) {
 	chainId, _ := uint256.FromBig(signerChainID)
 	if txChainID != nil && txChainID.Sign() != 0 && txChainID.Cmp(chainId) != 0 {
@@ -439,6 +484,9 @@ func (s eip2930Signer) Equal(s2 Signer) bool {
 }
 
 func (s eip2930Signer) Sender(tx *Transaction) (types.Address, error) {
+	if addr, err, ok := s.EIP155Signer.legacySenderFast(tx); ok {
+		return addr, err
+	}
 	V, R, S := tx.RawSignatureValues()
 	V1 := V.ToBig()
 	switch tx.Type() {
@@ -544,6 +592,9 @@ var big8 = big.NewInt(8)
 func (s EIP155Signer) Sender(tx *Transaction) (types.Address, error) {
 	if tx.Type() != LegacyTxType {
 		return types.Address{}, ErrTxTypeNotSupported
+	}
+	if addr, err, ok := s.legacySenderFast(tx); ok {
+		return addr, err
 	}
 	if !tx.Protected() {
 		return HomesteadSigner{}.Sender(tx)
@@ -707,12 +758,24 @@ func recoverPlainRS(sighash types.Hash, R, S *uint256.Int, Vb *big.Int, homestea
 	if Vb.BitLen() > 8 {
 		return types.Address{}, ErrInvalidSig
 	}
-	V := byte(Vb.Uint64() - 27)
+	return recoverPlainV(sighash, R, S, Vb.Uint64(), homestead)
+}
+
+// recoverPlainV is recoverPlainRS with the recovery value as Vb.Uint64()
+// (Vb of at most 8 bits), or as a non-negative uint64 of any size.
+func recoverPlainV(sighash types.Hash, R, S *uint256.Int, vb uint64, homestead bool) (types.Address, error) {
+	if R == nil || S == nil || vb >= 256 {
+		return types.Address{}, ErrInvalidSig
+	}
+	V := byte(vb - 27)
 	if !crypto.ValidateSignatureValues(V, R, S, homestead) {
 		return types.Address{}, ErrInvalidSig
 	}
 	// encode the signature in uncompressed format
-	sig := make([]byte, crypto.SignatureLength)
+	sc := recoverScratchPool.Get().(*recoverScratch)
+	defer recoverScratchPool.Put(sc)
+	sc.msg = sighash
+	sig := sc.sig[:]
 	R.WriteToSlice(sig[:32])
 	S.WriteToSlice(sig[32:64])
 	sig[64] = V
@@ -720,7 +783,7 @@ func recoverPlainRS(sighash types.Hash, R, S *uint256.Int, Vb *big.Int, homestea
 		recoveries.Add(1)
 	}
 	// recover the public key from the signature
-	pub, err := crypto.Ecrecover(sighash[:], sig)
+	pub, err := crypto.EcrecoverInto(sc.msg[:], sig, sc.pub[:0])
 	if err != nil {
 		return types.Address{}, err
 	}
@@ -728,9 +791,24 @@ func recoverPlainRS(sighash types.Hash, R, S *uint256.Int, Vb *big.Int, homestea
 		return types.Address{}, errors.New("invalid public key")
 	}
 	var addr types.Address
-	copy(addr[:], crypto.Keccak256(pub[1:])[12:])
+	h := crypto.Keccak256Hash(pub[1:])
+	copy(addr[:], h[12:])
 	return addr, nil
 }
+
+// recoverScratch holds a recovery's buffers. The signature hash, the
+// signature and the public key reach the secp256k1 cgo call, so buffers on
+// recoverPlainRS's stack would escape: four allocations per recovery (the
+// hash moved to the heap, the signature, the key and its Keccak digest),
+// ~90 bytes per imported transaction. A pooled scratch is pointer-free and
+// none of it outlives the call.
+type recoverScratch struct {
+	msg types.Hash
+	sig [crypto.SignatureLength]byte
+	pub [65]byte
+}
+
+var recoverScratchPool = sync.Pool{New: func() any { return new(recoverScratch) }}
 
 // deriveChainID derives the chain id from the given v parameter
 func DeriveChainId(v *uint256.Int) *uint256.Int {

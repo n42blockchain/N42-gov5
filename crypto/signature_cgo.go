@@ -38,6 +38,12 @@ func Ecrecover(hash, sig []byte) ([]byte, error) {
 	return secp256k1.RecoverPubkey(hash, sig)
 }
 
+// EcrecoverInto is Ecrecover appending the public key to pkbuf: with 65
+// bytes of spare capacity in pkbuf it allocates nothing.
+func EcrecoverInto(hash, sig, pkbuf []byte) ([]byte, error) {
+	return secp256k1.RecoverPubkeyWithContext(secp256k1.DefaultContext, hash, sig, pkbuf)
+}
+
 // Ecrecover returns the uncompressed public key that created the given signature.
 func EcrecoverWithContext(context *secp256k1.Context, hash, sig []byte) ([]byte, error) {
 	return secp256k1.RecoverPubkeyWithContext(context, hash, sig, nil)

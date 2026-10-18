@@ -98,14 +98,17 @@ type Transaction struct {
 	// heap-boxed hash behind an atomic pointer cost one allocation per
 	// transaction on every import (P14). See Hash for the claim.
 	hashState atomic.Uint32
-	hashVal   types.Hash
-	size      atomic.Value
-	from      atomic.Pointer[sigCache]
+	// fromSlotUsed claims fromSlot (below). It sits in hashState's padding:
+	// a decoded transfer is a 480-byte slab entry, a follower decodes one
+	// per imported transaction, and 8 of its bytes were padding here.
+	fromSlotUsed atomic.Bool
+	hashVal      types.Hash
+	size         atomic.Value
+	from         atomic.Pointer[sigCache]
 	// fromSlot is the first sender memo's storage, claimed once through
 	// fromSlotUsed (later memos under another signer allocate).
-	fromSlotUsed atomic.Bool
-	fromSlot     sigCache
-	enc          atomic.Pointer[[]byte] // canonical Ethereum wire encoding
+	fromSlot sigCache
+	enc      atomic.Pointer[[]byte] // canonical Ethereum wire encoding
 	// encSlot holds the encoding a decoder attached before the transaction
 	// was published (cacheEncodedOwned), so it needs no separate header.
 	encSlot []byte
