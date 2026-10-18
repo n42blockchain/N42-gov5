@@ -64,6 +64,14 @@ the original load error. It does not replace
 keys, repair metadata, retry successful setup or relax any consistency check.
 Focused tests inject a metadata read error and actual malformed twig metadata,
 checking original-error preservation and stable copied bytes. This diagnostic
-addition has not yet run under Go. A separately reviewed source80 version must
-pass normal/race/vet/Make before clean binaries or any retained runtime.
+addition passed the separate source80 v2 gate: status `98757ee3`, independent
+acceptance `d17353f5`. Normal testing passed 105 top-level tests and all 43 required
+regressions; targeted race, vet and Make also returned zero. Stage durations were
+10.471, 58.530, 4.738 and 165.009 seconds. All five process groups and owned claims
+were released. The original v1 failure was not reproduced, and its cause remains
+unknown. The diagnostic protects future failure evidence; it is not a QMDB fix.
+
+The two scoped source commits preserve all nine tested file hashes. This follow-up
+changes only this validation record. Clean binaries and a fresh full-source plan
+must bind the actual accepted 5,940,852 baseline before any new retained runtime.
 No accepted runtime throughput improvement is established.
