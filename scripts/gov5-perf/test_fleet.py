@@ -83,6 +83,8 @@ class FleetTest(unittest.TestCase):
             fleet.attempt_logs(self.root, "retry")
         parent.unlink()
         parent.mkdir(mode=0o755)
+        parent.chmod(0o755)
+        self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
         with self.assertRaisesRegex(ValueError, "private"):
             fleet.attempt_logs(self.root, "retry")
 
