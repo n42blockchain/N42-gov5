@@ -39,6 +39,18 @@ cache retention, actual applied-parent selection and recovery/QC tests remain.
 The plan parser adds only the exact newly accepted historical kind and retains
 all complete account/root and second-reopen hash checks.
 
-This source slice is a static draft. It has not been compiled, tested under Go,
-or used for a new retained runtime or TPS measurement. Any next run must use
-newly accepted binaries and a fresh source-verified plan at the audited baseline.
+Source validation v1 failed in five existing tests that constructed historical
+empty blocks through fresh queue selection. Its six tested source files and
+failure evidence remain sealed in acceptance `026e0c52`. Two shared setup helpers
+now construct those historical empty blocks through ordinary build APIs; every
+reopened owner-queue, QC, applied-marker and account assertion is unchanged.
+
+The independent source80 v2 acceptance `55369c9e` binds all eight tested files,
+101 passing normal tests (including 32 required regressions), race, vet and a
+successful `make -o version-build build`. Status `60c1c8f1` records all four
+stages returning zero and all owned process groups and claims released. This
+validation uses fixture MDBX only. It does not open the retained chain database,
+scan the real corpus, dispatch transactions or establish a performance gain.
+This documentation update follows the exact tested source commits. Any next
+runtime must use newly accepted binaries and a fresh source-verified plan at the
+audited baseline.
