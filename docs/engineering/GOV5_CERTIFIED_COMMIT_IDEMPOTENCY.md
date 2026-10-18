@@ -49,6 +49,17 @@ Dirty, lagging or bootstrapping queues retain the existing reconciliation path.
 The final canonical/finality durability read and ordinary advance ordering are
 unchanged. The trusted owner-capability path is unchanged.
 
-This implementation is awaiting controlled source validation and a new real
-measurement. Its physical index reads and receipt checks remain proportional to
-block size; no throughput improvement is claimed before measurement.
+Controlled source validation passed in
+`20261018-gov5-certified-commit-validation-v1`: targeted normal tests, race, vet,
+and Make all returned zero. The original mutation-lock/default-chain regressions
+and seven new certified-prefix tests passed, including physical index repair,
+held-reservation publication, fresh invalid-QC rejection, and seven concurrent
+certificates advancing ingress generation only once. The independent acceptance
+is `757358986149d7f807811b36855a2481772d8cec8dc81628f2b9c8a680879d54`;
+its terminal status is
+`04122ef439edf0d8f9a031c4c328f7c75c3281ee6e25b40867944e31773b4e5d`.
+
+A new real measurement is still required. Physical index reads and receipt checks
+remain proportional to block size; no throughput improvement is claimed before
+measurement. Source validation did not open the retained chain or dispatch
+transactions to it.
