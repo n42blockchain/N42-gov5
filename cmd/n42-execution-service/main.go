@@ -52,6 +52,11 @@ func run(ctx context.Context, args []string) error {
 	resumeSource := flags.String("resume-ingress-source", "", "Original immutable signed corpus root; owner rehashes all shards")
 	resumeManifest := flags.String("resume-ingress-manifest", "", "Exact finalized manifest for explicit resume ingress")
 	resumePlanID := flags.String("resume-ingress-plan-id", "", "Locally pinned expected four-frame plan ID")
+	boundedPlan := flags.String("bounded-ingress-plan", "", "Explicit original-source prefix plan v2; mutually exclusive with strict and four-frame ingress")
+	boundedProof := flags.String("bounded-ingress-source-proof", "", "Original-source mapping proof independently reconstructed by this owner")
+	boundedSource := flags.String("bounded-ingress-source", "", "Original immutable signed corpus root for bounded ingress")
+	boundedManifest := flags.String("bounded-ingress-manifest", "", "Exact finalized manifest for bounded prefix ingress")
+	boundedPlanID := flags.String("bounded-ingress-plan-id", "", "Locally pinned expected bounded prefix plan ID")
 	ingressMaxTx := flags.Int("ingress-max-transactions", 0, "Strict queue global credits (0 selects 2000000; maximum 2000000)")
 	ingressMaxBytes := flags.Int("ingress-max-encoded-bytes", 0, "Strict queue encoded credits (0 selects 512MiB; maximum 512MiB)")
 	if err := flags.Parse(args); err != nil {
@@ -73,16 +78,20 @@ func run(ctx context.Context, args []string) error {
 		}
 	})
 	resumeRequested := *resumePlan != "" || *resumeProof != "" || *resumeSource != "" || *resumeManifest != "" || *resumePlanID != ""
-	if resumeRequested && *ingressManifest != "" {
-		return errors.New("strict and resume ingress are mutually exclusive")
+	boundedRequested := *boundedPlan != "" || *boundedProof != "" || *boundedSource != "" || *boundedManifest != "" || *boundedPlanID != ""
+	if (resumeRequested && *ingressManifest != "") || (boundedRequested && (resumeRequested || *ingressManifest != "")) {
+		return errors.New("strict, four-frame resume and bounded ingress are mutually exclusive")
 	}
-	if *ingressManifest == "" && !resumeRequested && capsSpecified {
+	if *ingressManifest == "" && !resumeRequested && !boundedRequested && capsSpecified {
 		return errors.New("ingress credits require explicit strict or resume ingress")
 	}
 	var ingressOptions *sharedexec.StrictIngressOptions
 	var resumeOptions *sharedexec.ResumeIngressOptions
+	var boundedOptions *sharedexec.BoundedResumeIngressOptions
 	var err error
-	if resumeRequested {
+	if boundedRequested {
+		boundedOptions, err = boundedResumeIngressOptions(*boundedPlan, *boundedProof, *boundedSource, *boundedManifest, *boundedPlanID, *ingressMaxTx, *ingressMaxBytes)
+	} else if resumeRequested {
 		resumeOptions, err = resumeIngressOptions(*resumePlan, *resumeProof, *resumeSource, *resumeManifest, *resumePlanID, *ingressMaxTx, *ingressMaxBytes)
 	} else {
 		ingressOptions, err = strictIngressOptions(*ingressManifest, *ingressMaxTx, *ingressMaxBytes)
@@ -140,6 +149,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if resumeOptions != nil {
 		resumeOptions.GenesisRaw = raw
+	}
+	if boundedOptions != nil {
+		boundedOptions.GenesisRaw = raw
 	}
 	if err := node.ValidateDataDirNetworkBinding(cfg, genesis.Config, &genesisHash); err != nil {
 		return err
@@ -248,9 +260,14 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	if boundedOptions != nil {
+		if err := server.EnableBoundedResumeIngress(ctx, *boundedOptions); err != nil {
+			return err
+		}
+	}
 	socketDir := filepath.Join(*datadir, "execution-rpc")
 	if err := os.Mkdir(socketDir, 0700); err != nil && !os.IsExist(err) {
 		return err
 	}
-	return server.ServePrivateUnix(ctx, socketDir, ingressOptions != nil || resumeOptions != nil)
+	return server.ServePrivateUnix(ctx, socketDir, ingressOptions != nil || resumeOptions != nil || boundedOptions != nil)
 }
