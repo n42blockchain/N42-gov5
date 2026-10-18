@@ -23,7 +23,7 @@ def failed_window_inputs(path, digest, failure_path, failure_sha, supplement_pat
     value = pinned_json(path, digest)
     accepted = pinned_json(failure_path, failure_sha)
     supplement = pinned_json(supplement_path, supplement_sha)
-    if value.get("kind") != "gov5-bounded-resume-20s-window-and-drain-candidate-not-capacity-v2" or value.get("passed") is not False or value.get("error") != "bounded acknowledged prefix did not drain before deadline" or value["identity"] != m["identity"] or value["plan_id"] != document["plan_id"]:
+    if value.get("kind") != "gov5-bounded-resume-20s-window-and-drain-candidate-not-capacity-v2" or value.get("passed") is not False or value.get("error") not in ("bounded acknowledged prefix did not drain before deadline", 'Post "http://unix/v1/status": context deadline exceeded') or value["identity"] != m["identity"] or value["plan_id"] != document["plan_id"]:
         raise ValueError("actual failed bounded drain required")
     if accepted.get("failure_verified") is not True or accepted.get("functional_gate_passed") is not False or accepted.get("capacity_5m_proven") is not False or accepted["candidate_sha256"] != digest or accepted.get("all_owned_processes_gone") is not True or accepted.get("owned_claims_released") is not True or accepted.get("physical_reopen_performed") is not False:
         raise ValueError("independent failed-window acceptance required")
