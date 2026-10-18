@@ -252,6 +252,71 @@ def stable_owner_snapshot(m, p, historical, candidate, guard):
     raise TimeoutError("bounded stable canonical/applied account snapshot unavailable after producers stopped")
 
 
+def quiesce_producers(m,p,candidate,guard):
+    epoch=candidate["owner_initial"]["Epoch"]
+    acks=[]
+    for v in m["validators"]:
+        guard(True)
+        client=fleet.UnixHTTP(v["api_socket"],timeout=33)
+        try:
+            request={"identity":m["identity"],"epoch":epoch,"manifest_hash":p["ManifestSHA256"]}
+            client.request("POST","/v1/recovery-only",json.dumps(request),{"Content-Type":"application/json"})
+            response=client.getresponse();raw=response.read(4097)
+            if response.status!=200 or len(raw)>4096:
+                raise ValueError("production quiescence requires seven explicit acknowledgements")
+            ack=json.loads(raw,object_pairs_hook=fleet.pairs_unique)
+            if any(ack.get(k)!=value for k,value in request.items()) or ack.get("recovery_only")is not True or ack.get("drain_acknowledged")is not True or type(ack.get("fresh_builds"))is not int or not 0<=ack["fresh_builds"]<1<<64:
+                raise ValueError("production quiescence binding/counter differs")
+            acks.append({"validator":v["index"],"ack":ack})
+        finally:
+            client.close();guard(True)
+    return acks
+
+
+def quiescent_owner_snapshot(m,p,historical,candidate,acks,guard):
+    import time
+    if [a["validator"]for a in acks]!=list(range(7)):
+        raise ValueError("seven indexed quiescence acknowledgements required")
+    epoch=candidate["owner_initial"]["Epoch"]
+    count=p["CanonicalNonceSum"]+candidate["stream_final"]["acknowledged_unique_admitted"]
+    previous=list(candidate["initial"])
+    previous[0]=candidate["reference_final"]
+    end=time.monotonic()+45
+    def peers():
+        values=[]
+        for i,v in enumerate(m["validators"]):
+            value=fleet.status(v["api_socket"],m["identity"]);guard(True)
+            validator_binding(value,m,epoch,p["ManifestSHA256"])
+            if value.get("recovery_only")is not True or value.get("drain_acknowledged")is not True or type(value.get("fresh_builds",0))is not int or value.get("fresh_builds",0)!=acks[i]["ack"]["fresh_builds"] or not p["CanonicalNonceSum"]<=value["committed_executed_transactions"]<=count or not canonical_nonregressing(value,previous[i]):
+                raise ValueError("quiescent validator changed fresh-build baseline or canonical evidence")
+            previous[i]=value;values.append(value)
+        return values
+    def same_head(values,owner):
+        return all(v["number"]==owner["CanonicalNumber"]and v["block_hash"]==owner["CanonicalHash"]and v["committed_executed_transactions"]==count for v in values)
+    while time.monotonic()<end:
+        guard(True)
+        values=peers();owner=queue_fixture.owner_status(m);guard(True)
+        if owner["Identity"]!=p["Identity"]or owner["Epoch"]!=epoch or owner["ManifestHash"]!=p["ManifestSHA256"]or owner["NewlyAdmitted"]!=candidate["stream_final"]["acknowledged_unique_admitted"]:
+            raise ValueError("quiescent production owner binding changed")
+        if owner["Reconciling"]or any(owner[k]!=0 for k in ("PendingTransactions","ReservedTransactions","RetainedEncodedBytes","ReservedEncodedBytes"))or not same_head(values,owner):
+            time.sleep(.1);continue
+        stable=stable_owner_snapshot(m,p,historical,candidate,guard)
+        values=peers();final=queue_fixture.owner_status(m);guard(True)
+        if time.monotonic()>=end:
+            raise TimeoutError("quiescent full snapshot exceeded45seconds")
+        if final!=stable["owner"]or not same_head(values,final):
+            time.sleep(.1);continue
+        stable["validators"]=values
+        return stable
+    raise TimeoutError("seven recovery-only validators/owner did not quiesce")
+
+
+def quiescent_snapshot_equal(after,before):
+    for key in ("owner","accounts","canonical_nonce_sum","account_vector_sha256","canonical_roots"):
+        if after[key]!=before[key]:
+            raise ValueError("late import or validator stop changed quiescent production state")
+
+
 def canonical_account_request(m, owner, addresses):
     client = fleet.UnixHTTP(m["owner_socket"], timeout=3)
     try:
@@ -510,14 +575,20 @@ def run(m, node, owner, replay, attempt, plan_path, plan_sha, plan_id, proof_pat
             if candidate["owner_initial"] != source_ready["owner"]:
                 raise ValueError("bounded measurement changed initial owner baseline")
             result.update(tps_measured=True, window_result=str(candidate_path), window_sha256=hashlib.sha256(strict_fleet.read_private(candidate_path, 16 << 20)).hexdigest(), canonical_window_delta=candidate["canonical_window_delta"], actual_window_seconds=candidate["actual_window_seconds"], canonical_committed_executed_tps=candidate["canonical_committed_executed_tps"], target_count=p["CanonicalNonceSum"] + candidate["stream_final"]["acknowledged_unique_admitted"])
-            # Stop all producers first. The owner stays alive while a stable
-            # full account/root snapshot is captured; moving seven-head equality
-            # is never required by the 20-second window or its drain.
+            # The measured window and original45s drain have already ended.
+            # Keep QC/network alive while fresh builds are terminally fenced;
+            # an ACK alone cannot exclude a late owner Import.
+            acks=quiesce_producers(m,p,candidate,guard)
+            record("production-quiescence-acknowledgements.json",{"acknowledgements":acks})
+            converged=quiescent_owner_snapshot(m,p,historical,candidate,acks,guard)
+            record("live-quiescent-before-validator-stop.json",converged)
+            result.update(production_quiescence_acknowledgements=acks,live_quiescent_snapshot=converged)
             stop_phase("production-validator-lifecycle.json", producers)
             guard(True)
             if any(os.path.lexists(path) for path in sockets[2:]):
                 raise ValueError("producer socket survived clean stop")
             stable = stable_owner_snapshot(m, p, historical, candidate, guard)
+            quiescent_snapshot_equal(stable,converged)
             current, root_read = stable["owner"], stable["canonical_roots"]
             result.update(before_stop_owner=current, before_stop_roots=root_read["roots"], stable_snapshot=stable)
             record("stable-before-owner-stop.json", stable)
