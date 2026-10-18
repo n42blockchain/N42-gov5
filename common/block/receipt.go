@@ -13,6 +13,7 @@ package block
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 
 	"github.com/holiman/uint256"
@@ -144,10 +145,57 @@ type Receipt struct {
 	BlockNumber      *uint256.Int `json:"blockNumber,omitempty"`
 	TransactionIndex uint         `json:"transactionIndex"`
 
-	// Bloom is last: the per-block passes over receipts (root, bloom,
-	// compact row) read the fields above, and the 256 bytes in between
-	// would put each receipt's hot fields on separate cache lines.
+	// bloom is the receipt's logs bloom, nil for the zero bloom (a receipt
+	// without logs, ~every receipt of a transfer block): GetBloom and
+	// SetBloom. Held inline it was 256 of a receipt's 440 bytes, and a
+	// follower allocates a receipt per imported transaction (r31a). A
+	// non-zero bloom is never modified in place (SetBloom replaces it), so
+	// copies of a receipt may share it.
+	bloom *Bloom
+}
+
+// GetBloom returns the receipt's logs bloom (zero when none was set).
+func (r *Receipt) GetBloom() Bloom {
+	if r.bloom == nil {
+		return Bloom{}
+	}
+	return *r.bloom
+}
+
+// SetBloom sets the receipt's logs bloom. The zero bloom is held as none.
+func (r *Receipt) SetBloom(b Bloom) {
+	if b == (Bloom{}) {
+		r.bloom = nil
+		return
+	}
+	r.bloom = &b
+}
+
+// receiptFields is Receipt without its methods, for the JSON codec below.
+type receiptFields Receipt
+
+// receiptJSON is the JSON shape Receipt had with an inline Bloom field:
+// every exported field in order, the bloom last.
+type receiptJSON struct {
+	*receiptFields
 	Bloom Bloom `json:"logsBloom" gencodec:"required"`
+}
+
+// MarshalJSON encodes r as encoding/json encoded the receipt when its
+// bloom was an exported field.
+func (r Receipt) MarshalJSON() ([]byte, error) {
+	return json.Marshal(receiptJSON{receiptFields: (*receiptFields)(&r), Bloom: r.GetBloom()})
+}
+
+// UnmarshalJSON is MarshalJSON's inverse.
+func (r *Receipt) UnmarshalJSON(data []byte) error {
+	var dec receiptJSON
+	dec.receiptFields = (*receiptFields)(r)
+	if err := json.Unmarshal(data, &dec); err != nil {
+		return err
+	}
+	r.SetBloom(dec.Bloom)
+	return nil
 }
 
 func (r *Receipt) Marshal() ([]byte, error) {
@@ -179,8 +227,14 @@ func (r *Receipt) toProtoMessage() proto.Message {
 		BlockHash:         utils.ConvertHashToH256(r.BlockHash),
 		BlockNumber:       utils.ConvertUint256IntToH256(r.BlockNumber),
 		TransactionIndex:  uint64(r.TransactionIndex),
-		Bloom:             utils.ConvertBytesToH2048(r.Bloom[:]),
+		Bloom:             receiptBloomH2048(r),
 	}
+}
+
+// receiptBloomH2048 is r's bloom as the proto message carries it.
+func receiptBloomH2048(r *Receipt) *types_pb.H2048 {
+	b := r.GetBloom()
+	return utils.ConvertBytesToH2048(b[:])
 }
 
 func (r *Receipt) fromProtoMessage(message proto.Message) error {
@@ -202,7 +256,7 @@ func (r *Receipt) fromProtoMessage(message proto.Message) error {
 	r.PostState = pReceipt.PostState
 	r.Status = pReceipt.Status
 	r.CumulativeGasUsed = pReceipt.CumulativeGasUsed
-	r.Bloom = utils.ConvertH2048ToBloom(pReceipt.Bloom)
+	r.SetBloom(utils.ConvertH2048ToBloom(pReceipt.Bloom))
 	r.Logs = logs
 	r.TxHash = utils.ConvertH256ToHash(pReceipt.TxHash)
 	r.ContractAddress = utils.ConvertH160toAddress(pReceipt.ContractAddress)

@@ -355,7 +355,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 			From:              from,
 			GasUsed:           hexutil.Uint64(receipt.GasUsed),
 			CumulativeGasUsed: hexutil.Uint64(receipt.CumulativeGasUsed),
-			LogsBloom:         receipt.Bloom,
+			LogsBloom:         receipt.GetBloom(),
 			Status:            hexutil.Uint64(receipt.Status),
 			EffectiveGasPrice: (*hexutil.Big)(gasPrice),
 			Type:              hexutil.Uint64(tx.Type()),

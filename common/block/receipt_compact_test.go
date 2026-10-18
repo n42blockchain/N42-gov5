@@ -25,18 +25,18 @@ func receiptsForCompactTest() Receipts {
 		Topics:      []types.Hash{{0xb1}},
 	}
 	withLogs := &Receipt{Type: 0, Status: 1, CumulativeGasUsed: 53000, Logs: []*Log{logA, logB}, BlockNumber: uint256.NewInt(7)}
-	withLogs.Bloom = CreateBloom(Receipts{withLogs})
+	withLogs.SetBloom(CreateBloom(Receipts{withLogs}))
 
 	failed := &Receipt{Type: 2, Status: 0, CumulativeGasUsed: 74000, Logs: nil, BlockNumber: uint256.NewInt(7)}
-	failed.Bloom = CreateBloom(Receipts{failed})
+	failed.SetBloom(CreateBloom(Receipts{failed}))
 
 	postState := &Receipt{PostState: bytes.Repeat([]byte{0x42}, 32), CumulativeGasUsed: 100000, BlockNumber: uint256.NewInt(7)}
-	postState.Bloom = CreateBloom(Receipts{postState})
+	postState.SetBloom(CreateBloom(Receipts{postState}))
 
 	// Contract-creation receipt: ContractAddress must survive (not derivable from
 	// the receipt alone, and the read path does not re-derive it).
 	creation := &Receipt{Type: 0, Status: 1, CumulativeGasUsed: 153000, ContractAddress: types.Address{0xde, 0xad, 0xbe, 0xef, 0x05}, BlockNumber: uint256.NewInt(7)}
-	creation.Bloom = CreateBloom(Receipts{creation})
+	creation.SetBloom(CreateBloom(Receipts{creation}))
 
 	return Receipts{withLogs, failed, postState, creation}
 }
@@ -67,7 +67,7 @@ func TestCompactReceiptsRoundTrip(t *testing.T) {
 		if w.ContractAddress != g.ContractAddress {
 			t.Fatalf("receipt %d: ContractAddress diverged: %x vs %x", i, w.ContractAddress, g.ContractAddress)
 		}
-		if w.Bloom != g.Bloom {
+		if w.GetBloom() != g.GetBloom() {
 			t.Fatalf("receipt %d: recomputed Bloom diverged", i)
 		}
 		if len(w.Logs) != len(g.Logs) {

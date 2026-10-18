@@ -52,7 +52,7 @@ func (rs ethReceiptList) EncodeIndex(i int, w *bytes.Buffer) {
 		w.WriteByte(r.Type)
 	}
 
-	bloom := r.Bloom
+	bloom := r.GetBloom()
 	if bloom == (block.Bloom{}) && len(r.Logs) > 0 {
 		bloom = block.CreateBloom(block.Receipts{r})
 	}

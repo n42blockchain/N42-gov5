@@ -343,7 +343,7 @@ func TestTransferFastPathMatchesEVM(t *testing.T) {
 					require.Equal(t, a.Status, b.Status, "receipt %d status", i)
 					require.Equal(t, a.GasUsed, b.GasUsed, "receipt %d gas", i)
 					require.Equal(t, a.CumulativeGasUsed, b.CumulativeGasUsed, "receipt %d cumulative gas", i)
-					require.Equal(t, a.Bloom, b.Bloom, "receipt %d bloom", i)
+					require.Equal(t, a.GetBloom(), b.GetBloom(), "receipt %d bloom", i)
 					require.Equal(t, len(a.Logs), len(b.Logs), "receipt %d logs", i)
 					require.Equal(t, a.TxHash, b.TxHash, "receipt %d hash", i)
 					require.Equal(t, a.TransactionIndex, b.TransactionIndex, "receipt %d index", i)

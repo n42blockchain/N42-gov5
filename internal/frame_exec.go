@@ -171,7 +171,7 @@ func SkippedTxReceipt(tx *transaction.Transaction, header *block.Header, index i
 		BlockNumber:       header.Number,
 		TransactionIndex:  uint(index), // #nosec G115 -- block index
 	}
-	r.Bloom = block.CreateBloom(block.Receipts{r})
+	r.SetBloom(block.CreateBloom(block.Receipts{r}))
 	return r
 }
 

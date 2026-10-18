@@ -870,7 +870,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 						}
 						r := &block.Receipt{Type: txns[tr.TxIdx].Type(), Status: uint64(tr.Status),
 							CumulativeGasUsed: tr.CumulativeGasUsed, Logs: lg}
-						r.Bloom = block.CreateBloom(block.Receipts{r})
+						r.SetBloom(block.CreateBloom(block.Receipts{r}))
 						pr = append(pr, r)
 					}
 					prHash := ethel.EthReceiptHash(pr)

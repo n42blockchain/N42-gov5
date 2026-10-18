@@ -3294,7 +3294,7 @@ func (bc *BlockChain) reportBlock(blk block.IBlock, receipts []*block.Receipt, e
 	for i, receipt := range receipts {
 		receiptString += fmt.Sprintf("\t %d: cumulative: %v gas: %v contract: %v status: %v tx: %v logs: %v bloom: %x state: %x\n",
 			i, receipt.CumulativeGasUsed, receipt.GasUsed, receipt.ContractAddress.String(),
-			receipt.Status, receipt.TxHash.String(), "Logs", receipt.Bloom, receipt.PostState)
+			receipt.Status, receipt.TxHash.String(), "Logs", receipt.GetBloom(), receipt.PostState)
 	}
 	log.Error(fmt.Sprintf(`
 ########## BAD BLOCK #########

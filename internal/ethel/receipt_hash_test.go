@@ -54,7 +54,7 @@ func TestEthReceiptHashReusesExecutionBloom(t *testing.T) {
 		},
 	}
 	for _, receipt := range receipts {
-		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+		receipt.SetBloom(block.CreateBloom(block.Receipts{receipt}))
 	}
 
 	want := hash.DeriveShaErigon(referenceEthReceiptList(receipts))
@@ -64,7 +64,7 @@ func TestEthReceiptHashReusesExecutionBloom(t *testing.T) {
 
 	// Compact receipt decoders omit Bloom. The compatibility fallback must
 	// preserve the same root for callers outside the replay execution path.
-	receipts[0].Bloom = block.Bloom{}
+	receipts[0].SetBloom(block.Bloom{})
 	if got := EthReceiptHash(receipts); got != want {
 		t.Fatalf("missing bloom fallback root mismatch: got %s want %s", got, want)
 	}
@@ -90,7 +90,7 @@ func TestEthReceiptEncodingMatchesReference(t *testing.T) {
 			receipt := &block.Receipt{Type: tc.typ, Status: tc.status, CumulativeGasUsed: tc.cumulative}
 			if tc.data != nil || tc.topics != nil {
 				receipt.Logs = []*block.Log{{Address: types.Address{0x80}, Topics: tc.topics, Data: tc.data}}
-				receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+				receipt.SetBloom(block.CreateBloom(block.Receipts{receipt}))
 			}
 			var got, want bytes.Buffer
 			ethReceiptList{receipt}.EncodeIndex(0, &got)
@@ -117,7 +117,7 @@ func BenchmarkEthReceiptEncodeIndex(b *testing.B) {
 			Data: bytes.Repeat([]byte{byte(0x80 + i)}, 128),
 		})
 	}
-	receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+	receipt.SetBloom(block.CreateBloom(block.Receipts{receipt}))
 	receipts := ethReceiptList{receipt}
 	var buf bytes.Buffer
 	b.ReportAllocs()

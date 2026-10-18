@@ -433,7 +433,7 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext().Origin, tx.Nonce())
 		}
 		receipt.Logs = ibs.GetLogs(tx.Hash())
-		receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+		receipt.SetBloom(block.CreateBloom(block.Receipts{receipt}))
 		receipt.BlockNumber = header.Number
 		receipt.TransactionIndex = uint(ibs.TxIndex())
 	}
