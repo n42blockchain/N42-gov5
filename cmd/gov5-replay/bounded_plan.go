@@ -56,7 +56,8 @@ func boundedHistoricalBaseline(inputs resumePlanInputs, m supplyManifest, runtim
 	if err := resumeDecodeJSON(originalRaw, &original, false); err != nil {
 		return strictRecoveryResult{}, resumeReportAnchor{}, err
 	}
-	if outer.Kind != "gov5-post-resume-double-physical-reopen-accepted-not-tps" || !outer.Passed || outer.Error != "" || outer.Dispatched != 0 || outer.TPSMeasured || len(outer.Recoveries) != 2 || len(outer.RecoveryHashes) != 2 || outer.Recoveries[1] != inputs.Recovery.Path {
+	allowedAudit := outer.Kind == "gov5-post-resume-double-physical-reopen-accepted-not-tps" || outer.Kind == "gov5-post-bounded-double-physical-reopen-accepted-not-tps"
+	if !allowedAudit || !outer.Passed || outer.Error != "" || outer.Dispatched != 0 || outer.TPSMeasured || len(outer.Recoveries) != 2 || len(outer.RecoveryHashes) != 2 || outer.Recoveries[1] != inputs.Recovery.Path {
 		return fail()
 	}
 	h, err := resumeHashText(outer.RecoveryHashes[1])
