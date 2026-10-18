@@ -56,5 +56,15 @@ errors, including errors for empty blocks. It still permits the existing valid
 zero-byte encoding of an empty receipt list. No cross-request cache, signature
 bypass, codec change or owner authorization change is introduced.
 
-This slice is awaiting controlled source validation and a new real measurement.
-No throughput improvement is claimed from source inspection or read counts.
+Controlled source validation passed in
+`20261018-gov5-certified-read-reuse-validation-v1`: targeted normal/race tests for
+internal, sharedexec and rawdb, vet, and Make all returned zero. The normal run
+included 54 top-level tests and all 22 required regressions. Independent
+acceptance is `4b608e0179082910a3da458be51dec5f92e8c2d9094ee5e208d7e67dcc07115b`,
+binding status
+`a6e084ca2f34548cf53ba1419b62862a9680ed685168d26f30cf062d62235e2b`.
+The controlled test worker and its process groups/claims were released.
+
+A new real measurement is still required. No throughput improvement is claimed
+from source inspection or read counts; source validation did not open the
+retained chain database or dispatch transactions to it.
