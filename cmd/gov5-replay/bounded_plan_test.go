@@ -76,7 +76,7 @@ func TestBoundedResumeHistoricalAuditRequiresActualRootEvidenceAndFinalReportPin
 		}
 		return b
 	}
-	for _, kind := range []string{"gov5-post-resume-double-physical-reopen-accepted-not-tps", "gov5-post-bounded-double-physical-reopen-accepted-not-tps"} {
+	for _, kind := range []string{"gov5-post-resume-double-physical-reopen-accepted-not-tps", "gov5-post-bounded-double-physical-reopen-accepted-not-tps", "gov5-quiescent-retained-child-double-physical-reopen-accepted-not-tps"} {
 		outer.Kind = kind
 		if _, _, err := boundedHistoricalBaseline(f.inputs, f.manifest, f.runtime, raw(outer), raw(f.recovery), raw(f.original)); err != nil {
 			t.Fatalf("complete pinned audit rejected for kind %s: %v", kind, err)
@@ -129,5 +129,44 @@ func TestBoundedResumePlanLatePublicationFailureNeverPromotes(t *testing.T) {
 	raw, err := strictMetadata(filepath.Join(f.output, "failure.json"), 16<<20)
 	if err != nil || resumeDecodeJSON(raw, &failure, true) != nil || failure.Passed || failure.Error == "" {
 		t.Fatal("late failure missing failed evidence", err)
+	}
+}
+
+func TestBoundedResumeQuiescentHistoricalKindRequiresPinnedSecondReopen(t *testing.T) {
+	f, outer := makeBoundedPlanFixture(t)
+	outer.Kind = "gov5-quiescent-retained-child-double-physical-reopen-accepted-not-tps"
+	encode := func(v any) []byte {
+		t.Helper()
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	for name, mutate := range map[string]func(*boundedHistoricalOuter){
+		"failed":         func(o *boundedHistoricalOuter) { o.Passed = false },
+		"error":          func(o *boundedHistoricalOuter) { o.Error = "unfinished" },
+		"window":         func(o *boundedHistoricalOuter) { o.TPSMeasured = true },
+		"dispatch":       func(o *boundedHistoricalOuter) { o.Dispatched = 1 },
+		"missing-second": func(o *boundedHistoricalOuter) { o.Recoveries = o.Recoveries[:1] },
+		"third":          func(o *boundedHistoricalOuter) { o.Recoveries = append(o.Recoveries, "third") },
+		"missing-hash":   func(o *boundedHistoricalOuter) { o.RecoveryHashes = o.RecoveryHashes[:1] },
+		"wrong-path":     func(o *boundedHistoricalOuter) { o.Recoveries[1] = "another-recovery.json" },
+		"wrong-hash":     func(o *boundedHistoricalOuter) { o.RecoveryHashes[1] = (types.Hash{7}).Hex() },
+		"unknown":        func(o *boundedHistoricalOuter) { o.Kind = "gov5-quiescent-not-accepted" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := outer
+			copy.Recoveries = append([]string(nil), outer.Recoveries...)
+			copy.RecoveryHashes = append([]string(nil), outer.RecoveryHashes...)
+			mutate(&copy)
+			if _, _, err := boundedHistoricalBaseline(f.inputs, f.manifest, f.runtime, encode(copy), encode(f.recovery), encode(f.original)); err == nil {
+				t.Fatal("changed quiescent proof accepted")
+			}
+		})
+	}
+	badShape := map[string]any{"kind": outer.Kind, "passed": true, "recovery_results": outer.Recoveries, "recovery_sha256": outer.RecoveryHashes[1]}
+	if _, _, err := boundedHistoricalBaseline(f.inputs, f.manifest, f.runtime, encode(badShape), encode(f.recovery), encode(f.original)); err == nil {
+		t.Fatal("scalar recovery hash accepted for double reopen")
 	}
 }
