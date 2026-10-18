@@ -23,7 +23,51 @@ count eight and empty queues. See [the evidence record](GOV5_E1_FIRST_FUNCTIONAL
 These are functional results, not a throughput measurement. Offline Ed25519
 codec changes remain untested work in progress and did not enter either run.
 
-## Latest bounded window and persistence proof — 2026-10-18
+## Latest finite phase diagnostic and durable baseline — 2026-10-18
+
+The explicit finite diagnostic passed on the original retained `s192r1` data
+using clean `74de4981` binaries. It preloaded **1,032 complete original frames**:
+516,000 original transactions, 315,824 fixed canonical skips and **200,176 new
+admissions**, before starting any of the seven producers. All new transactions
+then became canonical: block 1,241 contained **163,000 transactions**, with
+successful Produce, durable reference Import and public-QC `advanceCanonical`
+records joined by the same hash/number/parent; block 1,242 contained the remaining
+37,176. This is a finite phase diagnostic, **not a TPS or 5M capacity result**.
+The previous failed 20-second measurement remains failed.
+
+After clean producer stop, a complete stable 6,000-account snapshot and a real
+nonproducing physical reopen matched exactly, including each sender's known
+nonce/balance delta, header root and loaded QMDB root. The new durable baseline
+is count **904,301**, height **1,242**, hash
+`0x5100080e3d2344a93930269ece9797e503ff202edf6080c0d1476dc3a83f6295`,
+root `0x419f3e90d6adda48545aac124a3b023f10f2d708df2dd434288e69db9921b502`,
+and vector SHA `0x11fc20d12bc08bba0e961b18b34b603d6a3b04120d13f0b158c88668abc25f58`.
+All 18 runtime processes exited zero without forced kill; outer and child also
+exited, all groups/sockets disappeared, and owned claims released. The protected
+three copies' complete hashes were unchanged. The original remains the same
+2 GiB inode in mode 0600; its post SHA is
+`15fef847ea7eb0623d5ac4c90bb1d9242cde03c288c1a527d49bdb9f469b482b`.
+No worker is active after this released turn. Future sessions must use this new
+full-vector baseline and a new plan/epoch; the completed plan is not replayable.
+
+Evidence in `validation/20261018-gov5-finite-phase-target-v1/`:
+
+- `status.json`: `094d694036534aae147e731d1471f521a8a7e678a36e4ca83ecad570364d5006`.
+- `finite-result.json`: `fa83de3284a1c456d56e78636345abdbf216fee6545475f322e2473ef113504e`.
+- Independent Sol `acceptance.json`: `e8b34b44f799efc0e054b8c19fb31b7e4e58f5a38c86afecb1ecedff15bedafe`.
+- Full physical-reopen report is
+  `runtime/s192r1/strict-attempts/finite-phase-q1-reopen/recovery.json`, SHA
+  `7c7b6e265122b9da75673e07512d1072479cd95f4784c35d5e367ada2259f734`.
+
+The new timing records locate the long preparation interval in the candidate
+WAL `db.Update`/`WriteBlock` span (about 5.16–5.29 seconds), with an initial
+reference availability-write span of 5.37 seconds. The same block's owner import
+RPC took about 0.27 seconds. Canonical RPC spans also reached 5–7 seconds while
+the owner's logged canonical transaction itself was about 0.16 seconds. These
+are measured call spans, not yet an attribution to disk, lock waiting or encoding.
+Read-only diagnosis precedes any optimization; no verification is bypassed.
+
+## Prior bounded window and persistence proof — 2026-10-18
 
 The first real GSR2 bounded-prefix attempt, `bounded-window-q1` on retained
 `s192r1`, completed a **20.001335337-second** canonical counter bracket:
@@ -46,8 +90,8 @@ queue size was treated as a final persisted or lost count.
 
 A separate **zero-dispatch, nonproducing double physical reopen** passed on
 the same data. Both full 6,000-account vectors, canonical heads, header roots
-and loaded QMDB roots matched, with distinct empty owner epochs. The proven
-baseline is now height **1,240**, hash
+and loaded QMDB roots matched, with distinct empty owner epochs. That recovery’s proven
+baseline was height **1,240**, hash
 `0xe58f1eb9d4470a492df4372ebaf31cc15636f3bc6474d109ee28ed8dc0e6e7c9`,
 root `0x0062215b74827a2dfeeaa35ff1d5b90ded5bdd0afd3b0af39bef3e0bf135e9f7`,
 and canonical nonce sum **704,125**. Each sender's actual delta was within its

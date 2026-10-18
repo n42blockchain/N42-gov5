@@ -3,9 +3,8 @@
 Source validation passed in the dedicated 20261018 finite-phase turn: Python12
 mocks, three-package normal/race/vet and Make build all exited zero. Independent
 Sol acceptance is `f916f407b2814930d13eebdbd60cdeebd7918dff213fafa28401285d4cf5a803`
-in `validation/20261018-gov5-finite-phase-validation-v1/acceptance.json`. No target
-transactions have been sent by this code, and this validation makes no target
-throughput claim.
+in `validation/20261018-gov5-finite-phase-validation-v1/acceptance.json`. That source-only validation made no target throughput claim. The separate
+actual target diagnostic subsequently passed as recorded below.
 The previous 20-second run remains failed because its queue did not drain within
 45 seconds. Its subsequent two physical reopens established the new complete
 6000-account baseline: canonical height 1240 and nonce sum 704125.
@@ -62,3 +61,22 @@ with the unchanged 314479476736-byte launch disk budget and 64GiB running low
 water mark. Clean committed binaries must include their actual VCS provenance;
 a fresh full-source plan scan must bind the 704125 audit before any target run.
 The existing same-claim original/three-protected-copy pre/post proof applies.
+
+## Actual target acceptance
+
+The separately claimed runtime completed on 2026-10-18 using clean `74de4981`
+binaries and the source-scanned 704125-baseline plan. It sent 1032 whole frames:
+516000 original transactions, 315824 canonical skips and 200176 new transactions.
+All new transactions became canonical in blocks 1241 (163000) and 1242 (37176),
+then persisted through the specified stable 6000-account/root snapshot and
+physical nonproducing reopen. The final nonce sum is 904301 at height 1242.
+
+Independent Sol acceptance is
+`e8b34b44f799efc0e054b8c19fb31b7e4e58f5a38c86afecb1ecedff15bedafe`
+in `validation/20261018-gov5-finite-phase-target-v1/acceptance.json`; it rechecks
+all known receipts, phase association, full vector/root, 18-process cleanup,
+same-claim original/protected file observations and claim release. The previous
+20-second drain failure is unchanged, and this finite result has no TPS value.
+The new 904301 complete vector is the basis for any later plan, not permission
+to reuse this completed session. See the operations checkpoint for exact heads,
+roots, file hashes and measured phase spans.
