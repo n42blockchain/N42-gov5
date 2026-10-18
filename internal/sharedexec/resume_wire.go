@@ -49,6 +49,9 @@ func (s *Server) resumeReply(q *strictIngressQueue, kind string, frame CorpusFra
 	}
 	planID := q.resume.planID
 	ack.PlanID = planID
+	if q.resume.window != nil && ack.Lifetime == nil {
+		ack.Lifetime = q.resume.window.status()
+	}
 	q.mu.Unlock()
 	reply := resumeReply{Kind: kind, Identity: s.identity, ManifestHash: q.manifestHash, PlanID: planID, Epoch: q.epoch, FrameID: frame.CorpusFrameID, PayloadHash: frame.PayloadHash, Ack: ack}
 	if err != nil {
