@@ -25,6 +25,7 @@ const MaxQueueBuildEncodedBytes = 32 << 20
 
 var ErrQueueBuildExpired = errors.New("queue build plan expired; use current applied child and a new view")
 var ErrQueueBuildConflict = errors.New("queue view already bound to another prepared request")
+var ErrQueueBuildEmpty = errors.New("queue has no eligible transactions; retry the prepared request")
 
 type QueueBuildRequest struct {
 	Identity        Identity   `json:"identity"`
@@ -161,6 +162,11 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 		// Materialization errors publish no plan. Once input exists, all retries
 		// retain exactly that input, even when the execution attempt fails.
 		txs, err := s.selectQueueTransactions(q, addresses, parent.Accounts, header, r.MaxTransactions, r.MaxEncodedBytes)
+		if err == nil && len(txs) == 0 {
+			// An empty fresh selection is not a candidate. Use the materialization
+			// cleanup below so the same prepared request can select later work.
+			err = ErrQueueBuildEmpty
+		}
 		if err == nil {
 			selected := block.CopyHeader(header)
 			selected.TxHash = block.TxRootAt(txs, selected.Time)

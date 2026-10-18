@@ -24,9 +24,8 @@ func startupReplicaFixture(t *testing.T, pending bool) (*sharedexec.StrictIngres
 	db := memdb.New(t.TempDir())
 	t.Cleanup(db.Close)
 	_, service, producer := strictQueueReplica(t, f, oldClient, db)
-	if err := producer.UseOwnerQueue(ctx, sharedvalidator.OwnerQueueOptions{MaxTransactions: 6, MaxEncodedBytes: 1 << 20}); err != nil {
-		t.Fatal(err)
-	}
+	// Prepare a historical retained empty candidate through ordinary production.
+	// Reopened producers below still bind owner-queue recovery before use.
 	b, err := producer.Produce(ctx, f.Chain.GenesisBlock().Hash())
 	if err != nil {
 		t.Fatal(err)
