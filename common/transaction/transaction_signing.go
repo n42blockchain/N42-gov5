@@ -727,8 +727,12 @@ func recoverPlainRS(sighash types.Hash, R, S *uint256.Int, Vb *big.Int, homestea
 	if len(pub) == 0 || pub[0] != 4 {
 		return types.Address{}, errors.New("invalid public key")
 	}
+	// Keccak256Hash keeps the digest on the stack (Keccak256 allocates it
+	// and goes through the pooled state's interface): this runs once per
+	// sender recovery.
 	var addr types.Address
-	copy(addr[:], crypto.Keccak256(pub[1:])[12:])
+	h := crypto.Keccak256Hash(pub[1:])
+	copy(addr[:], h[12:])
 	return addr, nil
 }
 
