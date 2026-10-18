@@ -242,18 +242,29 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 // The decoded transactions die here (only their senders are kept), so
 // under N42_TX_DECODE_POOL their storage is pooled across frames.
 func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int, error) {
-	f, err := Decode(raw)
-	if err != nil {
+	var f Frame
+	if err := decodeEnvelope(raw, &f); err != nil {
 		return nil, 0, err
 	}
 	var rd *recoverDecode
 	var txs []*transaction.Transaction
+	var err error
 	if f.TxType == TxTypeEthereum && TxDecodePoolEnabled() {
 		rd = recoverDecodePool.Get().(*recoverDecode)
 		rd.dec.Reset(int(f.TxCount))
-		txs, _, _ = decodeFrameInto(f, &rd.dec, rd.txs[:0])
+		txs, _, err = decodeFrameInto(&f, &rd.dec, rd.txs[:0])
+		if err != nil {
+			// The partial decode is discarded with the pooled state.
+			clear(rd.txs[:cap(rd.txs)])
+			rd.txs = rd.txs[:0]
+			recoverDecodePool.Put(rd)
+			return nil, 0, err
+		}
 	} else {
-		txs, _, _ = decodeFrameInto(f, nil, make([]*transaction.Transaction, 0, f.TxCount))
+		txs, _, err = decodeFrameInto(&f, nil, make([]*transaction.Transaction, 0, f.TxCount))
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 	ss := &store.Senders{Signer: signer, Addrs: make([]types.Address, len(txs))}
 	failed := 0
