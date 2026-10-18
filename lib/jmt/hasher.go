@@ -23,7 +23,10 @@
 
 package jmt
 
-import "lukechampine.com/blake3"
+import (
+	"lukechampine.com/blake3"
+	"lukechampine.com/blake3/guts"
+)
 
 // HashSize is the length of a JMT hash in bytes.
 const HashSize = 32
@@ -52,10 +55,10 @@ func (Blake3Hasher) Hash(data []byte) Hash {
 }
 
 func (Blake3Hasher) HashTwo(a, b Hash) Hash {
-	var buf [HashSize * 2]byte
+	var buf [guts.BlockSize]byte
 	copy(buf[:HashSize], a[:])
 	copy(buf[HashSize:], b[:])
-	return blake3.Sum256(buf[:])
+	return sumBlock(&buf, guts.BlockSize)
 }
 
 // DefaultHasher returns the default Blake3-based hasher.
@@ -65,5 +68,32 @@ func DefaultHasher() Hasher {
 
 // HashKey computes the Blake3 hash of a key (address, storage slot, etc.).
 func HashKey(key []byte) Hash {
-	return blake3.Sum256(key)
+	if len(key) <= guts.BlockSize {
+		var block [guts.BlockSize]byte
+		copy(block[:], key)
+		return sumBlock(&block, len(key))
+	}
+	return sumLong(key)
+}
+
+// sumLong is blake3.Sum256 of a key longer than one block. The key is
+// copied first so HashKey's argument does not escape: the short keys (an
+// address, address||slot) then hash without a heap allocation (an
+// account key hash was 23% of a follower's allocated objects).
+func sumLong(key []byte) Hash {
+	return blake3.Sum256(append([]byte(nil), key...))
+}
+
+// sumBlock is blake3.Sum256 of the first n (<= 64) bytes of block, whose
+// remaining bytes are zero: the one-block path of blake3.Sum512, without
+// the slice argument that made every caller's buffer escape.
+func sumBlock(block *[guts.BlockSize]byte, n int) (out Hash) {
+	words := guts.WordsToBytes(guts.CompressNode(guts.Node{
+		CV:       guts.IV,
+		Block:    guts.BytesToWords(*block),
+		BlockLen: uint32(n),
+		Flags:    guts.FlagChunkStart | guts.FlagChunkEnd | guts.FlagRoot,
+	}))
+	copy(out[:], words[:HashSize])
+	return out
 }
