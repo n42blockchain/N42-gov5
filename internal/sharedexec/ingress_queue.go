@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -458,7 +459,7 @@ func (s *Server) ingressTransactions(limit int) ([][]byte, error) {
 	return out, nil
 }
 
-func (s *Server) reconcileStrictIngress() error {
+func (s *Server) reconcileStrictIngress(phases *ownerOperationPhases) error {
 	q := s.ingress
 	if q == nil {
 		return nil
@@ -471,6 +472,7 @@ func (s *Server) reconcileStrictIngress() error {
 	var head types.Hash
 	var number uint64
 	var canonicalView hotstuff.ViewNumber
+	phases.phase("ingress_read_decode")
 	err := s.chain.DB().View(s.ctx, func(tx kv.Tx) error {
 		head = rawdb.ReadHeadBlockHash(tx)
 		n := rawdb.ReadHeaderNumber(tx, head)
@@ -491,6 +493,7 @@ func (s *Server) reconcileStrictIngress() error {
 		}
 		previous := stamp.hash
 		for height := stamp.number + 1; height <= number; height++ {
+			phases.phase("ingress_read_decode")
 			hash, err := rawdb.ReadCanonicalHash(tx, height)
 			if err != nil {
 				return err
@@ -503,14 +506,15 @@ func (s *Server) reconcileStrictIngress() error {
 				return errors.New("strict ingress canonical body missing or inconsistent")
 			}
 			signer := transaction.MakeSignerWithTimestamp(s.chain.Config(), b.Number64().ToBig(), b.Time())
-			for _, txn := range b.Transactions() {
-				from, err := signer.Sender(txn)
-				if err != nil {
-					return err
-				}
-				if txn.Nonce() == ^uint64(0) {
-					return errors.New("strict ingress canonical nonce overflow")
-				}
+			txs := b.Transactions()
+			phases.phase("ingress_sender_recovery")
+			senders, err := recoverCanonicalSenders(s.ctx, txs, signer, runtime.GOMAXPROCS(0))
+			if err != nil {
+				return err
+			}
+			phases.phase("ingress_floors")
+			for index, txn := range txs {
+				from := senders[index]
 				if next := txn.Nonce() + 1; next > floors[from] {
 					floors[from] = next
 				}
@@ -527,6 +531,7 @@ func (s *Server) reconcileStrictIngress() error {
 	}
 	ready := true
 	if bootstrap {
+		phases.phase("ingress_bootstrap_snapshot")
 		// A duplicate or older valid QC may advance metadata while actual state
 		// is still ahead. Acknowledge that QC, retaining the startup gate until
 		// one real canonical PlainState snapshot matches this canonical tuple.
@@ -539,7 +544,9 @@ func (s *Server) reconcileStrictIngress() error {
 			return errors.New("strict ingress startup canonical snapshot changed")
 		}
 	}
+	phases.phase("ingress_queue_wait")
 	q.mu.Lock()
+	phases.phase("ingress_queue_apply")
 	for from, floor := range floors {
 		lane := q.lanes[from]
 		if lane == nil {
@@ -575,6 +582,7 @@ func (s *Server) reconcileStrictIngress() error {
 	q.bootstrapPending = bootstrap && !ready
 	q.reconciling = q.bootstrapPending
 	q.mu.Unlock()
+	phases.phase("ingress_expire_queue_plans")
 	s.expireQueuePlans(number, canonicalView)
 	return nil
 }
