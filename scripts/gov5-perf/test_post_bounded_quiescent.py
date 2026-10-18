@@ -35,6 +35,16 @@ class QuiescentRecoveryTest(unittest.TestCase):
         for change in [lambda s:s.update(recovery_only=False),lambda s:s.update(drain_acknowledged=False),lambda s:s.update(fresh_builds=1),lambda s:s.update(producer_running=False),lambda s:s.update(committed_executed_transactions=1999),lambda s:s.update(block_hash='0x'+'77'*32),lambda s:s['owner_queue'].update(epoch=[9]+[0]*15)]:
             s=copy.deepcopy(value);change(s)
             with self.assertRaises(ValueError):q.recovery_validator(s,self.m,self.epoch,self.f.plan['ManifestSHA256'],self.retained,converged=True)
+    def test_status_omits_zero_fresh_builds_but_rejects_boolean_or_nonzero(self):
+        value=self.status();value.pop('fresh_builds')
+        args=(self.m,self.epoch,self.f.plan['ManifestSHA256'],self.retained)
+        q.recovery_validator(value,*args,converged=True)
+        value.update(number=2,block_hash=self.retained['floor']['hash'],committed_executed_transactions=1900)
+        q.recovery_validator(value,*args)
+        for counter in (True,False,1,-1,None,'0'):
+            malformed=copy.deepcopy(value);malformed['fresh_builds']=counter
+            with self.assertRaises(ValueError):q.recovery_validator(malformed,*args)
+
     def test_post_stop_snapshot_rejects_late_import_root_or_vector_change(self):
         q.exact_snapshot(copy.deepcopy(self.snapshot),self.snapshot)
         for change in [lambda s:s['owner'].update(CanonicalNumber=4),lambda s:s['canonical_roots']['roots'].update(root='0x'+'66'*32),lambda s:s['accounts'][0].update(nonce=501),lambda s:s.update(account_vector_sha256='0x'+'66'*32)]:

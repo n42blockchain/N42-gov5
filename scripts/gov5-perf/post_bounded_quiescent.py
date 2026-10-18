@@ -26,7 +26,7 @@ def recovery_binding(owner, m, manifest, epoch):
 
 def recovery_validator(value, m, epoch, manifest, retained, previous=None, converged=False):
     finite_fleet.validator_binding(value,m,epoch,manifest)
-    if value.get("recovery_only") is not True or value.get("drain_acknowledged") is not True or type(value.get("fresh_builds")) is not int or value["fresh_builds"]!=0:
+    if value.get("recovery_only") is not True or value.get("drain_acknowledged") is not True or type(value.get("fresh_builds",0)) is not int or value.get("fresh_builds",0)!=0:
         raise ValueError("recovery-only ACK/fresh-build fence differs")
     current=(value["number"],value["block_hash"],value["committed_executed_transactions"])
     floor=retained["floor"];target=retained["target"]
