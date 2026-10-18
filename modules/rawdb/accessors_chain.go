@@ -720,8 +720,9 @@ func WriteBody(db kv.RwTx, hash types.Hash, number uint64, body *block.Body) err
 	if body.IsFrameBody() {
 		return writeFrameBody(db, hash, number, body)
 	}
-	// Pre-processing
-	body.SendersFromTxs()
+	// Storage encodes the supplied body; it does not authenticate senders or
+	// prewarm sender caches. The discarded recovery result never entered the
+	// stored body/transaction records and unnecessarily held the writer open.
 	baseTxId, err := db.IncrementSequence(modules.BlockTx, uint64(len(body.Txs))+2)
 	if err != nil {
 		return err
