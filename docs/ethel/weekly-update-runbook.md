@@ -366,6 +366,44 @@ mainnet cadence) with no state-root mismatch in the log.
 
 ## 8. Run log
 
+### 2026-10-19 (n42dev `/data` space: what is a Windows copy, what was removed)
+
+`/data` on n42dev was 7.0T, 6.5T used, **519 GB free** (93%); after the cleanup
+below 5.0T used, **2.1 TB free** (71%). Sizes are `du` at 2026-10-19.
+
+| n42dev directory | Size | Is a copy of | Linux copy last pushed |
+|---|---|---|---|
+| `blockchain/witness-geth` | 866 GB | `D:\geth\geth\chaindata\ancient\chain` (geth ancient: `headers`, `bodies`) | 2026-09-14 |
+| `blockchain/witness` | 833 GB | `bodyc`/`headerc`/`senders` from `D:\n42-eth1\chain\freezer`; `witness`/`codes` from `D:\N42-eth1177\chain\freezer` (its `MANIFEST.txt` records this) | 2026-09-14 |
+| `blockchain/datc-input/N42-eth1177` | 434 GB | `D:\N42-eth1177` (945 GB) | not checked |
+| `blockchain/qs-replay-hist-20261014` | 84 GB | `E:\qs-replay-hist-20261014` (md5 identical) | 2026-10-14 |
+| `blockchain/mainnet-source`, `mainnet-source-win` | 40 GB each | `D:\mainnet\mainnet` | 2026-08/09 |
+
+- `witness` and `witness-geth` are two different directories, not duplicates of
+  each other and not symlinks (no large file is shared between them). They are
+  the witness-replay inputs and were pushed from Windows by the
+  `weekly-0830-push-geth.sh` / `weekly-0831-push-witness.sh` style scripts. The
+  Windows originals were already newer (2026-10-06).
+- **Removed on 2026-10-19 by the operator: `blockchain/witness` and
+  `blockchain/witness-geth`** (about 1.7 TB) after checking every file by name and
+  size against the Windows trees (`D:\geth`, `D:\n42-eth1`, `D:\N42-eth1177`,
+  `D:\n42-publish-*`): all present, or present in a newer and larger version (grown
+  tail segments and `.cidx`). Name+size only, not a byte compare; these are
+  append-only freezer files. No process held either directory open.
+- Five files existed only on Linux and were copied to
+  `D:\witness-linux-only-20261019\` (md5 verified) before the removal:
+  `MANIFEST.txt` and the four `*.addridx-20260601` backups of `codes`
+  (about 5.9 GB).
+- To bring them back for a witness-replay run, push again from Windows (about 1.7 TB,
+  roughly 4 h at the ~118 MB/s measured for scp on 2026-10-14).
+- Not touched: `witness.prev-25864982` and `witness-geth.prev-25864982` (about
+  2.4 GB), `datc-input-backup-26130711`, and other projects' directories
+  (`n42-build`, `rust-fleet*`, `gov5-perf*`, `qs-node0..6`, `n42-performance-chain`,
+  `qs-replay-node3-bu`, `bench/*`, `n42-pregen`), which need their owners' say.
+- Not reclaimable: `datc-out/datc-25m-v2-hi` (1.04 TB) and `datc-25m-serving`
+  (765 GB) share 1,685 hard-linked files, so together they use 1.8 TB and deleting
+  either frees much less than its size.
+
 ### 2026-10-08 (DATC extension on n42dev)
 
 - Inputs shipped with `scripts/datc/ship-inputs.py`: 9.5 GB (acctcs, storcs, headerc
