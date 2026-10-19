@@ -97,3 +97,7 @@ func Keccak256x4OneBlock(in *[4][]byte, out *[4]types.Hash) bool {
 	}
 	return true
 }
+
+// Keccak256OneBlockMax is the exclusive upper bound on the input length
+// Keccak256OneBlock and Keccak256x4OneBlock accept (the Keccak-256 rate).
+const Keccak256OneBlockMax = keccak256Rate

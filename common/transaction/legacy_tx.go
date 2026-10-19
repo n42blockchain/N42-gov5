@@ -240,30 +240,52 @@ func legacySigningHash(tx *Transaction, chainID *big.Int) types.Hash {
 	if chainID != nil {
 		cid.SetFromBig(chainID)
 	}
-	gasPrice, value, data, to := tx.GasPrice(), tx.Value(), tx.Data(), tx.To()
-	contentSize := uint64(rlp.IntSize(tx.Nonce())+rlp.IntSize(tx.Gas())) +
-		rlpUint256Size(gasPrice) + rlpAddressSize(to) +
-		rlpUint256Size(value) + rlp.BytesSize(data) +
-		rlpUint256Size(&cid) + 2
-	bufp := legacyHashBufferPool.Get().(*[]byte)
-	dst := appendRLPCollectionPrefix((*bufp)[:0], 0xc0, 0xf7, contentSize)
-	dst = rlp.AppendUint64(dst, tx.Nonce())
-	dst = appendRLPUint256(dst, gasPrice)
-	dst = rlp.AppendUint64(dst, tx.Gas())
-	if to == nil {
-		dst = append(dst, 0x80)
-	} else {
-		dst = append(dst, 0x94)
-		dst = append(dst, to[:]...)
+	contentSize := legacySigningContentSize(tx, &cid)
+	// The list prefix is at most 2 bytes for contents under 256 bytes.
+	if crypto.KeccakOneBlockEnabled && contentSize+2 < crypto.Keccak256OneBlockMax {
+		// A transfer's payload (~45-70 bytes) fits one Keccak rate block:
+		// append it into a stack buffer and hash it with one permutation,
+		// with no pooled buffer and no pooled sponge.
+		var buf [crypto.Keccak256OneBlockMax]byte
+		dst := appendLegacySigningPayload(buf[:0], tx, &cid, contentSize)
+		if h, ok := crypto.Keccak256OneBlock(dst); ok {
+			return h
+		}
 	}
-	dst = appendRLPUint256(dst, value)
-	dst = appendRLPBytes(dst, data)
-	dst = appendRLPUint256(dst, &cid)
-	dst = append(dst, 0x80, 0x80)
+	bufp := legacyHashBufferPool.Get().(*[]byte)
+	dst := appendLegacySigningPayload((*bufp)[:0], tx, &cid, contentSize)
 	h := crypto.Keccak256Hash(dst)
 	if cap(dst) <= 1<<20 {
 		*bufp = dst[:0]
 		legacyHashBufferPool.Put(bufp)
 	}
 	return h
+}
+
+// legacySigningContentSize is the RLP content size of the EIP-155 signing
+// list [nonce, gasPrice, gas, to, value, data, chainId, 0, 0].
+func legacySigningContentSize(tx *Transaction, cid *uint256.Int) uint64 {
+	return uint64(rlp.IntSize(tx.Nonce())+rlp.IntSize(tx.Gas())) +
+		rlpUint256Size(tx.GasPrice()) + rlpAddressSize(tx.To()) +
+		rlpUint256Size(tx.Value()) + rlp.BytesSize(tx.Data()) +
+		rlpUint256Size(cid) + 2
+}
+
+// appendLegacySigningPayload appends the EIP-155 signing list whose content
+// size is contentSize (legacySigningContentSize) to dst.
+func appendLegacySigningPayload(dst []byte, tx *Transaction, cid *uint256.Int, contentSize uint64) []byte {
+	dst = appendRLPCollectionPrefix(dst, 0xc0, 0xf7, contentSize)
+	dst = rlp.AppendUint64(dst, tx.Nonce())
+	dst = appendRLPUint256(dst, tx.GasPrice())
+	dst = rlp.AppendUint64(dst, tx.Gas())
+	if to := tx.To(); to == nil {
+		dst = append(dst, 0x80)
+	} else {
+		dst = append(dst, 0x94)
+		dst = append(dst, to[:]...)
+	}
+	dst = appendRLPUint256(dst, tx.Value())
+	dst = appendRLPBytes(dst, tx.Data())
+	dst = appendRLPUint256(dst, cid)
+	return append(dst, 0x80, 0x80)
 }

@@ -790,13 +790,25 @@ func recoverPlainV(sighash types.Hash, R, S *uint256.Int, vb uint64, homestead b
 	if len(pub) == 0 || pub[0] != 4 {
 		return types.Address{}, errors.New("invalid public key")
 	}
-	// Keccak256Hash keeps the digest on the stack (Keccak256 allocates it
-	// and goes through the pooled state's interface): this runs once per
-	// sender recovery.
-	var addr types.Address
-	h := crypto.Keccak256Hash(pub[1:])
+	return pubkeyAddress(pub[1:]), nil
+}
+
+// pubkeyAddress is the address of a 64-byte uncompressed public key (X||Y):
+// the low 20 bytes of its Keccak-256. 64 bytes fit one Keccak rate block, so
+// with N42_KECCAK_ONEBLOCK on (the default) this is one permutation on a
+// stack state; off, it is the pooled sponge (Keccak256Hash keeps the digest
+// on the stack, where Keccak256 allocates it). Runs once per recovery.
+func pubkeyAddress(xy []byte) (addr types.Address) {
+	var h types.Hash
+	ok := false
+	if crypto.KeccakOneBlockEnabled {
+		h, ok = crypto.Keccak256OneBlock(xy)
+	}
+	if !ok {
+		h = crypto.Keccak256Hash(xy)
+	}
 	copy(addr[:], h[12:])
-	return addr, nil
+	return addr
 }
 
 // recoverScratch holds a recovery's buffers. The signature hash, the
