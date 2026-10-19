@@ -218,3 +218,58 @@ func TestTransferOneLookupEquivalence(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkTransferOneLookupWave runs the fast2 fixture's block (distinct
+// senders over Zipf recipients by default; N42_BENCH_* reshape it) through
+// ExecuteParallelAhead with N42_TRANSFER_ONE_LOOKUP off and on. waveCPUNs/tx
+// is the process CPU of the executor's run (its exec waves and
+// validations), waveNs/tx the workers' time in transaction bodies and
+// store writes, planNs/tx the latter per applied plan.
+func BenchmarkTransferOneLookupWave(b *testing.B) {
+	fx := fast2BenchFixture()
+	waveCPUMeter = processCPU
+	defer func() { waveCPUMeter = nil }()
+	db := memdb.NewTestDB(b)
+	fundTransferBlockState(b, db, fx)
+	bc := &BlockChain{ctx: context.Background(), ChainDB: db}
+	sp := NewStateProcessor(fx.cfg, bc, nil)
+	blk := block.NewBlock(fx.header, fx.txs).(*block.Block)
+	hashFn := func(uint64) types.Hash { return types.Hash{} }
+	runOnce := func(b *testing.B) {
+		roTx, err := db.BeginRo(context.Background())
+		if err != nil {
+			b.Fatalf("begin ro: %v", err)
+		}
+		defer roTx.Rollback()
+		ibs := state.New(state.NewPlainStateReader(roTx))
+		run, err := sp.ExecuteParallelAhead(blk, ibs, hashFn)
+		if err != nil {
+			b.Fatalf("ExecuteParallelAhead: %v", err)
+		}
+		if len(run.Receipts) != len(fx.txs) {
+			b.Fatalf("receipts %d of %d", len(run.Receipts), len(fx.txs))
+		}
+	}
+	for _, on := range []bool{false, true} {
+		name := "onelookup=0"
+		if on {
+			name = "onelookup=1"
+		}
+		b.Run(name, func(b *testing.B) {
+			defer setTransferOneLookupForTest(on)()
+			runOnce(b) // warm-up: sender memos, pools
+			p0 := planTransfers.Load()
+			w0, c0 := waveWorkNs.Load(), waveCPUNs.Load()
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				runOnce(b)
+			}
+			b.StopTimer()
+			txs := float64(b.N * len(fx.txs))
+			b.ReportMetric(float64(waveWorkNs.Load()-w0)/txs, "waveNs/tx")
+			b.ReportMetric(float64(waveCPUNs.Load()-c0)/txs, "waveCPUNs/tx")
+			b.ReportMetric(float64(planTransfers.Load()-p0)/txs, "plan/tx")
+		})
+	}
+}

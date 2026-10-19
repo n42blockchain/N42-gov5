@@ -200,3 +200,97 @@ func TestDescriptorSizes(t *testing.T) {
 		t.Fatalf("versionedValue is %d bytes, want 72", s)
 	}
 }
+
+// BenchmarkTransferAccountPath drives the direct transfer's store traffic
+// for one worker: per transaction a sender read, a balance-insensitive
+// recipient read, the sender's full write and the recipient's delta through
+// the executor's write path, over sender chains and Zipf recipients, then
+// validates every transaction once the block is written -- with
+// N42_TRANSFER_ONE_LOOKUP off and on. ns/op and allocs/op are per
+// transaction.
+func BenchmarkTransferAccountPath(b *testing.B) {
+	const nTxs, nSenders, nRecips = 20000, 400, 2000
+	rng := rand.New(rand.NewSource(3))
+	base := newCountingBase()
+	senders := make([]types.Address, nSenders)
+	recips := make([]types.Address, nRecips)
+	for i := range senders {
+		rng.Read(senders[i][:])
+		base.present[senders[i]] = &account.StateAccount{Initialised: true, Balance: *uint256.NewInt(1 << 60)}
+	}
+	for i := range recips {
+		rng.Read(recips[i][:])
+		base.present[recips[i]] = &account.StateAccount{Initialised: true, Balance: *uint256.NewInt(1)}
+	}
+	z := rand.NewZipf(rng, 1.1, 50, nRecips-1)
+	from := make([]types.Address, nTxs)
+	to := make([]types.Address, nTxs)
+	// Worker order: a sender's chain in a row, the chains interleaved
+	// with the block order as the affinity partition runs them.
+	order := make([]int, 0, nTxs)
+	for s := 0; s < nSenders; s++ {
+		for i := s; i < nTxs; i += nSenders {
+			order = append(order, i)
+		}
+	}
+	for i := range from {
+		from[i] = senders[i%nSenders]
+		to[i] = recips[z.Uint64()]
+	}
+	for _, on := range []bool{false, true} {
+		name := "onelookup=0"
+		if on {
+			name = "onelookup=1"
+		}
+		b.Run(name, func(b *testing.B) {
+			defer SetOneLookupForTest(on)()
+			sets := make([]*ReadWriteSet, nTxs)
+			for i := range sets {
+				sets[i] = NewReadWriteSet(i)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for it := 0; it < b.N; it += nTxs {
+				m := NewMVS()
+				ex := &Executor{mvs: m}
+				r := NewParallelStateReader(base, m, nil, 0)
+				r.SetBaseCache(NewBaseCache(nSenders + nRecips))
+				r.ReuseAccountBuffer()
+				slab := NewValueSlab()
+				r.SetSlab(slab)
+				r.EnableEntryCache()
+				w := NewParallelStateWriter(nil)
+				w.SetSlab(slab)
+				for _, i := range order {
+					rw := sets[i]
+					rw.Clear()
+					r.Rebind(rw, i)
+					w.Rebind(rw)
+					acc, _ := r.ReadAccountDataForWrite(from[i])
+					fo := *acc
+					fn := fo
+					fn.Nonce++
+					fn.Balance.Sub(&fn.Balance, uint256.NewInt(21000))
+					acc, _ = r.ReadAccountIgnoringBalanceForWrite(to[i])
+					tro := *acc
+					trn := tro
+					trn.Balance.Add(&trn.Balance, uint256.NewInt(7))
+					w.UpdateAccountDataEligible(from[i], &fo, &fn, false)
+					w.UpdateAccountDataEligible(to[i], &tro, &trn, true)
+					for k := range rw.Writes {
+						wd := &rw.Writes[k]
+						ent, at := ex.writeEntry(rw, &wd.Key)
+						if wd.Delta != nil {
+							m.writeDelta(ent, i, 0, wd.Delta, at)
+						} else {
+							m.writeOwnedHint(ent, i, 0, wd.Value, 0, at)
+						}
+					}
+				}
+				for _, rw := range sets {
+					Validate(m, rw)
+				}
+			}
+		})
+	}
+}
