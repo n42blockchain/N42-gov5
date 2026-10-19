@@ -38,9 +38,11 @@ func TestKeccak256OneBlockEquivalence(t *testing.T) {
 				t.Fatalf("Keccak256HashOne len %d mismatch", n)
 			}
 			if n < keccak256Rate {
-				if got := keccak256OneBlock(buf); got != want {
-					t.Fatalf("keccak256OneBlock len %d mismatch", n)
+				if got, ok := Keccak256OneBlock(buf); !ok || got != want {
+					t.Fatalf("Keccak256OneBlock len %d mismatch", n)
 				}
+			} else if _, ok := Keccak256OneBlock(buf); ok {
+				t.Fatalf("Keccak256OneBlock accepted len %d", n)
 			}
 		}
 	}
@@ -79,7 +81,7 @@ func BenchmarkKeccakSizes(b *testing.B) {
 		b.Run("oneblock/"+itoa(n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_ = keccak256OneBlock(data)
+				_, _ = Keccak256OneBlock(data)
 			}
 		})
 	}
@@ -95,6 +97,9 @@ func TestKeccak256x4OneBlockEquivalence(t *testing.T) {
 		var in [4][]byte
 		for i := range in {
 			n := rng.Intn(301)
+			if iter%2 == 0 {
+				n = rng.Intn(keccak256Rate)
+			}
 			if iter%7 == 0 {
 				n = 135 + rng.Intn(3) // around the block boundary
 			}
@@ -102,7 +107,16 @@ func TestKeccak256x4OneBlockEquivalence(t *testing.T) {
 			rng.Read(in[i])
 		}
 		var out [4]types.Hash
-		Keccak256x4OneBlock(&in, &out)
+		short := true
+		for i := range in {
+			short = short && len(in[i]) < keccak256Rate
+		}
+		if ok := Keccak256x4OneBlock(&in, &out); ok != short {
+			t.Fatalf("iter %d: ok %v, all short %v", iter, ok, short)
+		}
+		if !short {
+			continue
+		}
 		for i := range in {
 			if out[i] != refKeccak(in[i]) {
 				t.Fatalf("iter %d lane %d len %d mismatch", iter, i, len(in[i]))
