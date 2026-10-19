@@ -53,6 +53,23 @@ var transferDirectPath = os.Getenv("N42_TRANSFER_DIRECT") != "0"
 // its message, and skips the work the plan or the path makes redundant.
 var transferFast2 = os.Getenv("N42_TRANSFER_FAST2") != "0"
 
+// transferOneLookup is N42_TRANSFER_ONE_LOOKUP (default on; "0" keeps the
+// previous plan path): the plan path takes its block-wide checks from the
+// worker's scratch, computed once per EVM (planBlockChecks), and reads its
+// two accounts with the reader's ForWrite variants, so each account's store
+// entry is resolved once for the read, the write and the validation (the
+// reader's side of the switch is parallel.SetOneLookupForTest).
+var transferOneLookup = os.Getenv("N42_TRANSFER_ONE_LOOKUP") != "0"
+
+// setTransferOneLookupForTest sets transferOneLookup (and the store's
+// matching switch) and returns the restore.
+func setTransferOneLookupForTest(on bool) func() {
+	prev := transferOneLookup
+	transferOneLookup = on
+	restoreParallel := parallel.SetOneLookupForTest(on)
+	return func() { transferOneLookup = prev; restoreParallel() }
+}
+
 // setTransferFast2ForTest sets transferFast2 (and the store's matching
 // switch) and returns the restore.
 func setTransferFast2ForTest(on bool) func() {
@@ -89,6 +106,62 @@ type fastTransferScratch struct {
 	appliedDirect                           uint64 // not yet added to directTransfers
 	appliedPlan                             uint64 // not yet added to planTransfers
 	direct                                  directTransferAccounts
+	// block is the plan path's block-wide checks for the EVM block.evm
+	// (planBlockChecks).
+	block planBlockChecks
+}
+
+// planBlockChecks is what tryDirectTransferPlan decides from the block and
+// the EVM alone, computed once per worker EVM instead of per transaction.
+// A worker's EVM is built for one block and keeps its configuration, rules
+// and block context (nothing in the parallel path calls
+// ResetBetweenBlocks on it), so the checks hold for every transaction it
+// runs.
+type planBlockChecks struct {
+	evm *vm2.EVM
+	// ok: the EVM's configuration and rules let the plan path run.
+	ok        bool
+	noBaseFee bool
+	baseFee   *uint256.Int
+	// tipTo receives the priority fee; burnTo the burnt base fee when burn.
+	tipTo, burnTo types.Address
+	burn          bool
+}
+
+// planChecks returns the block-wide checks for evm, computing them on the
+// first call with a new EVM exactly as tryDirectTransferPlan's per-call
+// path does.
+func (sc *fastTransferScratch) planChecks(evm *vm2.EVM) *planBlockChecks {
+	pb := &sc.block
+	if pb.evm == evm {
+		return pb
+	}
+	*pb = planBlockChecks{evm: evm}
+	cfg := evm.Config()
+	if cfg.Debug || cfg.RestoreState || dbgNonceBlock > 0 || dbgRefundBlock > 0 {
+		return pb
+	}
+	rules := evm.ChainRules()
+	if !rules.IsLondon || rules.IsGlamsterdam {
+		return pb
+	}
+	policy := newTransitionChainPolicy(evm.ChainConfig())
+	if policy.shouldForceGasBailout() {
+		return pb
+	}
+	if rules.IsPrague && vm2.FloorDataGas(nil) > params.TxGas {
+		return pb
+	}
+	blockCtx := evm.Context()
+	pb.ok = true
+	pb.noBaseFee = cfg.NoBaseFee
+	pb.baseFee = blockCtx.BaseFee
+	pb.tipTo = policy.priorityFeeRecipient(blockCtx.Coinbase)
+	if rules.IsEip1559FeeCollector {
+		pb.burn = true
+		pb.burnTo = *evm.ChainConfig().Eip1559FeeCollector
+	}
+	return pb
 }
 
 // directTransferAccounts are tryDirectTransfer's two accounts, as read
@@ -415,6 +488,9 @@ func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *p
 	if sink == nil {
 		return nil, false
 	}
+	if transferOneLookup {
+		return tryDirectTransferPlanOnce(evm, rd, wr, rw, pl, gasLimit, sink, sc)
+	}
 	cfg := evm.Config()
 	if cfg.Debug || cfg.RestoreState || dbgNonceBlock > 0 || dbgRefundBlock > 0 {
 		return nil, false
@@ -519,6 +595,115 @@ func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *p
 		burnAmount := sc.burn.SetUint64(gas)
 		burnAmount.Mul(burnAmount, blockCtx.BaseFee)
 		sink(*evm.ChainConfig().Eip1559FeeCollector, burnAmount)
+	}
+	sc.applied++
+	sc.appliedDirect++
+	sc.appliedPlan++
+	sc.result = ExecutionResult{UsedGas: gas, BlockGasUsed: gas}
+	return &sc.result, true
+}
+
+// tryDirectTransferPlanOnce is tryDirectTransferPlan with the block-wide
+// checks from the worker's scratch (planChecks) and each account's store
+// entry resolved once (the reader's ForWrite reads): the same checks, in
+// the same order, the same reads and writes, and the same fees.
+func tryDirectTransferPlanOnce(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *parallel.ParallelStateWriter, rw *parallel.ReadWriteSet,
+	pl *transferPlan, gasLimit uint64, sink FeeSink, sc *fastTransferScratch) (*ExecutionResult, bool) {
+	pb := sc.planChecks(evm)
+	const gas = params.TxGas
+	if !pb.ok || gas > gasLimit {
+		return nil, false
+	}
+	if evm.IsPrecompile(pl.to) {
+		return nil, false
+	}
+	feeCap, tip, value := &sc.planFeeCap, &sc.planTip, &sc.planValue
+	feeCap.SetUint64(pl.feeCap)
+	tip.SetUint64(pl.tip)
+	value.SetUint64(pl.value)
+	if !pb.noBaseFee || pl.feeCap != 0 || pl.tip != 0 {
+		// CheckEip1559TxGasFeeCap for a message that is not free.
+		if pl.feeCap < pl.tip || (pb.baseFee != nil && feeCap.Lt(pb.baseFee)) {
+			return nil, false
+		}
+	}
+	// buyGas's debit gas*gasPrice and the balance the sender must hold,
+	// gas*feeCap+value (64-bit operands: no overflow).
+	mgval, balanceCheck := &sc.mgval, &sc.balanceCheck
+	sc.planGas.SetUint64(gas)
+	mgval.SetUint64(pl.gasPrice)
+	mgval.Mul(mgval, &sc.planGas)
+	balanceCheck.Mul(feeCap, &sc.planGas)
+	balanceCheck.Add(balanceCheck, value)
+	nReads := len(rw.Reads)
+
+	// The sender (preCheck reads its nonce first).
+	acc, err := rd.ReadAccountDataForWrite(pl.from)
+	if err != nil || acc == nil {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+	s := &sc.direct
+	s.fromOrig = *acc // the reader's buffer is overwritten by the next read
+	s.from = s.fromOrig
+	normaliseLoaded(&s.from)
+	nonce := s.from.Nonce
+	if nonce != pl.nonce || nonce+1 < nonce {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+	if ch := s.from.CodeHash; ch != emptyCodeHash && ch != (types.Hash{}) {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+	if s.from.Balance.Lt(balanceCheck) {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+	// The recipient (evm.Call's Exist), read ignoring its balance.
+	acc, err = rd.ReadAccountIgnoringBalanceForWrite(pl.to)
+	if err != nil || acc == nil {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+	s.toOrig = *acc
+	s.to = s.toOrig
+	normaliseLoaded(&s.to)
+	if ch := s.to.CodeHash; ch != emptyCodeHash && ch != (types.Hash{}) {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false
+	}
+	// buyGas, the nonce bump, the transfer, the zero refund.
+	s.from.Balance.Sub(&s.from.Balance, mgval)
+	s.from.Nonce = nonce + 1
+	s.from.Balance.Sub(&s.from.Balance, value)
+	s.to.Balance.Add(&s.to.Balance, value)
+	if s.to.Balance.IsZero() {
+		rw.Reads = rw.Reads[:nReads]
+		return nil, false // wrapped: leave it to the EVM path's semantics
+	}
+
+	// FinalizeTx: the dirty accounts in address order.
+	if bytes.Compare(pl.from[:], pl.to[:]) < 0 {
+		wr.UpdateAccountDataEligible(pl.from, &s.fromOrig, &s.from, false)
+		wr.UpdateAccountDataEligible(pl.to, &s.toOrig, &s.to, true)
+	} else {
+		wr.UpdateAccountDataEligible(pl.to, &s.toOrig, &s.to, true)
+		wr.UpdateAccountDataEligible(pl.from, &s.fromOrig, &s.from, false)
+	}
+
+	// creditTransferFees under London.
+	effectiveTip := u256.Num0
+	if feeCap.Gt(pb.baseFee) {
+		effectiveTip = cmath.Min256(tip, sc.tip.Sub(feeCap, pb.baseFee))
+	}
+	amount := sc.amount.SetUint64(gas)
+	amount.Mul(amount, effectiveTip)
+	sink(pb.tipTo, amount)
+	if pb.burn {
+		burnAmount := sc.burn.SetUint64(gas)
+		burnAmount.Mul(burnAmount, pb.baseFee)
+		sink(pb.burnTo, burnAmount)
 	}
 	sc.applied++
 	sc.appliedDirect++
