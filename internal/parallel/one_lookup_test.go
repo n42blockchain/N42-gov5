@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/holiman/uint256"
@@ -209,7 +210,16 @@ func TestDescriptorSizes(t *testing.T) {
 // N42_TRANSFER_ONE_LOOKUP off and on. ns/op and allocs/op are per
 // transaction.
 func BenchmarkTransferAccountPath(b *testing.B) {
-	const nTxs, nSenders, nRecips = 20000, 400, 2000
+	b.Run("chains", func(b *testing.B) { benchTransferAccountPath(b, 4000) })
+	b.Run("distinct", func(b *testing.B) { benchTransferAccountPath(b, 160000) })
+}
+
+// benchTransferAccountPath is BenchmarkTransferAccountPath with nSenders
+// senders over a bench-sized block (160,000 transfers to 22,857 Zipf
+// recipients: a store well beyond the caches); vNs/tx is the validation's
+// share.
+func benchTransferAccountPath(b *testing.B, nSenders int) {
+	const nTxs, nRecips = 160000, 22857
 	rng := rand.New(rand.NewSource(3))
 	base := newCountingBase()
 	senders := make([]types.Address, nSenders)
@@ -248,6 +258,7 @@ func BenchmarkTransferAccountPath(b *testing.B) {
 			for i := range sets {
 				sets[i] = NewReadWriteSet(i)
 			}
+			var vNs time.Duration
 			b.ReportAllocs()
 			b.ResetTimer()
 			for it := 0; it < b.N; it += nTxs {
@@ -287,10 +298,13 @@ func BenchmarkTransferAccountPath(b *testing.B) {
 						}
 					}
 				}
+				t0 := time.Now()
 				for _, rw := range sets {
 					Validate(m, rw)
 				}
+				vNs += time.Since(t0)
 			}
+			b.ReportMetric(float64(vNs.Nanoseconds())/float64(b.N), "vNs/tx")
 		})
 	}
 }
