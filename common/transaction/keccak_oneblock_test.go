@@ -127,3 +127,144 @@ func TestKeccakOneBlockLegacyEquivalence(t *testing.T) {
 		t.Fatalf("no single-block inputs exercised (sig %d, enc %d)", shortSig, shortEnc)
 	}
 }
+
+// mixedTxs returns random legacy transfers, mixed with dynamic-fee
+// transactions, tampered signatures (bad V, zero R, high S), wrong chain
+// ids, unprotected legacy transactions, transactions without a cached
+// encoding, and nil entries.
+func mixedTxs(t *testing.T, rng *rand.Rand, n int, chainID *big.Int) []*Transaction {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	txs := make([]*Transaction, n)
+	for i := range txs {
+		switch r := rng.Intn(20); {
+		case r == 0:
+			txs[i] = nil
+		case r == 1:
+			to := types.Address{1}
+			tx, err := SignNewTx(key, NewLondonSigner(chainID), &DynamicFeeTx{ChainID: uint256.MustFromBig(chainID), Nonce: uint64(i),
+				GasTipCap: uint256.NewInt(1), GasFeeCap: uint256.NewInt(2), Gas: 21000, To: &to, Value: uint256.NewInt(3)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			txs[i] = tx
+		case r == 2:
+			tx := randLegacyTx(t, rng, key, chainID)
+			v, R, S := tx.RawSignatureValues()
+			inner := tx.inner.copy().(*LegacyTx)
+			switch rng.Intn(4) {
+			case 0:
+				inner.V = new(uint256.Int).AddUint64(v, 2) // chain id mismatch
+			case 1:
+				inner.R = new(uint256.Int)
+			case 2:
+				inner.S = new(uint256.Int).Not(new(uint256.Int))
+			case 3:
+				inner.R = new(uint256.Int).AddUint64(R, 1)
+				_ = S
+			}
+			txs[i] = NewTx(inner)
+		case r == 3:
+			tx, err := SignTx(NewTx(&LegacyTx{Nonce: uint64(i), GasPrice: uint256.NewInt(1), Gas: 21000, Value: uint256.NewInt(1)}), HomesteadSigner{}, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			txs[i] = tx
+		case r == 4:
+			txs[i] = randLegacyTx(t, rng, key, big.NewInt(chainID.Int64()+1)) // other chain
+		case r == 5:
+			tx := randLegacyTx(t, rng, key, chainID)
+			txs[i] = NewTx(tx.inner.copy()) // no cached encoding
+		default:
+			tx := randLegacyTx(t, rng, key, chainID)
+			if rng.Intn(2) == 0 {
+				inner := tx.inner.copy().(*LegacyTx)
+				inner.Data = nil
+				tx2, err := SignTx(NewTx(inner), NewEIP155Signer(chainID), key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, _ := EncodeEthereumTransaction(tx2)
+				tx, _ = DecodeEthereumTransaction(raw)
+			}
+			txs[i] = tx
+		}
+	}
+	return txs
+}
+
+func cloneTxs(txs []*Transaction) []*Transaction {
+	out := make([]*Transaction, len(txs))
+	for i, tx := range txs {
+		if tx == nil {
+			continue
+		}
+		if p := tx.enc.Load(); p != nil {
+			c, err := DecodeEthereumTransaction(append([]byte(nil), *p...))
+			if err == nil {
+				out[i] = c
+				continue
+			}
+		}
+		out[i] = NewTx(tx.inner.copy())
+	}
+	return out
+}
+
+// TestHashBatchAndSendersBatchEquivalence: HashBatch memoises exactly the
+// hashes tx.Hash() computes one by one, and SendersBatch returns exactly
+// signer.Sender per transaction (address and error), across signers, batch
+// lengths and the transaction mix above, with the flag on and off.
+func TestHashBatchAndSendersBatchEquivalence(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	chainID := big.NewInt(1142)
+	signers := []Signer{NewLondonSigner(chainID), NewEIP2930Signer(chainID), NewEIP155Signer(chainID), HomesteadSigner{}}
+	for round := 0; round < 40; round++ {
+		n := rng.Intn(70)
+		txs := mixedTxs(t, rng, n, chainID)
+		for _, on := range []bool{true, false} {
+			withOneBlock(on, func() {
+				ref := cloneTxs(txs)
+				got := cloneTxs(txs)
+				// Pre-hash a few so HashBatch meets ready hashes too.
+				for i := range got {
+					if got[i] != nil && rng.Intn(10) == 0 {
+						got[i].Hash()
+					}
+				}
+				HashBatch(got)
+				for i := range ref {
+					if ref[i] == nil {
+						continue
+					}
+					if got[i].hashState.Load() != hashReady {
+						t.Fatalf("round %d tx %d: hash not memoised", round, i)
+					}
+					want := ref[i].inner.hash()
+					if ref[i].Hash() != want || got[i].Hash() != want {
+						t.Fatalf("round %d tx %d on=%v: hash %x / %x want %x", round, i, on, got[i].Hash(), ref[i].Hash(), want)
+					}
+				}
+				for _, sg := range signers {
+					addrs := make([]types.Address, len(got))
+					errs := make([]error, len(got))
+					SendersBatch(sg, got, addrs, errs)
+					for i, tx := range ref {
+						if tx == nil {
+							if addrs[i] != (types.Address{}) || errs[i] != nil {
+								t.Fatalf("nil tx %d touched", i)
+							}
+							continue
+						}
+						wa, we := sg.Sender(tx)
+						if addrs[i] != wa || (we == nil) != (errs[i] == nil) || (we != nil && we.Error() != errs[i].Error()) {
+							t.Fatalf("round %d tx %d on=%v %T: batch (%x, %v) single (%x, %v)", round, i, on, sg, addrs[i], errs[i], wa, we)
+						}
+					}
+				}
+			})
+		}
+	}
+}
