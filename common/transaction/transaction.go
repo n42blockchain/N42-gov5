@@ -653,7 +653,9 @@ func (tx *Transaction) computeHash() types.Hash {
 		// non-canonical RLP, so the bytes equal a fresh encode. Re-encoding
 		// was half of every transaction-hash computation on a follower
 		// (appendLegacyTxRLP 4.0 s of 7.9 s in a 25 s profile).
-		return crypto.Keccak256Hash(*p)
+		// A transfer's encoding (~105-110 bytes) fits one Keccak rate
+		// block: one permutation, no pooled sponge (N42_KECCAK_ONEBLOCK).
+		return crypto.Keccak256HashOne(*p)
 	}
 	return tx.inner.hash()
 }
