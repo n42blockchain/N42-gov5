@@ -425,28 +425,39 @@ func recoverTypedSender(tx *Transaction, expectedChainID *big.Int, hashFn func()
 // the recovery value V-chainIdMul-8 is non-negative here, so its BitLen and
 // Uint64 are those of the uint64 difference (recoverPlainV).
 func (s EIP155Signer) legacySenderFast(tx *Transaction) (addr types.Address, err error, ok bool) {
-	inner, isLegacy := tx.inner.(*LegacyTx)
-	if !isLegacy || legacySenderFastOffForTest || inner.V == nil || !inner.V.IsUint64() || s.chainId == nil || s.chainId.Sign() < 0 ||
-		!s.chainId.IsUint64() || s.chainIdMul == nil || s.chainIdMul.Sign() < 0 || !s.chainIdMul.IsUint64() {
-		return types.Address{}, nil, false
-	}
-	v := inner.V.Uint64()
-	if v < 256 && (v == 27 || v == 28 || v == 1 || v == 0) {
-		return types.Address{}, nil, false // unprotected: the Homestead path
-	}
-	mul := s.chainIdMul.Uint64()
-	if mul > math.MaxUint64-8 || v < mul+8 {
-		return types.Address{}, nil, false
-	}
-	if (v-35)/2 != s.chainId.Uint64() {
-		return types.Address{}, ErrInvalidChainId, true
+	inner, vb, err, ok := s.legacyFastPrecheck(tx)
+	if !ok || err != nil {
+		return types.Address{}, err, ok
 	}
 	h, herr := s.Hash(tx)
 	if herr != nil {
 		return types.Address{}, herr, true
 	}
-	addr, err = recoverPlainV(h, inner.R, inner.S, v-mul-8, true)
+	addr, err = recoverPlainV(h, inner.R, inner.S, vb, true)
 	return addr, err, true
+}
+
+// legacyFastPrecheck is legacySenderFast up to the signing hash: ok=false
+// leaves the transaction to the big.Int path, err is the chain id mismatch,
+// and vb is the recovery value V-chainIdMul-8 for recoverPlainV.
+func (s EIP155Signer) legacyFastPrecheck(tx *Transaction) (inner *LegacyTx, vb uint64, err error, ok bool) {
+	inner, isLegacy := tx.inner.(*LegacyTx)
+	if !isLegacy || legacySenderFastOffForTest || inner.V == nil || !inner.V.IsUint64() || s.chainId == nil || s.chainId.Sign() < 0 ||
+		!s.chainId.IsUint64() || s.chainIdMul == nil || s.chainIdMul.Sign() < 0 || !s.chainIdMul.IsUint64() {
+		return nil, 0, nil, false
+	}
+	v := inner.V.Uint64()
+	if v < 256 && (v == 27 || v == 28 || v == 1 || v == 0) {
+		return nil, 0, nil, false // unprotected: the Homestead path
+	}
+	mul := s.chainIdMul.Uint64()
+	if mul > math.MaxUint64-8 || v < mul+8 {
+		return nil, 0, nil, false
+	}
+	if (v-35)/2 != s.chainId.Uint64() {
+		return nil, 0, ErrInvalidChainId, true
+	}
+	return inner, v - mul - 8, nil, true
 }
 
 // legacySenderFastOffForTest sends every legacy recovery down the big.Int
@@ -764,16 +775,27 @@ func recoverPlainRS(sighash types.Hash, R, S *uint256.Int, Vb *big.Int, homestea
 // recoverPlainV is recoverPlainRS with the recovery value as Vb.Uint64()
 // (Vb of at most 8 bits), or as a non-negative uint64 of any size.
 func recoverPlainV(sighash types.Hash, R, S *uint256.Int, vb uint64, homestead bool) (types.Address, error) {
+	sc := recoverScratchPool.Get().(*recoverScratch)
+	defer recoverScratchPool.Put(sc)
+	xy, err := recoverPubInto(sc, sighash, R, S, vb, homestead)
+	if err != nil {
+		return types.Address{}, err
+	}
+	return pubkeyAddress(xy), nil
+}
+
+// recoverPubInto is recoverPlainV up to the public key: it validates the
+// signature values, recovers the key into sc and returns its 64-byte X||Y
+// (aliasing sc.pub).
+func recoverPubInto(sc *recoverScratch, sighash types.Hash, R, S *uint256.Int, vb uint64, homestead bool) ([]byte, error) {
 	if R == nil || S == nil || vb >= 256 {
-		return types.Address{}, ErrInvalidSig
+		return nil, ErrInvalidSig
 	}
 	V := byte(vb - 27)
 	if !crypto.ValidateSignatureValues(V, R, S, homestead) {
-		return types.Address{}, ErrInvalidSig
+		return nil, ErrInvalidSig
 	}
 	// encode the signature in uncompressed format
-	sc := recoverScratchPool.Get().(*recoverScratch)
-	defer recoverScratchPool.Put(sc)
 	sc.msg = sighash
 	sig := sc.sig[:]
 	R.WriteToSlice(sig[:32])
@@ -785,12 +807,12 @@ func recoverPlainV(sighash types.Hash, R, S *uint256.Int, vb uint64, homestead b
 	// recover the public key from the signature
 	pub, err := crypto.EcrecoverInto(sc.msg[:], sig, sc.pub[:0])
 	if err != nil {
-		return types.Address{}, err
+		return nil, err
 	}
 	if len(pub) == 0 || pub[0] != 4 {
-		return types.Address{}, errors.New("invalid public key")
+		return nil, errors.New("invalid public key")
 	}
-	return pubkeyAddress(pub[1:]), nil
+	return pub[1:], nil
 }
 
 // pubkeyAddress is the address of a 64-byte uncompressed public key (X||Y):

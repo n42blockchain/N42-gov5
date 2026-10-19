@@ -79,3 +79,54 @@ func BenchmarkLegacySender(b *testing.B) {
 		}
 	}
 }
+
+func resetHashes(txs []*Transaction) {
+	for _, tx := range txs {
+		tx.hashState.Store(hashNone)
+	}
+}
+
+// BenchmarkHashTxs64 memoises the hashes of 64 decoded transfers per op:
+// one by one (tx.Hash, today's frame.HashTxs) and with HashBatch.
+func BenchmarkHashTxs64(b *testing.B) {
+	txs, _ := benchTransfers(b, 64)
+	b.Run("loop", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			resetHashes(txs)
+			for _, tx := range txs {
+				tx.Hash()
+			}
+		}
+	})
+	b.Run("batch", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			resetHashes(txs)
+			HashBatch(txs)
+		}
+	})
+}
+
+// BenchmarkSenders64 recovers the senders of 64 transfers per op: one by
+// one (signer.Sender, today's frame.RecoverSenders) and with SendersBatch.
+func BenchmarkSenders64(b *testing.B) {
+	txs, _ := benchTransfers(b, 64)
+	signer := NewLondonSigner(big.NewInt(benchChainID))
+	addrs := make([]types.Address, 64)
+	errs := make([]error, 64)
+	b.Run("loop", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			for j, tx := range txs {
+				addrs[j], errs[j] = signer.Sender(tx)
+			}
+		}
+	})
+	b.Run("batch", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			SendersBatch(signer, txs, addrs, errs)
+		}
+	})
+}
