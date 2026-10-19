@@ -26,7 +26,7 @@ import (
 // Its flags sit together after the version so the descriptor is 128 bytes.
 type ReadDescriptor struct {
 	Key               LocationKey
-	WriterTx          int    // index of the transaction that provided the value (-1 if from base state)
+	WriterTx          int32  // index of the transaction that provided the value (-1 if from base state)
 	WriterIncarnation uint32 // incarnation of the writer tx at read time
 	FromBase          bool   // true if the value was read from the base DB (no MVS entry)
 	// HasValue says Value holds the bytes read (see Value).
@@ -39,6 +39,12 @@ type ReadDescriptor struct {
 	// account. Validation then compares every field but the balance, so a
 	// recipient credited by preceding transactions does not invalidate it.
 	IgnoreBalance bool
+	// at is one more than the count of the entry's versions that preceded
+	// the reading transaction when an account read scanned them (0: not
+	// recorded). Validation and the transaction's own write to the account
+	// try that position before searching (mvEntry.beforeAt), and it holds
+	// unless a version was inserted or removed below it since.
+	at int32
 	// Value is the bytes the transaction read (nil for a missing account or
 	// slot) when HasValue is set. Validation accepts a read whose version
 	// moved but whose bytes did not: a re-executed writer that produced the
@@ -87,7 +93,7 @@ func NewReadWriteSet(txIndex int) *ReadWriteSet {
 func (rw *ReadWriteSet) RecordRead(key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool) {
 	rw.Reads = append(rw.Reads, ReadDescriptor{
 		Key:               key,
-		WriterTx:          writerTx,
+		WriterTx:          int32(writerTx),
 		WriterIncarnation: writerIncarnation,
 		FromBase:          fromBase,
 	})
@@ -98,7 +104,7 @@ func (rw *ReadWriteSet) RecordRead(key LocationKey, writerTx int, writerIncarnat
 func (rw *ReadWriteSet) RecordReadValue(key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value []byte) {
 	rw.Reads = append(rw.Reads, ReadDescriptor{
 		Key:               key,
-		WriterTx:          writerTx,
+		WriterTx:          int32(writerTx),
 		WriterIncarnation: writerIncarnation,
 		FromBase:          fromBase,
 		Value:             value,
@@ -112,7 +118,7 @@ func (rw *ReadWriteSet) RecordReadValue(key LocationKey, writerTx int, writerInc
 func (rw *ReadWriteSet) RecordAccountRead(key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value, base []byte, hadDelta bool) {
 	rw.Reads = append(rw.Reads, ReadDescriptor{
 		Key:               key,
-		WriterTx:          writerTx,
+		WriterTx:          int32(writerTx),
 		WriterIncarnation: writerIncarnation,
 		FromBase:          fromBase,
 		Value:             value,

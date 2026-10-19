@@ -1125,7 +1125,8 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		wd := &rw.Writes[i]
 		switch {
 		case wd.Delta != nil:
-			e.mvs.writeDelta(e.writeEntry(rw, &wd.Key), txIndex, inc, wd.Delta)
+			ent, at := e.writeEntry(rw, &wd.Key)
+			e.mvs.writeDelta(ent, txIndex, inc, wd.Delta, at)
 		case wd.Key.Field == FieldCode:
 			// Code can alias EVM memory: copied.
 			e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
@@ -1135,12 +1136,12 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 			// The hint sizes only an empty version list: an entry with a
 			// full write has a non-empty one, so it is computed only for an
 			// entry without (its lookups were a cache miss per write).
-			ent := e.writeEntry(rw, &wd.Key)
+			ent, at := e.writeEntry(rw, &wd.Key)
 			hint := 0
 			if ent.noFullWrites() {
 				hint = e.versionHint(ws, txIndex, &wd.Key)
 			}
-			e.mvs.writeOwnedHint(ent, txIndex, inc, wd.Value, hint)
+			e.mvs.writeOwnedHint(ent, txIndex, inc, wd.Value, hint, at)
 		}
 	}
 	if ws != nil {
@@ -1154,14 +1155,15 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 // writeEntry returns the store entry for a write of rw to key. An account
 // the transaction read carries the entry its read was served from; when
 // the read found none, the entry created here is handed back to that read
-// so its validation skips the lookup as well.
-func (e *Executor) writeEntry(rw *ReadWriteSet, key *LocationKey) *mvEntry {
+// so its validation skips the lookup as well. at is the read's guess at
+// the write's slot (ReadDescriptor.at; -1 when there is none).
+func (e *Executor) writeEntry(rw *ReadWriteSet, key *LocationKey) (*mvEntry, int) {
 	var rd *ReadDescriptor
 	if key.Field == FieldBalance {
 		for i := range rw.Reads {
 			if r := &rw.Reads[i]; r.Key.Field == FieldBalance && r.Key.Address == key.Address {
 				if r.entry != nil {
-					return r.entry
+					return r.entry, int(r.at) - 1
 				}
 				rd = r
 				break
@@ -1169,10 +1171,12 @@ func (e *Executor) writeEntry(rw *ReadWriteSet, key *LocationKey) *mvEntry {
 		}
 	}
 	ent := e.mvs.getOrCreateEntry(*key)
+	at := -1
 	if rd != nil {
 		rd.entry = ent
+		at = int(rd.at) - 1
 	}
-	return ent
+	return ent, at
 }
 
 // validateInOrder validates all executed txs in order.

@@ -266,6 +266,12 @@ func (m *MVS) getOrCreateEntry(key LocationKey) *mvEntry {
 // skips sort.Search's closure calls.
 func (e *mvEntry) before(txIndex int) int {
 	n := len(e.versions)
+	if oneLookup && n > 16 && e.versions[n-1].txIndex < txIndex {
+		// Every version precedes txIndex: the common case at execution
+		// time for a long sender chain, whose binary search was a cache
+		// miss per probe.
+		return n
+	}
 	if n <= 16 {
 		for n > 0 && e.versions[n-1].txIndex >= txIndex {
 			n--
@@ -273,6 +279,20 @@ func (e *mvEntry) before(txIndex int) int {
 		return n
 	}
 	return e.search(txIndex)
+}
+
+// beforeAt is before(txIndex) with a guess at, the count a recent call
+// returned (negative: none). The versions are sorted by strictly ascending
+// txIndex, so at is before(txIndex) exactly when every version below it
+// precedes txIndex and the one at it (if any) does not; the guess is
+// checked against that, and a stale one falls back to the search
+// (e.mu held).
+func (e *mvEntry) beforeAt(txIndex, at int) int {
+	if at >= 0 && at <= len(e.versions) && (at == 0 || e.versions[at-1].txIndex < txIndex) &&
+		(at == len(e.versions) || e.versions[at].txIndex >= txIndex) {
+		return at
+	}
+	return e.before(txIndex)
 }
 
 // search is sort.Search for the first version at or after txIndex, without
@@ -306,20 +326,20 @@ func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []by
 // a slice nobody mutates afterwards (the executor's write descriptors,
 // which the state writer encodes fresh per write).
 func (m *MVS) writeOwned(key LocationKey, txIndex int, incarnation uint32, value []byte) {
-	m.writeOwnedHint(m.getOrCreateEntry(key), txIndex, incarnation, value, 0)
+	m.writeOwnedHint(m.getOrCreateEntry(key), txIndex, incarnation, value, 0, -1)
 }
 
 // writeOwnedHint is writeOwned on the location's entry e that sizes an
 // empty version list for hint versions (the writes the caller expects at
-// this location in the block).
-func (m *MVS) writeOwnedHint(e *mvEntry, txIndex int, incarnation uint32, value []byte, hint int) {
+// this location in the block). at guesses txIndex's slot (slotAt).
+func (m *MVS) writeOwnedHint(e *mvEntry, txIndex int, incarnation uint32, value []byte, hint, at int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if hint > 1 && cap(e.versions) == 0 && m.va == nil {
 		e.versions = make([]versionedValue, 0, hint)
 	}
 
-	idx := e.slot(txIndex)
+	idx := e.slotAt(txIndex, at)
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
 		// Overwrite existing.
 		v := &e.versions[idx]
@@ -349,18 +369,33 @@ func (e *mvEntry) slot(txIndex int) int {
 	return e.search(txIndex)
 }
 
+// slotAt is slot with a guess at (negative: none): the slot is the count of
+// versions before txIndex, so a read's beforeAt count serves as the guess
+// for the same transaction's write (e.mu held).
+func (e *mvEntry) slotAt(txIndex, at int) int {
+	if at >= 0 {
+		n := len(e.versions)
+		if n == 0 || e.versions[n-1].txIndex < txIndex {
+			return n
+		}
+		return e.beforeAt(txIndex, at)
+	}
+	return e.slot(txIndex)
+}
+
 // WriteDelta records that transaction txIndex added delta to the account at
 // key. It replaces any earlier write of txIndex at the key.
 func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta *uint256.Int) {
-	m.writeDelta(m.getOrCreateEntry(key), txIndex, incarnation, delta)
+	m.writeDelta(m.getOrCreateEntry(key), txIndex, incarnation, delta, -1)
 }
 
-// writeDelta is WriteDelta on the location's entry e.
-func (m *MVS) writeDelta(e *mvEntry, txIndex int, incarnation uint32, delta *uint256.Int) {
+// writeDelta is WriteDelta on the location's entry e; at guesses txIndex's
+// slot (slotAt).
+func (m *MVS) writeDelta(e *mvEntry, txIndex int, incarnation uint32, delta *uint256.Int, at int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	idx := e.slot(txIndex)
+	idx := e.slotAt(txIndex, at)
 	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
 		v := &e.versions[idx]
 		if !v.isDelta {
@@ -407,20 +442,24 @@ func (m *MVS) ReadAccount(key LocationKey, txIndex int) (full []byte, fullTx int
 // delta (overwritten; meaningful only when hasDelta), so the hot readers
 // allocate nothing.
 func (m *MVS) readAccountInto(key *LocationKey, txIndex int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool) {
-	return m.lookup(key).readAccount(txIndex, delta)
+	full, fullTx, fullInc, found, hasDelta, _ = m.lookup(key).readAccount(txIndex, -1, delta)
+	return full, fullTx, fullInc, found, hasDelta
 }
 
 // readAccount is readAccountInto on a looked-up entry; a nil entry has no
-// versions.
-func (e *mvEntry) readAccount(txIndex int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool) {
+// versions. at guesses the count of versions before txIndex (beforeAt;
+// negative: none), and the count found is returned as n (0 for a nil
+// entry).
+func (e *mvEntry) readAccount(txIndex, at int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool, n int) {
 	if e == nil {
-		return nil, 0, 0, false, false
+		return nil, 0, 0, false, false, 0
 	}
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	for i := e.before(txIndex) - 1; i >= 0; i-- {
+	n = e.beforeAt(txIndex, at)
+	for i := n - 1; i >= 0; i-- {
 		v := &e.versions[i]
 		if v.isDelta {
 			if !hasDelta {
@@ -431,9 +470,9 @@ func (e *mvEntry) readAccount(txIndex int, delta *uint256.Int) (full []byte, ful
 			}
 			continue
 		}
-		return v.value, v.txIndex, v.incarnation, true, hasDelta
+		return v.value, v.txIndex, v.incarnation, true, hasDelta, n
 	}
-	return nil, 0, 0, false, hasDelta
+	return nil, 0, 0, false, hasDelta, n
 }
 
 // Read returns the value written by the latest transaction before txIndex.

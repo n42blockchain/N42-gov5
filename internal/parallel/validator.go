@@ -58,7 +58,7 @@ func readValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 		// The write we depended on was removed — stale.
 		return false
 	}
-	if writerTx == rd.WriterTx && writerInc == rd.WriterIncarnation {
+	if writerTx == int(rd.WriterTx) && writerInc == rd.WriterIncarnation {
 		return true
 	}
 	// A different writer, or the same writer re-executed. The read is
@@ -87,7 +87,7 @@ func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 	if rd.IgnoreBalance && rd.FromBase && rd.Base != nil && e.noFullWrites() {
 		return true
 	}
-	full, fullTx, fullInc, found, hasDelta := e.readAccount(txIndex, &deltaBuf)
+	full, fullTx, fullInc, found, hasDelta, _ := e.readAccount(txIndex, int(rd.at)-1, &deltaBuf)
 	var delta *uint256.Int
 	if hasDelta {
 		delta = &deltaBuf
@@ -97,7 +97,7 @@ func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 		if rd.FromBase && !found {
 			return true
 		}
-		if !rd.FromBase && found && fullTx == rd.WriterTx && fullInc == rd.WriterIncarnation {
+		if !rd.FromBase && found && fullTx == int(rd.WriterTx) && fullInc == rd.WriterIncarnation {
 			return true
 		}
 	}

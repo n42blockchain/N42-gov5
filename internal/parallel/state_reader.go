@@ -48,6 +48,10 @@ type ParallelStateReader struct {
 	// ents, when set, remembers the store entries ReadAccountData found
 	// (EnableEntryCache).
 	ents *entryCache
+	// lastAt is the version count readAccountIn's scan found, for the
+	// read it records next (ReadDescriptor.at); -1 when that read did not
+	// scan.
+	lastAt int
 }
 
 // entryCacheSlots is the size of a reader's entry cache (a power of two).
@@ -90,6 +94,24 @@ func (r *ParallelStateReader) accountEntry(key *LocationKey) *mvEntry {
 	if e != nil {
 		sl.addr, sl.e = *a, e
 	}
+	return e
+}
+
+// accountEntryForWrite is accountEntry creating the entry when the account
+// has none (ReadAccountDataForWrite), so the result is never nil and the
+// entry cache keeps it.
+func (r *ParallelStateReader) accountEntryForWrite(key *LocationKey) *mvEntry {
+	c := r.ents
+	if c == nil {
+		return r.mvs.getOrCreateEntry(*key)
+	}
+	a := &key.Address
+	sl := &c[(binary.LittleEndian.Uint32(a[0:4])^binary.LittleEndian.Uint32(a[16:20]))&(entryCacheSlots-1)]
+	if sl.e != nil && sl.addr == *a {
+		return sl.e
+	}
+	e := r.mvs.getOrCreateEntry(*key)
+	sl.addr, sl.e = *a, e
 	return e
 }
 
@@ -168,6 +190,7 @@ func NewParallelStateReader(base state.StateReader, mvs *MVS, rw *ReadWriteSet, 
 		mvs:     mvs,
 		rw:      rw,
 		txIndex: txIndex,
+		lastAt:  -1,
 	}
 }
 
@@ -177,14 +200,34 @@ func NewParallelStateReader(base state.StateReader, mvs *MVS, rw *ReadWriteSet, 
 func (r *ParallelStateReader) Rebind(rw *ReadWriteSet, txIndex int) {
 	r.rw = rw
 	r.txIndex = txIndex
+	r.lastAt = -1
 }
 
 func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
+	return r.readAccountIn(r.accountEntry(&key), &key)
+}
 
+// ReadAccountDataForWrite is ReadAccountData for a caller that writes the
+// account in the same transaction (the direct transfer): with
+// N42_TRANSFER_ONE_LOOKUP the account's store entry is created by the read
+// when it has none, so the read, the write and the validation all use the
+// one entry the reader resolved (an empty entry reads as an absent one).
+func (r *ParallelStateReader) ReadAccountDataForWrite(address types.Address) (*account.StateAccount, error) {
+	if !oneLookup {
+		return r.ReadAccountData(address)
+	}
+	key := LocationKey{Address: address, Field: FieldBalance}
+	return r.readAccountIn(r.accountEntryForWrite(&key), &key)
+}
+
+// readAccountIn is ReadAccountData on the account's store entry e (nil when
+// it has none).
+func (r *ParallelStateReader) readAccountIn(e *mvEntry, keyp *LocationKey) (*account.StateAccount, error) {
+	key, address := *keyp, keyp.Address
 	var deltaBuf uint256.Int
-	e := r.accountEntry(&key)
-	full, fullTx, fullInc, found, hasDelta := e.readAccount(r.txIndex, &deltaBuf)
+	full, fullTx, fullInc, found, hasDelta, n := e.readAccount(r.txIndex, -1, &deltaBuf)
+	r.lastAt = n
 	var delta *uint256.Int
 	if hasDelta {
 		delta = &deltaBuf
@@ -264,7 +307,29 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 // IgnoreBalance set; the caller must honour it.
 func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
-	if e := r.mvs.lookup(&key); e.noFullWrites() {
+	if !oneLookup {
+		return r.readIgnoringBalanceIn(r.mvs.lookup(&key), &key, false)
+	}
+	return r.readIgnoringBalanceIn(r.accountEntry(&key), &key, true)
+}
+
+// ReadAccountIgnoringBalanceForWrite is ReadAccountIgnoringBalance for a
+// caller that writes the account (ReadAccountDataForWrite).
+func (r *ParallelStateReader) ReadAccountIgnoringBalanceForWrite(address types.Address) (*account.StateAccount, error) {
+	if !oneLookup {
+		return r.ReadAccountIgnoringBalance(address)
+	}
+	key := LocationKey{Address: address, Field: FieldBalance}
+	return r.readIgnoringBalanceIn(r.accountEntryForWrite(&key), &key, true)
+}
+
+// readIgnoringBalanceIn is ReadAccountIgnoringBalance on the account's
+// store entry e (nil when it has none). reuse makes the full read use e as
+// well; otherwise it looks the entry up again (the path before
+// N42_TRANSFER_ONE_LOOKUP).
+func (r *ParallelStateReader) readIgnoringBalanceIn(e *mvEntry, keyp *LocationKey, reuse bool) (*account.StateAccount, error) {
+	key, address := *keyp, keyp.Address
+	if e.noFullWrites() {
 		base, enc, err := r.baseAccountVia(e, address)
 		if err != nil {
 			r.rw.RecordRead(key, -1, 0, true)
@@ -280,7 +345,13 @@ func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) 
 			return acc, nil
 		}
 	}
-	acc, err := r.ReadAccountData(address)
+	var acc *account.StateAccount
+	var err error
+	if reuse {
+		acc, err = r.readAccountIn(e, keyp)
+	} else {
+		acc, err = r.ReadAccountData(address)
+	}
 	if err == nil {
 		r.rw.Reads[len(r.rw.Reads)-1].IgnoreBalance = true
 	}
@@ -292,7 +363,12 @@ func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) 
 // transaction's own write to the account then skip the lookup.
 func (r *ParallelStateReader) recordAccountRead(e *mvEntry, key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value, base []byte, hadDelta bool) {
 	r.rw.RecordAccountRead(key, writerTx, writerIncarnation, fromBase, value, base, hadDelta)
-	r.rw.Reads[len(r.rw.Reads)-1].entry = e
+	rd := &r.rw.Reads[len(r.rw.Reads)-1]
+	rd.entry = e
+	if oneLookup && r.lastAt >= 0 {
+		rd.at = int32(r.lastAt) + 1
+	}
+	r.lastAt = -1
 }
 
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
@@ -364,6 +440,22 @@ func DecodeAccount(data []byte) (*account.StateAccount, error) {
 // encodeAccount encodes a StateAccount using V2 variable-length format.
 func encodeAccount(acc *account.StateAccount) ([]byte, error) {
 	return acc.MarshalV2(), nil
+}
+
+// oneLookup is N42_TRANSFER_ONE_LOOKUP (default on; "0" restores the
+// previous path): a transfer's account reads resolve each account's store
+// entry once -- through the reader's entry cache, created by the read when
+// the transaction writes the account -- and record where in the entry's
+// version list the read stood, so validation and the transaction's own
+// write try that position before a binary search.
+var oneLookup = os.Getenv("N42_TRANSFER_ONE_LOOKUP") != "0"
+
+// SetOneLookupForTest sets N42_TRANSFER_ONE_LOOKUP's switch and returns the
+// restore.
+func SetOneLookupForTest(on bool) func() {
+	prev := oneLookup
+	oneLookup = on
+	return func() { oneLookup = prev }
 }
 
 // fast2 is N42_TRANSFER_FAST2 (default on; "0" disables) on the reader's
