@@ -190,10 +190,13 @@ func TestBeforeAtMatchesSearch(t *testing.T) {
 	}
 }
 
-// TestDescriptorSizes pins the read descriptor at 128 bytes: it
-// spans two cache lines.
+// TestDescriptorSizes pins the read descriptor at 128 bytes (two cache
+// lines) and a version at 72.
 func TestDescriptorSizes(t *testing.T) {
 	if s := unsafe.Sizeof(ReadDescriptor{}); s != 128 {
 		t.Fatalf("ReadDescriptor is %d bytes, want 128", s)
+	}
+	if s := unsafe.Sizeof(versionedValue{}); s != 72 {
+		t.Fatalf("versionedValue is %d bytes, want 72", s)
 	}
 }
