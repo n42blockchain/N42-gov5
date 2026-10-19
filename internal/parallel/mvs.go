@@ -63,15 +63,19 @@ const (
 )
 
 // versionedValue is a single write to a location at a given transaction index.
+// The small fields sit together at the end so a version is 72 bytes, not
+// 80: a write into the middle of a hot recipient's list shifts the
+// versions after it.
 type versionedValue struct {
-	txIndex     int
+	txIndex int
+	value   []byte // serialized value; nil means "deleted"
+	// delta is the balance increment of a delta version (see isDelta),
+	// held by value: a pointer cost an allocation per credit.
+	delta       uint256.Int
 	incarnation uint32 // incarnation of the writing tx
-	value       []byte // serialized value; nil means "deleted"
 	// isDelta makes this version a balance increment of delta over the
-	// composition of the versions before it (value is then unused). The
-	// delta is held by value: a pointer cost an allocation per credit.
+	// composition of the versions before it (value is then unused).
 	isDelta bool
-	delta   uint256.Int
 }
 
 // mvEntry holds all versions for one location, sorted by txIndex ascending.
