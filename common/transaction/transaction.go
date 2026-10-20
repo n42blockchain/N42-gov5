@@ -7,7 +7,7 @@
 // TxData is the per-type behavioural contract (chainID, gas, value,
 // nonce, to, signature values, encode / decode) implemented by
 // each txdata struct in this package, while Transaction itself
-// caches hash / size via sync/atomic for hot-path reuse.
+// caches hash / encoding via sync/atomic for hot-path reuse.
 
 package transaction
 
@@ -18,7 +18,6 @@ import (
 	"math/big"
 	"runtime"
 	"sync/atomic"
-	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/types"
@@ -89,7 +88,9 @@ func (s TransactionsV2) EncodeIndex(i int, w *bytes.Buffer) {
 
 type Transaction struct {
 	inner TxData
-	time  time.Time
+	// There is no arrival time: nothing ever read it, and its 24 bytes
+	// (plus a clock read per decode) were paid by every decoded
+	// transaction (r35a).
 
 	// caches
 	//
@@ -99,11 +100,10 @@ type Transaction struct {
 	// transaction on every import (P14). See Hash for the claim.
 	hashState atomic.Uint32
 	// fromSlotUsed claims fromSlot (below). It sits in hashState's padding:
-	// a decoded transfer is a 480-byte slab entry, a follower decodes one
+	// a decoded transfer is a 440-byte slab entry, a follower decodes one
 	// per imported transaction, and 8 of its bytes were padding here.
 	fromSlotUsed atomic.Bool
 	hashVal      types.Hash
-	size         atomic.Value
 	from         atomic.Pointer[sigCache]
 	// fromSlot is the first sender memo's storage, claimed once through
 	// fromSlotUsed (later memos under another signer allocate).
@@ -421,7 +421,6 @@ func (tx *Transaction) ToProtoMessage() proto.Message {
 
 func (tx *Transaction) setDecoded(inner TxData, size int) {
 	tx.inner = inner
-	tx.time = time.Now()
 }
 
 // EncodedSize returns the length of the transaction's canonical Ethereum wire
@@ -433,8 +432,11 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 // again on every later build it was still pending for. The length is immutable
 // once the transaction exists, so it is computed once and cached.
 func (tx *Transaction) EncodedSize() (int, error) {
-	if s := tx.size.Load(); s != nil {
-		return s.(int), nil
+	// The length is the cached encoding's: a separate size memo was set
+	// together with it and cost every decoded transaction 16 bytes and an
+	// atomic.Value store (r35a).
+	if p := tx.enc.Load(); p != nil {
+		return len(*p), nil
 	}
 	enc, err := tx.EthEncoded()
 	if err != nil {
@@ -471,7 +473,6 @@ func (tx *Transaction) EthEncoded() ([]byte, error) {
 // will not mutate.
 func (tx *Transaction) cacheEncoded(enc []byte) {
 	tx.enc.Store(&enc)
-	tx.size.Store(len(enc))
 }
 
 // cacheEncodedOwned is cacheEncoded for a decoder that has not published tx
@@ -480,7 +481,6 @@ func (tx *Transaction) cacheEncoded(enc []byte) {
 func (tx *Transaction) cacheEncodedOwned(enc []byte) {
 	tx.encSlot = enc
 	tx.enc.Store(&tx.encSlot)
-	tx.size.Store(len(enc))
 }
 
 func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
@@ -830,7 +830,7 @@ func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, e
 	r1, _ := uint256.FromBig(r)
 	s1, _ := uint256.FromBig(s)
 	cpy.setSignatureValues(chainID, v1, r1, s1)
-	return &Transaction{inner: cpy, time: tx.time}, nil
+	return &Transaction{inner: cpy}, nil
 }
 
 func copyAddressPtr(a *types.Address) *types.Address {
