@@ -3,6 +3,9 @@ package sharedvalidator
 import (
 	"context"
 	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +33,15 @@ func (j *statusBlockingVoteJournal) JournalVote(*hotstuff.ConsensusState) error 
 }
 
 func TestStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
+	testStatusDuringBlockedVoteJournal(t, false)
+}
+
+func TestUnixStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
+	testStatusDuringBlockedVoteJournal(t, true)
+}
+
+func testStatusDuringBlockedVoteJournal(t *testing.T, unix bool) {
+	t.Helper()
 	key, err := bls.RandKey()
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +61,12 @@ func TestStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
 	voteDone := make(chan error, 1)
 	go func() {
 		voteDone <- ce.ProcessEvent(hotstuff.ConsensusEvent{Type: hotstuff.EventBlockReady, Hash: types.Hash{3}, TxRootHash: types.Hash{6}})
+	}()
+	defer func() {
+		release()
+		if err := <-voteDone; err == nil {
+			t.Error("test journal failure unexpectedly authorized a proposal")
+		}
 	}()
 	select {
 	case <-journal.entered: // JournalVote is called with the real engine mutex held.
@@ -84,11 +102,17 @@ func TestStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
 		}
 	}
 	write()
-	r := &Replica{db: db, identity: identity, engine: engine}
-	p := &Producer{replica: r, started: true, ownerQueue: &OwnerQueueBinding{Epoch: [16]byte{1}, ManifestHash: types.Hash{2}}}
+	r := &Replica{ctx: context.Background(), db: db, identity: identity, engine: engine}
+	p := &Producer{replica: r, started: true, ownerQueue: &OwnerQueueBinding{Epoch: [16]byte{1}, ManifestHash: types.Hash{2}, MaxTransactions: DefaultOwnerQueueTransactions, MaxEncodedBytes: sharedexec.MaxQueueBuildEncodedBytes}}
 	a, err := NewAPI(r, p)
 	if err != nil {
 		t.Fatal(err)
+	}
+	status := a.status
+	timeout := time.Second
+	if unix {
+		status = statusUnixClient(t, a).Status
+		timeout = 2 * time.Second
 	}
 	viewReadStarted := make(chan struct{})
 	readyDone := make(chan struct{})
@@ -103,9 +127,6 @@ func TestStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
 	defer func() {
 		release()
 		<-readyDone
-		if err := <-voteDone; err == nil {
-			t.Error("test journal failure unexpectedly authorized a proposal")
-		}
 	}()
 
 	// Change the physical progress row while the engine remains blocked. Status
@@ -117,11 +138,14 @@ func TestStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
 		err   error
 	}
 	statusDone := make(chan response, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	go func() { value, err := a.status(ctx); statusDone <- response{value, err} }()
+	go func() { value, err := status(ctx); statusDone <- response{value, err} }()
 	select {
 	case got := <-statusDone:
+		if errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatal("status waited for the unrelated engine vote journal")
+		}
 		if got.err != nil || got.value.CanonicalProgress != progress || !got.value.ProducerRunning || got.value.OwnerQueue == nil || *got.value.OwnerQueue != *p.ownerQueue {
 			t.Fatalf("status lost fresh metadata or producer binding: %+v %v", got.value, got.err)
 		}
@@ -135,4 +159,43 @@ func TestStatusRemainsFreshWhileReadinessWaitsForVoteJournal(t *testing.T) {
 		t.Fatal("readiness completed before the engine journal was released")
 	default:
 	}
+}
+
+func statusUnixClient(t *testing.T, a *API) *APIClient {
+	t.Helper()
+	// Short path avoids sockaddr_un's limit; MkdirTemp creates an owned 0700 dir.
+	dir, err := os.MkdirTemp("/tmp", "q6-status-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	socket := filepath.Join(dir, "api.sock")
+	server, listener, err := a.ListenUnix(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	client := NewAPIClient(socket, a.replica.identity)
+	t.Cleanup(func() {
+		client.Close()
+		if err := server.Close(); err != nil {
+			t.Error(err)
+		}
+		a.Stop()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Unix server exit: %v", err)
+		}
+		if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("socket survived close: %v", err)
+		}
+	})
+	if info, err := os.Stat(socket); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("Unix socket permissions: %v %v", info, err)
+	}
+	return client
 }
