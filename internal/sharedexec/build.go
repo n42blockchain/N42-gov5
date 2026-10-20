@@ -149,9 +149,17 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 	if buildErr != nil {
 		return BuildResult{}, buildErr
 	}
-	raw, marshalErr := built.Marshal()
-	if marshalErr != nil {
-		return BuildResult{}, marshalErr
+	var raw []byte
+	if prepared != nil {
+		// Preparation already encoded this unchanged unsigned candidate. Keep
+		// the response independently owned from the import authentication bytes.
+		raw = prepared.CopyUnsignedRLP()
+	} else {
+		var marshalErr error
+		raw, marshalErr = built.Marshal()
+		if marshalErr != nil {
+			return BuildResult{}, marshalErr
+		}
 	}
 	if len(raw) > MaxBlockBytes || len(raw)+len(input) > reserved {
 		return BuildResult{}, errors.New("candidate exceeds reserved payload budget")
