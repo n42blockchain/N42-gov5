@@ -16,19 +16,15 @@
 
 package transaction
 
-import (
-	"time"
-)
-
 // EthBatchDecoder decodes the Ethereum-encoded transactions of one
 // immutable buffer, such as a frame (P14).
 //
 // DecodeEthereumTransaction pays, per transaction, a Transaction, its body
 // with integers and recipient, a copy of the encoding and the encoding's
-// slice header: four allocations and a memmove, plus a clock read. A batch
+// slice header: four allocations and a memmove. A batch
 // decoder carves the Transaction and the body of the two transfer shapes the
 // fast decoder handles out of one slab per batch, aliases the encoding into
-// the caller's buffer instead of copying it, and reads the clock once.
+// the caller's buffer instead of copying it.
 //
 // Aliasing is only correct when the buffer is never modified while any
 // decoded transaction lives; frames satisfy that (the frame store, block
@@ -41,7 +37,6 @@ import (
 // decoder fills the slab entries, and anything it declines goes through the
 // general decoder.
 type EthBatchDecoder struct {
-	now  time.Time
 	left int // expected transactions not decoded yet (slab sizing)
 	dyn  []dynamicFeeEntry
 	leg  []legacyEntry
@@ -74,7 +69,6 @@ func (d *EthBatchDecoder) Reset(n int) {
 	clear(d.leg[:d.nLeg])
 	d.nDyn, d.nLeg = 0, 0
 	d.left = n
-	d.now = time.Now()
 }
 
 // DecodeAliased decodes one canonical Ethereum transaction encoding.
@@ -110,7 +104,6 @@ func (d *EthBatchDecoder) DecodeAliased(data []byte) (*Transaction, error) {
 
 func (d *EthBatchDecoder) publish(tx *Transaction, inner TxData, data []byte) *Transaction {
 	tx.inner = inner
-	tx.time = d.now
 	tx.cacheEncodedOwned(data)
 	return tx
 }

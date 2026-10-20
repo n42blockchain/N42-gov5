@@ -6,6 +6,7 @@ package transaction
 import (
 	"math/big"
 	"testing"
+	"unsafe"
 
 	"github.com/holiman/uint256"
 
@@ -46,5 +47,21 @@ func TestEncodedSizeMatchesEncoding(t *testing.T) {
 	// Second call: cached.
 	if again, err := tx.EncodedSize(); err != nil || again != got {
 		t.Fatalf("cached EncodedSize=%d err=%v, want %d", again, err, got)
+	}
+}
+
+// TestDecodedEntryLayout pins the per-transaction slab entry sizes: a
+// follower allocates one entry per imported transaction, so a field added
+// to Transaction or the fast-path bodies is paid ~1M times a second. Grow
+// these bounds only on purpose.
+func TestDecodedEntryLayout(t *testing.T) {
+	if n := unsafe.Sizeof(Transaction{}); n > 136 {
+		t.Fatalf("Transaction is %d bytes, want <= 136", n)
+	}
+	if n := unsafe.Sizeof(legacyEntry{}); n > 440 {
+		t.Fatalf("legacyEntry is %d bytes, want <= 440", n)
+	}
+	if n := unsafe.Sizeof(dynamicFeeEntry{}); n > 544 {
+		t.Fatalf("dynamicFeeEntry is %d bytes, want <= 544", n)
 	}
 }
