@@ -92,6 +92,12 @@ func decodeTx(txType uint8, b []byte, dec *transaction.EthBatchDecoder) (*transa
 // The transactions may share one allocation and alias raw (see
 // transaction.EthBatchDecoder): raw must not be modified afterwards.
 func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
+	return decodeTxsInto(raw, nil)
+}
+
+// decodeTxsInto is DecodeTxs appending to dst (nil: a slice of the frame's
+// capacity is made).
+func decodeTxsInto(raw []byte, dst []*transaction.Transaction) ([]*transaction.Transaction, int, error) {
 	var f Frame
 	if err := decodeEnvelope(raw, &f); err != nil {
 		return nil, 0, err
@@ -100,8 +106,10 @@ func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
 	if f.TxType == TxTypeEthereum && TxDecodePoolEnabled() {
 		dec = transaction.NewEthBatchDecoder(int(f.TxCount))
 	}
-	txs := make([]*transaction.Transaction, 0, f.TxCount)
-	return decodeFrameInto(&f, dec, txs)
+	if dst == nil {
+		dst = make([]*transaction.Transaction, 0, f.TxCount)
+	}
+	return decodeFrameInto(&f, dec, dst)
 }
 
 // decodeFrameInto decodes f's entries into txs while it checks the payload
@@ -164,6 +172,69 @@ func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transactio
 // concurrently for different frames and only for frames whose layout is
 // valid.
 func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []*transaction.Transaction)) ([][]*transaction.Transaction, int, error) {
+	return decodeFramesEach(frames, workers, nil, after)
+}
+
+// EnvIngestRecycle is N42_INGEST_RECYCLE: a block's frames decode straight
+// into the block's one transaction slice (DecodeFramesFlatWith) instead of
+// into a slice per frame that is copied into the block's and dropped.
+// Default on; "0" decodes per frame and concatenates, as before.
+const EnvIngestRecycle = "N42_INGEST_RECYCLE"
+
+var ingestRecycleOn atomic.Bool
+
+func init() { ingestRecycleOn.Store(os.Getenv(EnvIngestRecycle) != "0") }
+
+// IngestRecycleEnabled reports N42_INGEST_RECYCLE.
+func IngestRecycleEnabled() bool { return ingestRecycleOn.Load() }
+
+// SetIngestRecycleForTest switches N42_INGEST_RECYCLE and returns the
+// restore.
+func SetIngestRecycleForTest(on bool) func() {
+	prev := ingestRecycleOn.Swap(on)
+	return func() { ingestRecycleOn.Store(prev) }
+}
+
+// DecodeFramesFlatWith is DecodeFramesEachWith that also returns the
+// frames' transactions concatenated in frame order (flat), without a copy:
+// every frame decodes into its own window of one slice sized from the
+// frame headers, and per[i] is that window. flat is nil when some frame
+// dropped an undecodable entry (its window has a hole); the caller then
+// concatenates per as DecodeFramesEachWith's callers do. Nothing writes
+// into flat or per after the call; per[i] is capped at its window, so an
+// append to it cannot reach the next frame's transactions.
+func DecodeFramesFlatWith(frames [][]byte, workers int, after func(i int, txs []*transaction.Transaction)) (flat []*transaction.Transaction, per [][]*transaction.Transaction, dropped int, err error) {
+	offs := make([]int, len(frames)+1)
+	for i, raw := range frames {
+		h, herr := ParseHeader(raw)
+		if herr != nil {
+			// The decode reports the error for the lowest bad frame.
+			per, dropped, err = DecodeFramesEachWith(frames, workers, after)
+			return nil, per, dropped, err
+		}
+		offs[i+1] = offs[i] + int(h.TxCount)
+	}
+	all := make([]*transaction.Transaction, offs[len(frames)])
+	per, dropped, err = decodeFramesEach(frames, workers, func(i int) []*transaction.Transaction {
+		return all[offs[i]:offs[i]:offs[i+1]]
+	}, after)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if dropped != 0 {
+		return nil, per, dropped, nil
+	}
+	for i, p := range per {
+		if len(p) != offs[i+1]-offs[i] || (len(p) > 0 && &p[0] != &all[offs[i]]) {
+			return nil, per, dropped, nil
+		}
+	}
+	return all, per, dropped, nil
+}
+
+// decodeFramesEach decodes frames across workers; into(i), when non-nil,
+// is the zero-length slice frame i's transactions are appended to.
+func decodeFramesEach(frames [][]byte, workers int, into func(i int) []*transaction.Transaction, after func(i int, txs []*transaction.Transaction)) ([][]*transaction.Transaction, int, error) {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
@@ -174,7 +245,11 @@ func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []
 	drops := make([]int, len(frames))
 	errs := make([]error, len(frames))
 	one := func(i int) {
-		per[i], drops[i], errs[i] = DecodeTxs(frames[i])
+		var dst []*transaction.Transaction
+		if into != nil {
+			dst = into(i)
+		}
+		per[i], drops[i], errs[i] = decodeTxsInto(frames[i], dst)
 		if after != nil && errs[i] == nil {
 			after(i, per[i])
 		}
