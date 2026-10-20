@@ -169,6 +169,7 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 		LessFalsePositives: true,
 		IndexFile:          idxPath,
 		BaseDataID:         startBlock,
+		Salt:               sourceSaltForTest, // 0: random, as always
 		TmpDir:             etlTmpDir(),
 		// The hashes are already in memory (perBlock); a sealer segment is
 		// ~1M keys, ~50 MB to sort in memory. The etl collectors' stable
@@ -295,3 +296,7 @@ var (
 	sourceLeafSize   = uint16(4)
 	sourceBucketSize = 100
 )
+
+// sourceSaltForTest fixes the RecSplit salt so tests can compare builds
+// byte for byte; 0 (production) draws a random salt per segment.
+var sourceSaltForTest uint32
