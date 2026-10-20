@@ -407,14 +407,27 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	if fs.store != nil {
 		applied = make([]frameSenders, len(hashes))
 	}
-	per, dropped, err := frame.DecodeFramesEachWith(raws, 0, func(i int, txs []*transaction.Transaction) {
+	after := func(i int, txs []*transaction.Transaction) {
 		if applied != nil {
 			ss := fs.store.Senders(hashes[i])
 			n, d := frame.ApplySendersDeclared(txs, ss)
 			applied[i] = frameSenders{ss: ss, n: n, declared: d}
 		}
 		frame.HashTxs(txs)
-	})
+	}
+	// Under N42_INGEST_RECYCLE the frames decode into the block's slice
+	// (flat) instead of a slice per frame copied into it below.
+	var (
+		flat    []*transaction.Transaction
+		per     [][]*transaction.Transaction
+		dropped int
+		err     error
+	)
+	if frame.IngestRecycleEnabled() {
+		flat, per, dropped, err = frame.DecodeFramesFlatWith(raws, 0, after)
+	} else {
+		per, dropped, err = frame.DecodeFramesEachWith(raws, 0, after)
+	}
 	if err != nil {
 		return fmt.Errorf("frame body: block %d: %w", b.Number64().Uint64(), err)
 	}
@@ -444,9 +457,12 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 			}
 		}
 	}
-	txs := make([]*transaction.Transaction, 0, total)
-	for _, p := range per {
-		txs = append(txs, p...)
+	txs := flat
+	if txs == nil {
+		txs = make([]*transaction.Transaction, 0, total)
+		for _, p := range per {
+			txs = append(txs, p...)
+		}
 	}
 	body.Txs = txs
 	body.FrameData = raws
