@@ -9,11 +9,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,26 +49,28 @@ const unixProfileNonces = 28
 const unixProfileTransactions = 163000
 
 type unixProfileInput struct {
-	genesis    conf.Genesis
-	keys       []blscommon.SecretKey
-	senders    []types.Address
-	hashes     map[types.Address][]types.Hash
-	frames     []CorpusFrame
-	manifest   []byte
-	genesisSHA types.Hash
+	genesis        conf.Genesis
+	keys           []blscommon.SecretKey
+	senders        []types.Address
+	hashes         map[types.Address][]types.Hash
+	frames         []CorpusFrame
+	manifest       []byte
+	genesisSHA     types.Hash
+	fixtureSeedSHA types.Hash
 }
 
 type unixProfileStage struct {
-	Name             string `json:"name"`
-	GOMAXPROCSBefore int    `json:"gomaxprocs_before"`
-	GOMAXPROCSDuring int    `json:"gomaxprocs_during"`
-	GOMAXPROCSAfter  int    `json:"gomaxprocs_after"`
-	WallNS           int64  `json:"wall_ns"`
-	AllocatedBytes   uint64 `json:"allocated_bytes"`
-	Mallocs          uint64 `json:"mallocs"`
-	CPUProfile       string `json:"cpu_profile"`
-	AllocBefore      string `json:"alloc_before"`
-	AllocAfter       string `json:"alloc_after"`
+	Name              string `json:"name"`
+	GOMAXPROCSBefore  int    `json:"gomaxprocs_before"`
+	GOMAXPROCSDuring  int    `json:"gomaxprocs_during"`
+	GOMAXPROCSAfter   int    `json:"gomaxprocs_after"`
+	WallNS            int64  `json:"wall_ns"`
+	AllocatedBytes    uint64 `json:"allocated_bytes"`
+	Mallocs           uint64 `json:"mallocs"`
+	ProcessPeakRSSKiB uint64 `json:"process_peak_rss_kib_after_stage"`
+	CPUProfile        string `json:"cpu_profile"`
+	AllocBefore       string `json:"alloc_before"`
+	AllocAfter        string `json:"alloc_after"`
 }
 
 type unixProfileResult struct {
@@ -74,6 +79,7 @@ type unixProfileResult struct {
 	TPSMeasured                  bool               `json:"tps_measured"`
 	ReuseOwnBuild                bool               `json:"reuse_own_build"`
 	GOMAXPROCS                   int                `json:"gomaxprocs"`
+	FixtureSeedSHA               types.Hash         `json:"fixture_seed_sha256"`
 	GenesisSHA                   types.Hash         `json:"genesis_sha256"`
 	ManifestSHA                  types.Hash         `json:"manifest_sha256"`
 	Transactions                 int                `json:"transactions"`
@@ -94,6 +100,7 @@ type unixProfileResult struct {
 	PreparedRetainedBytes        int                `json:"prepared_retained_bytes_after_build"`
 	DuplicateWallNS              [6]int64           `json:"duplicate_wall_ns"`
 	Stages                       []unixProfileStage `json:"stages"`
+	ProcessPeakRSSKiB            uint64             `json:"process_peak_rss_kib"`
 	MDBXPolicy                   string             `json:"mdbx_policy"`
 	MDBXFlags                    uint               `json:"mdbx_actual_flags"`
 }
@@ -120,7 +127,7 @@ func unixProfileWrite(t *testing.T, path string, write func(*os.File) error) {
 func unixProfileMeasure(t *testing.T, dir, name string, out *unixProfileResult, operation func() error) {
 	t.Helper()
 	stage := unixProfileStage{Name: name, CPUProfile: name + ".cpu.pprof", AllocBefore: name + ".alloc-before.pprof", AllocAfter: name + ".alloc-after.pprof"}
-	stage.GOMAXPROCSBefore = runtime.GOMAXPROCS(36)
+	stage.GOMAXPROCSBefore = runtime.GOMAXPROCS(out.GOMAXPROCS)
 	defer runtime.GOMAXPROCS(stage.GOMAXPROCSBefore)
 	if stage.GOMAXPROCSBefore != 2 {
 		t.Fatal("profile setup/validation must use GOMAXPROCS=2")
@@ -142,6 +149,7 @@ func unixProfileMeasure(t *testing.T, dir, name string, out *unixProfileResult, 
 		return err
 	})
 	stage.AllocatedBytes, stage.Mallocs = after.TotalAlloc-before.TotalAlloc, after.Mallocs-before.Mallocs
+	stage.ProcessPeakRSSKiB = unixProfilePeakRSS(t)
 	runtime.GC()
 	unixProfileWrite(t, filepath.Join(dir, stage.AllocAfter), func(f *os.File) error { return pprof.Lookup("allocs").WriteTo(f, 0) })
 	runtime.GOMAXPROCS(stage.GOMAXPROCSBefore)
@@ -153,6 +161,10 @@ func unixProfileMeasure(t *testing.T, dir, name string, out *unixProfileResult, 
 func unixProfileMakeInput(t *testing.T) unixProfileInput {
 	t.Helper()
 	var in unixProfileInput
+	seed := os.Getenv("GOV5_UNIX_PROFILE_SEED")
+	if seed != "" {
+		in.fixtureSeedSHA = types.Hash(sha256.Sum256([]byte(seed)))
+	}
 	raw, err := os.ReadFile("../../scripts/gov5-perf/isolated-chain.json")
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +193,14 @@ func unixProfileMakeInput(t *testing.T) unixProfileInput {
 	in.hashes = make(map[types.Address][]types.Hash)
 	private := make([]*ecdsa.PrivateKey, unixProfileSenders)
 	for i := range private {
-		private[i], err = crypto.GenerateKey()
+		if seed == "" {
+			private[i], err = crypto.GenerateKey()
+		} else {
+			// Public deterministic test material makes independent A/B/A process
+			// inputs identical. These keys must never leave this fresh fixture.
+			key := sha256.Sum256([]byte(fmt.Sprintf("gov5/unix-profile-test-only/ecdsa/%s/%d", seed, i)))
+			private[i], err = crypto.ToECDSA(key[:])
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +213,13 @@ func unixProfileMakeInput(t *testing.T) unixProfileInput {
 		in.genesis.Alloc[address] = conf.GenesisAccount{Balance: "0x1000000000000000000000000000000"}
 	}
 	for i := 0; i < 7; i++ {
-		key, err := bls.RandKey()
+		var key blscommon.SecretKey
+		if seed == "" {
+			key, err = bls.RandKey()
+		} else {
+			ikm := sha256.Sum256([]byte(fmt.Sprintf("gov5/unix-profile-test-only/bls/%s/%d", seed, i)))
+			key, err = bls.SecretKeyFromRandom32Byte(ikm)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -331,6 +356,50 @@ func unixProfileChain(t *testing.T, dir string, in unixProfileInput) (*internal.
 	return chain, leader, header
 }
 
+func unixProfilePeakRSS(t *testing.T) uint64 {
+	t.Helper()
+	raw, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "VmHWM:" && fields[2] == "kB" {
+			value, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+	}
+	t.Fatal("process peak RSS is unavailable")
+	return 0
+}
+
+func unixProfileSocket(t *testing.T, server *Server) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "execute.sock")
+	httpServer, listener, err := server.ListenUnix(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := httpServer.Handler
+	// Newly spawned workers inherit their RPC label. Pre-existing workers
+	// may be unlabelled; inspect their call stacks separately from commit.
+	httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pprof.Do(r.Context(), pprof.Labels("gov5_rpc", r.URL.Path), func(ctx context.Context) {
+			handler.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	go func() { _ = httpServer.Serve(listener) }()
+	t.Cleanup(func() { _ = httpServer.Close(); server.Close() })
+	return socket
+}
+
 func TestUnix163kOperationProfile(t *testing.T) {
 	dir := os.Getenv("GOV5_UNIX_PROFILE_DIR")
 	if dir == "" {
@@ -344,6 +413,18 @@ func TestUnix163kOperationProfile(t *testing.T) {
 			t.Fatalf("profile refuses MDBX environment override %s", name)
 		}
 	}
+	profileCores := 36
+	if raw := os.Getenv("GOV5_UNIX_PROFILE_GOMAXPROCS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || (value != 2 && value != 36) {
+			t.Fatal("profile GOMAXPROCS must be 2 or 36")
+		}
+		profileCores = value
+	}
+	mode := os.Getenv("GOV5_UNIX_PROFILE_MODE")
+	if mode != "" && mode != "strict-import" && mode != "reuse-own-build" {
+		t.Fatal("unknown profile mode")
+	}
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -356,18 +437,23 @@ func TestUnix163kOperationProfile(t *testing.T) {
 		if reuse {
 			name = "reuse-own-build"
 		}
-		t.Run(name, func(t *testing.T) { results = append(results, unixProfileMode(t, filepath.Join(dir, name), in, reuse)) })
+		if mode != "" && mode != name {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			results = append(results, unixProfileMode(t, filepath.Join(dir, name), in, reuse, profileCores))
+		})
 		if t.Failed() {
 			return
 		}
 	}
-	if results[0].BlockHash != results[1].BlockHash || results[0].GenesisSHA != results[1].GenesisSHA || results[0].ManifestSHA != results[1].ManifestSHA || results[0].Root != results[1].Root || results[0].ReceiptHash != results[1].ReceiptHash || results[0].GasUsed != results[1].GasUsed || results[0].AccountVectorSHA != results[1].AccountVectorSHA {
+	if len(results) == 2 && (results[0].BlockHash != results[1].BlockHash || results[0].GenesisSHA != results[1].GenesisSHA || results[0].ManifestSHA != results[1].ManifestSHA || results[0].Root != results[1].Root || results[0].ReceiptHash != results[1].ReceiptHash || results[0].GasUsed != results[1].GasUsed || results[0].AccountVectorSHA != results[1].AccountVectorSHA) {
 		t.Fatal("strict and reuse modes produced different actual execution state")
 	}
 	unixProfileWrite(t, filepath.Join(dir, "profile-result.json"), func(f *os.File) error { return json.NewEncoder(f).Encode(results) })
 }
 
-func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool) unixProfileResult {
+func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, profileCores int) unixProfileResult {
 	t.Helper()
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -396,7 +482,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool) 
 			t.Fatalf("profile preload: %+v %v", ack, err)
 		}
 	}
-	socket := startExecutionSocket(t, server)
+	socket := unixProfileSocket(t, server)
 	client := NewClient(socket, server.Identity())
 	defer client.Close()
 	prepared, err := block.NewBlock(header, nil).Marshal()
@@ -404,7 +490,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool) 
 		t.Fatal(err)
 	}
 	request := QueueBuildRequest{Identity: server.Identity(), Epoch: status.Epoch, PreparedHash: crypto.Keccak256Hash(prepared), PreparedRLP: prepared, MaxTransactions: unixProfileTransactions, MaxEncodedBytes: 32 << 20}
-	out := unixProfileResult{Kind: "gov5-independent-unix-single-block-profile-v1", ReuseOwnBuild: reuse, GOMAXPROCS: 36, GenesisSHA: in.genesisSHA, ManifestSHA: types.Hash(sha256.Sum256(in.manifest)), Senders: unixProfileSenders, Preloaded: unixProfileSenders * unixProfileNonces, MDBXPolicy: "durable/no-readahead; merge=32768; map=8GiB; growth=256MiB; independent fresh DB; no env overrides"}
+	out := unixProfileResult{Kind: "gov5-independent-unix-single-block-profile-v1", ReuseOwnBuild: reuse, GOMAXPROCS: profileCores, FixtureSeedSHA: in.fixtureSeedSHA, GenesisSHA: in.genesisSHA, ManifestSHA: types.Hash(sha256.Sum256(in.manifest)), Senders: unixProfileSenders, Preloaded: unixProfileSenders * unixProfileNonces, MDBXPolicy: "durable/no-readahead; merge=32768; map=8GiB; growth=256MiB; independent fresh DB; no env overrides"}
 	out.MDBXFlags, err = chain.DB().(*mdbx.MdbxKV).Env().Flags()
 	if err != nil {
 		t.Fatal(err)
@@ -548,6 +634,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool) 
 	out.Pending = status.PendingTransactions
 	out.AccountVectorSHA = unixProfileValidate(t, client, chain, in, signed, status)
 	out.Passed = true
+	out.ProcessPeakRSSKiB = unixProfilePeakRSS(t)
 	unixProfileWrite(t, filepath.Join(dir, "result.json"), func(f *os.File) error { return json.NewEncoder(f).Encode(out) })
 	return out
 }
