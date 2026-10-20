@@ -55,6 +55,15 @@ func (p *PreparedUnsignedCandidate) RetainedBytes() int {
 	return p.bytes
 }
 
+// CopyUnsignedRLP returns an owned copy of the already encoded candidate.
+// The private bytes remain immutable for ImportPreparedCandidate authentication.
+func (p *PreparedUnsignedCandidate) CopyUnsignedRLP() []byte {
+	if p == nil {
+		return nil
+	}
+	return append([]byte(nil), p.unsigned...)
+}
+
 func (bc *BlockChain) prepareUnsignedCandidate(b *block.Block, result rawdb.ExecutedResult, ibs *state.IntraBlockState, receipts []*block.Receipt, nopay map[types.Address]*uint256.Int, parentRoot types.Hash) (*PreparedUnsignedCandidate, error) {
 	root, err := state.PrepareRootReplay(ibs)
 	if err != nil {
