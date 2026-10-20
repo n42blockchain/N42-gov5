@@ -24,7 +24,9 @@ package state
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -205,8 +207,23 @@ func prepareHistoryMap(tx kv.Tx, bucket string, m map[string]*roaring64.Bitmap, 
 	}
 	sort.Strings(keys)
 	buf := bytes.NewBuffer(nil)
+	var lr *lastChunkReader
+	if HistoryCheapPrepare {
+		c, err := tx.Cursor(bucket)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		lr = &lastChunkReader{c: c}
+	}
 	for _, k := range keys {
-		index, err := bitmapdb.Get64(tx, bucket, []byte(k), math.MaxUint32, math.MaxUint32)
+		var index *roaring64.Bitmap
+		var err error
+		if lr != nil {
+			index, err = lr.get([]byte(k))
+		} else {
+			index, err = bitmapdb.Get64(tx, bucket, []byte(k), math.MaxUint32, math.MaxUint32)
+		}
 		if err != nil {
 			return err
 		}
@@ -223,4 +240,55 @@ func prepareHistoryMap(tx kv.Tx, bucket string, m map[string]*roaring64.Bitmap, 
 		}
 	}
 	return nil
+}
+
+// HistoryCheapPrepare selects the cheaper read side of Prepare (N42_BG_CHEAP,
+// default on; "0" restores bitmapdb.Get64 per key). Both read the same
+// chunks and build the same bitmaps, so the rows are identical; the cheap
+// path keeps one cursor for the whole sorted key walk instead of opening and
+// closing one per key, and takes the common single last chunk as decoded
+// instead of cloning it through FastOr out of a pooled bitmap.
+var HistoryCheapPrepare = os.Getenv("N42_BG_CHEAP") != "0"
+
+// lastChunkReader is bitmapdb.Get64(tx, bucket, key, MaxUint32, MaxUint32)
+// over one reused cursor.
+type lastChunkReader struct {
+	c   kv.Cursor
+	key []byte
+}
+
+func (r *lastChunkReader) get(key []byte) (*roaring64.Bitmap, error) {
+	r.key = append(append(r.key[:0], key...), 0, 0, 0, 0, 0, 0, 0, 0)
+	binary.BigEndian.PutUint64(r.key[len(key):], math.MaxUint32)
+	var first *roaring64.Bitmap
+	var rest []*roaring64.Bitmap
+	for k, v, err := r.c.Seek(r.key); k != nil; k, v, err = r.c.Next() {
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.HasPrefix(k, key) {
+			break
+		}
+		bm := roaring64.New()
+		if _, err := bm.ReadFrom(bytes.NewReader(v)); err != nil {
+			return nil, err
+		}
+		if first == nil {
+			first = bm
+		} else {
+			rest = append(rest, bm)
+		}
+		if len(k) >= 8 && binary.BigEndian.Uint64(k[len(k)-8:]) >= math.MaxUint32 {
+			break
+		}
+	}
+	switch {
+	case first == nil:
+		return roaring64.New(), nil
+	case len(rest) == 0:
+		// FastOr of one bitmap is its Clone; this one is ours already.
+		return first, nil
+	default:
+		return roaring64.FastOr(append([]*roaring64.Bitmap{first}, rest...)...), nil
+	}
 }
