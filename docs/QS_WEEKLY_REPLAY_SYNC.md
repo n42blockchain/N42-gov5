@@ -59,6 +59,41 @@ Weekly order:
    `qmdbRoot` lines.
 4. Seal / emit-hot / txindex / re-seed as in Steps 2b-3.
 
+### Step 0 commands (items 1 and 2)
+
+Sync (item 1). Run from `D:\mainnet`: the datadir is the relative `./mainnet`, and
+started from any other directory the node creates a new empty datadir there
+(`D:\mainnet\n42q.bat` is the same command).
+
+```powershell
+$env:N42_BLOCK_ONLY_SYNC = '1'          # block-only sync, no state execution
+Start-Process D:\mainnet\n42q.exe -WorkingDirectory D:\mainnet -WindowStyle Hidden -ArgumentList `
+  '--data.dir','./mainnet','--chain','mainnet_compat', `
+  '--p2p.tcp-port','10186','--p2p.udp-port','10185','--p2p.min-sync-peers','1', `
+  '--p2p.bootstrap-node','enr:-Je4QGJb6IZbaceKodV55AtTd9oxwiqeVeZ1LwHA9MId-k8XAsKAAyxTi_Pf_nkRTuH-vQnICSLg2Uu_PmG3Vwx8eaIChmFzdEVucoQThzS3gmlkgnY0gmlwhAWhUVqJc2VjcDI1NmsxoQICbV6ssdll4ktSNrWY2FaYTFjio7WqVJLSPNwJMv2SBYN0Y3CCJ2aDdWRwgidl', `
+  '--log.level','info' `
+  -RedirectStandardOutput D:\mainnet\resync-<date>.log -RedirectStandardError D:\mainnet\resync-<date>.err
+```
+
+- Caught up when the log shows `currentNr=<N> highestExpectedBlockNr=<N>` with the
+  two equal; `<N>` is the week's baseline. Then stop it: `C:\N42\sendbreak.exe <pid>`.
+  Do not use `taskkill /F`; `sendbreak.exe` exits with code 58, which is its own convention.
+- Do not run `n42q.exe version` from this directory to check it: it does not exit.
+- 2026-10-14: 13,612,974 -> 14,066,100; `mainnet/chaindata/mdbx.dat` 45,097,156,608 B.
+
+Copy to Linux (item 2). Only after the sync is stopped. From git bash, never a
+PowerShell pipeline (it re-encodes the stream):
+
+```bash
+S=/d/mainnet/mainnet/chaindata/mdbx.dat
+D=/data/blockchain/mainnet-source-<date>
+ssh n42@192.168.0.166 "mkdir -p $D/chaindata"
+scp "$S" n42@192.168.0.166:$D/chaindata/mdbx.dat.part       # ~118 MB/s measured
+md5sum "$S"                                                   # Windows side
+ssh n42@192.168.0.166 "stat -c %s $D/chaindata/mdbx.dat.part; md5sum $D/chaindata/mdbx.dat.part"
+ssh n42@192.168.0.166 "mv -T $D/chaindata/mdbx.dat.part $D/chaindata/mdbx.dat"   # only if size and md5 match
+```
+
 ### Why: folding fleet blocks forks the base, silently
 
 Step 2 below passes `--source E:/qs-node0` — a FLEET NODE. The fleet produces
@@ -215,6 +250,8 @@ foreach ($i in 0..6) { $p = (Get-Content E:\qs-node$i\n42.pid).Split()[0]; sendb
 
 Wait until all 7 exit (`wmic process where "name like 'n42%'" get ProcessId`).
 CTRL_BREAK only — a hard kill truncates MDBX spill and poisons the undo layer.
+`n42 stop --data.dir E:\qs-nodeN --timeout 2m` does the same from the node's own
+`n42.pid` (`--pid <id>` overrides; default timeout 2m).
 
 Record the converged stop state (all 7 must agree):
 
@@ -264,6 +301,34 @@ its hash must equal the target canonical hash at that height. Also require
 per-batch `qmdbRoot` lines and no errors. The separate source and target fields
 prevent a source number from being paired with a target hash.
 
+`replay-v2` flags (`n42 replay-v2 --help`), those that matter for this chain. Any
+flag not listed stays at its default; the defaults of `--chain` (`mainnet_v2`) and
+`--tree` (`jmt`) are NOT this chain's, so both must always be passed.
+
+| Flag | Value used | Meaning |
+|---|---|---|
+| `--source` / `--target` | datadir roots | source old mainnet; target base (resume point lives in the target DB) |
+| `--chain` | `mainnet_qmdb_staggered` | required |
+| `--tree` | `qmdb` | required (`jmt`, `bmt`, `mpt`, `trie` also exist) |
+| `--qmdb-undo-window` | 64 (default) | per-block undo records for the last N blocks; 0 disables |
+| `--qmdb-history` | off (default); on for Step 0c | full-history layer for any-height proofs; empty target only |
+| `--fill-gaps` | true | fill timeline gaps with empty blocks |
+| `--gap-period` / `--gap-tolerance` | 8 / 15 s | fill period and the gap that triggers it |
+| `--gap-max` | 10000 | cap on synthetic blocks per gap (`cappedAt=10000` warning when hit) |
+| `--compact-headers`, `-txs`, `-receipts`, `-logs`, `-bodies` | true | compact storage codecs |
+| `--virtual-td` | true | skip all-zero TD rows |
+| `--batch` | 100000 | blocks per MDBX commit |
+| `--from` / `--to` | 0 / 0 | do not override the resume point; `--to 0` = source head |
+| `--snapshot-at-end` | true | create a snapshot after the replay |
+| `--output` | stats JSON path | overwrites; use a dated name |
+| `--log` | structured log path | per-batch `qmdbRoot` lines |
+| `--pprof.port` | 0 | >0 serves pprof |
+
+Environment: `N42_ETL_TMPDIR=D:/etl-tmp` (ETL temp must not land on the system
+drive). Not used on this chain: `--bls-reseal` (+ `--bls-seed`, `--bls-pool-size`,
+`--bls-committee`, `--bls-ramp-blocks`), `--verify-mpt`, `--auto-topup`,
+`--export-era`, `--leaf-journal`.
+
 ## Step 2b — seal eras + emit the hot layout (since 2026-08-15)
 
 The fleet now boots from the **era layout** (docs/QS_ANCIENT_ERA_DESIGN.md):
@@ -286,6 +351,21 @@ Copy-Item E:\qs-replay-v4\checkpoint.json E:\qs-era-out\checkpoint.json
 GATE: verify prints `deep verify OK`; `SEAL_DONE.json` head == Step 2's
 target head. 2026-08-15 first run: 13 eras / 39 files / 17 GB sealed in
 ~13 min, hot MDBX 8.0 GB (was 49 GB), deep verify 832 blocks clean.
+
+Parameters (`C:\N42\n42-ancient-seal.exe`, `C:\N42\n42-ancient.exe`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `n42-ancient-seal --source` | required | datadir or chaindata path, read-only |
+| `--out` | required | output dir (gets `ancient-era/` and `chaindata/`) |
+| `--seal` / `--emit-hot` | — | phase 1 (era files) / phase 2 (hot chaindata copy); the runbook runs them as separate commands |
+| `--span` | 1048576 | blocks per era (power-of-two multiple of 64) |
+| `--threshold` | 90000 | blocks behind head that stay hot |
+| `--commit-rows` | 2000000 | hot copy: commit interval in rows |
+| `--creator` | `n42-ancient-seal/1` | descriptive tag |
+| `n42-ancient <ls\|verify\|fetch\|prune> --dir` | required | era store directory |
+| `verify --deep --source <chaindata> --sample N` | sample 64 | cross-read N blocks per era against the base |
+| `prune --class exec\|aux --before-era N` | — | future knob, see above |
 
 - `--emit-hot` restarts from scratch if interrupted (safe); `--seal`
   resumes per era file.
@@ -330,6 +410,23 @@ GATE: `E:\qs-era-out\txindex` contains `txindex.NNNN.cdat` + `.cidx` +
 `.ranges`, and `txindex-watermark --db E:\qs-era-out\chaindata` reports the
 range start. 2026-08-16 first run: 22 MB covering 13,631,488 → 14,323,711.
 
+`E:\build-seed-txindex.ps1` parameters: `-Seed` (default `E:\qs-era-out`), `-Scratch`
+(`E:\qs-seedidx`), `-Bin` (default is a stale binary: always pass the current
+`n42-v5.7.<latest>.exe`), `-From` (0 = the era `sealed_end` in `SEAL_DONE.json`),
+`-TimeoutMin` (90). Inside, it runs an indexer node on the scratch copy with:
+
+```
+--chain mainnet_qmdb_staggered --profile n42 --data.dir <Scratch>
+--p2p.no-discovery --p2p.min-sync-peers 0 --p2p.local-ip 127.0.0.1 --p2p.host-ip 127.0.0.1
+--p2p.tcp-port 32100 --p2p.udp-port 33100
+--http --http.addr 127.0.0.1 --http.port 20100 --http.api eth,web3,net
+```
+
+with `N42_TXINDEX_TAIL=1`, `N42_MDBX_MAPSIZE_GB=128`; completion signal is the log line
+`txindex tail enabled`. `C:\N42\txindex-watermark.exe --db <chaindata> [--set N | --clear]`
+reads, sets or clears the start watermark (no flag = read). Linux twin:
+`scripts/qs/build-seed-txindex.sh [--seed DIR] [--scratch DIR] [--bin PATH] [--from N] [--timeout-min N]`.
+
 ## Step 3 — re-seed the fleet on the extended base
 
 ```powershell
@@ -347,6 +444,49 @@ pwsh -File E:\deploy-7node.ps1 -Data E:\qs-era-out -Bin C:\N42\N42-gov5\build\bi
 - The replay base carries no HotStuff journal, so the new fleet starts
   consensus fresh from the replayed head — equivalent to a clean
   hotstuff-reset; no extra reset step needed.
+
+`E:\deploy-7node.ps1` parameters: `-Data` (seed dir to copy), `-Bin` (node binary),
+`-ValMd` (default `E:\qs-validators.md`, BLS keys, never committed), `-NodeRoot`
+(default `E:\qs-node`, giving `E:\qs-node0..6`), `-TxGenMax` (default 31 simulated
+txs per block; 0 = off). Environment it sets for every node: `N42_MDBX_MAPSIZE_GB=128`,
+`N42_TXINDEX_TAIL=1`. Per node `i` (0..6) the arguments are:
+
+```
+--chain mainnet_qmdb_staggered --profile n42 --data.dir E:\qs-node<i>
+--engine.miner --engine.etherbase <validator i address>
+--p2p.no-discovery --p2p.local-ip 127.0.0.1 --p2p.host-ip 127.0.0.1
+--p2p.tcp-port <32000+i> --p2p.udp-port <33000+i> --p2p.min-sync-peers 0
+--http --http.addr 127.0.0.1 --http.port <20012+i> --http.api eth,web3,net
+--mobileverify.http 127.0.0.1:<21012+i>
+--pprof --pprof.port <6090+i> --pprof.mutex --pprof.block
+--p2p.peer /ip4/127.0.0.1/tcp/<32000+j>/p2p/<peer id j>      (for every j != i)
+node 0 only, when -TxGenMax > 0:  --dev.txgen --dev.txgen.max <TxGenMax> --dev.txgen.key <dev faucet key>
+```
+
+The 7 peer IDs and the fixed libp2p network keys (`11…`, `22…`, … `77…`, 32 bytes each)
+are in the script; the faucet key is keccak("n42-dev-faucet-v1") and is not
+reproduced here. The script also writes `keystore\bls_<address>.key` and
+`network-keys` into each node dir after seeding, and starts each node hidden with
+output in `E:\qs-node<i>\run.log` / `run.err`.
+
+Rolling one node onto a new binary (verify convergence before the next):
+
+```powershell
+pwsh -File E:\roll-one-node.ps1 -Node 3 -Bin C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe
+# also: -ValMd E:\qs-validators.md  -NodeRoot E:\qs-node  -SendBreak C:\N42\sendbreak.exe  -TxGenMax 31
+```
+
+It takes its environment from `deploy-7node.ps1`'s `$env:` lines, never from its own copy.
+
+Linux counterparts in `scripts/qs/`: `stop-fleet.sh [--timeout S] [--no-inspect]`,
+`deploy-7node.sh [--data DIR] [--bin PATH] [--txgen-max N]`,
+`roll-one-node.sh --node N [--bin PATH] [--txgen-max N]`; all source `qs-env.sh`
+(layout and levers: `QS_ROOT`, `QS_SEED`, `QS_BASE`, `QS_BIN`, `QS_TOOLS`,
+`QS_VALIDATORS`, `N42_DEV_FAUCET_KEY`; ports `QS_TCP_BASE` 32000, `QS_UDP_BASE`
+33000, `QS_HTTP_BASE` 20012, `QS_MOBILE_BASE` 21012, `QS_PPROF_BASE` 6090). One Linux-only
+setup: `sudo sysctl -w net.ipv4.ip_local_reserved_ports=33000-33006` and
+`ulimit -n 65536`. Note that `scripts/qs/README.md` still names the stopped fleet's
+`qs-node0` as the weekly replay source; Step 0 above overrides it (old mainnet only).
 
 ## Step 4 — acceptance
 
