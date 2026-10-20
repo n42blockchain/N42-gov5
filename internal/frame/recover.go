@@ -268,17 +268,21 @@ func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int,
 	}
 	ss := &store.Senders{Signer: signer, Addrs: make([]types.Address, len(txs))}
 	failed := 0
-	for i, tx := range txs {
-		if tx == nil {
-			failed++
-			continue
+	// SendersBatch is signer.Sender per transaction, its Keccak steps four
+	// at a time; chunks keep the error slots on the stack.
+	const chunk = 64
+	var errs [chunk]error
+	for lo := 0; lo < len(txs); lo += chunk {
+		hi := min(lo+chunk, len(txs))
+		clear(errs[:])
+		part := txs[lo:hi]
+		transaction.SendersBatch(signer, part, ss.Addrs[lo:hi], errs[:len(part)])
+		for j, tx := range part {
+			if tx == nil || errs[j] != nil {
+				ss.Addrs[lo+j] = types.Address{}
+				failed++
+			}
 		}
-		addr, err := signer.Sender(tx)
-		if err != nil {
-			failed++
-			continue
-		}
-		ss.Addrs[i] = addr
 	}
 	if rd != nil {
 		// Nothing below holds a transaction: Sender returned and only the
