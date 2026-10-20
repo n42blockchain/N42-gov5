@@ -269,9 +269,7 @@ func (p *Producer) loop() {
 		if !p.replica.engine.IsCurrentLeader() {
 			continue
 		}
-		p.mu.Lock()
-		ready := p.published != p.replica.engine.Engine().CurrentView() && time.Since(p.lastProduced) >= p.interval
-		p.mu.Unlock()
+		ready := p.readyForProduction(p.replica.engine.Engine().CurrentView)
 		if !ready {
 			continue
 		}
@@ -294,6 +292,16 @@ func (p *Producer) loop() {
 		}
 		p.mu.Unlock()
 	}
+}
+
+// Read the engine view before taking the producer mutex: the engine may be
+// waiting for its durable vote journal while status only needs producer fields.
+// Produce still revalidates the view and leadership before building/proposing.
+func (p *Producer) readyForProduction(currentView func() hotstuff.ViewNumber) bool {
+	view := currentView()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.published != view && time.Since(p.lastProduced) >= p.interval
 }
 
 func candidateKey(view hotstuff.ViewNumber) []byte {
