@@ -127,11 +127,8 @@ func decodeFrameInto(f *Frame, dec *transaction.EthBatchDecoder, txs []*transact
 // skipped). Called on a decode worker right after the decode (see
 // DecodeFramesEachWith) it hashes encodings and objects still in cache.
 func HashTxs(txs []*transaction.Transaction) {
-	for _, tx := range txs {
-		if tx != nil {
-			tx.Hash()
-		}
-	}
+	// tx.Hash() on each, single-block encodings four at a time.
+	transaction.HashBatch(txs)
 }
 
 // DecodeFrames decodes frames across up to workers goroutines (<= 0 means
