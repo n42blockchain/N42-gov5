@@ -39,6 +39,10 @@ type resumeSourceFixture struct {
 func makeResumeSourceFixture(t *testing.T) resumeSourceFixture {
 	t.Helper()
 	f := resumeSourceFixture{root: t.TempDir(), keys: make([]*ecdsa.PrivateKey, 4)}
+	// TempDir's child permissions depend on umask; the source requires 0700.
+	if err := os.Chmod(f.root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	seed := make([]byte, 32)
 	for candidate := 1; ; candidate++ {
 		seed[0] = byte(candidate)
