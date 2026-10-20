@@ -181,21 +181,39 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	// frame, while its transactions are still in that worker's cache; the
 	// build recovers the senders that were not cached.
 	applied := make([]int, len(pick.raws))
-	per, dropped, err := frame.DecodeFramesEachWith(pick.raws, 0, func(i int, txs []*transaction.Transaction) {
+	after := func(i int, txs []*transaction.Transaction) {
 		applied[i] = frame.ApplySenders(txs, st.Senders(pick.hashes[i]))
 		frame.HashTxs(txs)
-	})
+	}
+	// Under N42_INGEST_RECYCLE the frames decode into one slice (decoded)
+	// instead of a slice per frame copied into flat below.
+	var (
+		decoded []*transaction.Transaction
+		per     [][]*transaction.Transaction
+		dropped int
+		err     error
+	)
+	if frame.IngestRecycleEnabled() {
+		decoded, per, dropped, err = frame.DecodeFramesFlatWith(pick.raws, 0, after)
+	} else {
+		per, dropped, err = frame.DecodeFramesEachWith(pick.raws, 0, after)
+	}
 	if err != nil {
 		// Admitted frames passed the layout check; this cannot happen
 		// short of memory corruption, and is not worth a block.
 		log.Error("miner: frame decode failed", "err", err)
 		return nil
 	}
-	flat := make([]*transaction.Transaction, 0, pick.txs)
+	flat := decoded
+	if flat == nil {
+		flat = make([]*transaction.Transaction, 0, pick.txs)
+	}
 	cachedSenders := 0
 	for i, p := range per {
 		cachedSenders += applied[i]
-		flat = append(flat, p...)
+		if decoded == nil {
+			flat = append(flat, p...)
+		}
 	}
 	internal.CountLocalFillRecovered(len(flat) - cachedSenders)
 	dDecode := time.Since(tDecode)
