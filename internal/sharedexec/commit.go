@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -119,32 +118,17 @@ func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitReque
 	if err := s.ctx.Err(); err != nil {
 		return CommitResult{}, false, err
 	}
-	var b *block.Block
 	var duplicate bool
-	if certificate != nil {
-		phases.phase("stored_header_read")
-	} else {
-		phases.phase("stored_block_read")
-	}
+	phases.phase("stored_header_read")
 	err = s.chain.DB().View(ctx, func(tx kv.Tx) error {
-		var err error
-		if certificate != nil {
-			header, readErr := rawdb.ReadHeaderByHash(tx, request.BlockHash)
-			if readErr != nil {
-				return readErr
-			}
-			if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Hash() != request.BlockHash || header.Number.Uint64() != request.Number || header.ParentHash != request.ParentHash {
-				return errors.New("commit stored header identity mismatch or missing header")
-			}
-		} else {
-			b, err = rawdb.ReadBlockByHash(tx, request.BlockHash)
-			if err != nil {
-				return err
-			}
-			if b == nil || b.Hash() != request.BlockHash || b.Number64().Uint64() != request.Number || b.ParentHash() != request.ParentHash {
-				return errors.New("commit stored block identity mismatch or missing block")
-			}
+		header, readErr := rawdb.ReadHeaderByHash(tx, request.BlockHash)
+		if readErr != nil {
+			return readErr
 		}
+		if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Hash() != request.BlockHash || header.Number.Uint64() != request.Number || header.ParentHash != request.ParentHash {
+			return errors.New("commit stored header identity mismatch or missing header")
+		}
+
 		head := rawdb.ReadHeadBlockHash(tx)
 		number := rawdb.ReadHeaderNumber(tx, head)
 		if number == nil {
@@ -226,31 +210,13 @@ func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitReque
 		}
 	}
 	if !certifiedDuplicate {
-		if certificate != nil {
-			phases.phase("stored_block_read")
-			if err := s.chain.DB().View(ctx, func(tx kv.Tx) error {
-				var readErr error
-				b, readErr = rawdb.ReadBlockByHash(tx, request.BlockHash)
-				if readErr != nil {
-					return readErr
-				}
-				if b == nil || b.Hash() != request.BlockHash || b.Number64() == nil || !b.Number64().IsUint64() || b.Number64().Uint64() != request.Number || b.ParentHash() != request.ParentHash {
-					return errors.New("commit stored block identity mismatch or missing block")
-				}
-				return nil
-			}); err != nil {
-				return CommitResult{}, false, err
-			}
-		}
-		phases.transactions = len(b.Transactions())
 		phases.phase("durable_evidence")
-		verified, verifyErr := s.durable(b)
+		transactions, verifyErr := s.durableStoredCommit(request)
 		if verifyErr != nil {
 			return CommitResult{}, false, verifyErr
 		}
-		if verified == nil {
-			return CommitResult{}, false, errors.New("commit requires actual durable execution")
-		}
+		phases.transactions = transactions
+
 		phases.phase("ingress_gate")
 		if q := s.ingress; q != nil {
 			q.mu.Lock()
