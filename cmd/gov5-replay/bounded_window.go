@@ -54,6 +54,7 @@ type boundedWindowResult struct {
 	CanonicalTPS                 *float64                       `json:"canonical_committed_executed_tps,omitempty"`
 	CorpusAvailableThroughWindow bool                           `json:"corpus_available_through_window"`
 	DrainedCanonicalCount        uint64                         `json:"drained_canonical_count"`
+	DrainFailure                 *boundedDrainFailure           `json:"drain_failure,omitempty"`
 	Stream                       boundedStreamSample            `json:"stream_final"`
 	Budget                       boundedSenderBudgetSample      `json:"sender_lifetime_budget"`
 	Prefix                       []strictShardProgress          `json:"consumed_prefixes"`
@@ -415,6 +416,7 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 		current, err := owner.StrictIngressStatus(probe)
 		cancel()
 		if err != nil {
+			result.DrainFailure = boundedDrainFailureAt(ctx, drain, "owner_status", err)
 			return err
 		}
 		if current.Identity != p.Identity || current.ManifestHash != p.ManifestSHA256 || current.Epoch != epoch || current.NewlyAdmitted != result.Stream.Admitted {
@@ -422,9 +424,11 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 		}
 		sample, err := observe(drain)
 		if err != nil {
+			result.DrainFailure = boundedDrainFailureAt(ctx, drain, "validator_status", err)
 			return err
 		}
 		if err := drain.Err(); err != nil {
+			result.DrainFailure = boundedDrainFailureAt(ctx, drain, "final_observation", err)
 			return errors.New("bounded drain deadline exceeded during final observation")
 		}
 		result.OwnerFinal = current
@@ -438,6 +442,7 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 		}
 		select {
 		case <-drain.Done():
+			result.DrainFailure = boundedDrainFailureAt(ctx, drain, "wait", drain.Err())
 			return errors.New("bounded acknowledged prefix did not drain before deadline")
 		case <-time.After(100 * time.Millisecond):
 		}
