@@ -125,6 +125,8 @@ type RecSplit struct {
 	inMemory   bool
 	memKeys    []memBucketKey
 	memOffsets []uint64
+	// unaryBuf is the reused per-bucket unary code buffer (CheapBuild).
+	unaryBuf []uint64
 }
 
 // memBucketKey is one bucket collector entry held in memory: the etl key
@@ -200,9 +202,16 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 	}
 	rs.inMemory = args.InMemory
 	if rs.inMemory {
-		rs.memKeys = make([]memBucketKey, 0, args.KeyCount)
-		if args.Enums {
-			rs.memOffsets = make([]uint64, 0, args.KeyCount)
+		if CheapBuild {
+			rs.memKeys = getMemKeys(args.KeyCount)
+			if args.Enums {
+				rs.memOffsets = getOffsets(args.KeyCount)
+			}
+		} else {
+			rs.memKeys = make([]memBucketKey, 0, args.KeyCount)
+			if args.Enums {
+				rs.memOffsets = make([]uint64, 0, args.KeyCount)
+			}
 		}
 	} else {
 		rs.bucketCollector = etl.NewCollector(RecSplitLogPrefix+" "+fname, rs.tmpDir, etl.NewSortableBuffer(rs.etlBufLimit), logger)
@@ -393,6 +402,9 @@ func (rs *RecSplit) AddKey(key []byte, offset uint64) error {
 	if rs.built {
 		return fmt.Errorf("cannot add keys after perfect hash function had been built")
 	}
+	if CheapBuild && rs.inMemory {
+		return rs.addKeyMem(key, offset)
+	}
 	rs.hasher.Reset()
 	rs.hasher.Write(key) //nolint:errcheck
 	hi, lo := rs.hasher.Sum128()
@@ -488,11 +500,18 @@ func (rs *RecSplit) recsplitCurrentBucket() error {
 				rs.offsetBuffer = append(rs.offsetBuffer, 0)
 			}
 		}
-		unary, err := rs.recsplit(0 /* level */, rs.currentBucket, rs.currentBucketOffs, nil /* unary */)
+		var unary []uint64
+		if CheapBuild {
+			unary = rs.unaryBuf[:0]
+		}
+		unary, err := rs.recsplit(0 /* level */, rs.currentBucket, rs.currentBucketOffs, unary)
 		if err != nil {
 			return err
 		}
 		rs.gr.appendUnaryAll(unary)
+		if CheapBuild {
+			rs.unaryBuf = unary[:0]
+		}
 		if rs.trace {
 			fmt.Printf("recsplitBucket(%d, %d, bitsize = %d)\n", rs.currentBucketIdx, len(rs.currentBucket), rs.gr.bitCount-bitPos)
 		}
@@ -564,31 +583,58 @@ func (rs *RecSplit) recsplit(level int, bucket []uint64, offsets []uint64, unary
 	} else {
 		fanout, unit := splitParams(m, rs.leafSize, rs.primaryAggrBound, rs.secondaryAggrBound)
 		count := rs.count
-		for {
-			for i := uint16(0); i < fanout-1; i++ {
-				count[i] = 0
+		if CheapBuild && fanout == 2 {
+			// Same salt search and placement as below: a key goes to the
+			// first half iff remap16(h, m) < unit iff (h&mask48)*m < unit<<48.
+			bound := uint64(unit) << 48
+			mm := uint64(m)
+			for {
+				// Branch-free: the borrow of y - bound is 1 iff y < bound.
+				var c0 uint64
+				for _, k := range bucket {
+					_, borrow := bits.Sub64((remix(k+salt)&mask48)*mm, bound, 0)
+					c0 += borrow
+				}
+				if c0 == uint64(unit) {
+					break
+				}
+				salt++
 			}
-			var fail bool
+			pos := [2]uint16{0, unit}
+			for i, k := range bucket {
+				_, borrow := bits.Sub64((remix(k+salt)&mask48)*mm, bound, 0)
+				side := 1 - borrow
+				rs.buffer[pos[side]] = k
+				rs.offsetBuffer[pos[side]] = offsets[i]
+				pos[side]++
+			}
+		} else {
+			for {
+				for i := uint16(0); i < fanout-1; i++ {
+					count[i] = 0
+				}
+				var fail bool
+				for i := uint16(0); i < m; i++ {
+					count[remap16(remix(bucket[i]+salt), m)/unit]++
+				}
+				for i := uint16(0); i < fanout-1; i++ {
+					fail = fail || (count[i] != unit)
+				}
+				if !fail {
+					break
+				}
+				salt++
+			}
+			for i, c := uint16(0), uint16(0); i < fanout; i++ {
+				count[i] = c
+				c += unit
+			}
 			for i := uint16(0); i < m; i++ {
-				count[remap16(remix(bucket[i]+salt), m)/unit]++
+				j := remap16(remix(bucket[i]+salt), m) / unit
+				rs.buffer[count[j]] = bucket[i]
+				rs.offsetBuffer[count[j]] = offsets[i]
+				count[j]++
 			}
-			for i := uint16(0); i < fanout-1; i++ {
-				fail = fail || (count[i] != unit)
-			}
-			if !fail {
-				break
-			}
-			salt++
-		}
-		for i, c := uint16(0), uint16(0); i < fanout; i++ {
-			count[i] = c
-			c += unit
-		}
-		for i := uint16(0); i < m; i++ {
-			j := remap16(remix(bucket[i]+salt), m) / unit
-			rs.buffer[count[j]] = bucket[i]
-			rs.offsetBuffer[count[j]] = offsets[i]
-			count[j]++
 		}
 		copy(bucket, rs.buffer)
 		copy(offsets, rs.offsetBuffer)
@@ -648,6 +694,9 @@ func (rs *RecSplit) loadMemBuckets(ctx context.Context) error {
 	rs.memKeys = nil
 	if len(keys) == 0 {
 		return nil
+	}
+	if CheapBuild {
+		return rs.loadMemBucketsCheap(ctx, keys)
 	}
 	starts := make([]uint32, rs.bucketCount+1)
 	for i := range keys {
@@ -792,6 +841,9 @@ func (rs *RecSplit) Build(ctx context.Context) error {
 			}
 			for _, off := range rs.memOffsets {
 				rs.offsetEf.AddOffset(off)
+			}
+			if CheapBuild {
+				putOffsets(rs.memOffsets)
 			}
 			rs.memOffsets = nil
 		} else {
