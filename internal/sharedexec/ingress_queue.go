@@ -468,6 +468,8 @@ func (s *Server) reconcileStrictIngress(phases *ownerOperationPhases) error {
 	stamp := q.stamp
 	bootstrap := q.bootstrapPending
 	q.mu.Unlock()
+	phases.phase("ingress_verified_snapshot")
+	proofs := s.snapshotCanonicalIngressSenders(q)
 	floors := make(map[types.Address]uint64)
 	var head types.Hash
 	var number uint64
@@ -508,7 +510,7 @@ func (s *Server) reconcileStrictIngress(phases *ownerOperationPhases) error {
 			signer := transaction.MakeSignerWithTimestamp(s.chain.Config(), b.Number64().ToBig(), b.Time())
 			txs := b.Transactions()
 			phases.phase("ingress_sender_recovery")
-			senders, err := recoverCanonicalSenders(s.ctx, txs, signer, runtime.GOMAXPROCS(0))
+			senders, err := recoverCanonicalIngressSenders(s.ctx, txs, signer, runtime.GOMAXPROCS(0), s.chain.Config().ChainID, proofs)
 			if err != nil {
 				return err
 			}
