@@ -113,7 +113,9 @@ func (s *StateX2) Initialize(turbo bool) []uint64 {
 // Permute performs the four parallel Keccak-f[1600]s interleaved on the slice
 // returned from Initialize().
 func (s *StateX4) Permute() {
-	if IsEnabledX4() {
+	if enabledX4VL && !s.turbo {
+		permuteSIMDx4VL(s.a[s.offset:])
+	} else if IsEnabledX4() {
 		permuteSIMDx4(s.a[s.offset:], s.turbo)
 	} else {
 		permuteScalarX4(s.a[s.offset:], s.turbo) // A slower generic implementation.
