@@ -4,18 +4,22 @@
 // Eight-way secp256k1 public key recovery with AVX-512 IFMA.
 //
 // Eight signatures are recovered side by side, one per 64-bit lane of a zmm
-// register. A field element is five 52-bit limbs (radix 2^52), one zmm per
-// limb, multiplied with vpmadd52luq/vpmadd52huq. Per lane the recovery is
+// register (a "group"); a call works through up to eight groups at once.
+// A field element is five 52-bit limbs (radix 2^52), one zmm per limb,
+// multiplied with vpmadd52luq/vpmadd52huq. Per lane the recovery is
 // Q = u2*R + u1*G with u1 = -z/r and u2 = s/r (mod n), where R is the point
 // whose x is r and whose y parity is the recovery id:
 //
-//   - R is decompressed with the (p+1)/4 square root.
-//   - u2*R is a fixed-window (signed 5-bit digits) double-and-add over a
-//     table of 1R..16R in Jacobian coordinates.
+//   - R is decompressed with the (p+1)/4 square root, the chains of all
+//     groups interleaved (one chain alone runs at the multiplier latency).
+//   - u2 is split with the endomorphism into k1 + k2 lambda, |k1|, |k2| below
+//     2^128 (libsecp256k1's GLV constants), and k1 R + k2 lambda(R) is a
+//     fixed-window (signed 5-bit digits) double-and-add over tables of
+//     1R..16R and their images (beta X, Y, Z), in Jacobian coordinates.
 //   - u1*G is a signed 7-bit comb over a precomputed table of affine
 //     multiples j * 2^(7i) * G: one mixed addition per window, no doublings.
-//   - 1/r is one Montgomery batch inversion per call; 1/Z for the affine
-//     result a Fermat inversion per lane.
+//   - 1/r is one Montgomery batch inversion (mod n) per call, and so is 1/Z
+//     for the affine results (mod p, across the groups).
 //
 // Nothing here is constant time: every input is a public signature.
 // Exceptional cases are not handled but detected: an addition of equal or
