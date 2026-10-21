@@ -113,7 +113,7 @@ func legacyFastSigner(signer Signer) (EIP155Signer, bool) {
 }
 
 // senderBatchScratch holds four recoveries' cgo buffers (see recoverScratch)
-// and four signing payload buffers, and the eight-way path's buffers.
+// and four signing payload buffers, and the IFMA path's buffers.
 type senderBatchScratch struct {
 	sc  [4]recoverScratch
 	pay [4][crypto.Keccak256OneBlockMax]byte

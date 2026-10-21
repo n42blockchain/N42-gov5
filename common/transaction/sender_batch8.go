@@ -12,24 +12,36 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 )
 
-// The eight-way sender path (crypto.EcrecoverIFMAEnabled): replay-protected
-// legacy transactions on the uint64 fast path are taken eight at a time,
-// their signing hashes and address hashes four-way Keccak as in the
-// four-way path, and their public keys recovered by one
-// crypto.RecoverPubkeysBatch call (the AVX-512 IFMA kernel). Validation,
-// results and errors are recoverPubInto's, lane by lane.
+// The batched sender path (crypto.EcrecoverIFMAEnabled): replay-protected
+// legacy transactions on the uint64 fast path are taken up to
+// sender8Group at a time, their signing hashes and address hashes
+// four-way Keccak as in the four-way path, and their public keys
+// recovered by one crypto.RecoverPubkeysBatch call (the AVX-512 IFMA
+// kernel, eight lanes at a time; a larger call shares its inversions and
+// interleaves its square roots). Validation, results and errors are
+// recoverPubInto's, lane by lane.
+
+// sender8Group is the most transactions one kernel call is given.
+const sender8Group = 64
 
 // sender8Scratch holds one group's buffers.
 type sender8Scratch struct {
-	pay  [8][crypto.Keccak256OneBlockMax]byte
-	hash [8][32]byte
-	sig  [8][65]byte
-	pub  [8][65]byte
-	err  [8]error
-	lane [8]int // group position of each recovery
+	pay   [sender8Group][crypto.Keccak256OneBlockMax]byte
+	hash  [sender8Group][32]byte
+	sig   [sender8Group][65]byte
+	pub   [sender8Group][65]byte
+	err   [sender8Group]error
+	lane  [sender8Group]int // group position of each recovery
+	idx   [sender8Group]int
+	inner [sender8Group]*LegacyTx
+	vb    [sender8Group]uint64
+	sigh  [sender8Group]types.Hash
+	rerr  [sender8Group]error
+	pubs  [sender8Group][]byte
+	out   [sender8Group]types.Address
 }
 
-// sendersBatch8 is SendersBatch with the recoveries eight at a time.
+// sendersBatch8 is SendersBatch with the recoveries batched.
 func (s EIP155Signer) sendersBatch8(signer Signer, txs []*Transaction, addrs []types.Address, errs []error) {
 	var cid uint256.Int
 	if s.chainId != nil {
@@ -37,12 +49,8 @@ func (s EIP155Signer) sendersBatch8(signer Signer, txs []*Transaction, addrs []t
 	}
 	bs := senderBatchPool.Get().(*senderBatchScratch)
 	defer senderBatchPool.Put(bs)
-	var (
-		idx   [8]int
-		inner [8]*LegacyTx
-		vb    [8]uint64
-		n     int
-	)
+	x := &bs.x8
+	n := 0
 	for i, tx := range txs {
 		if tx == nil {
 			continue
@@ -56,25 +64,27 @@ func (s EIP155Signer) sendersBatch8(signer Signer, txs []*Transaction, addrs []t
 			addrs[i], errs[i] = types.Address{}, err
 			continue
 		}
-		idx[n], inner[n], vb[n] = i, in, v
+		x.idx[n], x.inner[n], x.vb[n] = i, in, v
 		n++
-		if n == 8 {
-			s.recover8(&bs.x8, &cid, txs, idx[:], &inner, &vb, addrs, errs)
+		if n == sender8Group {
+			s.recover8(x, &cid, txs, n, addrs, errs)
 			n = 0
 		}
 	}
 	if n > 0 {
-		s.recover8(&bs.x8, &cid, txs, idx[:n], &inner, &vb, addrs, errs)
+		s.recover8(x, &cid, txs, n, addrs, errs)
 	}
-	clear(bs.x8.err[:])
+	clear(x.err[:])
+	clear(x.rerr[:])
+	clear(x.inner[:])
+	clear(x.pubs[:])
 }
 
-// recover8 recovers the senders of the len(idx) <= 8 prechecked legacy
-// transactions txs[idx[k]].
-func (s EIP155Signer) recover8(x *sender8Scratch, cid *uint256.Int, txs []*Transaction, idx []int, inner *[8]*LegacyTx,
-	vb *[8]uint64, addrs []types.Address, errs []error) {
-	n := len(idx)
-	var sigh [8]types.Hash
+// recover8 recovers the senders of the n <= sender8Group prechecked
+// legacy transactions txs[x.idx[k]] (x.inner[k], recovery value x.vb[k]).
+func (s EIP155Signer) recover8(x *sender8Scratch, cid *uint256.Int, txs []*Transaction, n int, addrs []types.Address,
+	errs []error) {
+	idx, inner, vb, sigh, rerr, pubs := &x.idx, &x.inner, &x.vb, &x.sigh, &x.rerr, &x.pubs
 	// Signing hashes: four-way for each full quarter of one-block payloads.
 	for q := 0; q < n; q += 4 {
 		done := false
@@ -99,9 +109,9 @@ func (s EIP155Signer) recover8(x *sender8Scratch, cid *uint256.Int, txs []*Trans
 		}
 	}
 	// Validation as recoverPubInto, then one batch of recoveries.
-	var rerr [8]error
 	m := 0
 	for k := 0; k < n; k++ {
+		rerr[k] = nil
 		R, S, v := inner[k].R, inner[k].S, vb[k]
 		if R == nil || S == nil || v >= 256 {
 			rerr[k] = ErrInvalidSig
@@ -123,7 +133,6 @@ func (s EIP155Signer) recover8(x *sender8Scratch, cid *uint256.Int, txs []*Trans
 		}
 	}
 	crypto.RecoverPubkeysBatch(x.hash[:m], x.sig[:m], x.pub[:m], x.err[:m])
-	var pubs [8][]byte
 	for k := 0; k < n; k++ {
 		pubs[k] = x.pub[0][1:] // a dummy lane; its digest is discarded
 	}
@@ -139,7 +148,7 @@ func (s EIP155Signer) recover8(x *sender8Scratch, cid *uint256.Int, txs []*Trans
 		}
 	}
 	// Addresses: four-way for each full quarter.
-	var out [8]types.Address
+	out := &x.out
 	for q := 0; q < n; q += 4 {
 		var digests [4]types.Hash
 		if q+4 <= n && keccakBatchOn() && crypto.Keccak256x4OneBlock((*[4][]byte)(pubs[q:q+4]), &digests) {
