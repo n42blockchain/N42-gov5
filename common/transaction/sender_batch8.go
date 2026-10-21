@@ -163,3 +163,81 @@ func (s EIP155Signer) recover8(x *sender8Scratch, cid *uint256.Int, txs []*Trans
 		addrs[i], errs[i] = out[k], nil
 	}
 }
+
+// sendersMemoChunk bounds one SendersMemo pass, keeping its buffers on the
+// stack.
+const sendersMemoChunk = 64
+
+// SendersMemo is Sender(signer, tx) for every non-nil tx of txs, with the
+// recoveries batched: transactions the memo or the sender cache answers
+// for are settled first, the rest go through SendersBatch together, and
+// each recovered sender is memoised and cached as Sender would. When addrs
+// is non-nil (at least len(txs) long), addrs[i] is the sender of txs[i], or
+// the zero address when it does not recover. Without
+// crypto.EcrecoverIFMAEnabled this is Sender one transaction at a time.
+func SendersMemo(signer Signer, txs []*Transaction, addrs []types.Address) {
+	if !crypto.EcrecoverIFMAEnabled {
+		for i, tx := range txs {
+			if tx == nil {
+				continue
+			}
+			a, err := Sender(signer, tx)
+			if addrs != nil {
+				if err != nil {
+					a = types.Address{}
+				}
+				addrs[i] = a
+			}
+		}
+		return
+	}
+	var (
+		miss  [sendersMemoChunk]*Transaction
+		pos   [sendersMemoChunk]int
+		found [sendersMemoChunk]types.Address
+		errs  [sendersMemoChunk]error
+	)
+	for lo := 0; lo < len(txs); lo += sendersMemoChunk {
+		hi := min(lo+sendersMemoChunk, len(txs))
+		m := 0
+		for i := lo; i < hi; i++ {
+			tx := txs[i]
+			if tx == nil {
+				continue
+			}
+			if sc := tx.from.Load(); sc != nil && sc.signer.Equal(signer) {
+				if addrs != nil {
+					addrs[i] = sc.from
+				}
+				continue
+			}
+			if a, ok := senderCacheGet(tx.Hash(), signer); ok {
+				tx.storeSenderMemo(signer, a)
+				if addrs != nil {
+					addrs[i] = a
+				}
+				continue
+			}
+			miss[m], pos[m] = tx, i
+			m++
+		}
+		if m == 0 {
+			continue
+		}
+		SendersBatch(signer, miss[:m], found[:m], errs[:m])
+		for k := 0; k < m; k++ {
+			tx, a := miss[k], found[k]
+			if errs[k] != nil {
+				a = types.Address{}
+			} else {
+				tx.storeSenderMemo(signer, a)
+				senderCachePut(tx.Hash(), signer, a)
+			}
+			if addrs != nil {
+				addrs[pos[k]] = a
+			}
+		}
+		clear(miss[:m])
+		clear(errs[:m])
+	}
+}
