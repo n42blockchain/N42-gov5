@@ -111,6 +111,11 @@ type Entry struct {
 	Raw []byte
 	Gas uint64 // sum of the transactions' gas limits (frame.GasEstimate)
 	Txs int    // transaction count from the header
+	// TxHashes are keccak256 of each entry in payload order, kept from a
+	// frame hash v2 admission (nil otherwise) so the frame's decodes take
+	// them as transaction hashes instead of hashing again. They are not
+	// counted against the byte budget.
+	TxHashes []types.Hash
 }
 
 // Result is the outcome of Admit.
