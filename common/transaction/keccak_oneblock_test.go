@@ -24,6 +24,15 @@ func withOneBlock(on bool, f func()) {
 	f()
 }
 
+// withIFMA runs f with N42_ECRECOVER_IFMA forced off, or left as the CPU
+// allows.
+func withIFMA(on bool, f func()) {
+	prev := crypto.EcrecoverIFMAEnabled
+	crypto.EcrecoverIFMAEnabled = on && prev
+	defer func() { crypto.EcrecoverIFMAEnabled = prev }()
+	f()
+}
+
 func randU256(rng *rand.Rand) *uint256.Int {
 	switch rng.Intn(5) {
 	case 0:
@@ -224,46 +233,49 @@ func TestHashBatchAndSendersBatchEquivalence(t *testing.T) {
 	for round := 0; round < 40; round++ {
 		n := rng.Intn(70)
 		txs := mixedTxs(t, rng, n, chainID)
-		for _, on := range []bool{true, false} {
-			withOneBlock(on, func() {
-				ref := cloneTxs(txs)
-				got := cloneTxs(txs)
-				// Pre-hash a few so HashBatch meets ready hashes too.
-				for i := range got {
-					if got[i] != nil && rng.Intn(10) == 0 {
-						got[i].Hash()
+		for _, mode := range []int{0, 1, 2, 3} {
+			on, ifma := mode&1 == 0, mode&2 == 0
+			withIFMA(ifma, func() {
+				withOneBlock(on, func() {
+					ref := cloneTxs(txs)
+					got := cloneTxs(txs)
+					// Pre-hash a few so HashBatch meets ready hashes too.
+					for i := range got {
+						if got[i] != nil && rng.Intn(10) == 0 {
+							got[i].Hash()
+						}
 					}
-				}
-				HashBatch(got)
-				for i := range ref {
-					if ref[i] == nil {
-						continue
-					}
-					if got[i].hashState.Load() != hashReady {
-						t.Fatalf("round %d tx %d: hash not memoised", round, i)
-					}
-					want := ref[i].inner.hash()
-					if ref[i].Hash() != want || got[i].Hash() != want {
-						t.Fatalf("round %d tx %d on=%v: hash %x / %x want %x", round, i, on, got[i].Hash(), ref[i].Hash(), want)
-					}
-				}
-				for _, sg := range signers {
-					addrs := make([]types.Address, len(got))
-					errs := make([]error, len(got))
-					SendersBatch(sg, got, addrs, errs)
-					for i, tx := range ref {
-						if tx == nil {
-							if addrs[i] != (types.Address{}) || errs[i] != nil {
-								t.Fatalf("nil tx %d touched", i)
-							}
+					HashBatch(got)
+					for i := range ref {
+						if ref[i] == nil {
 							continue
 						}
-						wa, we := sg.Sender(tx)
-						if addrs[i] != wa || (we == nil) != (errs[i] == nil) || (we != nil && we.Error() != errs[i].Error()) {
-							t.Fatalf("round %d tx %d on=%v %T: batch (%x, %v) single (%x, %v)", round, i, on, sg, addrs[i], errs[i], wa, we)
+						if got[i].hashState.Load() != hashReady {
+							t.Fatalf("round %d tx %d: hash not memoised", round, i)
+						}
+						want := ref[i].inner.hash()
+						if ref[i].Hash() != want || got[i].Hash() != want {
+							t.Fatalf("round %d tx %d on=%v: hash %x / %x want %x", round, i, on, got[i].Hash(), ref[i].Hash(), want)
 						}
 					}
-				}
+					for _, sg := range signers {
+						addrs := make([]types.Address, len(got))
+						errs := make([]error, len(got))
+						SendersBatch(sg, got, addrs, errs)
+						for i, tx := range ref {
+							if tx == nil {
+								if addrs[i] != (types.Address{}) || errs[i] != nil {
+									t.Fatalf("nil tx %d touched", i)
+								}
+								continue
+							}
+							wa, we := sg.Sender(tx)
+							if addrs[i] != wa || (we == nil) != (errs[i] == nil) || (we != nil && we.Error() != errs[i].Error()) {
+								t.Fatalf("round %d tx %d on=%v ifma=%v %T: batch (%x, %v) single (%x, %v)", round, i, on, ifma, sg, addrs[i], errs[i], wa, we)
+							}
+						}
+					}
+				})
 			})
 		}
 	}
