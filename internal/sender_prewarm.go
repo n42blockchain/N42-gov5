@@ -176,11 +176,7 @@ func (j *senderJob) run() {
 		if e > n {
 			e = n
 		}
-		for _, tx := range j.txs[s:e] {
-			if tx != nil {
-				_, _ = transaction.Sender(j.signer, tx)
-			}
-		}
+		transaction.SendersMemo(j.signer, j.txs[s:e], nil)
 	}
 }
 
@@ -250,11 +246,7 @@ func (j *senderJob) frame(i int, final bool) bool {
 	}
 	// Senders taken from elsewhere leave only failed entries (zero
 	// addresses) to derive; with no store this recovers the frame.
-	for _, tx := range txs {
-		if tx != nil {
-			_, _ = transaction.Sender(j.signer, tx)
-		}
-	}
+	transaction.SendersMemo(j.signer, txs, nil)
 	return true
 }
 
@@ -291,15 +283,14 @@ func (j *senderJob) fromSource(h types.Hash, n int, final bool) *store.Senders {
 // the store.
 func (j *senderJob) recoverTxs(h types.Hash, txs []*transaction.Transaction) *store.Senders {
 	addrs := make([]types.Address, len(txs))
-	for k, tx := range txs {
-		if tx == nil {
-			continue
-		}
-		senderRecoverTxsTxs.Add(1)
-		if a, err := transaction.Sender(j.signer, tx); err == nil {
-			addrs[k] = a
+	live := 0
+	for _, tx := range txs {
+		if tx != nil {
+			live++
 		}
 	}
+	senderRecoverTxsTxs.Add(uint64(live))
+	transaction.SendersMemo(j.signer, txs, addrs)
 	ss := &store.Senders{Signer: j.signer, Addrs: addrs}
 	if j.src != nil {
 		j.src.Recovered(h, ss)
