@@ -73,36 +73,43 @@ type unixProfileStage struct {
 	AllocAfter        string `json:"alloc_after"`
 }
 
+type unixProfileCertifiedReadCounts struct {
+	StartedFlights uint64 `json:"started_flights"`
+	JoinedCallers  uint64 `json:"joined_callers"`
+}
+
 type unixProfileResult struct {
-	Kind                         string             `json:"kind"`
-	Passed                       bool               `json:"passed"`
-	TPSMeasured                  bool               `json:"tps_measured"`
-	ReuseOwnBuild                bool               `json:"reuse_own_build"`
-	GOMAXPROCS                   int                `json:"gomaxprocs"`
-	FixtureSeedSHA               types.Hash         `json:"fixture_seed_sha256"`
-	GenesisSHA                   types.Hash         `json:"genesis_sha256"`
-	ManifestSHA                  types.Hash         `json:"manifest_sha256"`
-	Transactions                 int                `json:"transactions"`
-	Senders                      int                `json:"senders"`
-	Preloaded                    int                `json:"preloaded_transactions"`
-	Pending                      int                `json:"pending_transactions"`
-	BlockHash                    types.Hash         `json:"block_hash"`
-	Root                         types.Hash         `json:"root"`
-	ReceiptHash                  types.Hash         `json:"receipt_hash"`
-	GasUsed                      uint64             `json:"gas_used"`
-	AccountVectorSHA             types.Hash         `json:"account_vector_sha256"`
-	OwnBuildReuses               uint64             `json:"own_build_reuses"`
-	ExecutionAttemptsBefore      uint64             `json:"execution_attempts_before"`
-	ExecutionAttemptsAfterBuild  uint64             `json:"execution_attempts_after_build"`
-	ExecutionAttemptsAfterImport uint64             `json:"execution_attempts_after_import"`
-	ExecutionAttemptsDelta       uint64             `json:"execution_attempts_delta"`
-	PreparedPresent              bool               `json:"prepared_present_after_build"`
-	PreparedRetainedBytes        int                `json:"prepared_retained_bytes_after_build"`
-	DuplicateWallNS              [6]int64           `json:"duplicate_wall_ns"`
-	Stages                       []unixProfileStage `json:"stages"`
-	ProcessPeakRSSKiB            uint64             `json:"process_peak_rss_kib"`
-	MDBXPolicy                   string             `json:"mdbx_policy"`
-	MDBXFlags                    uint               `json:"mdbx_actual_flags"`
+	Kind                           string                         `json:"kind"`
+	Passed                         bool                           `json:"passed"`
+	TPSMeasured                    bool                           `json:"tps_measured"`
+	ReuseOwnBuild                  bool                           `json:"reuse_own_build"`
+	GOMAXPROCS                     int                            `json:"gomaxprocs"`
+	FixtureSeedSHA                 types.Hash                     `json:"fixture_seed_sha256"`
+	GenesisSHA                     types.Hash                     `json:"genesis_sha256"`
+	ManifestSHA                    types.Hash                     `json:"manifest_sha256"`
+	Transactions                   int                            `json:"transactions"`
+	Senders                        int                            `json:"senders"`
+	Preloaded                      int                            `json:"preloaded_transactions"`
+	Pending                        int                            `json:"pending_transactions"`
+	BlockHash                      types.Hash                     `json:"block_hash"`
+	Root                           types.Hash                     `json:"root"`
+	ReceiptHash                    types.Hash                     `json:"receipt_hash"`
+	GasUsed                        uint64                         `json:"gas_used"`
+	AccountVectorSHA               types.Hash                     `json:"account_vector_sha256"`
+	OwnBuildReuses                 uint64                         `json:"own_build_reuses"`
+	ExecutionAttemptsBefore        uint64                         `json:"execution_attempts_before"`
+	ExecutionAttemptsAfterBuild    uint64                         `json:"execution_attempts_after_build"`
+	ExecutionAttemptsAfterImport   uint64                         `json:"execution_attempts_after_import"`
+	ExecutionAttemptsDelta         uint64                         `json:"execution_attempts_delta"`
+	PreparedPresent                bool                           `json:"prepared_present_after_build"`
+	PreparedRetainedBytes          int                            `json:"prepared_retained_bytes_after_build"`
+	CertifiedReadsBeforeDuplicates unixProfileCertifiedReadCounts `json:"certified_reads_before_duplicates"`
+	CertifiedReadsAfterDuplicates  unixProfileCertifiedReadCounts `json:"certified_reads_after_duplicates"`
+	DuplicateWallNS                [6]int64                       `json:"duplicate_wall_ns"`
+	Stages                         []unixProfileStage             `json:"stages"`
+	ProcessPeakRSSKiB              uint64                         `json:"process_peak_rss_kib"`
+	MDBXPolicy                     string                         `json:"mdbx_policy"`
+	MDBXFlags                      uint                           `json:"mdbx_actual_flags"`
 }
 
 func unixProfileWrite(t *testing.T, path string, write func(*os.File) error) {
@@ -581,17 +588,22 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 		}
 		return err
 	})
+	out.CertifiedReadsBeforeDuplicates.StartedFlights, out.CertifiedReadsBeforeDuplicates.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	unixProfileMeasure(t, dir, "six-duplicate-commit-rpcs", &out, func() error {
-		var wg sync.WaitGroup
+		var wg, ready sync.WaitGroup
+		startTogether := make(chan struct{})
 		errors := make([]error, 6)
+		ready.Add(len(errors))
 		for i := range errors {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
 				c := NewClient(socket, server.Identity())
 				defer c.Close()
-				start := time.Now()
 				qc := proof.Clone()
+				ready.Done()
+				<-startTogether
+				start := time.Now()
 				result, err := c.CommitCertified(context.Background(), commit, &qc)
 				out.DuplicateWallNS[i] = time.Since(start).Nanoseconds()
 				if err == nil && (!result.Committed || result.HeadHash != signed.Hash()) {
@@ -600,6 +612,8 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 				errors[i] = err
 			}(i)
 		}
+		ready.Wait()
+		close(startTogether)
 		wg.Wait()
 		for _, err := range errors {
 			if err != nil {
@@ -608,6 +622,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 		}
 		return nil
 	})
+	out.CertifiedReadsAfterDuplicates.StartedFlights, out.CertifiedReadsAfterDuplicates.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	beforeRejected, err := server.StrictIngressStatus()
 	if err != nil {
 		t.Fatal(err)
