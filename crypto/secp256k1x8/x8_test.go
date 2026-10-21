@@ -136,8 +136,8 @@ func TestRecoverDifferential(t *testing.T) {
 	workers := runtime.GOMAXPROCS(0)
 	var (
 		next, handled, checked, missed atomic.Int64
-		wg                     sync.WaitGroup
-		failed                 atomic.Bool
+		wg                             sync.WaitGroup
+		failed                         atomic.Bool
 	)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
