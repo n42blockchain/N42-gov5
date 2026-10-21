@@ -30,6 +30,260 @@
 #include <immintrin.h>
 #include <string.h>
 
+typedef unsigned __int128 u128;
+
+#define M52 0xFFFFFFFFFFFFFULL
+
+// ---------------------------------------------------------------------------
+// Byte packing.
+
+static inline uint64_t be64(const uint8_t *b) {
+    uint64_t x;
+    memcpy(&x, b, 8);
+    return __builtin_bswap64(x);
+}
+
+static inline void put_be64(uint8_t *b, uint64_t x) {
+    x = __builtin_bswap64(x);
+    memcpy(b, &x, 8);
+}
+
+// b32_to_w reads a 32-byte big-endian number into little-endian words.
+static inline void b32_to_w(uint64_t w[4], const uint8_t *b) {
+    w[3] = be64(b);
+    w[2] = be64(b + 8);
+    w[1] = be64(b + 16);
+    w[0] = be64(b + 24);
+}
+
+// w_to_l52 splits four 64-bit words into five 52-bit limbs.
+static inline void w_to_l52(uint64_t l[5], const uint64_t w[4]) {
+    l[0] = w[0] & M52;
+    l[1] = ((w[0] >> 52) | (w[1] << 12)) & M52;
+    l[2] = ((w[1] >> 40) | (w[2] << 24)) & M52;
+    l[3] = ((w[2] >> 28) | (w[3] << 36)) & M52;
+    l[4] = w[3] >> 16;
+}
+
+// l52_to_b32 writes canonical limbs as 32 big-endian bytes.
+static inline void l52_to_b32(uint8_t *b, const uint64_t l[5]) {
+    put_be64(b + 24, l[0] | (l[1] << 52));
+    put_be64(b + 16, (l[1] >> 12) | (l[2] << 40));
+    put_be64(b + 8, (l[2] >> 24) | (l[3] << 28));
+    put_be64(b, (l[3] >> 36) | (l[4] << 16));
+}
+
+// ---------------------------------------------------------------------------
+// Scalars mod n (scalar code, little-endian 64-bit words, Montgomery form
+// for multiplication). This and the byte packing are compiled for the
+// baseline target: under the AVX-512 target GCC keeps their 64-bit
+// temporaries in vector registers, and a multiplication takes three
+// times as long.
+
+static const uint64_t N[4] = {0xBFD25E8CD0364141ULL, 0xBAAEDCE6AF48A03BULL, 0xFFFFFFFFFFFFFFFEULL,
+                              0xFFFFFFFFFFFFFFFFULL};
+static const uint64_t N0INV = 0x4b0dff665588b13fULL;  // -1/n mod 2^64
+static const uint64_t NR2[4] = {0x896cf21467d7d140ULL, 0x741496c20e7cf878ULL, 0xe697f5e45bcd07c6ULL,
+                                0x9d671cd581c69bc5ULL};  // 2^512 mod n
+
+static inline int sc_is_zero(const uint64_t a[4]) { return (a[0] | a[1] | a[2] | a[3]) == 0; }
+
+// sc_geq_n reports a >= n.
+static inline int sc_geq_n(const uint64_t a[4]) {
+    for (int i = 3; i >= 0; i--) {
+        if (a[i] != N[i]) return a[i] > N[i];
+    }
+    return 1;
+}
+
+// sc_sub_n: a -= n (wrapping).
+static inline void sc_sub_n(uint64_t a[4]) {
+    unsigned char b = 0;
+    unsigned long long t;
+    b = _subborrow_u64(b, a[0], N[0], &t);
+    a[0] = t;
+    b = _subborrow_u64(b, a[1], N[1], &t);
+    a[1] = t;
+    b = _subborrow_u64(b, a[2], N[2], &t);
+    a[2] = t;
+    (void)_subborrow_u64(b, a[3], N[3], &t);
+    a[3] = t;
+}
+
+// sc_neg: r = n - a for a in (0, n); r = 0 for a = 0.
+static inline void sc_neg(uint64_t r[4], const uint64_t a[4]) {
+    if (sc_is_zero(a)) {
+        r[0] = r[1] = r[2] = r[3] = 0;
+        return;
+    }
+    unsigned char b = 0;
+    unsigned long long t;
+    b = _subborrow_u64(b, N[0], a[0], &t);
+    r[0] = t;
+    b = _subborrow_u64(b, N[1], a[1], &t);
+    r[1] = t;
+    b = _subborrow_u64(b, N[2], a[2], &t);
+    r[2] = t;
+    (void)_subborrow_u64(b, N[3], a[3], &t);
+    r[3] = t;
+}
+
+// sc_mont_mul: r = a b / 2^256 mod n for a, b < n.
+__attribute__((noinline)) static void sc_mont_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    uint64_t t[6] = {0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        u128 c = 0;
+        for (int j = 0; j < 4; j++) {
+            c += (u128)a[j] * b[i] + t[j];
+            t[j] = (uint64_t)c;
+            c >>= 64;
+        }
+        c += t[4];
+        t[4] = (uint64_t)c;
+        t[5] = (uint64_t)(c >> 64);
+        uint64_t m = t[0] * N0INV;
+        c = (u128)m * N[0] + t[0];
+        c >>= 64;
+        for (int j = 1; j < 4; j++) {
+            c += (u128)m * N[j] + t[j];
+            t[j - 1] = (uint64_t)c;
+            c >>= 64;
+        }
+        c += t[4];
+        t[3] = (uint64_t)c;
+        t[4] = t[5] + (uint64_t)(c >> 64);
+    }
+    r[0] = t[0];
+    r[1] = t[1];
+    r[2] = t[2];
+    r[3] = t[3];
+    if (t[4] || sc_geq_n(r)) sc_sub_n(r);
+}
+
+// sc_mont_inv: r = 1/a in Montgomery form (a in Montgomery form, nonzero),
+// as a^(n-2) with a 4-bit fixed window.
+static void sc_mont_inv(uint64_t r[4], const uint64_t a[4]) {
+    static const uint64_t E[4] = {0xBFD25E8CD036413FULL, 0xBAAEDCE6AF48A03BULL, 0xFFFFFFFFFFFFFFFEULL,
+                                  0xFFFFFFFFFFFFFFFFULL};  // n - 2
+    uint64_t tab[16][4];
+    // tab[0] = 1 in Montgomery form = 2^256 mod n.
+    tab[0][0] = ~N[0] + 1;
+    tab[0][1] = ~N[1];
+    tab[0][2] = ~N[2];
+    tab[0][3] = ~N[3];
+    memcpy(tab[1], a, 32);
+    for (int i = 2; i < 16; i++) sc_mont_mul(tab[i], tab[i - 1], a);
+    uint64_t acc[4];
+    memcpy(acc, tab[(E[3] >> 60) & 15], 32);
+    for (int pos = 252 - 4; pos >= 0; pos -= 4) {
+        sc_mont_mul(acc, acc, acc);
+        sc_mont_mul(acc, acc, acc);
+        sc_mont_mul(acc, acc, acc);
+        sc_mont_mul(acc, acc, acc);
+        unsigned d = (unsigned)(E[pos >> 6] >> (pos & 63)) & 15;
+        if (d) sc_mont_mul(acc, acc, tab[d]);
+    }
+    memcpy(r, acc, 32);
+}
+
+// sc_bits returns w bits of k from bit b (bits past 255 are 0).
+static inline unsigned sc_bits(const uint64_t k[4], int b, int w) {
+    int limb = b >> 6, sh = b & 63;
+    if (limb >= 4) return 0;
+    uint64_t v = k[limb] >> sh;
+    if (sh + w > 64 && limb + 1 < 4) v |= k[limb + 1] << (64 - sh);
+    return (unsigned)(v & ((1u << w) - 1));
+}
+
+// sc_recode writes m signed base-2^w digits of k, each in
+// [-(2^(w-1) - 1), 2^(w-1)], with sum d[i] 2^(wi) = k (= -k with neg), to
+// d[i*8].
+static inline void sc_recode(int8_t *d, const uint64_t k[4], int w, int m, int neg) {
+    int carry = 0;
+    for (int i = 0; i < m; i++) {
+        int v = (int)sc_bits(k, i * w, w) + carry;
+        if (v > (1 << (w - 1))) {
+            v -= 1 << w;
+            carry = 1;
+        } else {
+            carry = 0;
+        }
+        d[i * 8] = (int8_t)(neg ? -v : v);
+    }
+}
+
+// sc_add: r = a + b mod n for a, b < n.
+static inline void sc_add(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    unsigned char c = 0;
+    unsigned long long t;
+    c = _addcarry_u64(c, a[0], b[0], &t);
+    r[0] = t;
+    c = _addcarry_u64(c, a[1], b[1], &t);
+    r[1] = t;
+    c = _addcarry_u64(c, a[2], b[2], &t);
+    r[2] = t;
+    c = _addcarry_u64(c, a[3], b[3], &t);
+    r[3] = t;
+    if (c || sc_geq_n(r)) sc_sub_n(r);
+}
+
+// sc_mul_shift384: r = round(a b / 2^384) (below 2^128 for the GLV
+// constants).
+static inline void sc_mul_shift384(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+    uint64_t t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        u128 c = 0;
+        for (int j = 0; j < 4; j++) {
+            c += (u128)a[i] * b[j] + t[i + j];
+            t[i + j] = (uint64_t)c;
+            c >>= 64;
+        }
+        t[i + 4] = (uint64_t)c;
+    }
+    u128 c = (u128)t[6] + (t[5] >> 63);
+    r[0] = (uint64_t)c;
+    r[1] = t[7] + (uint64_t)(c >> 64);
+    r[2] = r[3] = 0;
+}
+
+// GLV constants (libsecp256k1's scalar_split_lambda), the multipliers in
+// Montgomery form.
+static const uint64_t GLV_G1[4] = {0xe893209a45dbb031ULL, 0x3daa8a1471e8ca7fULL, 0xe86c90e49284eb15ULL,
+                                   0x3086d221a7d46bcdULL};
+static const uint64_t GLV_G2[4] = {0x1571b4ae8ac47f71ULL, 0x221208ac9df506c6ULL, 0x6f547fa90abfe4c4ULL,
+                                   0xe4437ed6010e8828ULL};
+static const uint64_t GLV_MB1M[4] = {0xc50468d00ad9263cULL, 0x1b1c8205faa6ed42ULL, 0x1571b4ae8ac47f71ULL,
+                                     0x221208ac9df506c6ULL};  // -b1
+static const uint64_t GLV_MB2M[4] = {0x0cac5e506a144696ULL, 0x1e8a8dc5f3ba5939ULL, 0x176cdf65ba244fceULL,
+                                     0xc25575eb8e173580ULL};  // -b2
+static const uint64_t GLV_LAMM[4] = {0xf07deb3dc9926c9eULL, 0x2c93e7ad83c6944cULL, 0x73a9660652697d91ULL,
+                                     0x532840178558d639ULL};  // lambda
+// beta, the cube root of unity mod p with lambda (x, y) = (beta x, y).
+static const uint64_t BETA52[5] = {0x96c28719501eeULL, 0x7512f58995c13ULL, 0xc3434e99cf049ULL, 0x7106e64479eaULL,
+                                   0x7ae96a2b657cULL};
+
+// sc_split_lambda splits k < n into k1 + k2 lambda = k (mod n) with
+// k1 = (-1)^n1 |k1|, k2 = (-1)^n2 |k2|, writing |k1| and |k2|. It returns
+// 0 if either half is not below 2^128 (never, by the GLV bounds; such a
+// lane is handed back rather than trusted).
+static int sc_split_lambda(uint64_t k1[4], int *n1, uint64_t k2[4], int *n2, const uint64_t k[4]) {
+    uint64_t c1[4], c2[4], t[4];
+    sc_mul_shift384(c1, k, GLV_G1);
+    sc_mul_shift384(c2, k, GLV_G2);
+    sc_mont_mul(c1, c1, GLV_MB1M);
+    sc_mont_mul(c2, c2, GLV_MB2M);
+    sc_add(k2, c1, c2);
+    sc_mont_mul(t, k2, GLV_LAMM);
+    sc_neg(t, t);
+    sc_add(k1, k, t);
+    // |x|: x or n - x, whichever is below 2^128.
+    *n1 = k1[2] | k1[3] ? 1 : 0;
+    if (*n1) sc_neg(k1, k1);
+    *n2 = k2[2] | k2[3] ? 1 : 0;
+    if (*n2) sc_neg(k2, k2);
+    return !(k1[2] | k1[3] | k2[2] | k2[3]);
+}
+
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("avx512f,avx512ifma,avx512dq,avx512vl,avx512bw,bmi2"))), \
                              apply_to = function)
@@ -41,7 +295,6 @@
 #define INLINE static inline __attribute__((always_inline))
 
 typedef __m512i v8;
-typedef unsigned __int128 u128;
 
 // fe holds eight field elements, limb-major. "Weak" form: every limb below
 // 2^52 (so the value is below 2^260), congruent to the element mod p.
@@ -50,7 +303,6 @@ typedef struct {
     v8 l[5];
 } fe;
 
-#define M52 0xFFFFFFFFFFFFFULL
 #define M48 0xFFFFFFFFFFFFULL
 #define KP 0x1000003D1ULL     // 2^256 mod p
 #define KP4 0x1000003D10ULL   // 2^260 mod p
@@ -111,7 +363,7 @@ INLINE void fe_reduce(fe *r, v8 *c) {
     r->l[3] = vand(c[3], M);
 }
 
-static inline void fe_mul(fe *r, const fe *a, const fe *b) {
+INLINE void fe_mul(fe *r, const fe *a, const fe *b) {
     v8 lo[10], hi[10], c[10];
     const v8 z = _mm512_setzero_si512();
 #pragma GCC unroll 10
@@ -132,7 +384,7 @@ static inline void fe_mul(fe *r, const fe *a, const fe *b) {
     fe_reduce(r, c);
 }
 
-static inline void fe_sqr(fe *r, const fe *a) {
+INLINE void fe_sqr(fe *r, const fe *a) {
     v8 lo[10], hi[10], c[10];
     const v8 z = _mm512_setzero_si512();
 #pragma GCC unroll 10
@@ -168,7 +420,7 @@ INLINE void fe_norm(fe *r) {
     const v8 M = bc(M52);
     v8 t = vsrl(r->l[4], 48);
     v8 l4 = vand(r->l[4], bc(M48));
-    v8 l0 = vadd(r->l[0], _mm512_mullo_epi64(t, bc(KP)));
+    v8 l0 = mlo(r->l[0], t, bc(KP));  // t below 2^14: t KP below 2^52
     v8 l1 = vadd(r->l[1], vsrl(l0, 52));
     l0 = vand(l0, M);
     v8 l2 = vadd(r->l[2], vsrl(l1, 52));
@@ -291,17 +543,58 @@ static void fe_inv(fe *r, const fe *a) {
     fe_mul(r, &t, a);
 }
 
-// fe_sqrt: r = a^((p+1)/4); returns the lanes where r^2 = a.
-static __mmask8 fe_sqrt(fe *r, const fe *a) {
-    fe x2, x3, x22, t;
-    fe_pow_chain(a, &x2, &x3, &x22, &t);
-    fe_sqr_n(&t, &t, 23);
-    fe_mul(&t, &t, &x22);
-    fe_sqr_n(&t, &t, 6);
-    fe_mul(&t, &t, &x2);
-    fe_sqr_n(r, &t, 2);
-    fe_sqr(&t, r);
-    return fe_eq(&t, a);
+// The square root over k independent elements at once: the chain is
+// serial, so one element at a time runs at the multiplier's latency;
+// interleaving k chains runs it at its throughput.
+
+#define MAXG 8  // groups of eight per chunk
+
+static void fe_sqr_nk(fe *r, const fe *a, int n, int k) {
+    for (int u = 0; u < k; u++) fe_sqr(&r[u], &a[u]);
+    for (int i = 1; i < n; i++)
+        for (int u = 0; u < k; u++) fe_sqr(&r[u], &r[u]);
+}
+
+static void fe_mul_k(fe *r, const fe *a, const fe *b, int k) {
+    for (int u = 0; u < k; u++) fe_mul(&r[u], &a[u], &b[u]);
+}
+
+// fe_sqrt_k: r[u] = a[u]^((p+1)/4) for u < k; ok[u] gets the lanes where
+// r[u]^2 = a[u].
+static void fe_sqrt_k(fe *r, const fe *a, __mmask8 *ok, int k) {
+    fe x2[MAXG], x3[MAXG], x6[MAXG], x9[MAXG], x11[MAXG], x22[MAXG], x44[MAXG], x88[MAXG], x176[MAXG],
+        x220[MAXG], x223[MAXG], t[MAXG];
+    fe_sqr_nk(x2, a, 1, k);
+    fe_mul_k(x2, x2, a, k);
+    fe_sqr_nk(x3, x2, 1, k);
+    fe_mul_k(x3, x3, a, k);
+    fe_sqr_nk(x6, x3, 3, k);
+    fe_mul_k(x6, x6, x3, k);
+    fe_sqr_nk(x9, x6, 3, k);
+    fe_mul_k(x9, x9, x3, k);
+    fe_sqr_nk(x11, x9, 2, k);
+    fe_mul_k(x11, x11, x2, k);
+    fe_sqr_nk(x22, x11, 11, k);
+    fe_mul_k(x22, x22, x11, k);
+    fe_sqr_nk(x44, x22, 22, k);
+    fe_mul_k(x44, x44, x22, k);
+    fe_sqr_nk(x88, x44, 44, k);
+    fe_mul_k(x88, x88, x44, k);
+    fe_sqr_nk(x176, x88, 88, k);
+    fe_mul_k(x176, x176, x88, k);
+    fe_sqr_nk(x220, x176, 44, k);
+    fe_mul_k(x220, x220, x44, k);
+    fe_sqr_nk(x223, x220, 3, k);
+    fe_mul_k(x223, x223, x3, k);
+    fe_sqr_nk(t, x223, 23, k);
+    fe_mul_k(t, t, x22, k);
+    fe_sqr_nk(t, t, 6, k);
+    fe_mul_k(t, t, x2, k);
+    fe_sqr_nk(r, t, 2, k);
+    for (int u = 0; u < k; u++) {
+        fe_sqr(&t[u], &r[u]);
+        ok[u] = fe_eq(&t[u], &a[u]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,42 +745,6 @@ INLINE void fe_neg_blend(fe *y, __mmask8 m) {
 // ---------------------------------------------------------------------------
 // Lane packing.
 
-static inline uint64_t be64(const uint8_t *b) {
-    uint64_t x;
-    memcpy(&x, b, 8);
-    return __builtin_bswap64(x);
-}
-
-static inline void put_be64(uint8_t *b, uint64_t x) {
-    x = __builtin_bswap64(x);
-    memcpy(b, &x, 8);
-}
-
-// b32_to_w reads a 32-byte big-endian number into little-endian words.
-static inline void b32_to_w(uint64_t w[4], const uint8_t *b) {
-    w[3] = be64(b);
-    w[2] = be64(b + 8);
-    w[1] = be64(b + 16);
-    w[0] = be64(b + 24);
-}
-
-// w_to_l52 splits four 64-bit words into five 52-bit limbs.
-static inline void w_to_l52(uint64_t l[5], const uint64_t w[4]) {
-    l[0] = w[0] & M52;
-    l[1] = ((w[0] >> 52) | (w[1] << 12)) & M52;
-    l[2] = ((w[1] >> 40) | (w[2] << 24)) & M52;
-    l[3] = ((w[2] >> 28) | (w[3] << 36)) & M52;
-    l[4] = w[3] >> 16;
-}
-
-// l52_to_b32 writes canonical limbs as 32 big-endian bytes.
-static inline void l52_to_b32(uint8_t *b, const uint64_t l[5]) {
-    put_be64(b + 24, l[0] | (l[1] << 52));
-    put_be64(b + 16, (l[1] >> 12) | (l[2] << 40));
-    put_be64(b + 8, (l[2] >> 24) | (l[3] << 28));
-    put_be64(b, (l[3] >> 36) | (l[4] << 16));
-}
-
 // fe_from_lanes loads per-lane limbs l[lane][5].
 static inline void fe_from_lanes(fe *r, const uint64_t l[8][5]) {
     uint64_t t[5][8] __attribute__((aligned(64)));
@@ -504,145 +761,10 @@ static inline void fe_to_lanes(uint64_t l[8][5], const fe *a) {
 }
 
 // ---------------------------------------------------------------------------
-// Scalars mod n (scalar code, little-endian 64-bit words, Montgomery form
-// for multiplication).
-
-static const uint64_t N[4] = {0xBFD25E8CD0364141ULL, 0xBAAEDCE6AF48A03BULL, 0xFFFFFFFFFFFFFFFEULL,
-                              0xFFFFFFFFFFFFFFFFULL};
-static const uint64_t N0INV = 0x4b0dff665588b13fULL;  // -1/n mod 2^64
-static const uint64_t NR2[4] = {0x896cf21467d7d140ULL, 0x741496c20e7cf878ULL, 0xe697f5e45bcd07c6ULL,
-                                0x9d671cd581c69bc5ULL};  // 2^512 mod n
-
-static inline int sc_is_zero(const uint64_t a[4]) { return (a[0] | a[1] | a[2] | a[3]) == 0; }
-
-// sc_geq_n reports a >= n.
-static inline int sc_geq_n(const uint64_t a[4]) {
-    for (int i = 3; i >= 0; i--) {
-        if (a[i] != N[i]) return a[i] > N[i];
-    }
-    return 1;
-}
-
-// sc_sub_n: a -= n (wrapping).
-static inline void sc_sub_n(uint64_t a[4]) {
-    unsigned char b = 0;
-    unsigned long long t;
-    b = _subborrow_u64(b, a[0], N[0], &t);
-    a[0] = t;
-    b = _subborrow_u64(b, a[1], N[1], &t);
-    a[1] = t;
-    b = _subborrow_u64(b, a[2], N[2], &t);
-    a[2] = t;
-    (void)_subborrow_u64(b, a[3], N[3], &t);
-    a[3] = t;
-}
-
-// sc_neg: r = n - a for a in (0, n); r = 0 for a = 0.
-static inline void sc_neg(uint64_t r[4], const uint64_t a[4]) {
-    if (sc_is_zero(a)) {
-        r[0] = r[1] = r[2] = r[3] = 0;
-        return;
-    }
-    unsigned char b = 0;
-    unsigned long long t;
-    b = _subborrow_u64(b, N[0], a[0], &t);
-    r[0] = t;
-    b = _subborrow_u64(b, N[1], a[1], &t);
-    r[1] = t;
-    b = _subborrow_u64(b, N[2], a[2], &t);
-    r[2] = t;
-    (void)_subborrow_u64(b, N[3], a[3], &t);
-    r[3] = t;
-}
-
-// sc_mont_mul: r = a b / 2^256 mod n for a, b < n.
-static void sc_mont_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
-    uint64_t t[6] = {0, 0, 0, 0, 0, 0};
-    for (int i = 0; i < 4; i++) {
-        u128 c = 0;
-        for (int j = 0; j < 4; j++) {
-            c += (u128)a[j] * b[i] + t[j];
-            t[j] = (uint64_t)c;
-            c >>= 64;
-        }
-        c += t[4];
-        t[4] = (uint64_t)c;
-        t[5] = (uint64_t)(c >> 64);
-        uint64_t m = t[0] * N0INV;
-        c = (u128)m * N[0] + t[0];
-        c >>= 64;
-        for (int j = 1; j < 4; j++) {
-            c += (u128)m * N[j] + t[j];
-            t[j - 1] = (uint64_t)c;
-            c >>= 64;
-        }
-        c += t[4];
-        t[3] = (uint64_t)c;
-        t[4] = t[5] + (uint64_t)(c >> 64);
-    }
-    r[0] = t[0];
-    r[1] = t[1];
-    r[2] = t[2];
-    r[3] = t[3];
-    if (t[4] || sc_geq_n(r)) sc_sub_n(r);
-}
-
-// sc_mont_inv: r = 1/a in Montgomery form (a in Montgomery form, nonzero),
-// as a^(n-2) with a 4-bit fixed window.
-static void sc_mont_inv(uint64_t r[4], const uint64_t a[4]) {
-    static const uint64_t E[4] = {0xBFD25E8CD036413FULL, 0xBAAEDCE6AF48A03BULL, 0xFFFFFFFFFFFFFFFEULL,
-                                  0xFFFFFFFFFFFFFFFFULL};  // n - 2
-    uint64_t tab[16][4];
-    // tab[0] = 1 in Montgomery form = 2^256 mod n.
-    tab[0][0] = ~N[0] + 1;
-    tab[0][1] = ~N[1];
-    tab[0][2] = ~N[2];
-    tab[0][3] = ~N[3];
-    memcpy(tab[1], a, 32);
-    for (int i = 2; i < 16; i++) sc_mont_mul(tab[i], tab[i - 1], a);
-    uint64_t acc[4];
-    memcpy(acc, tab[(E[3] >> 60) & 15], 32);
-    for (int pos = 252 - 4; pos >= 0; pos -= 4) {
-        sc_mont_mul(acc, acc, acc);
-        sc_mont_mul(acc, acc, acc);
-        sc_mont_mul(acc, acc, acc);
-        sc_mont_mul(acc, acc, acc);
-        unsigned d = (unsigned)(E[pos >> 6] >> (pos & 63)) & 15;
-        if (d) sc_mont_mul(acc, acc, tab[d]);
-    }
-    memcpy(r, acc, 32);
-}
-
-// sc_bits returns w bits of k from bit b (bits past 255 are 0).
-static inline unsigned sc_bits(const uint64_t k[4], int b, int w) {
-    int limb = b >> 6, sh = b & 63;
-    if (limb >= 4) return 0;
-    uint64_t v = k[limb] >> sh;
-    if (sh + w > 64 && limb + 1 < 4) v |= k[limb + 1] << (64 - sh);
-    return (unsigned)(v & ((1u << w) - 1));
-}
-
-// sc_recode writes m signed base-2^w digits of k, each in
-// [-(2^(w-1) - 1), 2^(w-1)], with sum d[i] 2^(wi) = k, to d[i*8].
-static inline void sc_recode(int8_t *d, const uint64_t k[4], int w, int m) {
-    int carry = 0;
-    for (int i = 0; i < m; i++) {
-        int v = (int)sc_bits(k, i * w, w) + carry;
-        if (v > (1 << (w - 1))) {
-            v -= 1 << w;
-            carry = 1;
-        } else {
-            carry = 0;
-        }
-        d[i * 8] = (int8_t)v;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tables and the recovery kernel.
 
 #define WR 5                       // u2*R window
-#define NR ((257 + WR - 1) / WR)   // u2*R digits
+#define NR ((129 + WR - 1) / WR)   // digits of each 128-bit GLV half of u2
 #define TR (1 << (WR - 1))         // u2*R table entries: 1R..TR R
 #define WG 7                       // u1*G window
 #define NG ((257 + WG - 1) / WG)   // u1*G digits (windows)
@@ -737,7 +859,8 @@ void n42_x8_init(void) {
 typedef struct {
     uint64_t x[8][5];                         // r as a field element
     uint8_t odd[8];                           // wanted y parity
-    int8_t dr[NR][8] __attribute__((aligned(8)));  // u2 digits
+    int8_t dr[NR][8] __attribute__((aligned(8)));  // digits of k1 (u2 = k1 + k2 lambda)
+    int8_t dl[NR][8] __attribute__((aligned(8)));  // digits of k2
     int8_t dg[NG][8] __attribute__((aligned(8)));  // u1 digits
     uint8_t active[8];
 } group_in;
@@ -781,67 +904,60 @@ static inline void g_gather(ge *p, int w, v8 idx) {
     }
 }
 
-static void recover_group(const group_in *in, uint8_t pubs[8][65], uint8_t ok[8]) {
+// recover_group computes Q = u2 R + u1 G in Jacobian coordinates for one
+// group, R affine with the wanted y. It returns the lanes of good that
+// stay good: Q is not at infinity and no addition was degenerate (Z != 0).
+static __mmask8 recover_group(const group_in *in, const ge *Rp, __mmask8 good, gej *out) {
     const v8 one = bc(1);
-    __mmask8 good = 0;
-    for (int i = 0; i < 8; i++) good |= (__mmask8)((in->active[i] ? 1 : 0) << i);
+    ge R = *Rp;
 
-    // R = (x, y): y^2 = x^3 + 7, y of the wanted parity.
-    ge R;
-    fe_from_lanes(&R.x, in->x);
-    fe t;
-    fe_sqr(&t, &R.x);
-    fe_mul(&t, &t, &R.x);
-    t.l[0] = vadd(t.l[0], bc(7));
-    fe_norm(&t);
-    good &= fe_sqrt(&R.y, &t);
-    fe_full(&R.y);
-    {
-        uint64_t odd[8] __attribute__((aligned(64)));
-        for (int i = 0; i < 8; i++) odd[i] = in->odd[i];
-        __mmask8 flip =
-            _mm512_cmpneq_epi64_mask(vand(R.y.l[0], one), _mm512_load_si512((const void *)odd));
-        fe_neg_blend(&R.y, flip);
-    }
-
-    // Table 1R..TR R.
-    rtable tbs;
-    rtable *tb = &tbs;
-    gej p;
+    // Tables 1R..TR R and their images under the endomorphism,
+    // lambda (X, Y, Z) = (beta X, Y, Z).
+    rtable tbs, tls;
+    rtable *tb = &tbs, *tl = &tls;
+    fe beta;
+    for (int k = 0; k < 5; k++) beta.l[k] = bc(BETA52[k]);
+    gej p, pl;
     p.x = R.x;
     p.y = R.y;
     fe_set1(&p.z);
-    rt_store(tb, 0, &p);
-    gej_dbl(&p, &p);
-    rt_store(tb, 1, &p);
-    for (int e = 2; e < TR; e++) {
-        gej_add_ge(&p, &p, &R);
+    for (int e = 0; e < TR; e++) {
+        if (e == 1) {
+            gej_dbl(&p, &p);
+        } else if (e > 1) {
+            gej_add_ge(&p, &p, &R);
+        }
         rt_store(tb, e, &p);
+        pl = p;
+        fe_mul(&pl.x, &p.x, &beta);
+        rt_store(tl, e, &pl);
     }
 
-    // acc = u2 R, top digit first.
+    // acc = k1 R + k2 lambda(R) = u2 R, top digits first.
     gej acc, q, s;
     __mmask8 inf = 0xFF;
     for (int i = NR - 1; i >= 0; i--) {
         if (i != NR - 1) {
             for (int k = 0; k < WR; k++) gej_dbl(&acc, &acc);
         }
-        v8 d = load_digits(in->dr[i]);
-        __mmask8 nz = _mm512_test_epi64_mask(d, d);
-        if (!nz) continue;
-        __mmask8 neg = _mm512_movepi64_mask(d);
-        v8 a = _mm512_abs_epi64(d);
-        v8 idx = _mm512_max_epi64(vsub(a, one), _mm512_setzero_si512());
-        rt_gather(&q, tb, idx);
-        fe_neg_blend(&q.y, neg);
-        if (inf == 0xFF) {
-            acc = q;
-        } else {
-            gej_add(&s, &acc, &q);
-            gej_blend(&acc, nz & ~inf, &s);
-            gej_blend(&acc, nz & inf, &q);
+        for (int h = 0; h < 2; h++) {
+            v8 d = load_digits(h ? in->dl[i] : in->dr[i]);
+            __mmask8 nz = _mm512_test_epi64_mask(d, d);
+            if (!nz) continue;
+            __mmask8 neg = _mm512_movepi64_mask(d);
+            v8 a = _mm512_abs_epi64(d);
+            v8 idx = _mm512_max_epi64(vsub(a, one), _mm512_setzero_si512());
+            rt_gather(&q, h ? tl : tb, idx);
+            fe_neg_blend(&q.y, neg);
+            if (inf == 0xFF) {
+                acc = q;
+            } else {
+                gej_add(&s, &acc, &q);
+                gej_blend(&acc, nz & ~inf, &s);
+                gej_blend(&acc, nz & inf, &q);
+            }
+            inf &= ~nz;
         }
-        inf &= ~nz;
     }
     __mmask8 infR = inf;
 
@@ -886,25 +1002,8 @@ static void recover_group(const group_in *in, uint8_t pubs[8][65], uint8_t ok[8]
     }
     good &= ~(infR & infG);
     good &= ~fe_is_zero(&acc.z);
-    if (!good) {
-        memset(ok, 0, 8);
-        return;
-    }
-    ge out;
-    gej_to_ge(&out, &acc);
-    uint64_t ox[8][5], oy[8][5];
-    fe_to_lanes(ox, &out.x);
-    fe_to_lanes(oy, &out.y);
-    for (int i = 0; i < 8; i++) {
-        if (!((good >> i) & 1)) {
-            ok[i] = 0;
-            continue;
-        }
-        pubs[i][0] = 4;
-        l52_to_b32(&pubs[i][1], ox[i]);
-        l52_to_b32(&pubs[i][33], oy[i]);
-        ok[i] = 1;
-    }
+    *out = acc;
+    return good;
 }
 
 #define CHUNK 64
@@ -947,31 +1046,121 @@ static void recover_chunk(size_t n, const uint8_t *msgs, const uint8_t *sigs, ui
         }
         memcpy(rm[first], inv, 32);
     }
-    for (size_t g = 0; g < n; g += 8) {
-        group_in in;
-        memset(&in, 0, sizeof in);
-        size_t m = n - g < 8 ? n - g : 8;
+    group_in in[MAXG];
+    int ng = (int)((n + 7) / 8);
+    memset(in, 0, sizeof(group_in) * (size_t)ng);
+    for (int g = 0; g < ng; g++) {
         for (size_t k = 0; k < 8; k++) {
-            if (k >= m || !valid[g + k]) {
-                in.x[k][0] = 1;
+            size_t i = (size_t)g * 8 + k;
+            if (i >= n || !valid[i]) {
+                in[g].x[k][0] = 1;
                 continue;
             }
-            size_t i = g + k;
-            in.active[k] = 1;
-            in.odd[k] = sigs[65 * i + 64] & 1;
-            w_to_l52(in.x[k], r[i]);
+            in[g].active[k] = 1;
+            in[g].odd[k] = sigs[65 * i + 64] & 1;
+            w_to_l52(in[g].x[k], r[i]);
             uint64_t u1[4], u2[4];
             sc_mont_mul(u1, z[i], rm[i]);  // z/r
             sc_neg(u1, u1);
             sc_mont_mul(u2, s[i], rm[i]);  // s/r
-            sc_recode(&in.dr[0][k], u2, WR, NR);
-            sc_recode(&in.dg[0][k], u1, WG, NG);
+            uint64_t k1[4], k2[4];
+            int n1, n2;
+            if (!sc_split_lambda(k1, &n1, k2, &n2, u2)) {
+                in[g].active[k] = 0;
+                continue;
+            }
+            sc_recode(&in[g].dr[0][k], k1, WR, NR, n1);
+            sc_recode(&in[g].dl[0][k], k2, WR, NR, n2);
+            sc_recode(&in[g].dg[0][k], u1, WG, NG, 0);
         }
-        uint8_t gp[8][65], gok[8];
-        recover_group(&in, gp, gok);
+    }
+
+    // R = (x, y) per group: y^2 = x^3 + 7, y of the wanted parity, the
+    // square roots of all groups side by side.
+    ge R[MAXG];
+    fe rhs[MAXG];
+    __mmask8 good[MAXG], sq[MAXG];
+    for (int g = 0; g < ng; g++) {
+        good[g] = 0;
+        for (int k = 0; k < 8; k++) good[g] |= (__mmask8)((in[g].active[k] ? 1 : 0) << k);
+        fe_from_lanes(&R[g].x, in[g].x);
+        fe_sqr(&rhs[g], &R[g].x);
+        fe_mul(&rhs[g], &rhs[g], &R[g].x);
+        rhs[g].l[0] = vadd(rhs[g].l[0], bc(7));
+        fe_norm(&rhs[g]);
+    }
+    fe ys[MAXG];
+    fe_sqrt_k(ys, rhs, sq, ng);
+    for (int g = 0; g < ng; g++) {
+        good[g] &= sq[g];
+        R[g].y = ys[g];
+        fe_full(&R[g].y);
+        uint64_t odd[8] __attribute__((aligned(64)));
+        for (int k = 0; k < 8; k++) odd[k] = in[g].odd[k];
+        __mmask8 flip = _mm512_cmpneq_epi64_mask(vand(R[g].y.l[0], bc(1)), _mm512_load_si512((const void *)odd));
+        fe_neg_blend(&R[g].y, flip);
+    }
+
+    // Q per group, Jacobian.
+    gej q[MAXG];
+    for (int g = 0; g < ng; g++) {
+        if (good[g]) good[g] = recover_group(&in[g], &R[g], good[g], &q[g]);
+    }
+
+    // 1/Z for every group: one Montgomery batch inversion (lanes not good
+    // take Z = 1 so the product stays invertible).
+    fe pz[MAXG], zinv[MAXG];
+    int live[MAXG], nl = 0;
+    for (int g = 0; g < ng; g++) {
+        if (!good[g]) continue;
+        fe one1;
+        fe_set1(&one1);
+        fe_blend(&q[g].z, (__mmask8)~good[g], &one1);
+        if (nl == 0) {
+            pz[0] = q[g].z;
+        } else {
+            fe_mul(&pz[nl], &pz[nl - 1], &q[g].z);
+        }
+        live[nl++] = g;
+    }
+    if (nl > 0) {
+        fe inv;
+        fe_inv(&inv, &pz[nl - 1]);
+        for (int u = nl - 1; u > 0; u--) {
+            int g = live[u];
+            fe_mul(&zinv[g], &inv, &pz[u - 1]);
+            fe_mul(&inv, &inv, &q[g].z);
+        }
+        zinv[live[0]] = inv;
+    }
+
+    for (int g = 0; g < ng; g++) {
+        size_t m = n - (size_t)g * 8 < 8 ? n - (size_t)g * 8 : 8;
+        uint8_t *gok = ok + (size_t)g * 8;
+        if (!good[g]) {
+            memset(gok, 0, m);
+            continue;
+        }
+        fe zi2, zi3, ax, ay;
+        fe_sqr(&zi2, &zinv[g]);
+        fe_mul(&zi3, &zi2, &zinv[g]);
+        fe_mul(&ax, &q[g].x, &zi2);
+        fe_mul(&ay, &q[g].y, &zi3);
+        fe_full(&ax);
+        fe_full(&ay);
+        uint64_t ox[8][5], oy[8][5];
+        fe_to_lanes(ox, &ax);
+        fe_to_lanes(oy, &ay);
         for (size_t k = 0; k < m; k++) {
-            ok[g + k] = gok[k];
-            if (gok[k]) memcpy(pubs + 65 * (g + k), gp[k], 65);
+            if (!((good[g] >> k) & 1)) {
+                gok[k] = 0;
+                continue;
+            }
+            uint8_t *pub = pubs + 65 * ((size_t)g * 8 + k);
+            pub[0] = 4;
+            l52_to_b32(pub + 1, ox[k]);
+            l52_to_b32(pub + 33, oy[k]);
+            gok[k] = 1;
         }
     }
 }
