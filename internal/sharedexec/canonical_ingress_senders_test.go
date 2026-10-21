@@ -3,9 +3,13 @@ package sharedexec
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"reflect"
+	"runtime"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -227,6 +231,156 @@ func TestCanonicalIngressSendersTypedWrongChainAndInactiveQueueFallback(t *testi
 	if err != nil || count != 1 || got[0] != f.from[0] {
 		t.Fatal("unprotected legacy payload did not use direct recovery", count, err)
 	}
+}
+
+func TestCanonicalIngressSendersParallelWorkersPreserveInputOrder(t *testing.T) {
+	f, txs, signer, proofs := admittedCanonicalSenderFixture(t)
+	const n = 4096 // exercises the parallel exact-encoding/hash scan
+	inputs := make([]*transaction.Transaction, n)
+	want := make([]types.Address, n)
+	for i := range inputs {
+		inputs[i] = txs[i%len(txs)]
+		want[i] = f.from[(i%len(txs))/3]
+	}
+	// A fresh, valid transaction deliberately misses the queue snapshot and
+	// must be recovered by the unchanged fallback, then placed at its input index.
+	changed, err := transaction.SignNewTx(f.private[0], signer, &transaction.LegacyTx{
+		Nonce: txs[0].Nonce(), To: &f.recipient, Gas: 21000,
+		GasPrice: uint256.NewInt(1), Value: uint256.NewInt(2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs[777] = changed
+	want[777] = f.from[0]
+
+	for _, workers := range []int{1, 2, 16} {
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			stop := transaction.CountSenderRecoveriesForTest()
+			got, err := recoverCanonicalIngressSenders(context.Background(), inputs, signer, workers, f.chain.Config().ChainID, proofs)
+			count := stop()
+			if err != nil || count != 1 || !reflect.DeepEqual(got, want) {
+				t.Fatalf("senders differ at workers=%d: recoveries=%d err=%v", workers, count, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalIngressSendersParallelMissesKeepErrorOrder(t *testing.T) {
+	f, txs, signer, proofs := admittedCanonicalSenderFixture(t)
+	const n = 4096
+	inputs := make([]*transaction.Transaction, n)
+	for i := range inputs {
+		inputs[i] = txs[i%len(txs)]
+	}
+	// Put two distinct fallback failures at different original indices. The
+	// lower-index validly signed nonce overflow must win even if a later worker
+	// reports the nil transaction first.
+	overflow, err := transaction.SignNewTx(f.private[0], signer, &transaction.LegacyTx{
+		Nonce: ^uint64(0), To: &f.recipient, Gas: 21000,
+		GasPrice: uint256.NewInt(1), Value: uint256.NewInt(2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs[901] = overflow
+	inputs[3077] = nil
+	for _, workers := range []int{1, 2, 16} {
+		_, err := recoverCanonicalIngressSenders(context.Background(), inputs, signer, workers, f.chain.Config().ChainID, proofs)
+		if err == nil || err.Error() != "strict ingress canonical nonce overflow" {
+			t.Fatalf("workers=%d error = %v, want earliest overflow error", workers, err)
+		}
+	}
+}
+
+func TestCanonicalIngressSendersExplicitWorkersWithGOMAXPROCSOne(t *testing.T) {
+	f, txs, signer, proofs := admittedCanonicalSenderFixture(t)
+	const n = 4096
+	inputs := make([]*transaction.Transaction, n)
+	want := make([]types.Address, n)
+	for i := range inputs {
+		inputs[i] = txs[i%len(txs)]
+		want[i] = f.from[(i%len(txs))/3]
+	}
+	old := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(old)
+	got, err := recoverCanonicalIngressSenders(context.Background(), inputs, signer, 16, f.chain.Config().ChainID, proofs)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("explicit 16-worker result under GOMAXPROCS=1 differs: %v", err)
+	}
+}
+
+type gatedCancelContext struct {
+	context.Context
+	workers int32
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *gatedCancelContext) Err() error {
+	n := c.calls.Add(1)
+	if n == 1 { // the synchronous preflight check
+		return nil
+	}
+	if n <= c.workers+1 {
+		c.entered <- struct{}{}
+		<-c.release
+	}
+	return c.Context.Err()
+}
+
+func TestCanonicalIngressSendersCancellationJoinsWorkers(t *testing.T) {
+	f, txs, signer, proofs := admittedCanonicalSenderFixture(t)
+	const workers = 16
+	inputs := make([]*transaction.Transaction, 4096)
+	for i := range inputs {
+		inputs[i] = txs[i%len(txs)]
+	}
+	base, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &gatedCancelContext{
+		Context: base, workers: workers,
+		entered: make(chan struct{}, workers), release: make(chan struct{}),
+	}
+	type outcome struct {
+		senders []types.Address
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		senders, err := recoverCanonicalIngressSenders(ctx, inputs, signer, workers, f.chain.Config().ChainID, proofs)
+		done <- outcome{senders: senders, err: err}
+	}()
+	for i := 0; i < workers; i++ {
+		select {
+		case <-ctx.entered:
+		case <-time.After(5 * time.Second):
+			close(ctx.release)
+			t.Fatalf("only %d parallel workers reached the scan", i)
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("sender recovery returned before blocked workers were released and joined")
+	default:
+	}
+	close(ctx.release)
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) || got.senders != nil {
+			t.Fatalf("canceled recovery returned partial output: senders=%v err=%v", got.senders, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("sender recovery did not return after workers were released")
+	}
+	if got := ctx.calls.Load(); got < workers+2 {
+		t.Fatalf("cancellation returned before every worker reached its check: calls=%d", got)
+	}
+	// Mutating the immutable snapshot after return is safe only if every worker
+	// has joined. The race test makes a missing join observable here.
+	clear(proofs)
 }
 
 func TestCanonicalIngressSendersStrictCommitReconcilesCredits(t *testing.T) {
