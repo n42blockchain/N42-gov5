@@ -23,6 +23,10 @@
 // an honest recovery gives. A frame without enough attestations is
 // recovered locally, so liveness never depends on the committee, and
 // nothing here touches a block's hash or state root.
+//
+// TEST ONLY: N42_ATTEST_COMMITTEE=k below f+1 drops the honest-member
+// guarantee (k colluding members can forge senders); N42_ATTEST_VERIFY_SAMPLE
+// spot-checks a fraction of attested frames locally. See EnvTestCommittee.
 package attest
 
 import (
@@ -50,6 +54,19 @@ const (
 	// EnvPeers lists the ingest addresses attestations are pushed to
 	// (default N42_FRAME_PULL_PEERS); this node's own listener is skipped.
 	EnvPeers = "N42_FRAME_ATTEST_PEERS"
+	// EnvTestCommittee (TEST ONLY, private benchmark fleets) sets the
+	// committee size to k and the attestations needed to min(k, f+1).
+	// Unset keeps the f+1 rule. With k < f+1 fewer than f+1 agreeing
+	// attestations are accepted, so k colluding (k = 1: one) byzantine
+	// committee members can forge a frame's senders. Every node of a fleet
+	// must use the same value.
+	EnvTestCommittee = "N42_ATTEST_COMMITTEE"
+	// EnvVerifySample (TEST ONLY; default 0) is the fraction p in [0, 1]
+	// of the frames this node would take from attestations that it
+	// recovers locally instead and compares with the attestations: an
+	// attester whose digest differs is logged and distrusted (its later
+	// attestations are ignored) for the life of the process.
+	EnvVerifySample = "N42_ATTEST_VERIFY_SAMPLE"
 )
 
 // Magic ("FAT1" little-endian) selects an attestation batch on the ingest
@@ -76,6 +93,28 @@ func CommitteeSizeFromEnv() int {
 		return n
 	}
 	return 3
+}
+
+// TestCommitteeFromEnv reads N42_ATTEST_COMMITTEE (0: unset or invalid,
+// the f+1 rule applies).
+func TestCommitteeFromEnv() int {
+	if n, err := strconv.Atoi(os.Getenv(EnvTestCommittee)); err == nil && n > 0 {
+		return n
+	}
+	return 0
+}
+
+// VerifySampleFromEnv reads N42_ATTEST_VERIFY_SAMPLE (0 when unset or
+// invalid; clamped to [0, 1]).
+func VerifySampleFromEnv() float64 {
+	v, err := strconv.ParseFloat(os.Getenv(EnvVerifySample), 64)
+	if err != nil || !(v > 0) {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // Committee returns frame h's committee as indexes into the validator set
