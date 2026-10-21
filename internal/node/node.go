@@ -2543,6 +2543,11 @@ func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *a
 		flush = time.Duration(v) * time.Millisecond
 	}
 	testK := attest.TestCommitteeFromEnv()
+	sample := attest.VerifySampleFromEnv()
+	if sample > 0 {
+		log.Warn("N42_ATTEST_VERIFY_SAMPLE is set (TEST ONLY): a fraction of attested frames is recovered locally and checked",
+			"p", sample)
+	}
 	if testK > 0 {
 		f := -1
 		if v := validators(); v != nil {
@@ -2554,11 +2559,12 @@ func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *a
 	}
 	pool := attest.NewPool(attest.Config{
 		Validators: validators, Self: self, Sign: sign, Signer: signer, Store: st,
-		CommitteeSize: attest.CommitteeSizeFromEnv(), TestCommittee: testK, Send: pusher.Send, FlushEvery: flush,
+		CommitteeSize: attest.CommitteeSizeFromEnv(), TestCommittee: testK, VerifySample: sample,
+		Send: pusher.Send, FlushEvery: flush,
 	})
 	pool.Start(n.ctx)
 	n.ingestServer.SetAttestHandler(pool.HandleWire)
-	log.Info("Frame sender attestation", "committee", attest.CommitteeSizeFromEnv(), "testCommittee", testK, "peers", peers, "flush", flush)
+	log.Info("Frame sender attestation", "committee", attest.CommitteeSizeFromEnv(), "testCommittee", testK, "verifySample", sample, "peers", peers, "flush", flush)
 	return pool
 }
 

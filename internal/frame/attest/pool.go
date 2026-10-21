@@ -19,6 +19,8 @@ package attest
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/log"
 )
@@ -80,6 +83,10 @@ type Config struct {
 	// CommitteeSize with k and accepts min(k, f+1) matching attestations
 	// instead of f+1. Below f+1 the honest-member guarantee is gone.
 	TestCommittee int
+	// VerifySample (TEST ONLY, N42_ATTEST_VERIFY_SAMPLE; 0 = off) is the
+	// fraction of non-member frames recovered locally and checked against
+	// their attestations instead of being taken from them.
+	VerifySample float64
 	// Send broadcasts one EncodeWire message to the other validators.
 	Send func(msg []byte)
 	// FlushEvery is the publishing batch interval (<= 0: 20 ms).
@@ -96,6 +103,10 @@ type digestVotes struct {
 type frameVotes struct {
 	digests  map[types.Hash]*digestVotes
 	accepted []types.Address
+	// local is the digest of this node's own recovery of a sampled frame
+	// (hasLocal); attestations of any other digest are lies.
+	local    types.Hash
+	hasLocal bool
 }
 
 // Pool collects attestations, accepts a frame's senders at f+1 matching
@@ -117,6 +128,12 @@ type Pool struct {
 	badSig, notMember, badDigest, badBatch, fallback        atomic.Uint64
 	lastDigestWarn                                          atomic.Int64
 	reducedWarned                                           atomic.Bool
+	sampled, sampleMismatch, distrustedVotes                atomic.Uint64
+
+	// sampleSeed makes this node's sample unpredictable to attesters.
+	sampleSeed [32]byte
+	// distrusted holds attesters a sample caught lying (under mu).
+	distrusted map[types.Address]bool
 
 	startOnce sync.Once
 	cancel    context.CancelFunc
@@ -134,7 +151,39 @@ func NewPool(cfg Config) *Pool {
 	if cfg.CommitteeSize <= 0 {
 		cfg.CommitteeSize = 3
 	}
-	return &Pool{cfg: cfg, frames: make(map[types.Hash]*frameVotes), kick: make(chan struct{}, 1)}
+	p := &Pool{cfg: cfg, frames: make(map[types.Hash]*frameVotes), kick: make(chan struct{}, 1),
+		distrusted: make(map[types.Address]bool)}
+	if cfg.VerifySample > 0 {
+		if _, err := rand.Read(p.sampleSeed[:]); err != nil {
+			log.Warn("frame attestation: no random sample seed", "err", err)
+		}
+	}
+	return p
+}
+
+// sampledFrame reports whether this node checks frame h against its
+// attestations (VerifySample): keccak(seed || h) read as a fraction.
+func (p *Pool) sampledFrame(h types.Hash) bool {
+	ps := p.cfg.VerifySample
+	if !(ps > 0) {
+		return false
+	}
+	if ps >= 1 {
+		return true
+	}
+	x := binary.BigEndian.Uint64(crypto.Keccak256(p.sampleSeed[:], h[:]))
+	return float64(x) < ps*(1<<64)
+}
+
+// liedLocked records that attester by attested frame h with a digest this
+// node's own recovery contradicts; by is distrusted from now on.
+func (p *Pool) liedLocked(h types.Hash, by types.Address, got, want types.Hash) {
+	p.sampleMismatch.Add(1)
+	if !p.distrusted[by] {
+		p.distrusted[by] = true
+		log.Warn("frame attestation: sampled local recovery contradicts an attester; attester distrusted",
+			"attester", by, "frame", h, "attested", got, "recovered", want)
+	}
 }
 
 // committee returns frame h's members and the attestations needed.
@@ -220,7 +269,7 @@ func (p *Pool) Pending(h types.Hash) bool {
 	if v == nil || len(v.Sorted) == 0 {
 		return false
 	}
-	return !p.InCommittee(h)
+	return !p.InCommittee(h) && !p.sampledFrame(h)
 }
 
 // Recovered is told every frame this node recovered: a committee member
@@ -234,6 +283,10 @@ func (p *Pool) Recovered(h types.Hash, ss *store.Senders) {
 		return
 	}
 	if !p.InCommittee(h) {
+		if p.sampledFrame(h) {
+			p.checkSample(h, Digest(ss.Addrs))
+			return
+		}
 		p.fallback.Add(1)
 		return
 	}
@@ -252,6 +305,27 @@ func (p *Pool) Recovered(h types.Hash, ss *store.Senders) {
 		select {
 		case p.kick <- struct{}{}:
 		default:
+		}
+	}
+}
+
+// checkSample records this node's recovery of sampled frame h (digest d)
+// and convicts every attester that voted another digest.
+func (p *Pool) checkSample(h, d types.Hash) {
+	p.sampled.Add(1)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fv := p.frameLocked(h)
+	if fv.hasLocal {
+		return
+	}
+	fv.local, fv.hasLocal = d, true
+	for got, dv := range fv.digests {
+		if got == d {
+			continue
+		}
+		for _, by := range dv.by {
+			p.liedLocked(h, by, got, d)
 		}
 	}
 }
@@ -326,7 +400,7 @@ func (p *Pool) Add(b *Batch) error {
 			// own copy of a list it records.
 			e.Senders = append([]types.Address(nil), e.Senders...)
 		}
-		if addrs := p.record(e, b.Attester, need); addrs != nil {
+		if addrs := p.record(e, b.Attester, need, p.sampledFrame(e.Frame)); addrs != nil {
 			done = append(done, acc{e.Frame, addrs})
 		}
 	}
@@ -398,12 +472,22 @@ func (p *Pool) frameLocked(h types.Hash) *frameVotes {
 }
 
 // record adds one attestation and returns the senders when it completes
-// f+1 matching attestations with a known list.
-func (p *Pool) record(e Entry, by types.Address, need int) []types.Address {
+// f+1 (or the test quorum of) matching attestations with a known list. A
+// distrusted attester's vote is ignored; a sampled frame is never accepted
+// from attestations (this node recovers it), its votes are only checked.
+func (p *Pool) record(e Entry, by types.Address, need int, sampled bool) []types.Address {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.distrusted[by] {
+		p.distrustedVotes.Add(1)
+		return nil
+	}
 	fv := p.frameLocked(e.Frame)
 	if fv.accepted != nil {
+		return nil
+	}
+	if fv.hasLocal && e.Digest != fv.local {
+		p.liedLocked(e.Frame, by, e.Digest, fv.local)
 		return nil
 	}
 	dv := fv.digests[e.Digest]
@@ -420,6 +504,9 @@ func (p *Pool) record(e Entry, by types.Address, need int) []types.Address {
 	if dv.list == nil && e.Senders != nil {
 		dv.list = e.Senders
 	}
+	if sampled {
+		return nil
+	}
 	if len(dv.by) >= need && dv.list != nil {
 		fv.accepted = dv.list
 		fv.digests = nil
@@ -432,6 +519,10 @@ func (p *Pool) record(e Entry, by types.Address, need int) []types.Address {
 type Stats struct {
 	Batches, Entries, Accepted, Published, PublishedBatches uint64
 	BadSig, NotMember, BadDigest, BadBatch, Fallback        uint64
+	// Sampled: frames checked by a local recovery; SampleMismatch:
+	// attestations a sample contradicted; DistrustedVotes: votes ignored
+	// from a distrusted attester.
+	Sampled, SampleMismatch, DistrustedVotes uint64
 }
 
 // Stats returns the counters.
@@ -439,12 +530,14 @@ func (p *Pool) Stats() Stats {
 	return Stats{Batches: p.batches.Load(), Entries: p.entries.Load(), Accepted: p.accepted.Load(),
 		Published: p.published.Load(), PublishedBatches: p.publishedBatches.Load(),
 		BadSig: p.badSig.Load(), NotMember: p.notMember.Load(), BadDigest: p.badDigest.Load(),
-		BadBatch: p.badBatch.Load(), Fallback: p.fallback.Load()}
+		BadBatch: p.badBatch.Load(), Fallback: p.fallback.Load(),
+		Sampled: p.sampled.Load(), SampleMismatch: p.sampleMismatch.Load(), DistrustedVotes: p.distrustedVotes.Load()}
 }
 
 func (s Stats) String() string {
-	return fmt.Sprintf("batches=%d entries=%d accepted=%d published=%d/%d badSig=%d notMember=%d badDigest=%d badBatch=%d fallback=%d",
-		s.Batches, s.Entries, s.Accepted, s.Published, s.PublishedBatches, s.BadSig, s.NotMember, s.BadDigest, s.BadBatch, s.Fallback)
+	return fmt.Sprintf("batches=%d entries=%d accepted=%d published=%d/%d badSig=%d notMember=%d badDigest=%d badBatch=%d fallback=%d sampled=%d sampleMismatch=%d distrustedVotes=%d",
+		s.Batches, s.Entries, s.Accepted, s.Published, s.PublishedBatches, s.BadSig, s.NotMember, s.BadDigest, s.BadBatch, s.Fallback,
+		s.Sampled, s.SampleMismatch, s.DistrustedVotes)
 }
 
 // Start begins publishing this node's attestations every FlushEvery and
