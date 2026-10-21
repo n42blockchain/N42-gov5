@@ -387,7 +387,20 @@ func (fr *frameRun) produce(nFrames int64) <-chan builtFrame {
 }
 
 // Corpus file: header, then per frame u32 rawLen, u32 txCount, raw bytes.
-const corpusMagic = "TXFC0001"
+// The frames are signed, so the magic records the frame hash version they
+// were signed under: a corpus replays only with the same N42_FRAME_HASH_V2
+// setting the fleet runs.
+const (
+	corpusMagic   = "TXFC0001" // frame hash v1
+	corpusMagicV2 = "TXFC2H01" // frame hash v2
+)
+
+func corpusMagicFor(v2 bool) string {
+	if v2 {
+		return corpusMagicV2
+	}
+	return corpusMagic
+}
 
 type corpusHeader struct {
 	Peers     uint32
@@ -408,7 +421,7 @@ func (fr *frameRun) writeCorpus(path string) error {
 	if fr.broadcast {
 		h.Broadcast = 1
 	}
-	_, _ = w.WriteString(corpusMagic)
+	_, _ = w.WriteString(corpusMagicFor(frame.HashV2Enabled()))
 	_ = binary.Write(w, binary.LittleEndian, h)
 	for bf := range fr.produce(nFrames) {
 		if bf.err != nil {
@@ -434,6 +447,8 @@ type corpusReader struct {
 	f *os.File
 	r *bufio.Reader
 	h corpusHeader
+	// hashV2: the frames were signed under frame hash v2.
+	hashV2 bool
 	// free holds frame buffers every peer has finished with. Streaming
 	// allocated (and zeroed) a fresh ~56 KB buffer per frame only to
 	// overwrite it, which with the GC it drove was a fifth of a replaying
@@ -464,11 +479,11 @@ func openCorpus(path string) (*corpusReader, error) {
 	}
 	r := bufio.NewReaderSize(f, 4<<20)
 	var m [len(corpusMagic)]byte
-	if _, err := io.ReadFull(r, m[:]); err != nil || string(m[:]) != corpusMagic {
+	if _, err := io.ReadFull(r, m[:]); err != nil || (string(m[:]) != corpusMagic && string(m[:]) != corpusMagicV2) {
 		f.Close()
 		return nil, fmt.Errorf("%s: not a txflood corpus", path)
 	}
-	c := &corpusReader{f: f, r: r}
+	c := &corpusReader{f: f, r: r, hashV2: string(m[:]) == corpusMagicV2}
 	if err := binary.Read(r, binary.LittleEndian, &c.h); err != nil {
 		f.Close()
 		return nil, err
@@ -481,6 +496,9 @@ func (c *corpusReader) check(peers int, broadcast bool, total int64) error {
 	if int(c.h.Peers) != peers || (c.h.Broadcast == 1) != broadcast || int64(c.h.Total) != total {
 		return fmt.Errorf("corpus built for peers=%d broadcast=%v total=%d, run has peers=%d broadcast=%v total=%d",
 			c.h.Peers, c.h.Broadcast == 1, c.h.Total, peers, broadcast, total)
+	}
+	if v2 := frame.HashV2Enabled(); c.hashV2 != v2 {
+		return fmt.Errorf("corpus frames signed with frame hash v2=%v, run has %s=%v", c.hashV2, frame.EnvFrameHashV2, v2)
 	}
 	return nil
 }
