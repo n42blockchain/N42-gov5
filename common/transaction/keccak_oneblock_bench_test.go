@@ -124,6 +124,17 @@ func BenchmarkSenders64(b *testing.B) {
 		}
 	})
 	b.Run("batch", func(b *testing.B) {
+		withIFMA(false, func() {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				SendersBatch(signer, txs, addrs, errs)
+			}
+		})
+	})
+	b.Run("batch-ifma", func(b *testing.B) {
+		if !crypto.EcrecoverIFMAEnabled {
+			b.Skip("IFMA kernel off")
+		}
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			SendersBatch(signer, txs, addrs, errs)
