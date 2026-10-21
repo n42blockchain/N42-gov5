@@ -54,8 +54,9 @@ func TestFrameIngestHashV2(t *testing.T) {
 	gw, _ := crypto.GenerateKey()
 	gwAddr := crypto.PubkeyToAddress(gw.PublicKey)
 	txs, _ := signedTxs(t, 10, 20)
+	defer frame.SetHashV2ForTest(false)()
 	v1 := packFrames(t, gw, txs[:50])[0]
-	defer frame.SetHashV2ForTest(true)()
+	frame.SetHashV2ForTest(true)
 	frames := packFrames(t, gw, txs)
 
 	peerStore := store.New(64 << 20)

@@ -46,6 +46,7 @@ func goldenFrame(t *testing.T) []byte {
 }
 
 func TestV1Golden(t *testing.T) {
+	defer SetHashV2ForTest(false)()
 	raw := goldenFrame(t)
 	f, err := Decode(raw)
 	if err != nil {
