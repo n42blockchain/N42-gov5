@@ -261,7 +261,7 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 		reply[0] = FrameBusy
 		return reply, nil
 	}
-	switch st.Admit(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}, false) {
+	switch st.Admit(hash, store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount), TxHashes: f.TxHashes}, false) {
 	case store.Stored:
 		if last, seen := fi.lastSeq[f.Gateway]; !seen || f.Seq > last {
 			fi.lastSeq[f.Gateway] = f.Seq
