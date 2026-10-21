@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // prewarmSenderMinBatch is the batch size below which recovering serially is
@@ -71,6 +72,11 @@ func (pool *TxsPool) prewarmSenders(txs []*transaction.Transaction) {
 		return // nothing to gain
 	}
 
+	if crypto.EcrecoverIFMAEnabled {
+		pool.prewarmSendersBatched(signer, txs, workers)
+		return
+	}
+
 	var (
 		wg   sync.WaitGroup
 		next = make(chan *transaction.Transaction, workers)
@@ -101,6 +107,44 @@ func (pool *TxsPool) prewarmSenders(txs []*transaction.Transaction) {
 			continue // already admitted; its sender is already recovered
 		}
 		next <- tx
+	}
+	close(next)
+	wg.Wait()
+}
+
+// prewarmSenderChunk is how many transactions a worker takes at a time
+// with the IFMA kernel on, so their recoveries go eight at a time.
+const prewarmSenderChunk = 32
+
+// prewarmSendersBatched is prewarmSenders handing the workers chunks of
+// transactions, recovered together through transaction.SendersMemo.
+func (pool *TxsPool) prewarmSendersBatched(signer transaction.Signer, txs []*transaction.Transaction, workers int) {
+	todo := make([]*transaction.Transaction, 0, len(txs))
+	for _, tx := range txs {
+		if tx == nil || pool.all.Get(tx.Hash()) != nil {
+			continue // already admitted; its sender is already recovered
+		}
+		todo = append(todo, tx)
+	}
+	var (
+		wg   sync.WaitGroup
+		next = make(chan []*transaction.Transaction, workers)
+	)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for part := range next {
+				// Errors are left for validateSender, as above.
+				transaction.SendersMemo(signer, part, nil)
+				for _, tx := range part {
+					_, _ = tx.EncodedSize()
+				}
+			}
+		}()
+	}
+	for lo := 0; lo < len(todo); lo += prewarmSenderChunk {
+		next <- todo[lo:min(lo+prewarmSenderChunk, len(todo))]
 	}
 	close(next)
 	wg.Wait()
