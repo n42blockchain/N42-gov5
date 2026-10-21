@@ -252,7 +252,7 @@ func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int,
 	if f.TxType == TxTypeEthereum && TxDecodePoolEnabled() {
 		rd = recoverDecodePool.Get().(*recoverDecode)
 		rd.dec.Reset(int(f.TxCount))
-		txs, _, err = decodeFrameInto(&f, &rd.dec, rd.txs[:0])
+		txs, _, err = decodeFrameInto(&f, &rd.dec, rd.txs[:0], nil)
 		if err != nil {
 			// The partial decode is discarded with the pooled state.
 			clear(rd.txs[:cap(rd.txs)])
@@ -261,7 +261,7 @@ func RecoverSenders(signer transaction.Signer, raw []byte) (*store.Senders, int,
 			return nil, 0, err
 		}
 	} else {
-		txs, _, err = decodeFrameInto(&f, nil, make([]*transaction.Transaction, 0, f.TxCount))
+		txs, _, err = decodeFrameInto(&f, nil, make([]*transaction.Transaction, 0, f.TxCount), nil)
 		if err != nil {
 			return nil, 0, err
 		}
