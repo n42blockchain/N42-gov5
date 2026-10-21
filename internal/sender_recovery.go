@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -258,12 +259,37 @@ func recoverSenderStride(signer transaction.Signer, txs []*transaction.Transacti
 		_ = recover()
 		done <- struct{}{}
 	}()
-	for i := start; i < len(txs); i += stride {
-		tx := txs[i]
-		if tx == nil || tx.From() != nil {
-			continue
+	recoverSendersStrided(signer, txs, start, stride)
+}
+
+// senderStrideChunk is the unit of the recovery workers' static striding
+// with the IFMA kernel on: worker w takes chunks w, w+n, w+2n of this many
+// transactions, so its recoveries reach transaction.SendersMemo (eight at
+// a time) in groups, while the workers still advance as one frontier.
+// With the kernel off the unit is one transaction, as before.
+const senderStrideChunk = 32
+
+// recoverSendersStrided recovers, as transaction.Sender would, the senders
+// of the transactions without a wire-declared sender in chunks start,
+// start+stride, ... of txs.
+func recoverSendersStrided(signer transaction.Signer, txs []*transaction.Transaction, start, stride int) {
+	unit := 1
+	if crypto.EcrecoverIFMAEnabled {
+		unit = senderStrideChunk
+	}
+	var part [senderStrideChunk]*transaction.Transaction
+	for lo := start * unit; lo < len(txs); lo += stride * unit {
+		hi := min(lo+unit, len(txs))
+		m := 0
+		for _, tx := range txs[lo:hi] {
+			if tx == nil || tx.From() != nil {
+				continue
+			}
+			part[m] = tx
+			m++
 		}
-		_, _ = transaction.Sender(signer, tx)
+		transaction.SendersMemo(signer, part[:m], nil)
+		clear(part[:m])
 	}
 }
 
@@ -294,13 +320,7 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 				_ = recover()
 				done <- struct{}{}
 			}()
-			for i := start; i < len(txs); i += workers {
-				tx := txs[i]
-				if tx == nil || tx.From() != nil {
-					continue
-				}
-				_, _ = transaction.Sender(signer, tx)
-			}
+			recoverSendersStrided(signer, txs, start, workers)
 		}(w)
 	}
 	for w := 0; w < workers; w++ {
