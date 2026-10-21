@@ -4,6 +4,7 @@
 package transaction
 
 import (
+	"bytes"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -228,4 +229,33 @@ func (s EIP155Signer) recover4(bs *senderBatchScratch, cid *uint256.Int, txs []*
 		copy(a[:], digests[j][12:])
 		addrs[i], errs[i] = a, nil
 	}
+}
+
+// SeedHashFromEncoding publishes h as tx's hash when that hash is, by
+// definition, keccak256 of exactly enc: tx's type hashes its consensus
+// encoding (see hashFromEncoding) and its cached encoding is enc, byte for
+// byte. The caller guarantees h == keccak256(enc), typically because it
+// already hashed enc for another purpose (a frame's v2 hash hashes every
+// entry, and the transaction was decoded from that entry). It reports
+// whether h was published; it is not when the hash is already set or being
+// computed, or when enc is not tx's hashed encoding.
+func (tx *Transaction) SeedHashFromEncoding(enc []byte, h types.Hash) bool {
+	if len(enc) == 0 || !hashFromEncoding(tx.Type()) {
+		return false
+	}
+	p := tx.enc.Load()
+	if p == nil || len(*p) != len(enc) {
+		return false
+	}
+	// A transaction decoded aliasing the entry shares its bytes; one decoded
+	// into its own copy is compared (a memcmp, far cheaper than the keccak).
+	if &(*p)[0] != &enc[0] && !bytes.Equal(*p, enc) {
+		return false
+	}
+	if !tx.hashState.CompareAndSwap(hashNone, hashWriting) {
+		return false
+	}
+	tx.hashVal = h
+	tx.hashState.Store(hashReady)
+	return true
 }
