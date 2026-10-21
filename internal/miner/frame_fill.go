@@ -181,7 +181,16 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	// frame, while its transactions are still in that worker's cache; the
 	// build recovers the senders that were not cached.
 	applied := make([]int, len(pick.raws))
-	per, dropped, err := frame.DecodeFramesEachWith(pick.raws, 0, func(i int, txs []*transaction.Transaction) {
+	// Entry hashes kept by a frame hash v2 admission are the transaction
+	// hashes (see DecodeFramesEachSeeded); HashTxs hashes the rest.
+	var seeds func(i int) []types.Hash
+	if frame.HashV2Enabled() {
+		seeds = func(i int) []types.Hash {
+			e, _ := st.GetEntry(pick.hashes[i])
+			return e.TxHashes
+		}
+	}
+	per, dropped, err := frame.DecodeFramesEachSeeded(pick.raws, seeds, 0, func(i int, txs []*transaction.Transaction) {
 		applied[i] = frame.ApplySenders(txs, st.Senders(pick.hashes[i]))
 		frame.HashTxs(txs)
 	})
