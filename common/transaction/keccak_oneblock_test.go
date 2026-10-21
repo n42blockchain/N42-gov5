@@ -24,6 +24,15 @@ func withOneBlock(on bool, f func()) {
 	f()
 }
 
+// withX8 runs f with the eight-way batching forced on or off (off means
+// four-way batches; forced on without AVX-512 it is slow but correct).
+func withX8(on bool, f func()) {
+	prev := crypto.KeccakX8Enabled
+	crypto.KeccakX8Enabled = on
+	defer func() { crypto.KeccakX8Enabled = prev }()
+	f()
+}
+
 func randU256(rng *rand.Rand) *uint256.Int {
 	switch rng.Intn(5) {
 	case 0:
@@ -224,46 +233,49 @@ func TestHashBatchAndSendersBatchEquivalence(t *testing.T) {
 	for round := 0; round < 40; round++ {
 		n := rng.Intn(70)
 		txs := mixedTxs(t, rng, n, chainID)
-		for _, on := range []bool{true, false} {
+		for _, mode := range []int{0, 1, 2} {
+			on, x8 := mode != 2, mode == 0
 			withOneBlock(on, func() {
-				ref := cloneTxs(txs)
-				got := cloneTxs(txs)
-				// Pre-hash a few so HashBatch meets ready hashes too.
-				for i := range got {
-					if got[i] != nil && rng.Intn(10) == 0 {
-						got[i].Hash()
+				withX8(x8, func() {
+					ref := cloneTxs(txs)
+					got := cloneTxs(txs)
+					// Pre-hash a few so HashBatch meets ready hashes too.
+					for i := range got {
+						if got[i] != nil && rng.Intn(10) == 0 {
+							got[i].Hash()
+						}
 					}
-				}
-				HashBatch(got)
-				for i := range ref {
-					if ref[i] == nil {
-						continue
-					}
-					if got[i].hashState.Load() != hashReady {
-						t.Fatalf("round %d tx %d: hash not memoised", round, i)
-					}
-					want := ref[i].inner.hash()
-					if ref[i].Hash() != want || got[i].Hash() != want {
-						t.Fatalf("round %d tx %d on=%v: hash %x / %x want %x", round, i, on, got[i].Hash(), ref[i].Hash(), want)
-					}
-				}
-				for _, sg := range signers {
-					addrs := make([]types.Address, len(got))
-					errs := make([]error, len(got))
-					SendersBatch(sg, got, addrs, errs)
-					for i, tx := range ref {
-						if tx == nil {
-							if addrs[i] != (types.Address{}) || errs[i] != nil {
-								t.Fatalf("nil tx %d touched", i)
-							}
+					HashBatch(got)
+					for i := range ref {
+						if ref[i] == nil {
 							continue
 						}
-						wa, we := sg.Sender(tx)
-						if addrs[i] != wa || (we == nil) != (errs[i] == nil) || (we != nil && we.Error() != errs[i].Error()) {
-							t.Fatalf("round %d tx %d on=%v %T: batch (%x, %v) single (%x, %v)", round, i, on, sg, addrs[i], errs[i], wa, we)
+						if got[i].hashState.Load() != hashReady {
+							t.Fatalf("round %d tx %d: hash not memoised", round, i)
+						}
+						want := ref[i].inner.hash()
+						if ref[i].Hash() != want || got[i].Hash() != want {
+							t.Fatalf("round %d tx %d on=%v: hash %x / %x want %x", round, i, on, got[i].Hash(), ref[i].Hash(), want)
 						}
 					}
-				}
+					for _, sg := range signers {
+						addrs := make([]types.Address, len(got))
+						errs := make([]error, len(got))
+						SendersBatch(sg, got, addrs, errs)
+						for i, tx := range ref {
+							if tx == nil {
+								if addrs[i] != (types.Address{}) || errs[i] != nil {
+									t.Fatalf("nil tx %d touched", i)
+								}
+								continue
+							}
+							wa, we := sg.Sender(tx)
+							if addrs[i] != wa || (we == nil) != (errs[i] == nil) || (we != nil && we.Error() != errs[i].Error()) {
+								t.Fatalf("round %d tx %d on=%v x8=%v %T: batch (%x, %v) single (%x, %v)", round, i, on, x8, sg, addrs[i], errs[i], wa, we)
+							}
+						}
+					}
+				})
 			})
 		}
 	}

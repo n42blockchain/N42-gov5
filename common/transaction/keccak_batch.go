@@ -22,14 +22,49 @@ import (
 // N42_KECCAK_ONEBLOCK=0 turns the batching off with the rest of the
 // single-block path.
 
-// keccakBatchOn reports whether the four-way batching is worth taking.
+// With AVX-512 (crypto.KeccakX8Enabled, N42_KECCAK_X8) the batches are
+// eight wide and one eight-way permutation costs about what one four-way
+// AVX2 permutation did.
+
+// keccakBatchMax is the widest batch the loops below collect.
+const keccakBatchMax = 8
+
+// keccakBatchOn reports whether the multi-way batching is worth taking.
 func keccakBatchOn() bool {
 	return crypto.KeccakOneBlockEnabled && crypto.KeccakX4Enabled
 }
 
+// keccakBatchWidth is the batch the loops collect before hashing: eight
+// with the AVX-512 eight-way permutation, else four.
+func keccakBatchWidth() int {
+	if crypto.KeccakX8Enabled {
+		return 8
+	}
+	return 4
+}
+
+// keccakOneBlockN sets out[i] = Keccak256Hash(in[i]) for the first n
+// inputs (n <= 8), each shorter than the Keccak rate: eight-way when n is 8
+// and AVX-512 is on, four-way per remaining group of four, one by one for
+// the rest.
+func keccakOneBlockN(in *[keccakBatchMax][]byte, out *[keccakBatchMax]types.Hash, n int) {
+	off := 0
+	if n == 8 && crypto.KeccakX8Enabled && crypto.Keccak256x8OneBlock(in, out) {
+		return
+	}
+	for ; n-off >= 4; off += 4 {
+		if !crypto.Keccak256x4OneBlock((*[4][]byte)(in[off:off+4]), (*[4]types.Hash)(out[off:off+4])) {
+			break
+		}
+	}
+	for ; off < n; off++ {
+		out[off] = crypto.Keccak256HashOne(in[off])
+	}
+}
+
 // HashBatch memoises the hash of every transaction of txs (nil entries are
 // skipped), as tx.Hash() on each would, hashing single-block cached
-// encodings four at a time. A transaction whose hash is ready or claimed by
+// encodings four (eight with AVX-512) at a time. A transaction whose hash is ready or claimed by
 // another goroutine, or that has no single-block cached encoding, goes
 // through tx.Hash().
 func HashBatch(txs []*Transaction) {
@@ -42,10 +77,11 @@ func HashBatch(txs []*Transaction) {
 		return
 	}
 	var (
-		claimed [4]*Transaction
-		in      [4][]byte
-		out     [4]types.Hash
+		claimed [keccakBatchMax]*Transaction
+		in      [keccakBatchMax][]byte
+		out     [keccakBatchMax]types.Hash
 		n       int
+		width   = keccakBatchWidth()
 	)
 	for _, tx := range txs {
 		if tx == nil {
@@ -58,12 +94,12 @@ func HashBatch(txs []*Transaction) {
 		}
 		claimed[n], in[n] = tx, enc
 		n++
-		if n == 4 {
-			publishHashes4(&claimed, &in, &out, 4)
+		if n == width {
+			publishHashes(&claimed, &in, &out, n)
 			n = 0
 		}
 	}
-	publishHashes4(&claimed, &in, &out, n)
+	publishHashes(&claimed, &in, &out, n)
 }
 
 // singleBlockEncoding returns tx's cached consensus encoding when its hash
@@ -79,21 +115,13 @@ func (tx *Transaction) singleBlockEncoding() []byte {
 	return *p
 }
 
-// publishHashes4 hashes the first n claimed encodings (four-way when n is
-// 4) and publishes them as Hash() does after its claim.
-func publishHashes4(claimed *[4]*Transaction, in *[4][]byte, out *[4]types.Hash, n int) {
-	if n == 4 && crypto.Keccak256x4OneBlock(in, out) {
-		for i := 0; i < 4; i++ {
-			claimed[i].hashVal = out[i]
-			claimed[i].hashState.Store(hashReady)
-			claimed[i], in[i] = nil, nil
-		}
-		return
-	}
+// publishHashes hashes the first n claimed encodings (multi-way where
+// possible) and publishes them as Hash() does after its claim.
+func publishHashes(claimed *[keccakBatchMax]*Transaction, in *[keccakBatchMax][]byte, out *[keccakBatchMax]types.Hash, n int) {
+	keccakOneBlockN(in, out, n)
 	for i := 0; i < n; i++ {
-		tx := claimed[i]
-		tx.hashVal = tx.computeHash()
-		tx.hashState.Store(hashReady)
+		claimed[i].hashVal = out[i]
+		claimed[i].hashState.Store(hashReady)
 		claimed[i], in[i] = nil, nil
 	}
 }
@@ -112,22 +140,22 @@ func legacyFastSigner(signer Signer) (EIP155Signer, bool) {
 	return EIP155Signer{}, false
 }
 
-// senderBatchScratch holds four recoveries' cgo buffers (see recoverScratch)
-// and four signing payload buffers.
+// senderBatchScratch holds a batch's recovery cgo buffers (see
+// recoverScratch) and signing payload buffers.
 type senderBatchScratch struct {
-	sc  [4]recoverScratch
-	pay [4][crypto.Keccak256OneBlockMax]byte
+	sc  [keccakBatchMax]recoverScratch
+	pay [keccakBatchMax][crypto.Keccak256OneBlockMax]byte
 }
 
 var senderBatchPool = sync.Pool{New: func() any { return new(senderBatchScratch) }}
 
 // SendersBatch sets addrs[i], errs[i] = signer.Sender(txs[i]) for every
 // non-nil txs[i] (nil entries are left untouched). Replay-protected legacy
-// transactions on the uint64 fast path are processed four at a time: their
-// signing hashes, then their recoveries one by one, then their address
-// hashes, each Keccak step a four-way permutation. Every other transaction
-// goes through signer.Sender. Results are identical to the one-at-a-time
-// calls. addrs and errs must be at least as long as txs.
+// transactions on the uint64 fast path are processed four (eight with
+// AVX-512) at a time: their signing hashes, then their recoveries one by
+// one, then their address hashes, each Keccak step one multi-way
+// permutation. Every other transaction goes through signer.Sender. Results
+// are identical to the one-at-a-time calls. addrs and errs must be at least as long as txs.
 func SendersBatch(signer Signer, txs []*Transaction, addrs []types.Address, errs []error) {
 	es, ok := legacyFastSigner(signer)
 	if !ok || !keccakBatchOn() {
@@ -145,10 +173,11 @@ func SendersBatch(signer Signer, txs []*Transaction, addrs []types.Address, errs
 	bs := senderBatchPool.Get().(*senderBatchScratch)
 	defer senderBatchPool.Put(bs)
 	var (
-		idx   [4]int
-		inner [4]*LegacyTx
-		vb    [4]uint64
+		idx   [keccakBatchMax]int
+		inner [keccakBatchMax]*LegacyTx
+		vb    [keccakBatchMax]uint64
 		n     int
+		width = keccakBatchWidth()
 	)
 	for i, tx := range txs {
 		if tx == nil {
@@ -165,29 +194,27 @@ func SendersBatch(signer Signer, txs []*Transaction, addrs []types.Address, errs
 		}
 		idx[n], inner[n], vb[n] = i, in, v
 		n++
-		if n == 4 {
-			es.recover4(bs, &cid, txs, &idx, &inner, &vb, addrs, errs)
+		if n == width {
+			es.recoverBatch(bs, &cid, txs, &idx, &inner, &vb, n, addrs, errs)
 			n = 0
 		}
 	}
-	for j := 0; j < n; j++ {
-		i := idx[j]
-		h, _ := es.Hash(txs[i])
-		addrs[i], errs[i] = recoverPlainV(h, inner[j].R, inner[j].S, vb[j], true)
+	if n > 0 {
+		es.recoverBatch(bs, &cid, txs, &idx, &inner, &vb, n, addrs, errs)
 	}
 }
 
-// recover4 recovers the senders of the four prechecked legacy transactions
-// txs[idx[0..3]].
-func (s EIP155Signer) recover4(bs *senderBatchScratch, cid *uint256.Int, txs []*Transaction, idx *[4]int, inner *[4]*LegacyTx,
-	vb *[4]uint64, addrs []types.Address, errs []error) {
+// recoverBatch recovers the senders of the n prechecked legacy
+// transactions txs[idx[0..n-1]].
+func (s EIP155Signer) recoverBatch(bs *senderBatchScratch, cid *uint256.Int, txs []*Transaction, idx *[keccakBatchMax]int,
+	inner *[keccakBatchMax]*LegacyTx, vb *[keccakBatchMax]uint64, n int, addrs []types.Address, errs []error) {
 	var (
-		in  [4][]byte
-		sig [4]types.Hash
+		in  [keccakBatchMax][]byte
+		sig [keccakBatchMax]types.Hash
 	)
-	// Signing hashes: four-way when every payload fits one block.
+	// Signing hashes: multi-way when every payload fits one block.
 	fits := true
-	for j := 0; j < 4; j++ {
+	for j := 0; j < n; j++ {
 		tx := txs[idx[j]]
 		size := legacySigningContentSize(tx, cid)
 		if size+2 >= crypto.Keccak256OneBlockMax {
@@ -196,29 +223,27 @@ func (s EIP155Signer) recover4(bs *senderBatchScratch, cid *uint256.Int, txs []*
 		}
 		in[j] = appendLegacySigningPayload(bs.pay[j][:0], tx, cid, size)
 	}
-	if !fits || !crypto.Keccak256x4OneBlock(&in, &sig) {
-		for j := 0; j < 4; j++ {
+	if fits {
+		keccakOneBlockN(&in, &sig, n)
+	} else {
+		for j := 0; j < n; j++ {
 			sig[j], _ = s.Hash(txs[idx[j]])
 		}
 	}
-	// Recoveries, one by one; then the addresses four-way.
+	// Recoveries, one by one; then the addresses multi-way.
 	var (
-		rerr [4]error
-		pubs [4][]byte
+		rerr [keccakBatchMax]error
+		pubs [keccakBatchMax][]byte
 	)
-	for j := 0; j < 4; j++ {
+	for j := 0; j < n; j++ {
 		pubs[j], rerr[j] = recoverPubInto(&bs.sc[j], sig[j], inner[j].R, inner[j].S, vb[j], true)
 		if rerr[j] != nil {
 			pubs[j] = bs.sc[j].pub[1:] // a dummy lane; its digest is discarded
 		}
 	}
-	var digests [4]types.Hash
-	if !crypto.Keccak256x4OneBlock(&pubs, &digests) {
-		for j := 0; j < 4; j++ {
-			digests[j] = crypto.Keccak256Hash(pubs[j])
-		}
-	}
-	for j := 0; j < 4; j++ {
+	var digests [keccakBatchMax]types.Hash
+	keccakOneBlockN(&pubs, &digests, n)
+	for j := 0; j < n; j++ {
 		i := idx[j]
 		if rerr[j] != nil {
 			addrs[i], errs[i] = types.Address{}, rerr[j]
