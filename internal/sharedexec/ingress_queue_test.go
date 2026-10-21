@@ -40,6 +40,10 @@ type strictIngressFixture struct {
 }
 
 func newStrictIngressFixture(t *testing.T, maxTx, maxBytes int, frameSize ...uint16) strictIngressFixture {
+	return newStrictIngressFixtureWithDB(t, maxTx, maxBytes, nil, frameSize...)
+}
+
+func newStrictIngressFixtureWithDB(t *testing.T, maxTx, maxBytes int, wrapDB func(kv.RwDB) kv.RwDB, frameSize ...uint16) strictIngressFixture {
 	t.Helper()
 	var private [2]*ecdsa.PrivateKey
 	var from [2]types.Address
@@ -52,7 +56,7 @@ func newStrictIngressFixture(t *testing.T, maxTx, maxBytes int, frameSize ...uin
 		from[i] = crypto.PubkeyToAddress(private[i].PublicKey)
 	}
 	var keys []blscommon.SecretKey
-	chain, _, leader, template, recipient, _ := unsignedBuildFixtureWithSet(t, 7, func(k []blscommon.SecretKey) { keys = k }, func(g *conf.Genesis) {
+	chain, _, leader, template, recipient, _ := unsignedBuildFixtureWithSetAndDB(t, 7, func(k []blscommon.SecretKey) { keys = k }, wrapDB, func(g *conf.Genesis) {
 		g.BaseFee = uint256.NewInt(1)
 		for _, address := range from {
 			g.Alloc[address] = conf.GenesisAccount{Balance: "0x56bc75e2d63100000"}

@@ -20,8 +20,12 @@ import (
 )
 
 func certifiedCanonicalFixture(t *testing.T, commit bool) (strictIngressFixture, *block.Block, CertifiedCommitRequest) {
+	return certifiedCanonicalFixtureWithDB(t, commit, nil)
+}
+
+func certifiedCanonicalFixtureWithDB(t *testing.T, commit bool, wrapDB func(kv.RwDB) kv.RwDB) (strictIngressFixture, *block.Block, CertifiedCommitRequest) {
 	t.Helper()
-	f := newStrictIngressFixture(t, 10, 1<<20)
+	f := newStrictIngressFixtureWithDB(t, 10, 1<<20, wrapDB)
 	status, err := f.server.StrictIngressStatus()
 	if err != nil {
 		t.Fatal(err)
