@@ -264,10 +264,10 @@ func recoverSenderStride(signer transaction.Signer, txs []*transaction.Transacti
 
 // senderStrideChunk is the unit of the recovery workers' static striding
 // with the IFMA kernel on: worker w takes chunks w, w+n, w+2n of this many
-// transactions, so its recoveries reach transaction.SendersMemo (eight at
-// a time) in groups, while the workers still advance as one frontier.
+// transactions, so its recoveries reach transaction.SendersMemo (and the
+// kernel) together, while the workers still advance as one frontier.
 // With the kernel off the unit is one transaction, as before.
-const senderStrideChunk = 32
+const senderStrideChunk = 64
 
 // recoverSendersStrided recovers, as transaction.Sender would, the senders
 // of the transactions without a wire-declared sender in chunks start,

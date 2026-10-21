@@ -113,8 +113,8 @@ func (pool *TxsPool) prewarmSenders(txs []*transaction.Transaction) {
 }
 
 // prewarmSenderChunk is how many transactions a worker takes at a time
-// with the IFMA kernel on, so their recoveries go eight at a time.
-const prewarmSenderChunk = 32
+// with the IFMA kernel on, so their recoveries reach the kernel together.
+const prewarmSenderChunk = 64
 
 // prewarmSendersBatched is prewarmSenders handing the workers chunks of
 // transactions, recovered together through transaction.SendersMemo.
