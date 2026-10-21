@@ -188,6 +188,7 @@ func waitFor(t testing.TB, d time.Duration, cond func() bool) {
 // frame store with its gas estimate, and nothing reaches the transaction
 // pool (frames feed frame-referenced blocks, not the pool).
 func TestFrameIngestEndToEnd(t *testing.T) {
+	defer frame.SetHashV2ForTest(false)() // the ack is checked against the v1 hash
 	gw, _ := crypto.GenerateKey()
 	txs, _ := signedTxs(t, 50, 100)
 	frames := packFrames(t, gw, txs)
