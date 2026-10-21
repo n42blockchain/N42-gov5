@@ -29,7 +29,9 @@
 //
 // FrameHash = keccak256(header || payload). The signature covers the hash,
 // which commits to every header field and every payload byte, so one keccak
-// pass serves as both identity and signed digest.
+// pass serves as both identity and signed digest. Under N42_FRAME_HASH_V2=1
+// the FrameHash is built over per-entry hashes instead (see hash_v2.go); the
+// wire layout is the same.
 package frame
 
 import (
@@ -154,6 +156,11 @@ type Frame struct {
 	Raw     []byte
 	Payload []byte
 	Sig     []byte
+	// TxHashes are keccak256 of each entry, in payload order, filled by
+	// Hash (and so Verify) under frame hash v2; nil under v1. For the
+	// Ethereum entry types that hash their encoding they are the
+	// transaction hashes, kept so the import does not hash them again.
+	TxHashes []types.Hash
 }
 
 // Decode parses an encoded frame, checks every bound and walks the payload
@@ -220,9 +227,22 @@ func walkPayload(p []byte, count int, fn func(i int, tx []byte)) error {
 	return nil
 }
 
-// Hash returns the FrameHash, keccak256(header || payload).
+// Hash returns the FrameHash: keccak256(header || payload) under v1; under
+// v2 the hash over the entry hashes, which it computes once into f.TxHashes.
+// Under v2 a payload whose layout is invalid (which Decode rejects) hashes
+// to the zero hash, which no signature recovers to a gateway.
 func (f *Frame) Hash() types.Hash {
-	return crypto.Keccak256Hash(f.Raw[:HeaderSize+int(f.PayloadLen)])
+	if !HashV2Enabled() {
+		return crypto.Keccak256Hash(f.Raw[:HeaderSize+int(f.PayloadLen)])
+	}
+	if f.TxHashes == nil || len(f.TxHashes) != int(f.TxCount) {
+		hs, err := entryHashes(f)
+		if err != nil {
+			return types.Hash{}
+		}
+		f.TxHashes = hs
+	}
+	return hashV2(f.Raw, f.TxHashes)
 }
 
 // Txs returns the transaction encodings, aliasing the frame's buffer.
@@ -235,9 +255,13 @@ func (f *Frame) Txs() [][]byte {
 
 // Verify checks the gateway signature: one ecrecover over the FrameHash,
 // compared with the header's gateway address. It returns the FrameHash so
-// the caller pays for the keccak once.
+// the caller pays for the keccak once. Under v2 the payload is hashed
+// entry by entry only (f.TxHashes), never as a whole.
 func (f *Frame) Verify() (types.Hash, error) {
 	h := f.Hash()
+	if h == (types.Hash{}) {
+		return h, ErrPayloadLayout
+	}
 	pub, err := crypto.SigToPub(h[:], f.Sig)
 	if err != nil {
 		return h, fmt.Errorf("%w: %v", ErrBadSignature, err)
@@ -304,7 +328,18 @@ func EncodeWith(s *Signer, seq uint64, txType uint8, txs [][]byte) ([]byte, type
 		off += txLenSize
 		off += copy(raw[off:], tx)
 	}
-	hash := crypto.Keccak256Hash(raw[:off])
+	var hash types.Hash
+	if HashV2Enabled() {
+		hs := make([]types.Hash, len(txs))
+		eh := newEntryHasher(hs)
+		for i, tx := range txs {
+			eh.add(i, tx)
+		}
+		eh.flush()
+		hash = hashV2(raw, hs)
+	} else {
+		hash = crypto.Keccak256Hash(raw[:off])
+	}
 	sig, err := s.SignHash(hash[:])
 	if err != nil {
 		return nil, types.Hash{}, err

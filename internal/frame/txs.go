@@ -33,8 +33,10 @@ import (
 // requested under.
 var ErrHashMismatch = errors.New("frame: bytes do not match frame hash")
 
-// HashOf returns keccak256(header || payload) of an encoded frame without a
-// full decode. It only checks the bounds needed to locate the signature.
+// HashOf returns the FrameHash of an encoded frame without a full decode.
+// Under v1 (keccak256(header || payload)) it only checks the bounds needed
+// to locate the signature; under v2 it walks the payload, whose layout it
+// checks, to hash the entries.
 func HashOf(raw []byte) (types.Hash, error) {
 	h, err := ParseHeader(raw)
 	if err != nil {
@@ -42,6 +44,13 @@ func HashOf(raw []byte) (types.Hash, error) {
 	}
 	if len(raw) != h.Size() {
 		return types.Hash{}, ErrShort
+	}
+	if HashV2Enabled() {
+		hs, err := EntryHashesOf(raw)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		return hashV2(raw, hs), nil
 	}
 	return crypto.Keccak256Hash(raw[:HeaderSize+int(h.PayloadLen)]), nil
 }
