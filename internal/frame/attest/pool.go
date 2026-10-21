@@ -76,6 +76,10 @@ type Config struct {
 	Store *store.Store
 	// CommitteeSize is the committee size; it is raised to f+1.
 	CommitteeSize int
+	// TestCommittee (TEST ONLY, N42_ATTEST_COMMITTEE; 0 = off) replaces
+	// CommitteeSize with k and accepts min(k, f+1) matching attestations
+	// instead of f+1. Below f+1 the honest-member guarantee is gone.
+	TestCommittee int
 	// Send broadcasts one EncodeWire message to the other validators.
 	Send func(msg []byte)
 	// FlushEvery is the publishing batch interval (<= 0: 20 ms).
@@ -112,6 +116,7 @@ type Pool struct {
 	batches, entries, accepted, published, publishedBatches atomic.Uint64
 	badSig, notMember, badDigest, badBatch, fallback        atomic.Uint64
 	lastDigestWarn                                          atomic.Int64
+	reducedWarned                                           atomic.Bool
 
 	startOnce sync.Once
 	cancel    context.CancelFunc
@@ -139,6 +144,17 @@ func (p *Pool) committee(v *Validators, h types.Hash) ([]types.Address, int) {
 	}
 	need := v.F + 1
 	size := p.cfg.CommitteeSize
+	if k := p.cfg.TestCommittee; k > 0 {
+		size = k
+		if k < need {
+			if !p.reducedWarned.Swap(true) {
+				log.Warn("!!! FRAME ATTESTATION QUORUM BELOW f+1 (TEST ONLY) !!! "+
+					"k colluding committee members can forge frame senders; never run this outside a private benchmark fleet",
+					"k", k, "f", v.F, "f+1", v.F+1, "validators", len(v.Sorted))
+			}
+			need = k
+		}
+	}
 	if size < need {
 		size = need
 	}
