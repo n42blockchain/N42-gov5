@@ -106,6 +106,14 @@ func BenchmarkHashTxs64(b *testing.B) {
 			HashBatch(txs)
 		}
 	})
+	b.Run("batch4", func(b *testing.B) {
+		withX8(false, func() {
+			for i := 0; i < b.N; i++ {
+				resetHashes(txs)
+				HashBatch(txs)
+			}
+		})
+	})
 }
 
 // BenchmarkSenders64 recovers the senders of 64 transfers per op: one by
@@ -128,5 +136,12 @@ func BenchmarkSenders64(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			SendersBatch(signer, txs, addrs, errs)
 		}
+	})
+	b.Run("batch4", func(b *testing.B) {
+		withX8(false, func() {
+			for i := 0; i < b.N; i++ {
+				SendersBatch(signer, txs, addrs, errs)
+			}
+		})
 	})
 }
