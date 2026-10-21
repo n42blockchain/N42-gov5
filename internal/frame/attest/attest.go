@@ -50,6 +50,13 @@ const (
 	// EnvPeers lists the ingest addresses attestations are pushed to
 	// (default N42_FRAME_PULL_PEERS); this node's own listener is skipped.
 	EnvPeers = "N42_FRAME_ATTEST_PEERS"
+	// EnvTestCommittee (TEST ONLY, private benchmark fleets) sets the
+	// committee size to k and the attestations needed to min(k, f+1).
+	// Unset keeps the f+1 rule. With k < f+1 fewer than f+1 agreeing
+	// attestations are accepted, so k colluding (k = 1: one) byzantine
+	// committee members can forge a frame's senders. Every node of a fleet
+	// must use the same value.
+	EnvTestCommittee = "N42_ATTEST_COMMITTEE"
 )
 
 // Magic ("FAT1" little-endian) selects an attestation batch on the ingest
@@ -76,6 +83,15 @@ func CommitteeSizeFromEnv() int {
 		return n
 	}
 	return 3
+}
+
+// TestCommitteeFromEnv reads N42_ATTEST_COMMITTEE (0: unset or invalid,
+// the f+1 rule applies).
+func TestCommitteeFromEnv() int {
+	if n, err := strconv.Atoi(os.Getenv(EnvTestCommittee)); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 // Committee returns frame h's committee as indexes into the validator set
