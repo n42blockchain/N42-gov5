@@ -113,10 +113,11 @@ func legacyFastSigner(signer Signer) (EIP155Signer, bool) {
 }
 
 // senderBatchScratch holds four recoveries' cgo buffers (see recoverScratch)
-// and four signing payload buffers.
+// and four signing payload buffers, and the eight-way path's buffers.
 type senderBatchScratch struct {
 	sc  [4]recoverScratch
 	pay [4][crypto.Keccak256OneBlockMax]byte
+	x8  sender8Scratch
 }
 
 var senderBatchPool = sync.Pool{New: func() any { return new(senderBatchScratch) }}
@@ -130,6 +131,10 @@ var senderBatchPool = sync.Pool{New: func() any { return new(senderBatchScratch)
 // calls. addrs and errs must be at least as long as txs.
 func SendersBatch(signer Signer, txs []*Transaction, addrs []types.Address, errs []error) {
 	es, ok := legacyFastSigner(signer)
+	if ok && crypto.EcrecoverIFMAEnabled {
+		es.sendersBatch8(signer, txs, addrs, errs)
+		return
+	}
 	if !ok || !keccakBatchOn() {
 		for i, tx := range txs {
 			if tx != nil {
