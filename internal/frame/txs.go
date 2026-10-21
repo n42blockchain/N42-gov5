@@ -33,8 +33,10 @@ import (
 // requested under.
 var ErrHashMismatch = errors.New("frame: bytes do not match frame hash")
 
-// HashOf returns keccak256(header || payload) of an encoded frame without a
-// full decode. It only checks the bounds needed to locate the signature.
+// HashOf returns the FrameHash of an encoded frame without a full decode.
+// Under v1 (keccak256(header || payload)) it only checks the bounds needed
+// to locate the signature; under v2 it walks the payload, whose layout it
+// checks, to hash the entries.
 func HashOf(raw []byte) (types.Hash, error) {
 	h, err := ParseHeader(raw)
 	if err != nil {
@@ -42,6 +44,13 @@ func HashOf(raw []byte) (types.Hash, error) {
 	}
 	if len(raw) != h.Size() {
 		return types.Hash{}, ErrShort
+	}
+	if HashV2Enabled() {
+		hs, err := EntryHashesOf(raw)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		return hashV2(raw, hs), nil
 	}
 	return crypto.Keccak256Hash(raw[:HeaderSize+int(h.PayloadLen)]), nil
 }
@@ -92,6 +101,16 @@ func decodeTx(txType uint8, b []byte, dec *transaction.EthBatchDecoder) (*transa
 // The transactions may share one allocation and alias raw (see
 // transaction.EthBatchDecoder): raw must not be modified afterwards.
 func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
+	return DecodeTxsSeeded(raw, nil)
+}
+
+// DecodeTxsSeeded is DecodeTxs that, given the frame's entry hashes
+// (keccak256 of each entry, as frame hash v2 admission computed them; nil
+// or of the wrong length = none), publishes each as its transaction's hash
+// wherever that hash is keccak of the entry (Transaction.SeedHashFromEncoding),
+// so those transactions are never hashed again. seeds must have been
+// computed over raw itself.
+func DecodeTxsSeeded(raw []byte, seeds []types.Hash) ([]*transaction.Transaction, int, error) {
 	var f Frame
 	if err := decodeEnvelope(raw, &f); err != nil {
 		return nil, 0, err
@@ -101,19 +120,26 @@ func DecodeTxs(raw []byte) ([]*transaction.Transaction, int, error) {
 		dec = transaction.NewEthBatchDecoder(int(f.TxCount))
 	}
 	txs := make([]*transaction.Transaction, 0, f.TxCount)
-	return decodeFrameInto(&f, dec, txs)
+	if len(seeds) != int(f.TxCount) {
+		seeds = nil
+	}
+	return decodeFrameInto(&f, dec, txs, seeds)
 }
 
 // decodeFrameInto decodes f's entries into txs while it checks the payload
 // layout, so a frame's payload is walked once. A layout error returns nil
 // transactions: whatever was decoded before it is discarded.
-func decodeFrameInto(f *Frame, dec *transaction.EthBatchDecoder, txs []*transaction.Transaction) ([]*transaction.Transaction, int, error) {
+// seeds, when non-nil, holds keccak256 of every entry (see DecodeTxsSeeded).
+func decodeFrameInto(f *Frame, dec *transaction.EthBatchDecoder, txs []*transaction.Transaction, seeds []types.Hash) ([]*transaction.Transaction, int, error) {
 	dropped := 0
-	err := walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
+	err := walkPayload(f.Payload, int(f.TxCount), func(i int, b []byte) {
 		tx, err := decodeTx(f.TxType, b, dec)
 		if err != nil {
 			dropped++
 			return
+		}
+		if seeds != nil {
+			tx.SeedHashFromEncoding(b, seeds[i])
 		}
 		txs = append(txs, tx)
 	})
@@ -164,6 +190,14 @@ func DecodeFramesEach(frames [][]byte, workers int) ([][]*transaction.Transactio
 // concurrently for different frames and only for frames whose layout is
 // valid.
 func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []*transaction.Transaction)) ([][]*transaction.Transaction, int, error) {
+	return DecodeFramesEachSeeded(frames, nil, workers, after)
+}
+
+// DecodeFramesEachSeeded is DecodeFramesEachWith decoding frame i with
+// DecodeTxsSeeded(frames[i], seeds(i)) when seeds is non-nil: the entry
+// hashes frame hash v2 admission kept become the transaction hashes. seeds
+// is called concurrently.
+func DecodeFramesEachSeeded(frames [][]byte, seeds func(i int) []types.Hash, workers int, after func(i int, txs []*transaction.Transaction)) ([][]*transaction.Transaction, int, error) {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
@@ -174,7 +208,11 @@ func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []
 	drops := make([]int, len(frames))
 	errs := make([]error, len(frames))
 	one := func(i int) {
-		per[i], drops[i], errs[i] = DecodeTxs(frames[i])
+		var s []types.Hash
+		if seeds != nil {
+			s = seeds(i)
+		}
+		per[i], drops[i], errs[i] = DecodeTxsSeeded(frames[i], s)
 		if after != nil && errs[i] == nil {
 			after(i, per[i])
 		}

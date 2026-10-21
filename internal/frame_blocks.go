@@ -407,7 +407,18 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	if fs.store != nil {
 		applied = make([]frameSenders, len(hashes))
 	}
-	per, dropped, err := frame.DecodeFramesEachWith(raws, 0, func(i int, txs []*transaction.Transaction) {
+	// Frame hash v2 admission kept every entry's hash: those are the
+	// transaction hashes, published by the decode, and HashTxs below only
+	// hashes what they do not cover (frames read from the database, entry
+	// types that do not hash their encoding).
+	var seeds func(i int) []types.Hash
+	if fs.store != nil && frame.HashV2Enabled() {
+		seeds = func(i int) []types.Hash {
+			e, _ := fs.store.GetEntry(hashes[i])
+			return e.TxHashes
+		}
+	}
+	per, dropped, err := frame.DecodeFramesEachSeeded(raws, seeds, 0, func(i int, txs []*transaction.Transaction) {
 		if applied != nil {
 			ss := fs.store.Senders(hashes[i])
 			n, d := frame.ApplySendersDeclared(txs, ss)
