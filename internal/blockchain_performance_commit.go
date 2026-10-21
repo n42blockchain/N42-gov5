@@ -40,8 +40,10 @@ type CertifiedCanonicalExecution struct {
 }
 
 // VerifyCertifiedCanonicalExecution also verifies durable receipts using the
-// block read by the chain itself. Block decoding and transaction hashes are
-// reused only within this request, never across requests or certificates.
+// block read by the chain itself. Decoded bodies and transaction hashes live
+// only within this physical verification. The shared executor may coalesce
+// overlapping identical full-certificate requests into its scalar observation;
+// completed observations are never cached.
 func (bc *BlockChain) VerifyCertifiedCanonicalExecution(qc *hotstuff.QuorumCertificate) (CertifiedCanonicalExecution, bool, error) {
 	return bc.verifyCertifiedCanonicalPrefix(qc, true)
 }

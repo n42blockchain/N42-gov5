@@ -31,12 +31,16 @@ func unsignedBuildFixture(t *testing.T, extra ...func(*conf.Genesis)) (*internal
 }
 
 func unsignedBuildFixtureWithSet(t *testing.T, count int, observeKeys func([]blscommon.SecretKey), extra ...func(*conf.Genesis)) (*internal.BlockChain, *hotstuff.HotStuff, *hotstuff.HotStuff, *block.Block, types.Address, *commitment.QMDBRootComputer) {
+	return unsignedBuildFixtureWithSetAndDB(t, count, observeKeys, nil, extra...)
+}
+
+func unsignedBuildFixtureWithSetAndDB(t *testing.T, count int, observeKeys func([]blscommon.SecretKey), wrapDB func(kv.RwDB) kv.RwDB, extra ...func(*conf.Genesis)) (*internal.BlockChain, *hotstuff.HotStuff, *hotstuff.HotStuff, *block.Block, types.Address, *commitment.QMDBRootComputer) {
 	t.Helper()
 	// Only the test leader retains its test signing key. The executor receives
 	// genesis public keys and initializes a verifier without Authorize.
 	var keys []blscommon.SecretKey
 	var liveRoot *commitment.QMDBRootComputer
-	chain, transfer, recipient := executionFixtureConfigured(t, []bool{true}, func(g *conf.Genesis) {
+	chain, transfer, recipient := executionFixtureConfiguredWithDB(t, []bool{true}, func(g *conf.Genesis) {
 		for i := 0; i < count; i++ {
 			key, err := bls.RandKey()
 			if err != nil {
@@ -50,7 +54,7 @@ func unsignedBuildFixtureWithSet(t *testing.T, count int, observeKeys func([]bls
 		if len(extra) > 0 {
 			extra[0](g)
 		}
-	}, func(root *commitment.QMDBRootComputer) { liveRoot = root })
+	}, wrapDB, func(root *commitment.QMDBRootComputer) { liveRoot = root })
 	if observeKeys != nil {
 		observeKeys(keys)
 	}

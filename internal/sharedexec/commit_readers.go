@@ -31,16 +31,32 @@ func (s *Server) canonicalDuplicateHint(ctx context.Context, request CommitReque
 	return same, err
 }
 
-// tryCertifiedDuplicateRead shares only fresh, read-only certified checks.
-// handled=false requires a complete exclusive retry; errors never authorize it.
-func (s *Server) tryCertifiedDuplicateRead(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases) (result CommitResult, handled bool, err error) {
+// readCertifiedDuplicate performs one fresh, read-only certified check.
+// Completion publishes only scalar observations while execute.RLock is held;
+// handled=false still requires every caller to retry the full exclusive path.
+func (s *Server) readCertifiedDuplicate(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, complete func(CommitResult, bool, error)) (result CommitResult, handled bool, err error) {
+	var slot, locked bool
+	defer func() {
+		if recover() != nil {
+			result, handled, err = CommitResult{}, false, errCertifiedDuplicateReadPanic
+		}
+		if complete != nil {
+			complete(result, handled, err)
+		}
+		if locked {
+			s.execute.RUnlock()
+		}
+		if slot {
+			<-s.certifiedReadSlots
+		}
+	}()
 	if s.certifiedReadSlots == nil {
 		return CommitResult{}, false, nil
 	}
 	phases.phase("certified_read_slot_wait")
 	select {
 	case s.certifiedReadSlots <- struct{}{}:
-		defer func() { <-s.certifiedReadSlots }()
+		slot = true
 	case <-ctx.Done():
 		return CommitResult{}, false, ctx.Err()
 	case <-s.ctx.Done():
@@ -54,7 +70,7 @@ func (s *Server) tryCertifiedDuplicateRead(ctx context.Context, request CommitRe
 	}
 	phases.phase("certified_read_lock_wait")
 	s.execute.RLock()
-	defer s.execute.RUnlock()
+	locked = true
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, false, err
 	}

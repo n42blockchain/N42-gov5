@@ -83,6 +83,9 @@ type Server struct {
 	resumeArming       bool // mu: exclusive long-running startup verification
 	execute            sync.RWMutex
 	certifiedReadSlots chan struct{}
+	certifiedReads     map[certifiedReadKey]*certifiedReadJob // mu; in-flight only
+	certifiedFlights   atomic.Uint64
+	certifiedJoins     atomic.Uint64
 	commitOwner        [32]byte
 	builds             map[importKey]*buildJob
 	buildCompleted     []importKey

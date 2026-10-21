@@ -114,6 +114,10 @@ func executionFixture(t *testing.T, commitOnly ...bool) (*internal.BlockChain, *
 }
 
 func executionFixtureConfigured(t *testing.T, commitOnly []bool, configure func(*conf.Genesis), observeRoot ...func(*commitment.QMDBRootComputer)) (*internal.BlockChain, *block.Block, types.Address) {
+	return executionFixtureConfiguredWithDB(t, commitOnly, configure, nil, observeRoot...)
+}
+
+func executionFixtureConfiguredWithDB(t *testing.T, commitOnly []bool, configure func(*conf.Genesis), wrapDB func(kv.RwDB) kv.RwDB, observeRoot ...func(*commitment.QMDBRootComputer)) (*internal.BlockChain, *block.Block, types.Address) {
 	t.Helper()
 	raw, err := os.ReadFile("../../scripts/gov5-perf/isolated-chain.json")
 	if err != nil {
@@ -133,7 +137,7 @@ func executionFixtureConfigured(t *testing.T, commitOnly []bool, configure func(
 	if configure != nil {
 		configure(&genesis)
 	}
-	owner, ownerRoot := executionChain(t, &genesis, commitOnly...)
+	owner, ownerRoot := executionChainUsingDB(t, &genesis, wrapDB, commitOnly...)
 	if len(observeRoot) > 0 {
 		observeRoot[0](ownerRoot)
 	}

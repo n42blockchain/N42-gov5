@@ -12,6 +12,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -128,6 +129,49 @@ func awaitCertifiedEvent(t *testing.T, channel <-chan struct{}, name string) {
 	}
 }
 
+func awaitCertifiedReadersIdle(t *testing.T, s *Server, d *certifiedReaderGateDB) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(s.certifiedReadSlots) != 0 || d.active.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("certified read worker retained a slot or physical view")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func awaitCertifiedJoins(t *testing.T, s *Server, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, joins := s.CertifiedDuplicateReadCounts()
+		if joins >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("certified read join count did not reach %d (got %d)", want, joins)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func certifiedRequestAtView(f strictIngressFixture, b *block.Block, request CertifiedCommitRequest, view hotstuff.ViewNumber) CertifiedCommitRequest {
+	request.Certificate = *queueQC(f.keys, b.Hash(), view, 5)
+	return request
+}
+
+func certifiedFlightForTest(t *testing.T, s *Server, request CertifiedCommitRequest) *certifiedReadJob {
+	t.Helper()
+	key, ok := certifiedDuplicateKey(request.CommitRequest, &request.Certificate)
+	if !ok {
+		t.Fatal("test request did not produce an eligible certified-read key")
+	}
+	s.mu.Lock()
+	job := s.certifiedReads[key]
+	s.mu.Unlock()
+	return job
+}
+
 func TestCertifiedDuplicateReadersQueuedAfterAdvanceOverlapAndStayBounded(t *testing.T) {
 	f, b, request := certifiedCanonicalFixture(t, false)
 	d := readerGate(t, f, b, true)
@@ -138,7 +182,7 @@ func TestCertifiedDuplicateReadersQueuedAfterAdvanceOverlapAndStayBounded(t *tes
 	f.server.certifiedReadSlots <- struct{}{}
 	f.server.certifiedReadSlots <- struct{}{}
 	results := make(chan error, 7)
-	commit := func() {
+	commit := func(request CertifiedCommitRequest) {
 		defer wg.Done()
 		result, err := f.server.CommitCertified(context.Background(), request)
 		if err == nil && (!result.Committed || result.HeadHash != b.Hash() || result.HeadNumber != 1) {
@@ -146,9 +190,12 @@ func TestCertifiedDuplicateReadersQueuedAfterAdvanceOverlapAndStayBounded(t *tes
 		}
 		results <- err
 	}
-	for range 7 {
+	for i := range 7 {
 		wg.Add(1)
-		go commit()
+		// Distinct valid views deliberately create distinct flights so this
+		// test continues to exercise the two-reader bound after exact-key joins.
+		requestAtView := certifiedRequestAtView(f, b, request, hotstuff.ViewNumber(i+1))
+		go commit(requestAtView)
 	}
 	for range 7 {
 		awaitCertifiedEvent(t, d.probeEntered, "initial noncanonical routing probe")
@@ -173,6 +220,7 @@ func TestCertifiedDuplicateReadersQueuedAfterAdvanceOverlapAndStayBounded(t *tes
 			t.Fatal(err)
 		}
 	}
+	awaitCertifiedReadersIdle(t, f.server, d)
 	status, _ := f.server.StrictIngressStatus()
 	if d.maximum.Load() != 2 || d.reads.Load() != 6 || status.CanonicalGeneration != 1 || status.Reconciling || len(f.server.certifiedReadSlots) != 0 {
 		t.Fatalf("duplicate bound/count/generation changed: max=%d reads=%d status=%+v", d.maximum.Load(), d.reads.Load(), status)
@@ -198,7 +246,12 @@ func TestCertifiedDuplicateReadSlotsCancellationAndCloseDrainWaiters(t *testing.
 		if i == 0 {
 			requestCtx = ctx
 		}
-		go func() { defer wg.Done(); _, err := f.server.CommitCertified(requestCtx, request); results <- err }()
+		requestAtView := certifiedRequestAtView(f, b, request, hotstuff.ViewNumber(i+1))
+		go func(request CertifiedCommitRequest) {
+			defer wg.Done()
+			_, err := f.server.CommitCertified(requestCtx, request)
+			results <- err
+		}(requestAtView)
 	}
 	for range 3 {
 		awaitCertifiedEvent(t, d.viewDone, "public request routing/classification")
@@ -240,22 +293,25 @@ func TestCertifiedDuplicateReadSlotsCancellationAndCloseDrainWaiters(t *testing.
 
 // Hold reservations until both public requests have completed their routing and
 // classification, then allow their fresh physical read views to overlap.
-func holdTwoCertifiedReaders(t *testing.T, f strictIngressFixture, d *certifiedReaderGateDB, request CertifiedCommitRequest) (<-chan error, *sync.WaitGroup) {
+func holdTwoCertifiedReaders(t *testing.T, f strictIngressFixture, d *certifiedReaderGateDB, requests ...CertifiedCommitRequest) (<-chan error, *sync.WaitGroup) {
 	t.Helper()
+	if len(requests) != 2 {
+		t.Fatal("two distinct certified read requests required")
+	}
 	f.server.certifiedReadSlots <- struct{}{}
 	f.server.certifiedReadSlots <- struct{}{}
 	results := make(chan error, 2)
 	wg := new(sync.WaitGroup)
-	for range 2 {
+	for _, request := range requests {
 		wg.Add(1)
-		go func() {
+		go func(request CertifiedCommitRequest) {
 			defer wg.Done()
 			result, err := f.server.CommitCertified(context.Background(), request)
 			if err == nil && !result.Committed {
 				err = errors.New("read duplicate not committed")
 			}
 			results <- err
-		}()
+		}(request)
 	}
 	t.Cleanup(func() { d.releaseReaders(); f.server.Close(); wg.Wait() })
 	for range 2 {
@@ -285,7 +341,7 @@ func TestCertifiedDuplicateReadersExcludeCanonicalWriter(t *testing.T) {
 	second := queueSealImport(t, f, client, leader, built)
 	next := CertifiedCommitRequest{CommitRequest: CommitRequest{Identity: f.server.Identity(), BlockHash: second.Hash(), ParentHash: first.Hash(), Number: 2}, Certificate: *queueQC(f.keys, second.Hash(), 2, 5)}
 	d := readerGate(t, f, first, false)
-	results, wg := holdTwoCertifiedReaders(t, f, d, request)
+	results, wg := holdTwoCertifiedReaders(t, f, d, request, certifiedRequestAtView(f, first, request, 2))
 	writerStarted := make(chan struct{})
 	writerFinished := make(chan error, 1)
 	var writerWG sync.WaitGroup
@@ -329,7 +385,7 @@ func TestCertifiedDuplicateReadersExcludeCanonicalWriter(t *testing.T) {
 func TestCertifiedDuplicateReadersCloseWaitsForPhysicalViews(t *testing.T) {
 	f, b, request := certifiedCanonicalFixture(t, true)
 	d := readerGate(t, f, b, false)
-	results, wg := holdTwoCertifiedReaders(t, f, d, request)
+	results, wg := holdTwoCertifiedReaders(t, f, d, request, certifiedRequestAtView(f, b, request, 2))
 	closed := make(chan struct{})
 	go func() { f.server.Close(); close(closed) }()
 	awaitCertifiedEvent(t, f.server.ctx.Done(), "owner lifetime cancellation")
@@ -361,7 +417,41 @@ func TestCertifiedDuplicateReadersCloseWaitsForPhysicalViews(t *testing.T) {
 func TestCertifiedDuplicateReadersIndependentlyVerifyPublicQC(t *testing.T) {
 	f, b, request := certifiedCanonicalFixture(t, true)
 	before, _ := f.server.StrictIngressStatus()
-	db := countedCertifiedReads(t, f, b)
+	d := readerGate(t, f, b, false)
+	var wg sync.WaitGroup
+	results := make(chan struct {
+		name      string
+		committed bool
+		err       error
+	}, 7)
+	start := func(name string, request CertifiedCommitRequest, ctx context.Context) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := f.server.CommitCertified(ctx, request)
+			results <- struct {
+				name      string
+				committed bool
+				err       error
+			}{name: name, committed: result.Committed, err: err}
+		}()
+	}
+	t.Cleanup(func() { d.releaseReaders(); f.server.Close(); wg.Wait() })
+	start("first-valid", request, context.Background())
+	awaitCertifiedEvent(t, d.readerEntered, "first valid request physical view")
+	firstJob := certifiedFlightForTest(t, f.server, request)
+	if firstJob == nil {
+		t.Fatal("first valid request did not register an in-flight job")
+	}
+	// The first canonical routing view is complete before this request joins;
+	// its caller context signals only after the active exact-key job is found.
+	awaitCertifiedEvent(t, d.viewDone, "first valid request classification")
+	_, joins := f.server.CertifiedDuplicateReadCounts()
+	start("second-valid", request, context.Background())
+	awaitCertifiedJoins(t, f.server, joins+1)
+	if job := certifiedFlightForTest(t, f.server, request); job != firstJob || d.reads.Load() != 1 || d.active.Load() != 1 {
+		t.Fatal("identical certified request did not join the held physical read")
+	}
 	four := request
 	four.Certificate = *commitProof(f.keys, b.Hash(), 4, false)
 	prepare := request
@@ -372,37 +462,29 @@ func TestCertifiedDuplicateReadersIndependentlyVerifyPublicQC(t *testing.T) {
 	parent.ParentHash[0] ^= 1
 	hash := request
 	hash.BlockHash[0] ^= 1
-	cases := []struct {
-		request CertifiedCommitRequest
-		valid   bool
-	}{{request, true}, {four, false}, {prepare, false}, {view, false}, {parent, false}, {hash, false}, {request, true}}
-	var wg sync.WaitGroup
-	results := make(chan error, len(cases))
-	for _, item := range cases {
-		wg.Add(1)
-		go func(item struct {
-			request CertifiedCommitRequest
-			valid   bool
-		}) {
-			defer wg.Done()
-			result, err := f.server.CommitCertified(context.Background(), item.request)
-			if (err == nil) != item.valid || item.valid && !result.Committed {
-				results <- errors.New("parallel public QC authorization differed")
-			} else {
-				results <- nil
-			}
-		}(item)
+	start("four-of-seven", four, context.Background())
+	start("prepare-certificate", prepare, context.Background())
+	start("wrong-view", view, context.Background())
+	start("wrong-parent", parent, context.Background())
+	start("wrong-hash", hash, context.Background())
+	// A valid certificate with a distinct request binding must not join the
+	// exact-request job and has its own physical proof check.
+	awaitCertifiedEvent(t, d.readerEntered, "wrong-parent request separate physical view")
+	if d.reads.Load() != 2 || d.active.Load() != 2 {
+		t.Fatal("request binding mismatch reused the exact-request flight")
 	}
+	d.releaseReaders()
 	wg.Wait()
-	for range cases {
-		if err := <-results; err != nil {
-			t.Fatal(err)
+	awaitCertifiedReadersIdle(t, f.server, d)
+	valid := map[string]bool{"first-valid": true, "second-valid": true}
+	for range 7 {
+		got := <-results
+		if (got.err == nil) != valid[got.name] || valid[got.name] && !got.committed {
+			t.Fatalf("public QC authorization for %s differs: committed=%t err=%v", got.name, got.committed, got.err)
 		}
 	}
-	// Two valid requests and the valid QC with a wrong request parent each
-	// undergo fresh physical verification; the latter fails scalar binding.
 	after, _ := f.server.StrictIngressStatus()
-	if !reflect.DeepEqual(before, after) || db.writes.Load() != 0 || db.bodies.Load() != 3 || db.receipts.Load() != 3 || db.senders.Load() != 3 || db.lookups.Load() != 3*int64(len(b.Transactions())) || len(f.server.certifiedReadSlots) != 0 {
+	if !reflect.DeepEqual(before, after) || d.writes.Load() != 0 || d.reads.Load() != 2 || d.active.Load() != 0 || len(f.server.certifiedReadSlots) != 0 {
 		t.Fatal("public requests shared authorization/evidence or changed queue state")
 	}
 }
@@ -428,46 +510,29 @@ func TestCertifiedDuplicateReadersStaggeredRequestsJoinActiveView(t *testing.T) 
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	t.Cleanup(func() { d.releaseReaders(); f.server.Close(); wg.Wait() })
-	start := func() {
+	start := func(ctx context.Context, request CertifiedCommitRequest) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := f.server.CommitCertified(context.Background(), request)
+			result, err := f.server.CommitCertified(ctx, request)
 			if err == nil && !result.Committed {
 				err = errors.New("duplicate not committed")
 			}
 			results <- err
 		}()
 	}
-	start()
+	start(context.Background(), request)
 	awaitCertifiedEvent(t, d.readerEntered, "already active first physical read")
-	// Launch only after the first reader holds both shared locks. An initial
-	// exclusive classification would prevent this second read from arriving.
-	start()
-	awaitCertifiedEvent(t, d.readerEntered, "staggered second physical read")
-	if d.active.Load() != 2 || d.maximum.Load() != 2 || d.writes.Load() != 0 {
-		t.Fatal("staggered duplicate could not join the active read view")
+	firstJob := certifiedFlightForTest(t, f.server, request)
+	if firstJob == nil {
+		t.Fatal("first duplicate did not register a flight")
 	}
-	for len(d.viewDone) > 0 {
-		<-d.viewDone
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	third := make(chan error, 1)
-	wg.Add(1)
-	go func() { defer wg.Done(); _, err := f.server.CommitCertified(ctx, request); third <- err }()
-	awaitCertifiedEvent(t, d.viewDone, "third request routed while two physical views are held")
-	cancel()
-	select {
-	case err := <-third:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("third reservation ignored cancellation: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("third request retained an exclusive lock or ignored its full read-slot bound")
-	}
-	if d.reads.Load() != 2 || d.active.Load() != 2 || len(f.server.certifiedReadSlots) != 2 {
-		t.Fatal("third request entered physical decoding past the two-reader bound")
+	awaitCertifiedEvent(t, d.viewDone, "first request routing/classification")
+	_, joins := f.server.CertifiedDuplicateReadCounts()
+	start(context.Background(), request)
+	awaitCertifiedJoins(t, f.server, joins+1)
+	if job := certifiedFlightForTest(t, f.server, request); job != firstJob || d.reads.Load() != 1 || d.active.Load() != 1 || d.maximum.Load() != 1 || d.writes.Load() != 0 {
+		t.Fatal("staggered identical request did not join the in-flight proof")
 	}
 	d.releaseReaders()
 	wg.Wait()
@@ -476,9 +541,126 @@ func TestCertifiedDuplicateReadersStaggeredRequestsJoinActiveView(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	awaitCertifiedReadersIdle(t, f.server, d)
+	if d.reads.Load() != 1 || certifiedFlightForTest(t, f.server, request) != nil {
+		t.Fatal("completed coalesced read left a flight or repeated physical validation")
+	}
+	// There is no completed-result cache: a later identical request starts a
+	// fresh physical proof and durability read.
+	later := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, err := f.server.CommitCertified(context.Background(), request)
+		if err == nil && !result.Committed {
+			err = errors.New("later fresh duplicate not committed")
+		}
+		later <- err
+	}()
+	awaitCertifiedEvent(t, d.readerEntered, "later request fresh physical read")
+	if d.reads.Load() != 2 {
+		t.Fatal("completed result was reused instead of freshly validated")
+	}
+	d.releaseReaders()
+	if err := <-later; err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	awaitCertifiedReadersIdle(t, f.server, d)
+	if d.reads.Load() != 2 || certifiedFlightForTest(t, f.server, request) != nil {
+		t.Fatal("fresh post-flight request retained a completed cache entry")
+	}
 	after, _ := f.server.StrictIngressStatus()
-	if !reflect.DeepEqual(before, after) || d.reads.Load() != 2 || len(f.server.certifiedReadSlots) != 0 {
-		t.Fatal("concurrent certified reads changed admission state or retained a slot")
+	if !reflect.DeepEqual(before, after) || len(f.server.certifiedReadSlots) != 0 {
+		t.Fatal("coalesced reads changed admission state or retained a slot")
+	}
+}
+
+func TestCertifiedDuplicateReadCallerCancellationDoesNotCancelJoinedFlight(t *testing.T) {
+	f, b, request := certifiedCanonicalFixture(t, true)
+	before, _ := f.server.StrictIngressStatus()
+	d := readerGate(t, f, b, false)
+	var wg sync.WaitGroup
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	leaderResult := make(chan error, 1)
+	followerResult := make(chan error, 1)
+	t.Cleanup(func() { cancelLeader(); d.releaseReaders(); f.server.Close(); wg.Wait() })
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, err := f.server.CommitCertified(leaderCtx, request)
+		if err == nil && !result.Committed {
+			err = errors.New("leader duplicate not committed")
+		}
+		leaderResult <- err
+	}()
+	awaitCertifiedEvent(t, d.readerEntered, "cancelable leader physical read")
+	job := certifiedFlightForTest(t, f.server, request)
+	if job == nil {
+		t.Fatal("cancelable leader did not register a flight")
+	}
+	awaitCertifiedEvent(t, d.viewDone, "leader request classification")
+	_, joins := f.server.CertifiedDuplicateReadCounts()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, err := f.server.CommitCertified(context.Background(), request)
+		if err == nil && !result.Committed {
+			err = errors.New("joined follower not committed")
+		}
+		followerResult <- err
+	}()
+	awaitCertifiedJoins(t, f.server, joins+1)
+	if certifiedFlightForTest(t, f.server, request) != job {
+		t.Fatal("follower did not attach to the leader's in-flight job")
+	}
+	cancelLeader()
+	select {
+	case err := <-leaderResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leader cancellation was not returned to its caller: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("leader caller did not detach after cancellation")
+	}
+	if d.reads.Load() != 1 || d.active.Load() != 1 || certifiedFlightForTest(t, f.server, request) != job {
+		t.Fatal("canceling one caller interrupted or removed the joined worker")
+	}
+	d.releaseReaders()
+	if err := <-followerResult; err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	awaitCertifiedReadersIdle(t, f.server, d)
+	if d.reads.Load() != 1 || certifiedFlightForTest(t, f.server, request) != nil {
+		t.Fatal("joined read did not publish and remove its flight after completion")
+	}
+	// The completion only served the overlapping callers. A later request must
+	// repeat the physical checks.
+	later := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, err := f.server.CommitCertified(context.Background(), request)
+		if err == nil && !result.Committed {
+			err = errors.New("post-cancellation fresh duplicate not committed")
+		}
+		later <- err
+	}()
+	awaitCertifiedEvent(t, d.readerEntered, "post-cancellation fresh physical read")
+	d.releaseReaders()
+	if err := <-later; err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	awaitCertifiedReadersIdle(t, f.server, d)
+	if d.reads.Load() != 2 || len(f.server.certifiedReadSlots) != 0 || certifiedFlightForTest(t, f.server, request) != nil {
+		t.Fatal("caller cancellation leaked a completed flight or reused its proof")
+	}
+	after, _ := f.server.StrictIngressStatus()
+	if !reflect.DeepEqual(before, after) || d.writes.Load() != 0 {
+		t.Fatal("caller cancellation changed queue state or performed a write")
 	}
 }
 
