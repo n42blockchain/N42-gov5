@@ -2542,13 +2542,29 @@ func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *a
 	if v, err := strconv.Atoi(os.Getenv(attest.EnvFlushMs)); err == nil && v > 0 {
 		flush = time.Duration(v) * time.Millisecond
 	}
+	testK := attest.TestCommitteeFromEnv()
+	sample := attest.VerifySampleFromEnv()
+	if sample > 0 {
+		log.Warn("N42_ATTEST_VERIFY_SAMPLE is set (TEST ONLY): a fraction of attested frames is recovered locally and checked",
+			"p", sample)
+	}
+	if testK > 0 {
+		f := -1
+		if v := validators(); v != nil {
+			f = v.F
+		}
+		log.Warn("!!! N42_ATTEST_COMMITTEE IS SET (TEST ONLY) !!! frame attestation committee size and quorum are overridden; "+
+			"a quorum below f+1 lets k colluding committee members forge frame senders",
+			"k", testK, "f", f, "reduced", f >= 0 && testK < f+1)
+	}
 	pool := attest.NewPool(attest.Config{
 		Validators: validators, Self: self, Sign: sign, Signer: signer, Store: st,
-		CommitteeSize: attest.CommitteeSizeFromEnv(), Send: pusher.Send, FlushEvery: flush,
+		CommitteeSize: attest.CommitteeSizeFromEnv(), TestCommittee: testK, VerifySample: sample,
+		Send: pusher.Send, FlushEvery: flush,
 	})
 	pool.Start(n.ctx)
 	n.ingestServer.SetAttestHandler(pool.HandleWire)
-	log.Info("Frame sender attestation", "committee", attest.CommitteeSizeFromEnv(), "peers", peers, "flush", flush)
+	log.Info("Frame sender attestation", "committee", attest.CommitteeSizeFromEnv(), "testCommittee", testK, "verifySample", sample, "peers", peers, "flush", flush)
 	return pool
 }
 
