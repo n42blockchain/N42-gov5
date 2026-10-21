@@ -280,3 +280,51 @@ func TestHashBatchAndSendersBatchEquivalence(t *testing.T) {
 		}
 	}
 }
+
+// TestSendersMemoMatchesSender: SendersMemo leaves every transaction with
+// the memo Sender gives it and returns Sender's addresses (zero for a
+// failed recovery), with the kernel on and off and some memos and cache
+// entries already present.
+func TestSendersMemoMatchesSender(t *testing.T) {
+	rng := rand.New(rand.NewSource(23))
+	chainID := big.NewInt(1142)
+	signers := []Signer{NewLondonSigner(chainID), NewEIP155Signer(chainID), HomesteadSigner{}}
+	for round := 0; round < 30; round++ {
+		txs := mixedTxs(t, rng, rng.Intn(150), chainID)
+		for _, ifma := range []bool{true, false} {
+			withIFMA(ifma, func() {
+				for _, sg := range signers {
+					ref := cloneTxs(txs)
+					got := cloneTxs(txs)
+					for i := range got {
+						if got[i] != nil && rng.Intn(8) == 0 {
+							_, _ = Sender(sg, got[i])
+						}
+					}
+					addrs := make([]types.Address, len(got))
+					SendersMemo(sg, got, addrs)
+					for i, tx := range ref {
+						if tx == nil {
+							continue
+						}
+						wa, we := sg.Sender(tx)
+						if we != nil {
+							wa = types.Address{}
+						}
+						if addrs[i] != wa {
+							t.Fatalf("round %d tx %d ifma=%v %T: addr %x want %x", round, i, ifma, sg, addrs[i], wa)
+						}
+						if (we == nil) != got[i].HasSenderMemo(sg) {
+							t.Fatalf("round %d tx %d ifma=%v %T: memo %v, recovery err %v", round, i, ifma, sg, got[i].HasSenderMemo(sg), we)
+						}
+						if we == nil {
+							if a, err := Sender(sg, got[i]); err != nil || a != wa {
+								t.Fatalf("round %d tx %d: memo %x %v want %x", round, i, a, err, wa)
+							}
+						}
+					}
+				}
+			})
+		}
+	}
+}
