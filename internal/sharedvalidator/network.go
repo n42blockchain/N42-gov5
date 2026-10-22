@@ -190,9 +190,10 @@ func (n *Network) serve(stream network.Stream) {
 		return
 	}
 	var b block.IBlock
+	var header block.IHeader
 	switch request[0] {
 	case requestStatus:
-		b = n.replica.CurrentBlock()
+		header = n.replica.currentHeader()
 	case requestHash:
 		var hash types.Hash
 		copy(hash[:], request[1:])
@@ -217,16 +218,25 @@ func (n *Network) serve(stream network.Stream) {
 	default:
 		return
 	}
+	if b != nil {
+		header = b.Header()
+	}
 	reply := bodyReply{Identity: n.replica.identity}
 	var payload []byte
-	if b != nil {
+	if header != nil {
 		var err error
-		reply.Header, err = rlp.EncodeToBytes(b.Header())
+		reply.Header, err = rlp.EncodeToBytes(header)
 		if err != nil {
 			return
 		}
-		if b.Number64().Uint64() > 0 {
-			reply.Certificate, err = n.service.CertificateForBlock(n.ctx, b.Hash())
+		if header.Number64().Uint64() > 0 {
+			var hash types.Hash
+			if b != nil {
+				hash = b.Hash()
+			} else {
+				hash = header.Hash()
+			}
+			reply.Certificate, err = n.service.CertificateForBlock(n.ctx, hash)
 			if err != nil {
 				return
 			}
@@ -331,7 +341,7 @@ func (n *Network) CatchUp() {
 	}
 }
 func (n *Network) HeightBehind() uint64 {
-	head := n.replica.CurrentBlock()
+	head := n.replica.currentHeader()
 	if head == nil {
 		return 0
 	}
@@ -448,7 +458,7 @@ func (n *Network) catchupLoop() {
 			for current := n.maxHeight.Load(); height > current && !n.maxHeight.CompareAndSwap(current, height); current = n.maxHeight.Load() {
 			}
 			for count := 0; count < 64; count++ {
-				local := n.replica.CurrentBlock()
+				local := n.replica.currentHeader()
 				if local == nil || local.Number64().Uint64() >= height {
 					break
 				}
