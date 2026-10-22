@@ -204,7 +204,7 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (respo
 		plan.bytes += len(plan.input) + 4096
 	}
 	phases.phase("execute_build")
-	result, buildErr := s.executeQueuePlanLocked(plan)
+	result, buildErr := s.executeQueuePlanLocked(plan, r.Epoch)
 	phases.phase("publish_accounting")
 	// Publish accounting while execute remains held: canonical pruning cannot
 	// delete a plan and race a late worker completion which resurrects it.
@@ -228,7 +228,7 @@ func queueBuildResponse(r QueueBuildRequest, result BuildResult) QueueBuildResul
 	result.BlockRLP = append([]byte(nil), result.BlockRLP...)
 	return QueueBuildResult{Epoch: r.Epoch, PreparedHash: r.PreparedHash, BuildResult: result}
 }
-func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan) (result BuildResult, err error) {
+func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan, epoch [16]byte) (result BuildResult, err error) {
 	defer func() {
 		if recover() != nil {
 			s.prepared = nil
@@ -236,7 +236,7 @@ func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan) (result BuildResul
 			err = errors.New("queue candidate execution failed")
 		}
 	}()
-	return s.executeBuildLocked(plan.input, crypto.Keccak256Hash(plan.input), plan.bytes)
+	return s.executeBuildWithIngressLocked(plan.input, crypto.Keccak256Hash(plan.input), plan.bytes, &epoch)
 }
 
 // Caller holds execute, but regular Build registration may run concurrently.

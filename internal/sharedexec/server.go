@@ -284,6 +284,9 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		reused, err = s.chain.ImportPreparedCandidate(s.ctx, b, prepared)
 	}
 	if err == nil && !reused {
+		phases.phase("ingress_sender_memos")
+		phases.verifiedSenderMemos = s.seedLiveIngressSenderMemos(b, nil)
+		phases.phase("chain_import")
 		_, err = s.chain.InsertPerformanceExtension(s.ctx, b)
 	}
 	if reused {
