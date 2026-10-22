@@ -105,11 +105,13 @@ func TestLagPipelineAheadOrderedWriter(t *testing.T) {
 
 func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, ordered bool) {
 	const (
-		blocks   = 12
-		frames   = 4
-		perFrame = 100
-		failAt   = 5
+		blocks = 12
+		failAt = 5
 	)
+	frames, perFrame := 4, 100
+	if lagPipePerFrameForTest > 0 {
+		frames, perFrame = lagPipeFramesForTest, lagPipePerFrameForTest
+	}
 	defer SetFrameBlocksForTest(true)()
 	defer block.SetVoteOnAvailabilityForTest(true)()
 	depth := uint64(2)
@@ -371,6 +373,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		got, want := piped.result(w.Hash()), serial.result(w.Hash())
 		require.Equal(t, uint64(frames*perFrame*21000), got.GasUsed, "block %d did not execute every transfer", n)
 		require.Equal(t, want, got, "block %d: pipelined result differs from the serial one", n)
+		if fn := lagPipeResultSinkForTest; fn != nil {
+			fn(n, got)
+		}
 	}
 
 	orderMu.Lock()
