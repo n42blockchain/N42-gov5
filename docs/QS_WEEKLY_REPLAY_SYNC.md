@@ -627,10 +627,18 @@ Binary and tools from commit `dcddd8b8` plus the marker fix below, built with
   pool wired (committee 512, pool 200,000, ramp 1,000,000). **Open:**
   `/mobileverify/packet/<block hash>` returned 404 on all 7 nodes for the 8 most
   recent blocks tested although the blocks carry 5-29 txs and no
-  `packet build failed` / `packet publish failed` warning was logged. Not yet
-  explained: `BuildStreamPacket` keys the packet by `header.Hash()` of a header
-  copy taken before the sealer appends the BLS signature to `Extra`, which is
-  one possible mismatch with the sealed block hash, unverified. No device was
+  `packet build failed` / `packet publish failed` warning was logged.
+  **Cause (read from the code and checked on the stored headers of 9 blocks):** the
+  leader builds the packet from a copy of the header taken in assemble, i.e. BEFORE
+  sealing, and keys it by that copy's `header.Hash()`. `buildHeaderExtra` reserves
+  the last 96 bytes of `Extra` as zeros and `Seal` fills them in place with the BLS
+  signature, so the sealed block's `Hash()` (the one a phone knows, and the one
+  `/mobileverify/packet/` and the receipt lookup use) differs from the key. On all 9
+  stored blocks the hash with the 96 bytes zeroed differs from the sealed hash. Not
+  proved on the running endpoint (the cache is in memory and the fleet was stopped
+  before the cross-check), and the fix is not made: the packet must be re-keyed to
+  the sealed hash at the point the sealed block is delivered (miner resultLoop), a
+  consensus-path change that needs its own test. No device was
   registered, so receipts and certificates (`/mobileverify/cert/`) were not
   exercised.
 - **Traps hit**:
