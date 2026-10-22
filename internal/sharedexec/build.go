@@ -119,7 +119,12 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 
 // executeBuildLocked requires execute, and never reacquires it. Callers retain
 // their owned immutable input and publish accounting before releasing execute.
-func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reserved int) (BuildResult, error) {
+// This nested record overlaps build_queue/runBuild; do not add their totals.
+func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reserved int) (response BuildResult, err error) {
+	phases := newOwnerOperationPhases("execute_build", s)
+	phases.hash = templateHash
+	defer func() { phases.finish(err) }()
+	phases.phase("input_hash_decode")
 	if err := s.ctx.Err(); err != nil {
 		return BuildResult{}, err
 	}
@@ -130,17 +135,20 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 	if err := template.Unmarshal(input); err != nil {
 		return BuildResult{}, err
 	}
+	phases.phase("template_validate_root")
 	header, ok := template.Header().(*block.Header)
 	body, bodyOK := template.Body().(*block.Body)
 	if !ok || header == nil || !bodyOK || body == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || body.IsFrameBody() || len(template.Transactions()) > MaxTransactions || template.TxHash() != block.BodyTxRoot(body, header.Time) {
 		return BuildResult{}, errors.New("invalid candidate template header or body")
 	}
+	phases.parent, phases.number, phases.transactions = header.ParentHash, header.Number.Uint64(), len(template.Transactions())
 	s.buildCalls.Add(1)
 	s.prepared = nil // a new build supersedes the only retained execution write
 	var built *block.Block
 	var executed rawdb.ExecutedResult
 	var prepared *internal.PreparedUnsignedCandidate
 	var buildErr error
+	phases.phase("chain_build")
 	if s.reuseOwnBuild {
 		built, executed, prepared, buildErr = s.chain.BuildPreparedUnsignedCandidate(s.ctx, &template)
 	} else {
@@ -149,6 +157,7 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 	if buildErr != nil {
 		return BuildResult{}, buildErr
 	}
+	phases.phase("result_marshal_copy")
 	var raw []byte
 	if prepared != nil {
 		// Preparation already encoded this unchanged unsigned candidate. Keep
@@ -165,7 +174,9 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 		return BuildResult{}, errors.New("candidate exceeds reserved payload budget")
 	}
 	s.prepared = prepared
-	return BuildResult{Identity: s.identity, TemplateHash: templateHash, BlockHash: built.Hash(), BlockRLP: raw, Result: executed}, nil
+	builtHash := built.Hash()
+	phases.hash = builtHash
+	return BuildResult{Identity: s.identity, TemplateHash: templateHash, BlockHash: builtHash, BlockRLP: raw, Result: executed}, nil
 }
 
 func (s *Server) serveBuild(w http.ResponseWriter, r *http.Request) {

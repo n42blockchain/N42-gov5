@@ -30,7 +30,11 @@ func (c *Client) Close() { c.http.CloseIdleConnections() }
 
 func (c *Client) Identity() Identity { return c.identity }
 
-func (c *Client) Import(ctx context.Context, request ImportRequest) (ImportResult, error) {
+func (c *Client) Import(ctx context.Context, request ImportRequest) (out ImportResult, err error) {
+	phases := newOwnerOperationPhases("client_import", nil)
+	phases.identity = c.identity
+	defer func() { phases.finish(err) }()
+	phases.phase("request_validate")
 	if request.Identity != c.identity {
 		return ImportResult{}, errors.New("client execution identity mismatch")
 	}
@@ -41,6 +45,11 @@ func (c *Client) Import(ctx context.Context, request ImportRequest) (ImportResul
 	if err := requested.Unmarshal(request.BlockRLP); err != nil || requested.Hash() != request.BlockHash {
 		return ImportResult{}, errors.New("invalid client execution block")
 	}
+	phases.parent, phases.transactions = requested.ParentHash(), len(requested.Transactions())
+	if number := requested.Number64(); number != nil && number.IsUint64() {
+		phases.number = number.Uint64()
+	}
+	phases.phase("request_json")
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return ImportResult{}, err
@@ -50,6 +59,7 @@ func (c *Client) Import(ctx context.Context, request ImportRequest) (ImportResul
 		return ImportResult{}, err
 	}
 	r.Header.Set("Content-Type", "application/json")
+	phases.phase("http_roundtrip_headers")
 	response, err := c.http.Do(r)
 	if err != nil {
 		return ImportResult{}, err
@@ -58,16 +68,19 @@ func (c *Client) Import(ctx context.Context, request ImportRequest) (ImportResul
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
 		return ImportResult{}, errors.New("execution service rejected import")
 	}
+	phases.phase("response_read")
 	responseBytes, err := io.ReadAll(io.LimitReader(response.Body, 16385))
 	if err != nil || len(responseBytes) > 16384 {
 		return ImportResult{}, errors.New("invalid execution response size")
 	}
+	phases.phase("response_json")
 	decoder := json.NewDecoder(bytes.NewReader(responseBytes))
 	decoder.DisallowUnknownFields()
 	var result ImportResult
 	if err := decoder.Decode(&result); err != nil {
 		return ImportResult{}, err
 	}
+	phases.phase("response_validate")
 	if err := validateImportResult(c.identity, request.BlockHash, requested.Header().(*block.Header), result, response.StatusCode); err != nil {
 		return ImportResult{}, err
 	}

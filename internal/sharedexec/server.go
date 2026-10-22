@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,7 +154,11 @@ func (s *Server) Close() {
 	s.mu.Unlock()
 }
 
-func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResult, error) {
+func (s *Server) Import(ctx context.Context, request ImportRequest) (response ImportResult, err error) {
+	phases := newOwnerOperationPhases("import_request", s)
+	phases.hash = request.BlockHash
+	defer func() { phases.finish(err) }()
+	phases.phase("request_decode_bind")
 	if request.Identity != s.identity {
 		return ImportResult{}, errors.New("execution chain identity mismatch")
 	}
@@ -178,9 +183,12 @@ func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResul
 	if len(b.Transactions()) > MaxTransactions {
 		return ImportResult{}, errors.New("execution transaction limit exceeded")
 	}
+	phases.parent, phases.number, phases.transactions = b.ParentHash(), header.Number.Uint64(), len(b.Transactions())
+	phases.phase("body_root")
 	if b.TxHash() != block.BodyTxRoot(body, header.Time) {
 		return ImportResult{}, errors.New("execution body transaction root mismatch")
 	}
+	phases.phase("registry")
 	key := importKey{s.identity, b.Hash()}
 	s.mu.Lock()
 	if s.closed || s.resumeArming {
@@ -205,6 +213,7 @@ func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResul
 		go s.run(key, job, &b)
 	}
 	s.mu.Unlock()
+	phases.phase("job_wait")
 	select {
 	case <-ctx.Done():
 		return ImportResult{}, ctx.Err()
@@ -215,12 +224,22 @@ func (s *Server) Import(ctx context.Context, request ImportRequest) (ImportResul
 
 func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	defer s.wg.Done()
+	phases := newOwnerOperationPhases("import_worker", s)
+	phases.hash, phases.parent, phases.number, phases.transactions = b.Hash(), b.ParentHash(), b.Number64().Uint64(), len(b.Transactions())
 	result := ImportResult{Identity: s.identity, BlockHash: b.Hash(), ParentHash: b.ParentHash(), Number: b.Number64().Uint64(), State: "accepted"}
+	defer func() {
+		var phaseErr error
+		if result.Error != "" {
+			phaseErr = errors.New("import worker did not establish durable execution")
+		}
+		phases.finish(phaseErr)
+	}()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result.State = "failed"
 			result.Error = "execution worker failed"
 		}
+		phases.phase("publish")
 		s.mu.Lock()
 		job.result = result
 		if result.Durable {
@@ -231,8 +250,10 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		close(job.done)
 		s.mu.Unlock()
 	}()
+	phases.phase("execute_wait")
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	phases.phase("durable_before")
 	if s.ctx.Err() != nil {
 		result.Error = "execution service stopping; retry"
 		return
@@ -245,6 +266,7 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		result = *durable
 		return
 	}
+	phases.phase("parent_applied")
 	if !s.chain.HasAppliedBlock(b.ParentHash(), result.Number-1) {
 		result.Error = "parent is not applied; retry"
 		return
@@ -253,6 +275,7 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	s.prepared = nil
 	reused := false
 	var err error
+	phases.phase("chain_import")
 	if prepared != nil {
 		reused, err = s.chain.ImportPreparedCandidate(s.ctx, b, prepared)
 	}
@@ -272,6 +295,7 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		result.Error = err.Error()
 		return
 	}
+	phases.phase("durable_after")
 	durable, err := s.durable(b)
 	if err != nil {
 		result.State = "failed"
@@ -316,7 +340,17 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 	return result, err
 }
 
+// Labels describe these RPCs and workers newly spawned within them, not
+// unrelated pre-existing background goroutines. Ingress framing is not tagged.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/v1/build-queue", "/v1/build", "/v1/import", "/v1/import-ref", "/v1/applied-child", "/v1/commit-qc":
+		pprof.Do(r.Context(), pprof.Labels("gov5_rpc", r.URL.Path), func(ctx context.Context) { s.serveHTTP(w, r.WithContext(ctx)) })
+	default:
+		s.serveHTTP(w, r)
+	}
+}
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if s.closed || s.resumeArming {
 		s.mu.Unlock()
@@ -362,29 +396,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	phases := newOwnerOperationPhases("import_http", s)
+	var operationErr error
+	defer func() { phases.finish(operationErr) }()
+	phases.phase("request_decode")
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	var request ImportRequest
-	if err := decoder.Decode(&request); err != nil {
+	if operationErr = decoder.Decode(&request); operationErr != nil {
 		http.Error(w, "invalid execution request", http.StatusBadRequest)
 		return
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
+		operationErr = errors.New("one execution request required")
 		http.Error(w, "one execution request required", http.StatusBadRequest)
 		return
 	}
+	phases.hash = request.BlockHash
+	phases.phase("operation")
 	result, err := s.Import(r.Context(), request)
 	if err != nil {
+		operationErr = err
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	phases.parent, phases.number = result.ParentHash, result.Number
+	phases.phase("response_encode")
 	w.Header().Set("Content-Type", "application/json")
 	if !result.Durable {
 		w.WriteHeader(http.StatusAccepted)
 	}
-	_ = json.NewEncoder(w).Encode(result)
+	operationErr = json.NewEncoder(w).Encode(result)
 }
 
 // ListenUnix refuses symlinked/public directories and existing socket paths.
