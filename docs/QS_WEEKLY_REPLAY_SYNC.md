@@ -583,3 +583,76 @@ were folded in.
   and was stopped with `taskkill /F` (plain `taskkill` is refused by a console-less
   process); the repo stayed clean. A bash `sleep N; cmd` over ~100 s is
   rejected by the tool, so long waits go through a Monitor loop.
+
+### 2026-10-21/22 (weekly: old-mainnet resync, incremental history replay, era seed, 7-node restart)
+
+Binary and tools from commit `dcddd8b8` plus the marker fix below, built with
+`go build` into `C:\N42\replay-20261021\` (`n42`, `n42-ancient-seal`, `n42-ancient`,
+`txindex-watermark`, `qmdb-histcheck`, `qmdb-proof-fuzz`, `hotstuff-inspect`,
+`hotstuff-reset`, `txflood`).
+
+- **Sync** (Step 0 command): 14,066,100 -> caught up at `currentNr=14138457
+  highestExpectedBlockNr=14138457`, stopped with `sendbreak.exe` (the node had
+  followed on to 14,138,895 by then, which is the replay's source head). The
+  caught-up line is printed with colour codes, so a plain `grep` for
+  `currentNr=N highestExpectedBlockNr=N` misses it.
+- **Incremental replay** into `E:\qs-replay-hist-20261014` (resume from the target
+  DB, same flags as Step 0c, `--qmdb-history`): 72,795 blocks in **1m03s**
+  (1,163 blk/s), 148,651 txs, **txFailed 0**, receiptMatch 72,752 / mismatch 43,
+  0 errors. checkpoint: `sourceHead` 14,138,895, `number` **14,178,293**, `hash`
+  `0x4996f21e0c3956ca2ac0bead731438b43f6f521ee3b4d6b18185a32b922c3d44`.
+- **Audit**: `qmdb-histcheck` TOTAL pass=96 fail=0 (heights up to 14,178,293);
+  `qmdb-proof-fuzz` 100,014 proofs, 0 failures, headerMissing=0, membership proof
+  avg 1,130 B, 3.5 ms avg / 5.2 ms p99.
+- **Seed** `E:\qs-era-out-20261021` (new directory, not the 08-16 seed: the base
+  lineage changed): `--seal` 13 eras / 39 files in 8m58s (7.9 GB); `--emit-hot`
+  hot MDBX 62 GB (the history tables are carried); `verify --deep --sample 64`
+  `deep verify OK: 832 blocks`; `SEAL_DONE.json` head 14,178,293, sealed_end
+  13,631,488; txindex 1 segment from 13,631,488 (`txindex-watermark` reads
+  13631488).
+- **Fleet**: `E:\qs-node0..6` re-seeded (previous generation moved to
+  `-pre20261022`), `deploy-7node.ps1 -Data E:\qs-era-out-20261021 -Bin
+  C:\N42\replay-20261021\n42.exe`. Startup fingerprint `appliedNum=headNum=14178293`.
+- **10-minute window** (sampled every 60 s over 611 s): 305 blocks, ~2 s/block,
+  all 7 nodes within one block of each other, **one block hash per height at every
+  sample**, 0 `error` lines on all 7 nodes, no `ValidateState` / root-mismatch /
+  rolling-it-back. Warnings only at start (peer dial, IPC, a few view timeouts,
+  dev-faucet funding retries). `eth_getTransactionByHash` returned the right
+  block on nodes 0, 3 and 6 for transactions in block 14,178,600, 14,178,000
+  (seed tail), 13,700,000 and 13,632,000 (txindex range).
+- **Mobile verification surface**: all 7 `--mobileverify.http` ports
+  (21012..21018) answer `/mobileverify/health` (`alarms 0`, `registry 0`,
+  `certBlocks 0`, `openWindows 0`), `/mobileverify/alarms` is `[]`, the log shows
+  packet service, cohort relay, registration replication and the BLS committee
+  pool wired (committee 512, pool 200,000, ramp 1,000,000). **Open:**
+  `/mobileverify/packet/<block hash>` returned 404 on all 7 nodes for the 8 most
+  recent blocks tested although the blocks carry 5-29 txs and no
+  `packet build failed` / `packet publish failed` warning was logged. Not yet
+  explained: `BuildStreamPacket` keys the packet by `header.Hash()` of a header
+  copy taken before the sealer appends the BLS signature to `Extra`, which is
+  one possible mismatch with the sealed block hash, unverified. No device was
+  registered, so receipts and certificates (`/mobileverify/cert/`) were not
+  exercised.
+- **Traps hit**:
+  1. **`replay-v2` left the QMDB applied marker at block 0** (genesis init writes
+     it, replay never advanced it). A node booting from such a target sees PlainState
+     at the head and the marker at 0, logs `PlainState is ahead of the applied marker
+     ... rolling it back` / `refusing to realign ... startup heal failed`, pulls the
+     canonical head back to genesis and builds from block 1 (all 7 nodes did,
+     height 0). The 08-16 seeds had no marker at all, which is why they booted.
+     Fixed in `37e19255` (the marker follows the head in the same transaction;
+     test `TestEngineV2_QMDBAppliedMarkerFollowsHead` fails without it). Bases
+     replayed before the fix were repaired once by writing
+     `DatabaseInfo/qmdbAppliedHead = (14178293, 0x4996f21e...)` after checking that
+     hash is block 14,178,293; the check for a future base is
+     `startup state fingerprint` showing `appliedNum == headNum`.
+  2. **Stale tools in `C:\N42\`**: `n42-ancient-seal.exe` / `n42-ancient.exe` /
+     `txindex-watermark.exe` were 08-16 builds and `--emit-hot` failed with
+     `bucket "BadHeaderNumber" not in N42TableCfg` (the table was added on
+     09-06). Build all three from the same commit as the binary.
+  3. `build-seed-txindex.ps1` hard-codes `C:\N42\txindex-watermark.exe`; a copy with
+     the path replaced was used, the script on `E:\` was not edited.
+  4. A background shell held by the tool is reaped under memory pressure
+     (`--emit-hot` was stopped once at the final commit, with free RAM near zero
+     while reth2k was syncing). Start long jobs with `Start-Process` and watch
+     them with a Monitor.
