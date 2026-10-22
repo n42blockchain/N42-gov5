@@ -17,7 +17,12 @@ import (
 // BuildFromQueue validates a complete returned body and permits only its
 // transaction root plus the existing execution-result additions to the leader
 // header. The original full-template Build validator remains unchanged.
-func (c *Client) BuildFromQueue(ctx context.Context, request QueueBuildRequest) (QueueBuildResult, error) {
+func (c *Client) BuildFromQueue(ctx context.Context, request QueueBuildRequest) (out QueueBuildResult, err error) {
+	phases := newOwnerOperationPhases("client_build_queue", nil)
+	phases.identity = c.identity
+	phases.hash = request.PreparedHash
+	defer func() { phases.finish(err) }()
+	phases.phase("request_validate")
 	if request.Identity != c.identity || request.Epoch == ([16]byte{}) || len(request.PreparedRLP) == 0 || len(request.PreparedRLP) > MaxQueuePreparedBytes || request.MaxTransactions < 1 || request.MaxTransactions > MaxTransactions || request.MaxEncodedBytes < 1 || request.MaxEncodedBytes > MaxQueueBuildEncodedBytes || crypto.Keccak256Hash(request.PreparedRLP) != request.PreparedHash {
 		return QueueBuildResult{}, errors.New("invalid client queue build binding/limits")
 	}
@@ -30,6 +35,8 @@ func (c *Client) BuildFromQueue(ctx context.Context, request QueueBuildRequest) 
 	if !wantOK || want == nil || want.Number == nil || !want.Number.IsUint64() || want.Number.IsZero() || !bodyOK || body == nil || body.IsFrameBody() || len(prepared.Transactions()) != 0 || len(body.Verifiers) > 0 || len(body.Rewards) > 0 || len(body.ZkProof) > 0 || want.TxHash != block.BodyTxRoot(body, want.Time) {
 		return QueueBuildResult{}, errors.New("client queue build requires empty prepared body")
 	}
+	phases.parent, phases.number = want.ParentHash, want.Number.Uint64()
+	phases.phase("request_json")
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return QueueBuildResult{}, err
@@ -39,6 +46,7 @@ func (c *Client) BuildFromQueue(ctx context.Context, request QueueBuildRequest) 
 		return QueueBuildResult{}, err
 	}
 	r.Header.Set("Content-Type", "application/json")
+	phases.phase("http_roundtrip_headers")
 	response, err := c.http.Do(r)
 	if err != nil {
 		return QueueBuildResult{}, err
@@ -48,10 +56,12 @@ func (c *Client) BuildFromQueue(ctx context.Context, request QueueBuildRequest) 
 		detail, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		return QueueBuildResult{}, fmt.Errorf("execution service rejected queue build: %s", bytes.TrimSpace(detail))
 	}
+	phases.phase("response_read")
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBytes+1))
 	if err != nil || len(data) > maxRequestBytes {
 		return QueueBuildResult{}, errors.New("invalid queue build response size")
 	}
+	phases.phase("response_json")
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var result QueueBuildResult
@@ -61,9 +71,11 @@ func (c *Client) BuildFromQueue(ctx context.Context, request QueueBuildRequest) 
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return QueueBuildResult{}, errors.New("trailing queue build response")
 	}
+	phases.phase("response_validate")
 	if err := validateQueueBuildResponse(c.identity, request, &prepared, result); err != nil {
 		return QueueBuildResult{}, err
 	}
+	phases.hash = result.BlockHash
 	return result, nil
 }
 

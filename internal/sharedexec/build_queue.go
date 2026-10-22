@@ -58,7 +58,11 @@ func queueBuildKey(r QueueBuildRequest) types.Hash {
 // BuildFromQueue synchronously owns execute through selection, execution and
 // publication. Request cancellation does not cancel an already selected owner
 // execution or change its body. This first path does not pipeline execution.
-func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (QueueBuildResult, error) {
+func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (response QueueBuildResult, err error) {
+	phases := newOwnerOperationPhases("build_queue", s)
+	phases.hash = r.PreparedHash
+	defer func() { phases.finish(err) }()
+	phases.phase("request_binding")
 	if r.Identity != s.identity || r.MaxTransactions < 1 || r.MaxTransactions > MaxTransactions || r.MaxEncodedBytes < 1 || r.MaxEncodedBytes > MaxQueueBuildEncodedBytes || len(r.PreparedRLP) == 0 || len(r.PreparedRLP) > MaxQueuePreparedBytes {
 		return QueueBuildResult{}, errors.New("queue build identity/limits/prepared size mismatch")
 	}
@@ -78,8 +82,10 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
+	phases.phase("execute_wait")
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	phases.phase("prepared_validate")
 	if err := s.ctx.Err(); err != nil {
 		return QueueBuildResult{}, err
 	}
@@ -102,6 +108,7 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 	if err := engine.ValidateUnsignedCandidateHeader(s.chain, header); err != nil {
 		return QueueBuildResult{}, err
 	}
+	phases.parent, phases.number = header.ParentHash, header.Number.Uint64()
 	view, err := hotstuff.ExtractViewFromExtra(header.Extra)
 	if err != nil {
 		return QueueBuildResult{}, err
@@ -121,10 +128,13 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 		return QueueBuildResult{}, ErrQueueBuildConflict
 	}
 	if plan != nil && len(plan.result.BlockRLP) > 0 {
+		phases.duplicate, phases.hash = true, plan.result.BlockHash
+		phases.phase("response_copy")
 		return queueBuildResponse(r, plan.result), nil
 	}
 	if plan == nil {
 		// Public validation precedes account IO, reservations and view binding.
+		phases.phase("lanes_snapshot_sort")
 		q.mu.Lock()
 		addresses := make([]types.Address, 0, len(q.lanes))
 		for address, lane := range q.lanes {
@@ -134,6 +144,7 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 		}
 		q.mu.Unlock()
 		sort.Slice(addresses, func(i, j int) bool { return bytes.Compare(addresses[i][:], addresses[j][:]) < 0 })
+		phases.phase("parent_accounts")
 		parent, err := s.chain.ReadPerformanceParentAccounts(s.ctx, header.ParentHash, header.Number.Uint64()-1, addresses)
 		if err != nil {
 			return QueueBuildResult{}, err
@@ -161,6 +172,7 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 		s.mu.Unlock()
 		// Materialization errors publish no plan. Once input exists, all retries
 		// retain exactly that input, even when the execution attempt fails.
+		phases.phase("select_decode")
 		txs, err := s.selectQueueTransactions(q, addresses, parent.Accounts, header, r.MaxTransactions, r.MaxEncodedBytes)
 		if err == nil && len(txs) == 0 {
 			// An empty fresh selection is not a candidate. Use the materialization
@@ -168,6 +180,8 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 			err = ErrQueueBuildEmpty
 		}
 		if err == nil {
+			phases.transactions = len(txs)
+			phases.phase("template_root_marshal")
 			selected := block.CopyHeader(header)
 			selected.TxHash = block.TxRootAt(txs, selected.Time)
 			selected.ResetHashCache()
@@ -189,7 +203,9 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 		}
 		plan.bytes += len(plan.input) + 4096
 	}
+	phases.phase("execute_build")
 	result, buildErr := s.executeQueuePlanLocked(plan)
+	phases.phase("publish_accounting")
 	// Publish accounting while execute remains held: canonical pruning cannot
 	// delete a plan and race a late worker completion which resurrects it.
 	s.mu.Lock()
@@ -204,6 +220,8 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (Queue
 	if err := ctx.Err(); err != nil {
 		return QueueBuildResult{}, err
 	}
+	phases.hash = result.BlockHash
+	phases.phase("response_copy")
 	return queueBuildResponse(r, result), nil
 }
 func queueBuildResponse(r QueueBuildRequest, result BuildResult) QueueBuildResult {
@@ -246,26 +264,36 @@ func (s *Server) reserveQueueBuildBudget(bytes int, newPlan bool) error {
 }
 
 func (s *Server) serveQueueBuild(w http.ResponseWriter, r *http.Request) {
+	phases := newOwnerOperationPhases("build_queue_http", s)
+	var operationErr error
+	defer func() { phases.finish(operationErr) }()
+	phases.phase("request_decode")
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, 2*MaxQueuePreparedBytes+4096)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	var request QueueBuildRequest
-	if err := decoder.Decode(&request); err != nil {
+	if operationErr = decoder.Decode(&request); operationErr != nil {
 		http.Error(w, "invalid queue build request", http.StatusBadRequest)
 		return
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
+		operationErr = errors.New("one queue build request required")
 		http.Error(w, "one queue build request required", http.StatusBadRequest)
 		return
 	}
+	phases.hash = request.PreparedHash
+	phases.phase("operation")
 	result, err := s.BuildFromQueue(r.Context(), request)
 	if err != nil {
+		operationErr = err
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	phases.hash = result.BlockHash
+	phases.phase("response_encode")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	operationErr = json.NewEncoder(w).Encode(result)
 }
 
 // Selection is non-destructive. References are safe until execute is released:
