@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"errors"
+	"slices"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -161,8 +162,17 @@ func (bc *BlockChain) verifyCertifiedCanonicalPrefix(qc *hotstuff.QuorumCertific
 		}
 		if bc.txIndexer == nil {
 			want := b.Number64().Bytes()
-			for _, txn := range b.Transactions() {
-				entry, err := tx.GetOne(modules.TxLookup, txn.Hash().Bytes())
+			// Visit every index entry in key order for locality in the existing
+			// transaction cursor. Keep duplicates and verify each value freshly.
+			hashes := make([]types.Hash, len(b.Transactions()))
+			for i, txn := range b.Transactions() {
+				hashes[i] = txn.Hash()
+			}
+			slices.SortFunc(hashes, func(a, b types.Hash) int {
+				return bytes.Compare(a[:], b[:])
+			})
+			for i := range hashes {
+				entry, err := tx.GetOne(modules.TxLookup, hashes[i][:])
 				if err != nil {
 					return err
 				}
