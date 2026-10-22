@@ -69,6 +69,19 @@ func SetAheadPrepForTest(on bool) func() {
 // transaction, ~40 MB at 163k): the lowest blocks are kept.
 const aheadPrepCap = 2
 
+// aheadPrepCapEarly is the bound with N42_AHEAD_PREP_EARLY=1: at a
+// deferred depth of 2 a third block is often queued while the two below it
+// still wait for their parents, and it was left with no preparation and no
+// base prefill (S126: one 163k ahead run in six, setup ~31 ms against ~1).
+const aheadPrepCapEarly = 3
+
+func aheadPrepCapacity() int {
+	if aheadPrepEarlyOn {
+		return aheadPrepCapEarly
+	}
+	return aheadPrepCap
+}
+
 // States of an aheadPrep.
 const (
 	prepPending int32 = iota
@@ -142,12 +155,12 @@ func (bc *BlockChain) newAheadPrep(b *block.Block) *aheadPrep {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	if ps.m == nil {
-		ps.m = make(map[types.Hash]*aheadPrep, aheadPrepCap)
+		ps.m = make(map[types.Hash]*aheadPrep, aheadPrepCapEarly)
 	}
 	if _, dup := ps.m[pr.hash]; dup {
 		return nil
 	}
-	if len(ps.m) >= aheadPrepCap {
+	if len(ps.m) >= aheadPrepCapacity() {
 		var top *aheadPrep
 		for _, o := range ps.m {
 			if top == nil || o.number > top.number {
@@ -191,6 +204,8 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 		// A panic leaves the preparation unusable; the run computes its own.
 		if recover() != nil {
 			pr.ok = false
+			// A prefill started beside it stops at its next key.
+			pr.dropping.Store(true)
 		}
 		pr.state.Store(prepDone)
 		close(pr.done)
@@ -203,14 +218,32 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if !ok || hdr.Number == nil {
 		return
 	}
+	txs := b.Transactions()
+	// N42_AHEAD_PREP_EARLY=1 (lag_early.go): the base prefill runs beside
+	// the preparation instead of after it. Its keys come from the
+	// transactions themselves (prepared nil): the preparation below writes
+	// its set while the prefill gathers them. The senders are settled (the
+	// sender job is done), so nothing writes what the prefill reads. Set
+	// before done closes, like the late start: claimers read it after done.
+	early := aheadPrepEarlyOn && bc.aheadBaseUsable()
+	if early {
+		pr.base = bc.startAheadBase(hdr, txs, nil, sp, pr.dropping.Load)
+		aheadPrepEarlyStarts.Add(1)
+	}
 	if !sp.ParallelApplicable(b) {
 		// The block runs serially.
+		if early {
+			pr.dropping.Store(true)
+		}
 		return
 	}
-	txs := b.Transactions()
 	signer := transaction.MakeSignerWithTimestamp(sp.config, hdr.Number.ToBig(), hdr.Time)
 	prepared, aff := sp.prepareParallelRun(txs, signer, hdr.BaseFee, parallelWorkers(), aheadPrepWorkers())
 	if aff == nil {
+		if early {
+			// Not usable: the run neither adopts it nor reads its prefill.
+			pr.dropping.Store(true)
+		}
 		return
 	}
 	pr.txs, pr.signer, pr.baseFee, pr.engine = txs, signer, hdr.BaseFee, sp.engine != nil
@@ -218,10 +251,14 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if fn := aheadPrepDoneForTest; fn != nil {
 		fn(pr)
 	}
-	if bc.aheadBaseUsable() {
+	if !early && bc.aheadBaseUsable() {
 		pr.base = bc.startAheadBase(hdr, txs, prepared, sp, pr.dropping.Load)
 	}
 }
+
+// aheadPrepEarlyStarts counts the base prefills started beside their
+// preparation (N42_AHEAD_PREP_EARLY=1, since start).
+var aheadPrepEarlyStarts atomic.Uint64
 
 // aheadPrepDoneForTest runs on a computed preparation before it is
 // published (tests: make it mismatch its run).
