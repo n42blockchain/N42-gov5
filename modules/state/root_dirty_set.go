@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -34,6 +35,15 @@ const detachMinPending = 2048
 // lastRootCredits is the most recent root walk's detached credits (high 32
 // bits) and materialised ones (low 32 bits), for the import phases line.
 var lastRootCredits atomic.Int64
+
+// lastRootWalkNanos is the most recent root walk's time through a root
+// computer up to its dirty set being final (credits, journal merge, the
+// account and storage maps), before the hooks and the computer run.
+var lastRootWalkNanos atomic.Int64
+
+// LastRootWalk returns the most recent root walk's time before the root
+// computer ran (the import phases line's "rootWalk").
+func LastRootWalk() time.Duration { return time.Duration(lastRootWalkNanos.Load()) }
 
 // LastRootCredits returns how many pending credits the most recent root
 // walk through a root computer took detached (P4b) and how many it

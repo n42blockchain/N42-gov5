@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 	"unsafe"
 
 	"github.com/holiman/uint256"
@@ -1694,6 +1695,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// verification reproducibility.
 	// Check if LtHash is supported — if so, collect originals.
 	ltRC, ltEnabled := s.rootComputer.(LtHashRootComputer)
+	tWalk := time.Now()
 
 	pending := s.pendingIncreaseAddrs()
 	var detached pendingCredits
@@ -1884,6 +1886,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 
 	// The dirty set is final here: everything the root walk is about to
 	// commit is in the state objects, and nothing below changes them.
+	lastRootWalkNanos.Store(int64(time.Since(tWalk)))
 	if hook := s.beforeRoot; hook != nil {
 		s.beforeRoot = nil
 		hook()
