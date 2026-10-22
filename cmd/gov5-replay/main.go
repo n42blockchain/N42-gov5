@@ -18,7 +18,7 @@ import (
 
 func runSupply(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|bounded-plan|bounded-window|bounded-phase-preload|resume-four-frame [options]")
+		return errors.New("usage: gov5-replay prepare|qualify|strict|recover|resume-plan|bounded-plan|bounded-window|bounded-window-suffix|bounded-phase-preload|resume-four-frame [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	root := flags.String("root", "", "absolute fresh private corpus directory")
@@ -47,7 +47,7 @@ func runSupply(ctx context.Context, args []string) error {
 			return errors.New("finite preload requires explicit plan/hash/ID/runtime/vector/new attempt")
 		}
 		return runBoundedFinitePreload(ctx, *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, resumePinnedInput{Path: *baseline, SHA256: vectorHash}, id)
-	case "bounded-window":
+	case "bounded-window", "bounded-window-suffix":
 		runtime := flags.String("runtime-manifest", "", "Retained schema-2 runtime; independently armed GSR2 owner required")
 		attempt := flags.String("attempt", "", "New bounded measurement evidence basename")
 		plan := flags.String("plan", "", "Pinned original-source prefix plan v2")
@@ -71,7 +71,7 @@ func runSupply(ctx context.Context, args []string) error {
 		if err != nil || flags.NArg() != 0 || *runtime == "" || *attempt == "" || *plan == "" || *baseline == "" {
 			return errors.New("bounded-window requires explicit plan/hash/ID/runtime/vector/new attempt")
 		}
-		return runBoundedWindow(ctx, *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, resumePinnedInput{Path: *baseline, SHA256: vectorHash}, id, *rate)
+		return runBoundedWindowMode(ctx, args[0] == "bounded-window-suffix", *root, *runtime, *attempt, resumePinnedInput{Path: *plan, SHA256: digest}, resumePinnedInput{Path: *baseline, SHA256: vectorHash}, id, *rate)
 	case "resume-four-frame":
 		runtime := flags.String("runtime-manifest", "", "Retained schema-2 runtime; owner must already be independently armed")
 		attempt := flags.String("attempt", "", "New evidence basename; never replay an existing attempt")
@@ -174,7 +174,7 @@ func runSupply(ctx context.Context, args []string) error {
 		}
 		return qualifySupply(ctx, *root, *attempt, *rate, 4*time.Second, 20*time.Second)
 	default:
-		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan, bounded-plan, bounded-window, bounded-phase-preload and resume-four-frame")
+		return errors.New("supported commands are prepare, qualify, strict, recover, resume-plan, bounded-plan, bounded-window, bounded-window-suffix, bounded-phase-preload and resume-four-frame")
 	}
 }
 
