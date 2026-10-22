@@ -722,7 +722,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 	out.AccountVectorSHA = unixProfileValidate(t, client, chain, in, signed, status)
 	out.Passed = true
 	out.ProcessPeakRSSKiB = unixProfilePeakRSS(t)
-	unixProfileWrite(t, filepath.Join(dir, "result.json"), func(f *os.File) error { return json.NewEncoder(f).Encode(out) })
+	// Publish once, from the cleanup callback after physical reopen succeeds.
 	return out
 }
 
