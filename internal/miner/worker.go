@@ -135,6 +135,9 @@ type task struct {
 	// recorded with the sealed block so a chained build stamps it into the
 	// next header before this block's write lands.
 	exec *rawdb.ExecutedResult
+	// mobilePacket is what the mobile-verification packet is built from once
+	// this block is sealed (nil when no packet sink is wired).
+	mobilePacket *mobilePacketJob
 
 	// Seal-path phase timings — OBSERVABILITY ONLY. The leader's
 	// ViewStart→ProposalSent window spans three goroutines (commit → taskLoop →
@@ -959,6 +962,9 @@ func (w *worker) writeAndFinish(job *writeJob) bool {
 	w.mu.Lock()
 	delete(w.pendingTasks, sealhash)
 	w.mu.Unlock()
+	// The sealed block is stored: build its mobile-verification packet from the
+	// sealed header so it is keyed by, and carries, the hash a verifier knows.
+	task.mobilePacket.launch(blk, w.mobilePacketSink)
 	blocksMinedCounter.Inc()
 	blockMiningTimer.UpdateDuration(task.createdAt)
 
@@ -2633,33 +2639,16 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	tFinalizeDoneAt := time.Now()
 	tRootDoneAt := tFinalizeDoneAt
 
-	// Mobile-verification packet: the recorder captured this block's read
-	// log during the build; pair it with the FINAL header (receipts root,
-	// state root, gas used are set by FinalizeAndAssemble) and hand off to
-	// the sink. Best-effort by design — packet production must never fail
-	// a block.
+	// Mobile-verification packet: the recorder captured this block's read log
+	// during the build. The packet is NOT built here: its header must be the
+	// SEALED one (the BLS seal fills the reserved tail of Extra afterwards and
+	// changes the block hash), so the job rides on the task and resultLoop
+	// builds the packet once the sealed block arrives. Best-effort by design;
+	// packet production must never fail a block.
 	tPacket := time.Now()
-	if w.mobilePacketSink != nil && readLogRecorder != nil {
-		if finalHeader, ok := iblock.Header().(*block.Header); ok {
-			// Built off the critical path: packet construction walked the whole
-			// read log (~35-75ms on a full block) inside assemble. The header is
-			// COPIED first — the sealer appends the BLS signature to this
-			// block's Extra concurrently — while the tx slice and the recorder
-			// are immutable once the build is done. Delivery was already
-			// best-effort; asynchrony only moves where the effort is spent.
-			hdrCopy := block.CopyHeader(finalHeader)
-			num, nerr := requireBlockNumber(iblock, "sealed block number unavailable")
-			if nerr == nil {
-				txs, rec, sink := envCopy.txs, readLogRecorder, w.mobilePacketSink
-				go func() {
-					if pkt, perr := streamverify.BuildStreamPacket(hdrCopy, txs, rec); perr != nil {
-						log.Warn("mobileverify: packet build failed", "number", hdrCopy.Number.Uint64(), "err", perr)
-					} else {
-						sink(pkt, num.Uint64())
-					}
-				}()
-			}
-		}
+	var pktJob *mobilePacketJob
+	if w.mobilePacketSink != nil {
+		pktJob = newMobilePacketJob(envCopy.txs, readLogRecorder)
 	}
 	dPacket := time.Since(tPacket)
 
@@ -2789,7 +2778,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		tSealedAt := time.Now()
 		w.specMu.Lock()
 		w.specTask = &task{
-			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
+			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec, mobilePacket: pktJob,
 			finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 			buildBeginAt: start, specParkedAt: tParked, triggerAt: triggerAt,
 		}
@@ -2814,7 +2803,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	}
 	select {
 	case w.taskCh <- &task{
-		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
+		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec, mobilePacket: pktJob,
 		finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 		buildBeginAt: start, triggerAt: triggerAt, paceEnterAt: tPaceEnter, paceDur: dPace, taskChSentAt: tTaskSent,
 	}:
