@@ -121,6 +121,10 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 // their owned immutable input and publish accounting before releasing execute.
 // This nested record overlaps build_queue/runBuild; do not add their totals.
 func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reserved int) (response BuildResult, err error) {
+	return s.executeBuildWithIngressLocked(input, templateHash, reserved, nil)
+}
+
+func (s *Server) executeBuildWithIngressLocked(input []byte, templateHash types.Hash, reserved int, epoch *[16]byte) (response BuildResult, err error) {
 	phases := newOwnerOperationPhases("execute_build", s)
 	phases.hash = templateHash
 	defer func() { phases.finish(err) }()
@@ -142,6 +146,10 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 		return BuildResult{}, errors.New("invalid candidate template header or body")
 	}
 	phases.parent, phases.number, phases.transactions = header.ParentHash, header.Number.Uint64(), len(template.Transactions())
+	if epoch != nil {
+		phases.phase("ingress_sender_memos")
+		phases.verifiedSenderMemos = s.seedLiveIngressSenderMemos(&template, epoch)
+	}
 	s.buildCalls.Add(1)
 	s.prepared = nil // a new build supersedes the only retained execution write
 	var built *block.Block

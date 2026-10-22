@@ -22,6 +22,7 @@ type ownerOperationPhases struct {
 	number                       uint64
 	duplicate                    bool
 	transactions                 int
+	verifiedSenderMemos          int
 }
 
 type ownerOperationPhaseRecord struct {
@@ -34,6 +35,7 @@ type ownerOperationPhaseRecord struct {
 	Number                                                 uint64
 	Duplicate                                              bool
 	Transactions                                           int
+	VerifiedSenderMemos                                    int
 }
 
 // Console logging uses Stringer while the JSON formatter retains the typed
@@ -87,7 +89,7 @@ func (p *ownerOperationPhases) record(at time.Time, err error) ownerOperationPha
 		accounted += elapsed
 	}
 	total := at.Sub(p.started).Nanoseconds()
-	return ownerOperationPhaseRecord{SchemaVersion: 1, Operation: p.operation, Outcome: outcome, LastPhase: p.lastPhase, StartedUnixMicros: p.started.UnixMicro(), TotalNs: total, AccountedNs: accounted, UnaccountedNs: total - accounted, PhaseNs: phases, Identity: p.identity, Hash: p.hash, Parent: p.parent, Number: p.number, Duplicate: p.duplicate, Transactions: p.transactions}
+	return ownerOperationPhaseRecord{SchemaVersion: 1, Operation: p.operation, Outcome: outcome, LastPhase: p.lastPhase, StartedUnixMicros: p.started.UnixMicro(), TotalNs: total, AccountedNs: accounted, UnaccountedNs: total - accounted, PhaseNs: phases, Identity: p.identity, Hash: p.hash, Parent: p.parent, Number: p.number, Duplicate: p.duplicate, Transactions: p.transactions, VerifiedSenderMemos: p.verifiedSenderMemos}
 }
 func (p *ownerOperationPhases) finish(err error) {
 	record := p.record(time.Now(), err)
