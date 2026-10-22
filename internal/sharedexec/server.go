@@ -69,37 +69,40 @@ type importJob struct {
 }
 
 type Server struct {
-	chain              *internal.BlockChain
-	identity           Identity
-	capacity           int
-	ctx                context.Context
-	cancel             context.CancelFunc
-	mu                 sync.Mutex
-	jobs               map[importKey]*importJob
-	completed          []importKey
-	wg                 sync.WaitGroup
-	imports            atomic.Uint64
-	closed             bool
-	started            bool // mu: external or direct execution use has begun
-	resumeArming       bool // mu: exclusive long-running startup verification
-	execute            sync.RWMutex
-	certifiedWriteGate chan struct{} // one not-yet-canonical certified execute writer
-	certifiedReadSlots chan struct{}
-	certifiedReads     map[certifiedReadKey]*certifiedReadJob // mu; in-flight only
-	certifiedFlights   atomic.Uint64
-	certifiedJoins     atomic.Uint64
-	commitOwner        [32]byte
-	builds             map[importKey]*buildJob
-	buildCompleted     []importKey
-	buildBytes         int
-	buildCalls         atomic.Uint64
-	buildHTTP          sync.Mutex
-	reuseOwnBuild      bool
-	prepared           *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
-	ownBuildReuses     atomic.Uint64
-	ingress            *strictIngressQueue                     // configured before serving; immutable pointer
-	queuePlans         map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
-	queueExpiredView   hotstuff.ViewNumber                     // execute
+	chain                 *internal.BlockChain
+	identity              Identity
+	capacity              int
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	mu                    sync.Mutex
+	jobs                  map[importKey]*importJob
+	completed             []importKey
+	wg                    sync.WaitGroup
+	imports               atomic.Uint64
+	closed                bool
+	started               bool // mu: external or direct execution use has begun
+	resumeArming          bool // mu: exclusive long-running startup verification
+	execute               sync.RWMutex
+	certifiedWriteGate    chan struct{} // one not-yet-canonical certified execute writer
+	certifiedReadSlots    chan struct{}
+	certifiedReads        map[certifiedReadKey]*certifiedReadJob // mu; in-flight only
+	certifiedFlights      atomic.Uint64
+	certifiedJoins        atomic.Uint64
+	certifiedWrites       map[certifiedReadKey]*certifiedWriteJob // mu; synchronous fresh creators only
+	certifiedWriteFlights atomic.Uint64
+	certifiedWriteJoins   atomic.Uint64
+	commitOwner           [32]byte
+	builds                map[importKey]*buildJob
+	buildCompleted        []importKey
+	buildBytes            int
+	buildCalls            atomic.Uint64
+	buildHTTP             sync.Mutex
+	reuseOwnBuild         bool
+	prepared              *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
+	ownBuildReuses        atomic.Uint64
+	ingress               *strictIngressQueue                     // configured before serving; immutable pointer
+	queuePlans            map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
+	queueExpiredView      hotstuff.ViewNumber                     // execute
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame

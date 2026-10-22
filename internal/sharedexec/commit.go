@@ -76,6 +76,9 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer s.wg.Done()
+	var freshJob *certifiedWriteJob
+	var freshKey certifiedReadKey
+	var freshComplete func(CommitResult, error, bool)
 	allowShared := certificate != nil
 	admitted := false
 	releaseAdmission := func() {
@@ -86,11 +89,46 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	}
 	defer releaseAdmission()
 	if certificate != nil {
+		var eligible bool
+		freshKey, eligible = certifiedDuplicateKey(request, certificate)
+		if eligible {
+			job, _, lookupErr := s.certifiedFreshCommit(ctx, freshKey, false)
+			if lookupErr != nil {
+				return CommitResult{}, lookupErr
+			}
+			if job != nil {
+				return s.waitCertifiedFreshCommit(ctx, request, certificate, phases, job)
+			}
+		}
 		hint, probeErr := s.canonicalDuplicateHint(ctx, request, phases)
 		if probeErr != nil {
 			return CommitResult{}, probeErr
 		}
 		if !hint {
+			if eligible {
+				job, created, joinErr := s.certifiedFreshCommit(ctx, freshKey, true)
+				if joinErr != nil {
+					return CommitResult{}, joinErr
+				}
+				if job != nil && !created {
+					return s.waitCertifiedFreshCommit(ctx, request, certificate, phases, job)
+				}
+				if created {
+					freshJob = job
+					phases.certifiedWriteCreated = true
+					freshComplete = func(value CommitResult, finalErr error, fresh bool) {
+						s.finishCertifiedFreshCommit(ctx, freshKey, freshJob, value, finalErr, fresh, phases.transactions)
+					}
+					// Covers admission/probe errors and panics before execute is held.
+					defer func() {
+						if caught := recover(); caught != nil {
+							freshComplete(CommitResult{}, errCertifiedFreshCommitPanic, false)
+							panic(caught)
+						}
+						freshComplete(CommitResult{}, err, false)
+					}()
+				}
+			}
 			phases.phase("certified_writer_admission_wait")
 			select {
 			case s.certifiedWriteGate <- struct{}{}:
@@ -114,6 +152,9 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 				return CommitResult{}, probeErr
 			}
 			if hint {
+				if freshComplete != nil {
+					freshComplete(CommitResult{}, nil, false)
+				}
 				releaseAdmission()
 			}
 		}
@@ -127,7 +168,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	}
 	for {
 		var retry bool
-		result, retry, err = s.commitExclusiveAttempt(ctx, request, certificate, phases, allowShared)
+		result, retry, err = s.commitExclusiveAttemptWithFresh(ctx, request, certificate, phases, allowShared, freshComplete)
 		if !retry {
 			return result, err
 		}
@@ -138,6 +179,10 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 // commitExclusiveAttempt classifies every request after all earlier writers.
 // A shared fallback is retried once by commit with no reusable observation.
 func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, allowShared bool) (result CommitResult, retry bool, err error) {
+	return s.commitExclusiveAttemptWithFresh(ctx, request, certificate, phases, allowShared, nil)
+}
+
+func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, allowShared bool, complete func(CommitResult, error, bool)) (result CommitResult, retry bool, err error) {
 	phases.phase("execute_wait")
 	s.execute.Lock()
 	held := true
@@ -146,6 +191,18 @@ func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitReque
 			s.execute.Unlock()
 		}
 	}()
+	classifiedFresh := false
+	if complete != nil {
+		// Later reconciliation runs first. Publish only its final result while
+		// execute still protects the successful fresh physical commit.
+		defer func() {
+			if caught := recover(); caught != nil {
+				complete(CommitResult{}, errCertifiedFreshCommitPanic, false)
+				panic(caught)
+			}
+			complete(result, err, classifiedFresh && !retry)
+		}()
+	}
 	phases.phase("request_context")
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, false, err
@@ -211,6 +268,12 @@ func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitReque
 		return CommitResult{}, false, err
 	}
 	phases.duplicate = duplicate
+	classifiedFresh = !duplicate
+	if duplicate && complete != nil {
+		// A stale initial false hint cannot turn a canonical read into a
+		// reusable fresh-write success, including before a shared-read unlock.
+		complete(CommitResult{}, nil, false)
+	}
 	if duplicate && certificate != nil && allowShared {
 		// Never wait for a read slot while holding exclusive ownership.
 		s.execute.Unlock()

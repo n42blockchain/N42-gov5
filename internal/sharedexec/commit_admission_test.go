@@ -226,11 +226,11 @@ func TestCertifiedWriterAdmissionReprobesAndCoalescesFalseHintFollowers(t *testi
 	for _, ctx := range contexts {
 		awaitAdmissionEvent(t, ctx.admissionTry, "writer admission select")
 	}
+	db.releaseReaders()
 	db.releaseWriter()
-	awaitAdmissionEvent(t, db.readerEntered, "one physical certified duplicate read")
-	awaitCertifiedJoins(t, f.server, 5)
-	if got := db.physicalReads.Load(); got != 1 {
-		t.Fatalf("same-QC followers did not share one blocked physical read: %d", got)
+	awaitFreshWriteJoins(t, f.server, 6)
+	if got := db.physicalReads.Load(); got != 0 {
+		t.Fatalf("same-QC fresh commit followers entered duplicate reads: %d", got)
 	}
 	db.releaseReaders()
 	for range contexts {
@@ -239,9 +239,9 @@ func TestCertifiedWriterAdmissionReprobesAndCoalescesFalseHintFollowers(t *testi
 			t.Fatalf("concurrent commit result: %+v, %v", result.result, result.err)
 		}
 	}
-	flights, joins := f.server.CertifiedDuplicateReadCounts()
-	if flights != 1 || joins != 5 {
-		t.Fatalf("actual certified read counts = %d flights / %d joins, want 1 / 5", flights, joins)
+	flights, joins := f.server.CertifiedFreshCommitCounts()
+	if flights != 1 || joins != 6 {
+		t.Fatalf("actual fresh commit flight counts = %d creators / %d joins, want 1 / 6", flights, joins)
 	}
 	after, err := f.server.StrictIngressStatus()
 	if err != nil || after.CanonicalGeneration != before.CanonicalGeneration+1 || after.Reconciling {
@@ -291,7 +291,7 @@ func TestCertifiedWriterAdmissionDoesNotMergeDifferentQCs(t *testing.T) {
 func TestCertifiedWriterAdmissionWaitHonorsRequesterAndServerCancellation(t *testing.T) {
 	for _, mode := range []string{"requester", "server-close"} {
 		t.Run(mode, func(t *testing.T) {
-			f, _, request, db := newAdmissionFixture(t, false)
+			f, b, request, db := newAdmissionFixture(t, false)
 			db.initialLimit = 1
 			db.holdFreshProbe.Store(true)
 			first := make(chan error, 1)
@@ -306,12 +306,13 @@ func TestCertifiedWriterAdmissionWaitHonorsRequesterAndServerCancellation(t *tes
 			parent, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			waiter := newAdmissionObservedContext(parent)
+			waiterRequest := certifiedRequestAtView(f, b, request, hotstuff.ViewNumber(6))
 			second := make(chan error, 1)
 			go func() {
-				_, err := f.server.CommitCertified(waiter, request)
+				_, err := f.server.CommitCertified(waiter, waiterRequest)
 				second <- err
 			}()
-			awaitAdmissionEvent(t, waiter.admissionTry, "waiter's writer admission select")
+			awaitAdmissionEvent(t, waiter.admissionTry, "different-QC writer admission select")
 			var closeDone <-chan struct{}
 			if mode == "requester" {
 				cancel()
