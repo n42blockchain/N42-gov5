@@ -31,6 +31,7 @@ func boundedWindowRate(start, end boundedCanonicalObservation) (float64, error) 
 }
 
 type boundedWindowResult struct {
+	Suffix                       *boundedSuffixResult           `json:"suffix_supply,omitempty"`
 	Kind                         string                         `json:"kind"`
 	Passed                       bool                           `json:"passed"`
 	Error                        string                         `json:"error,omitempty"`
@@ -107,6 +108,10 @@ func checkBoundedSources(files []strictSource, before []resumeSourceMetadata) ([
 // liveness. This command measures and drains; it does not claim physical-reopen
 // success or 5M capacity. The external runner stops producers before that audit.
 func runBoundedWindow(parent context.Context, root, runtimePath, attempt string, planPin, baselinePin resumePinnedInput, expectedPlan types.Hash, offered uint64) (returnErr error) {
+	return runBoundedWindowMode(parent, false, root, runtimePath, attempt, planPin, baselinePin, expectedPlan, offered)
+}
+
+func runBoundedWindowMode(parent context.Context, suffix bool, root, runtimePath, attempt string, planPin, baselinePin resumePinnedInput, expectedPlan types.Hash, offered uint64) (returnErr error) {
 	if !stringsHasPrefixPath(root, supplyRoot) || expectedPlan == (types.Hash{}) || offered == 0 || offered > 20_000_000 {
 		return errors.New("explicit bounded source/plan and offered rate 1..20M required")
 	}
@@ -143,6 +148,16 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 		}
 		returnErr = errors.Join(returnErr, exclusiveJSON(filepath.Join(dir, "result-candidate.json"), result), syncResumeDirectory(dir))
 	}()
+	if suffix {
+		result.Kind = "gov5-bounded-suffix-20s-window-and-drain-candidate-not-capacity-v1"
+		result.Suffix, err = newBoundedSuffix(dir, p, scan.Frames, expectedPlan, epoch, len(m.Shards))
+		if err != nil {
+			return err
+		}
+		if err := exclusiveJSON(filepath.Join(dir, "suffix-dispatch-intent.json"), result.Suffix); err != nil {
+			return err
+		}
+	}
 	if err := exclusiveJSON(filepath.Join(dir, "dispatch-intent.json"), struct {
 		PlanID                                     types.Hash
 		Epoch                                      [16]byte
@@ -188,6 +203,9 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 		SourceVerified bool                           `json:"full_source_integrity_verified"`
 		Dispatched     uint64                         `json:"dispatched_transactions"`
 	}{"gov5-bounded-source-ready-before-production-v2", expectedPlan, epoch, initialOwner, true, 0}
+	if suffix {
+		readyEvidence.Kind = "gov5-bounded-suffix-source-ready-before-production-v1"
+	}
 	if err := publishBoundedReady(filepath.Join(dir, "source-ready.json"), readyEvidence, resumePlanPublication{write: writeResumeArtifact, sync: syncResumeDirectory}); err != nil {
 		return err
 	}
@@ -282,7 +300,11 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			record(boundedPumpShard(ctx, dispatch, sources[i], m.Descriptor, byShard[i], admitters[i], expectedPlan, epoch, budget, pacer, counters, ready, start, journals[i], senderNew, &progress[i]))
+			if suffix {
+				record(boundedSuffixPumpShard(ctx, dispatch, sources[i], m.Descriptor, byShard[i], admitters[i], expectedPlan, epoch, result.Suffix.ScheduleSHA256, budget, pacer, counters, ready, start, journals[i], senderNew, &result.Suffix.Shards[i]))
+			} else {
+				record(boundedPumpShard(ctx, dispatch, sources[i], m.Descriptor, byShard[i], admitters[i], expectedPlan, epoch, budget, pacer, counters, ready, start, journals[i], senderNew, &progress[i]))
+			}
 		}(i)
 	}
 	// Every first-frame path sends ready exactly once, even on cancellation.
@@ -380,7 +402,9 @@ func runBoundedWindow(parent context.Context, root, runtimePath, attempt string,
 	wg.Wait()
 	result.Stream = counters.boundedSample()
 	result.Budget = budget.sample()
-	result.Prefix = progress
+	if !suffix {
+		result.Prefix = progress
+	}
 	result.SenderNew = senderNew
 	record(syncBoundedJournals(journals))
 	result.FilesAfter, err = checkBoundedSources(sources, scan.Source.FilesBefore)
