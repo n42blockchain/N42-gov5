@@ -636,9 +636,12 @@ Binary and tools from commit `dcddd8b8` plus the marker fix below, built with
   `/mobileverify/packet/` and the receipt lookup use) differs from the key. On all 9
   stored blocks the hash with the 96 bytes zeroed differs from the sealed hash. Not
   proved on the running endpoint (the cache is in memory and the fleet was stopped
-  before the cross-check), and the fix is not made: the packet must be re-keyed to
-  the sealed hash at the point the sealed block is delivered (miner resultLoop), a
-  consensus-path change that needs its own test. No device was
+  before the cross-check). **Fixed in `0aeb71e4`:** the transactions and the recorder
+  now ride on the task and the packet is built in `writeAndFinish` from the SEALED
+  header once the block is stored (speculative builds, which never produced a
+  packet before, are covered too). Tested through `commit` -> `handleSealed`; the
+  fleet has not been restarted on the fixed binary, so `/mobileverify/packet/<hash>`
+  returning 200 is still to be confirmed live. No device was
   registered, so receipts and certificates (`/mobileverify/cert/`) were not
   exercised.
 - **Traps hit**:
