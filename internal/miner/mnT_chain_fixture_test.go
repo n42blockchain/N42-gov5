@@ -163,6 +163,9 @@ func mnTNewChainFixture(tb testing.TB) *mnTChainFixture {
 	kv.ChaindataTablesCfg = modules.N42TableCfg
 
 	db := memdb.New(tb.TempDir())
+	// Close before the temp dir is removed (cleanups run last-in first-out):
+	// an open mdbx file blocks the removal on Windows.
+	tb.Cleanup(db.Close)
 
 	cfg := &params.ChainConfig{
 		ChainID:               big.NewInt(1337),
