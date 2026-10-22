@@ -77,10 +77,45 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	s.mu.Unlock()
 	defer s.wg.Done()
 	allowShared := certificate != nil
+	admitted := false
+	releaseAdmission := func() {
+		if admitted {
+			<-s.certifiedWriteGate
+			admitted = false
+		}
+	}
+	defer releaseAdmission()
 	if certificate != nil {
 		hint, probeErr := s.canonicalDuplicateHint(ctx, request, phases)
 		if probeErr != nil {
 			return CommitResult{}, probeErr
+		}
+		if !hint {
+			phases.phase("certified_writer_admission_wait")
+			select {
+			case s.certifiedWriteGate <- struct{}{}:
+				admitted = true
+			case <-ctx.Done():
+				return CommitResult{}, ctx.Err()
+			case <-s.ctx.Done():
+				return CommitResult{}, s.ctx.Err()
+			}
+			if err := ctx.Err(); err != nil {
+				return CommitResult{}, err
+			}
+			if err := s.ctx.Err(); err != nil {
+				return CommitResult{}, err
+			}
+			// An earlier writer may have made this request canonical while
+			// admission was queued. Route from a fresh physical observation;
+			// no result or QC verification is retained by this gate.
+			hint, probeErr = s.canonicalDuplicateHint(ctx, request, phases)
+			if probeErr != nil {
+				return CommitResult{}, probeErr
+			}
+			if hint {
+				releaseAdmission()
+			}
 		}
 		if hint {
 			shared, handled, readErr := s.tryCertifiedDuplicateRead(ctx, request, certificate, phases)

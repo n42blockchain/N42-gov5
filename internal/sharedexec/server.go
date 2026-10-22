@@ -83,6 +83,7 @@ type Server struct {
 	started            bool // mu: external or direct execution use has begun
 	resumeArming       bool // mu: exclusive long-running startup verification
 	execute            sync.RWMutex
+	certifiedWriteGate chan struct{} // one not-yet-canonical certified execute writer
 	certifiedReadSlots chan struct{}
 	certifiedReads     map[certifiedReadKey]*certifiedReadJob // mu; in-flight only
 	certifiedFlights   atomic.Uint64
@@ -121,6 +122,7 @@ func New(chain *internal.BlockChain, capacity int) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{chain: chain, identity: Identity{Version: 1, Namespace: cfg.Performance.NetworkNamespace, ChainID: cfg.ChainID.String(), GenesisHash: chain.GenesisBlock().Hash()},
 		capacity: capacity, ctx: ctx, cancel: cancel, jobs: make(map[importKey]*importJob),
+		certifiedWriteGate: make(chan struct{}, 1),
 		certifiedReadSlots: make(chan struct{}, min(capacity, maxCertifiedDuplicateReaders))}, nil
 }
 
