@@ -227,9 +227,9 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	phases := newOwnerOperationPhases("import_worker", s)
 	phases.hash, phases.parent, phases.number, phases.transactions = b.Hash(), b.ParentHash(), b.Number64().Uint64(), len(b.Transactions())
 	result := ImportResult{Identity: s.identity, BlockHash: b.Hash(), ParentHash: b.ParentHash(), Number: b.Number64().Uint64(), State: "accepted"}
+	var phaseErr error
 	defer func() {
-		var phaseErr error
-		if result.Error != "" {
+		if phaseErr == nil && result.Error != "" {
 			phaseErr = errors.New("import worker did not establish durable execution")
 		}
 		phases.finish(phaseErr)
@@ -255,10 +255,12 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	defer s.execute.Unlock()
 	phases.phase("durable_before")
 	if s.ctx.Err() != nil {
+		phaseErr = s.ctx.Err()
 		result.Error = "execution service stopping; retry"
 		return
 	}
 	if durable, err := s.durable(b); err != nil {
+		phaseErr = err
 		result.State = "failed"
 		result.Error = err.Error()
 		return
@@ -286,11 +288,13 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		s.ownBuildReuses.Add(1)
 	}
 	if errors.Is(err, internal.ErrPerformanceParentNotHead) {
+		phaseErr = err
 		result.Error = err.Error()
 		return
 	}
 	s.imports.Add(1)
 	if err != nil {
+		phaseErr = err
 		result.State = "failed"
 		result.Error = err.Error()
 		return
@@ -298,6 +302,7 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	phases.phase("durable_after")
 	durable, err := s.durable(b)
 	if err != nil {
+		phaseErr = err
 		result.State = "failed"
 		result.Error = err.Error()
 		return

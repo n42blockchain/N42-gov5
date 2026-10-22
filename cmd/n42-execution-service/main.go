@@ -38,11 +38,12 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string) error {
+func run(ctx context.Context, args []string) (runErr error) {
 	flags := flag.NewFlagSet("n42-execution-service", flag.ContinueOnError)
 	genesisFile := flags.String("genesis", "", "Absolute explicitly provisioned performance genesis file")
 	datadir := flags.String("data-dir", "", "Already initialized dedicated performance execution datadir")
 	capacity := flags.Int("capacity", 64, "Bounded import-once registry capacity (1..256)")
+	profileDir := flags.String("profile-dir", "", "Optional fresh private CPU/block/mutex profile output directory; default disabled, no listener")
 	parallelEVM := flags.Bool("parallel-evm", false, "Explicitly use existing Block-STM for performance imports above four transactions")
 	reuseOwnBuild := flags.Bool("reuse-own-build", false, "Reuse one matching owner-local candidate execution after public sealed-header validation (live root replay remains)")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
@@ -249,6 +250,14 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	var profiles *privateOwnerProfiles
+	// Registered before server.Close so all tracked workers drain before profiles
+	// are stopped/flushed and the completion manifest is written.
+	defer func() {
+		if profileErr := profiles.Close(); profileErr != nil {
+			runErr = errors.Join(runErr, profileErr)
+		}
+	}()
 	defer server.Close()
 	if ingressOptions != nil {
 		if err := server.EnableStrictIngress(*ingressOptions); err != nil {
@@ -264,6 +273,10 @@ func run(ctx context.Context, args []string) error {
 		if err := server.EnableBoundedResumeIngress(ctx, *boundedOptions); err != nil {
 			return err
 		}
+	}
+	profiles, err = startPrivateOwnerProfiles(*profileDir)
+	if err != nil {
+		return err
 	}
 	socketDir := filepath.Join(*datadir, "execution-rpc")
 	if err := os.Mkdir(socketDir, 0700); err != nil && !os.IsExist(err) {
