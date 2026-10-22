@@ -14,15 +14,16 @@ import (
 // operations. Nested validator/client intervals overlap these and are not CPU
 // time to add together. No payload, signing key or arbitrary error is recorded.
 type ownerOperationPhases struct {
-	operation, active, lastPhase string
-	started, changed             time.Time
-	elapsed                      map[string]int64
-	identity                     Identity
-	hash, parent                 types.Hash
-	number                       uint64
-	duplicate                    bool
-	transactions                 int
-	verifiedSenderMemos          int
+	operation, active, lastPhase                string
+	started, changed                            time.Time
+	elapsed                                     map[string]int64
+	identity                                    Identity
+	hash, parent                                types.Hash
+	number                                      uint64
+	duplicate                                   bool
+	transactions                                int
+	verifiedSenderMemos                         int
+	certifiedWriteCreated, certifiedWriteJoined bool
 }
 
 type ownerOperationPhaseRecord struct {
@@ -36,6 +37,7 @@ type ownerOperationPhaseRecord struct {
 	Duplicate                                              bool
 	Transactions                                           int
 	VerifiedSenderMemos                                    int
+	CertifiedWriteCreated, CertifiedWriteJoined            bool
 }
 
 // Console logging uses Stringer while the JSON formatter retains the typed
@@ -89,7 +91,7 @@ func (p *ownerOperationPhases) record(at time.Time, err error) ownerOperationPha
 		accounted += elapsed
 	}
 	total := at.Sub(p.started).Nanoseconds()
-	return ownerOperationPhaseRecord{SchemaVersion: 1, Operation: p.operation, Outcome: outcome, LastPhase: p.lastPhase, StartedUnixMicros: p.started.UnixMicro(), TotalNs: total, AccountedNs: accounted, UnaccountedNs: total - accounted, PhaseNs: phases, Identity: p.identity, Hash: p.hash, Parent: p.parent, Number: p.number, Duplicate: p.duplicate, Transactions: p.transactions, VerifiedSenderMemos: p.verifiedSenderMemos}
+	return ownerOperationPhaseRecord{SchemaVersion: 1, Operation: p.operation, Outcome: outcome, LastPhase: p.lastPhase, StartedUnixMicros: p.started.UnixMicro(), TotalNs: total, AccountedNs: accounted, UnaccountedNs: total - accounted, PhaseNs: phases, Identity: p.identity, Hash: p.hash, Parent: p.parent, Number: p.number, Duplicate: p.duplicate, Transactions: p.transactions, VerifiedSenderMemos: p.verifiedSenderMemos, CertifiedWriteCreated: p.certifiedWriteCreated, CertifiedWriteJoined: p.certifiedWriteJoined}
 }
 func (p *ownerOperationPhases) finish(err error) {
 	record := p.record(time.Now(), err)

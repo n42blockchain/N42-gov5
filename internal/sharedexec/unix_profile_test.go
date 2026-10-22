@@ -65,6 +65,8 @@ type unixProfileStage struct {
 	GOMAXPROCSDuring  int    `json:"gomaxprocs_during"`
 	GOMAXPROCSAfter   int    `json:"gomaxprocs_after"`
 	WallNS            int64  `json:"wall_ns"`
+	StartedUnixNS     int64  `json:"started_unix_ns"`
+	FinishedUnixNS    int64  `json:"finished_unix_ns"`
 	AllocatedBytes    uint64 `json:"allocated_bytes"`
 	Mallocs           uint64 `json:"mallocs"`
 	ProcessPeakRSSKiB uint64 `json:"process_peak_rss_kib_after_stage"`
@@ -75,6 +77,11 @@ type unixProfileStage struct {
 
 type unixProfileCertifiedReadCounts struct {
 	StartedFlights uint64 `json:"started_flights"`
+	JoinedCallers  uint64 `json:"joined_callers"`
+}
+
+type unixProfileFreshCommitCounts struct {
+	CreatedCohorts uint64 `json:"created_cohorts"`
 	JoinedCallers  uint64 `json:"joined_callers"`
 }
 
@@ -105,6 +112,12 @@ type unixProfileResult struct {
 	PreparedRetainedBytes          int                            `json:"prepared_retained_bytes_after_build"`
 	CertifiedReadsBeforeDuplicates unixProfileCertifiedReadCounts `json:"certified_reads_before_duplicates"`
 	CertifiedReadsAfterDuplicates  unixProfileCertifiedReadCounts `json:"certified_reads_after_duplicates"`
+	FreshCommitCallers             int                            `json:"fresh_commit_callers"`
+	FreshCommitWallNS              [7]int64                       `json:"fresh_commit_wall_ns"`
+	FreshCohortsBefore             unixProfileFreshCommitCounts   `json:"fresh_cohorts_before"`
+	FreshCohortsAfter              unixProfileFreshCommitCounts   `json:"fresh_cohorts_after"`
+	CertifiedReadsBeforeFresh      unixProfileCertifiedReadCounts `json:"certified_reads_before_fresh"`
+	CertifiedReadsAfterFresh       unixProfileCertifiedReadCounts `json:"certified_reads_after_fresh"`
 	DuplicateWallNS                [6]int64                       `json:"duplicate_wall_ns"`
 	Stages                         []unixProfileStage             `json:"stages"`
 	ProcessPeakRSSKiB              uint64                         `json:"process_peak_rss_kib"`
@@ -150,8 +163,11 @@ func unixProfileMeasure(t *testing.T, dir, name string, out *unixProfileResult, 
 		defer pprof.StopCPUProfile()
 		runtime.ReadMemStats(&before)
 		start := time.Now()
+		stage.StartedUnixNS = start.UnixNano()
 		err := operation()
-		stage.WallNS = time.Since(start).Nanoseconds()
+		finished := time.Now()
+		stage.WallNS = finished.Sub(start).Nanoseconds()
+		stage.FinishedUnixNS = finished.UnixNano()
 		runtime.ReadMemStats(&after)
 		return err
 	})
@@ -581,13 +597,44 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 	})
 	commit := CommitRequest{Identity: server.Identity(), BlockHash: signed.Hash(), ParentHash: signed.ParentHash(), Number: 1}
 	proof := commitProof(in.keys, signed.Hash(), 5, false)
+	out.FreshCommitCallers = len(out.FreshCommitWallNS)
+	out.FreshCohortsBefore.CreatedCohorts, out.FreshCohortsBefore.JoinedCallers = server.CertifiedFreshCommitCounts()
+	out.CertifiedReadsBeforeFresh.StartedFlights, out.CertifiedReadsBeforeFresh.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	unixProfileMeasure(t, dir, "fresh-commit-rpc", &out, func() error {
-		result, err := client.CommitCertified(context.Background(), commit, proof)
-		if err == nil && (!result.Committed || result.HeadHash != signed.Hash()) {
-			return fmt.Errorf("profile commit result differs")
+		var wg, ready sync.WaitGroup
+		startTogether := make(chan struct{})
+		errors := make([]error, out.FreshCommitCallers)
+		ready.Add(len(errors))
+		for i := range errors {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				c := NewClient(socket, server.Identity())
+				defer c.Close()
+				qc := proof.Clone()
+				ready.Done()
+				<-startTogether
+				start := time.Now()
+				result, err := c.CommitCertified(context.Background(), commit, &qc)
+				out.FreshCommitWallNS[i] = time.Since(start).Nanoseconds()
+				if err == nil && (!result.Committed || result.HeadHash != signed.Hash()) {
+					err = fmt.Errorf("fresh cohort %d result differs", i)
+				}
+				errors[i] = err
+			}(i)
 		}
-		return err
+		ready.Wait()
+		close(startTogether)
+		wg.Wait()
+		for _, err := range errors {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+	out.FreshCohortsAfter.CreatedCohorts, out.FreshCohortsAfter.JoinedCallers = server.CertifiedFreshCommitCounts()
+	out.CertifiedReadsAfterFresh.StartedFlights, out.CertifiedReadsAfterFresh.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	out.CertifiedReadsBeforeDuplicates.StartedFlights, out.CertifiedReadsBeforeDuplicates.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	unixProfileMeasure(t, dir, "six-duplicate-commit-rpcs", &out, func() error {
 		var wg, ready sync.WaitGroup
