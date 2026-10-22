@@ -53,7 +53,7 @@ func (s *Server) durableStoredCommit(request CommitRequest) (transactions int, e
 		if readErr != nil {
 			return readErr
 		}
-		receipts, readErr := rawdb.ReadReceiptsWithError(tx, stored, senders)
+		receipts, readErr := rawdb.ReadReceiptsForExecutionWithError(tx, stored, senders)
 		if readErr != nil {
 			return readErr
 		}

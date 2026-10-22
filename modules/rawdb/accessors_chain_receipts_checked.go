@@ -13,6 +13,18 @@ import (
 // block without reading its body again. Unlike the legacy reader, it propagates
 // storage, archive, decoding and metadata errors to authorization callers.
 func ReadReceiptsWithError(tx kv.Tx, b *block.Block, senders []types.Address) (block.Receipts, error) {
+	return readReceiptsWithError(tx, b, senders, true)
+}
+
+// ReadReceiptsForExecutionWithError reads and validates the stored receipts needed
+// to reconstruct an execution result. It preserves the actual transaction types
+// but does not derive transaction hashes or RPC location fields. The returned
+// metadata is unsuitable for RPC consumers and may contain legacy stored values.
+func ReadReceiptsForExecutionWithError(tx kv.Tx, b *block.Block, senders []types.Address) (block.Receipts, error) {
+	return readReceiptsWithError(tx, b, senders, false)
+}
+
+func readReceiptsWithError(tx kv.Tx, b *block.Block, senders []types.Address, deriveMetadata bool) (block.Receipts, error) {
 	if b == nil {
 		return nil, fmt.Errorf("receipt metadata requires a stored block")
 	}
@@ -47,8 +59,35 @@ func ReadReceiptsWithError(tx kv.Tx, b *block.Block, senders []types.Address) (b
 	if len(senders) > 0 {
 		b.SendersToTxs(senders)
 	}
-	if !deriveReceiptMetadata(receipts, b, number.Uint64()) {
+	if deriveMetadata {
+		if !deriveReceiptMetadata(receipts, b, number.Uint64()) {
+			return nil, fmt.Errorf("invalid stored receipt metadata")
+		}
+	} else if !deriveReceiptExecutionFields(receipts, b) {
 		return nil, fmt.Errorf("invalid stored receipt metadata")
 	}
 	return receipts, nil
+}
+
+// deriveReceiptExecutionFields retains the validation predicates of metadata
+// derivation while filling only the actual type used by Ethereum receipt roots.
+func deriveReceiptExecutionFields(receipts block.Receipts, b *block.Block) bool {
+	txs := b.Transactions()
+	if len(receipts) != len(txs) {
+		return false
+	}
+	var previousCumulativeGas uint64
+	for i, receipt := range receipts {
+		if receipt == nil || txs[i] == nil || receipt.CumulativeGasUsed < previousCumulativeGas {
+			return false
+		}
+		receipt.Type = txs[i].Type()
+		previousCumulativeGas = receipt.CumulativeGasUsed
+		for _, lg := range receipt.Logs {
+			if lg == nil {
+				return false
+			}
+		}
+	}
+	return true
 }
