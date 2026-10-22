@@ -364,6 +364,8 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 		"aheadSkipNotAvail", p.skipNotAvail.Load(), "aheadSkipParent", p.skipParent.Load(),
 		"aheadSkipBusy", p.skipBusy.Load(), "aheadSkipOff", p.skipOff.Load(),
 		"aheadLate", p.late.Load(), "aheadTakeLaunch", p.takeLaunch.Load(),
+		"prepHits", aheadPrepHits.Load(), "prepMisses", aheadPrepMisses.Load(),
+		"prepEarlyStarts", aheadPrepEarlyStarts.Load(),
 	}
 }
 
@@ -404,6 +406,7 @@ func (bc *BlockChain) lagPipeHook(blk block.IBlock, ibs *state.IntraBlockState) 
 			rc.LabelNextRoot(post, hdr.Number.Uint64(), h, hdr.ParentHash)
 		}
 		t0 := time.Now()
+		lagPublishAtNanos.Store(t0.UnixNano())
 		bc.lagPipePublish(hdr, post)
 		lagPublishNanos.Store(int64(time.Since(t0)))
 	})
@@ -413,6 +416,11 @@ func (bc *BlockChain) lagPipeHook(blk block.IBlock, ibs *state.IntraBlockState) 
 // (the child's launch; the snapshot itself is the root's dirty set), spent
 // inside the state root.
 var lagPublishNanos atomic.Int64
+
+// lagPublishAtNanos is when the most recent publication started (Unix
+// nanoseconds): FinishParallel's time to it is the import's part of the
+// cycle before the child can start ("finPub" on the phases line).
+var lagPublishAtNanos atomic.Int64
 
 // lagPipePublish records the post-state of the block being rooted now and
 // starts its queued child ahead. Runs on the importing goroutine, inside

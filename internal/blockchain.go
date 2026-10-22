@@ -2784,8 +2784,21 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// for it, aheadRun its whole run.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took, "aheadPre", ahead.pre,
 					"queueWaitMs", ahead.queueWait.Milliseconds(),
-					"setupAff", procPhases.SetupAffinity, "setupSys", procPhases.SetupBlockStart)
+					"setupAff", procPhases.SetupAffinity, "setupSys", procPhases.SetupBlockStart,
+					// collect's parts (receipts, fold, credit prefetch,
+					// fees; rcptRun: the receipts beside the fold,
+					// N42_LAG_EARLY_PUBLISH=1), and the root's part before
+					// the post-state was published: the block end, the
+					// root walk, and its start to the publication (block
+					// end + rewards + walk) -- the import's share of the
+					// cycle before the child can start.
+					"collectRcpt", procPhases.CollectReceipts, "collectApply", procPhases.CollectApply,
+					"collectPrefetch", procPhases.CollectPrefetch, "collectFees", procPhases.CollectFees,
+					"collectRcptRun", procPhases.CollectRcptRun,
+					"finEnd", procPhases.FinBlockEnd, "finPub", procPhases.FinToPublish,
+					"earlyPub", lagEarlyPublishOn, "prepEarly", aheadPrepEarlyOn)
 			}
+			fields = append(fields, "rootWalk", state.LastRootWalk())
 			// The root's own split (P7: the fleet logged only the total):
 			// the wait for the tree's readers, the dirty-set collection, the
 			// apply, the snapshot publish, and the credits the root took
