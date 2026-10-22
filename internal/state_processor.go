@@ -78,6 +78,13 @@ type ProcessPhases struct {
 	// fold into the state, the pending-credit prefetch and the deferred fee
 	// credit.
 	CollectReceipts, CollectApply, CollectPrefetch, CollectFees time.Duration
+	// CollectRcptRun: the receipts assembly's own time when it ran beside
+	// the fold (N42_LAG_EARLY_PUBLISH=1), zero otherwise.
+	CollectRcptRun time.Duration
+	// The import's completion of an ahead run (FinishParallel): the
+	// block-end system calls, and the time from its start to the point
+	// the post-state was published (the root walk's end, inside Finalize).
+	FinBlockEnd, FinToPublish time.Duration
 	// Skipped counts the transactions a frame block skipped (skip rule,
 	// frame_exec.go); always zero for other blocks.
 	Skipped int

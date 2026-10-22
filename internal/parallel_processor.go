@@ -330,12 +330,17 @@ func (p *StateProcessor) FinishParallel(b *block.Block, ibs *state.IntraBlockSta
 		return nil, nil, nil, 0, fmt.Errorf("FinishParallel: invalid header type assertion for block %v", b.Number64())
 	}
 	t0 := time.Now()
-	nopay, err := p.finishStrict(hdr, ibs, b.Transactions(), run.UsedGas)
+	nopay, dEnd, err := p.finishStrictTimed(hdr, ibs, b.Transactions(), run.UsedGas)
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
 	ph := run.phases
 	ph.Finalize = time.Since(t0)
+	ph.FinBlockEnd = dEnd
+	if at := lagPublishAtNanos.Load(); at >= t0.UnixNano() {
+		// This import's root published its post-state (lag_pipeline_exec.go).
+		ph.FinToPublish = time.Duration(at - t0.UnixNano())
+	}
 	p.lastPhases.Store(&ph)
 	return run.Receipts, nopay, run.Logs, run.UsedGas, nil
 }
@@ -343,17 +348,25 @@ func (p *StateProcessor) FinishParallel(b *block.Block, ibs *state.IntraBlockSta
 // finishStrict is the strict tail of a parallel run: gas against the
 // header, block end, Finalize.
 func (p *StateProcessor) finishStrict(concreteHeader *block.Header, ibs *state.IntraBlockState, txs []*transaction.Transaction, usedGas uint64) (map[types.Address]*uint256.Int, error) {
+	nopay, _, err := p.finishStrictTimed(concreteHeader, ibs, txs, usedGas)
+	return nopay, err
+}
+
+// finishStrictTimed is finishStrict, also returning the block end's time.
+func (p *StateProcessor) finishStrictTimed(concreteHeader *block.Header, ibs *state.IntraBlockState, txs []*transaction.Transaction, usedGas uint64) (map[types.Address]*uint256.Int, time.Duration, error) {
 	if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
-		return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
+		return nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 	}
+	t0 := time.Now()
 	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	dEnd := time.Since(t0)
 	_, nopay, err := p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
 	if err != nil {
-		return nil, err
+		return nil, dEnd, err
 	}
-	return nopay, nil
+	return nopay, dEnd, nil
 }
 
 // BuildParallel is the builder's lenient run over a candidate list: the
