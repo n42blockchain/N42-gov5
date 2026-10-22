@@ -66,16 +66,27 @@ func ReadTxLookupEntry(db kv.Getter, txnHash types.Hash) (*uint64, error) {
 // WriteTxLookupEntries stores a positional metadata for every transaction from
 // a block, enabling hash based transaction and receipt lookups.
 func WriteTxLookupEntries(db kv.Putter, block *block.Block) {
+	writeTxLookupEntries(db, block, false)
+}
+
+// WriteTxLookupEntriesBatch optionally batches ordinary physical rows in the
+// same transaction. Wrappers and unsupported backends retain the point writer.
+// It returns true only when the backend completed the native batch.
+func WriteTxLookupEntriesBatch(db kv.Putter, block *block.Block) bool {
+	return writeTxLookupEntries(db, block, true)
+}
+
+func writeTxLookupEntries(db kv.Putter, block *block.Block, batch bool) bool {
 	blockNumber, err := requireBlockNumber(block, "block number unavailable")
 	if err != nil {
 		log.Error("Skipping transaction lookup entries", "err", err)
-		return
+		return false
 	}
 
 	data := blockNumber.Bytes()
 	txs := block.Transactions()
 	if len(txs) == 0 {
-		return
+		return false
 	}
 
 	// Insert in ascending key order. The key is a transaction hash, so in
@@ -93,11 +104,30 @@ func WriteTxLookupEntries(db kv.Putter, block *block.Block) {
 	slices.SortFunc(hashes, func(a, b types.Hash) int {
 		return bytes.Compare(a.Bytes(), b.Bytes())
 	})
+	if batch {
+		if writer, ok := db.(interface {
+			TryPutSameValueMany(kv.Putter, string, []byte, int, []byte) (bool, error)
+		}); ok {
+			keys := make([]byte, len(hashes)*32)
+			for i := range hashes {
+				copy(keys[i*32:], hashes[i][:])
+			}
+			handled, err := writer.TryPutSameValueMany(db, modules.TxLookup, keys, 32, data)
+			if err != nil {
+				log.Crit("Failed to store transaction lookup entry", "err", err)
+				return false
+			}
+			if handled {
+				return true
+			}
+		}
+	}
 	for i := range hashes {
 		if err := db.Put(modules.TxLookup, hashes[i].Bytes(), data); err != nil {
 			log.Crit("Failed to store transaction lookup entry", "err", err)
 		}
 	}
+	return false
 }
 
 // DeleteTxLookupEntry removes all transaction data associated with a hash.
@@ -140,4 +170,3 @@ func ReadTransactionByHash(db kv.Tx, hash types.Hash) (*transaction.Transaction,
 	log.Error("Transaction not found", "number", blockNumber, "hash", blockHash, "txhash", hash)
 	return nil, types.Hash{}, 0, 0, nil
 }
-

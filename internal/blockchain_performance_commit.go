@@ -279,5 +279,5 @@ func (bc *BlockChain) commitExecutedExtension(hash types.Hash) error {
 	if !bc.HasAppliedBlock(hash, number) {
 		return errors.New("executed extension is no longer on applied lineage; retry")
 	}
-	return bc.CommitToCanonical(hash)
+	return bc.commitToCanonicalWith(hash, nil, true)
 }
