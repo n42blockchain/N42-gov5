@@ -944,40 +944,70 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	var feeTotals map[types.Address]*uint256.Int
 	var feeOrder []types.Address
 	collected := false
-	if failed == 0 {
-		if c, ok := collectParallelResults(txs, txResults, skipped, concreteHeader); ok {
-			receipts, allLogs, usedGas, feeTotals, feeOrder = c.receipts, c.logs, c.usedGas, c.feeTotals, c.feeOrder
-			collected = true
+	// assemble writes no state: N42_LAG_EARLY_PUBLISH=1 (lag_early.go) runs
+	// it on an ahead run beside the fold below, which is all the state it
+	// waits for; the fees are credited once both are done.
+	assemble := func() {
+		if failed == 0 {
+			if c, ok := collectParallelResults(txs, txResults, skipped, concreteHeader); ok {
+				receipts, allLogs, usedGas, feeTotals, feeOrder = c.receipts, c.logs, c.usedGas, c.feeTotals, c.feeOrder
+				collected = true
+			}
+		}
+		for i := 0; i < numTxs && !collected; i++ {
+			if skipped != nil && skipped[i] {
+				// failed == 0 here (skip mode drops nothing), so the index is i.
+				receipts = append(receipts, SkippedTxReceipt(txs[i], concreteHeader, i, usedGas))
+				continue
+			}
+			if results[i].Err != nil {
+				continue
+			}
+			tr := txResults[i]
+			usedGas += tr.gasUsed
+			if tr.receipt != nil {
+				tr.receipt.CumulativeGasUsed = usedGas
+				if failed > 0 {
+					tr.receipt.TransactionIndex = uint(len(included))
+					for _, l := range tr.receipt.Logs {
+						l.TxIndex = uint(len(included))
+						l.Index = uint(len(allLogs))
+						allLogs = append(allLogs, l)
+					}
+				}
+				receipts = append(receipts, tr.receipt)
+			}
+			if failed == 0 {
+				allLogs = append(allLogs, tr.logs...)
+			}
+			if failed > 0 {
+				included = append(included, txs[i])
+			}
 		}
 	}
-	for i := 0; i < numTxs && !collected; i++ {
-		if skipped != nil && skipped[i] {
-			// failed == 0 here (skip mode drops nothing), so the index is i.
-			receipts = append(receipts, SkippedTxReceipt(txs[i], concreteHeader, i, usedGas))
-			continue
-		}
-		if results[i].Err != nil {
-			continue
-		}
-		tr := txResults[i]
-		usedGas += tr.gasUsed
-		if tr.receipt != nil {
-			tr.receipt.CumulativeGasUsed = usedGas
-			if failed > 0 {
-				tr.receipt.TransactionIndex = uint(len(included))
-				for _, l := range tr.receipt.Logs {
-					l.TxIndex = uint(len(included))
-					l.Index = uint(len(allLogs))
-					allLogs = append(allLogs, l)
-				}
-			}
-			receipts = append(receipts, tr.receipt)
-		}
-		if failed == 0 {
-			allLogs = append(allLogs, tr.logs...)
-		}
-		if failed > 0 {
-			included = append(included, txs[i])
+	overlapRcpt := ahead && lagEarlyPublishOn
+	var rcptDone chan struct{}
+	var rcptTook, rcptWait time.Duration
+	if overlapRcpt {
+		// It reads the executor's results, which Release hands back: joined
+		// before Release on every path.
+		rcptDone = make(chan struct{})
+		lagRcptOverlaps.Add(1)
+		go func() {
+			defer close(rcptDone)
+			t0 := time.Now()
+			assemble()
+			rcptTook = time.Since(t0)
+		}()
+	} else {
+		assemble()
+	}
+	joinRcpt := func() {
+		if rcptDone != nil {
+			t0 := time.Now()
+			<-rcptDone
+			rcptWait = time.Since(t0)
+			rcptDone = nil
 		}
 	}
 
@@ -992,8 +1022,10 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		pf.SetKnown(baseCache)
 	}
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
+		joinRcpt()
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
+	joinRcpt()
 	executor.Release()
 	tApplied := time.Now()
 
@@ -1073,8 +1105,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			Collect:         time.Since(tRunEnd),
 			Skipped:         nSkipped,
 			// Collect's parts.
-			CollectReceipts: tApplyStart.Sub(tRunEnd),
-			CollectApply:    tApplied.Sub(tApplyStart),
+			// With the receipts beside the fold, their part is what the
+			// fold waited for them.
+			CollectReceipts: tApplyStart.Sub(tRunEnd) + rcptWait,
+			CollectApply:    tApplied.Sub(tApplyStart) - rcptWait,
+			CollectRcptRun:  rcptTook,
 			CollectPrefetch: tPrefetched.Sub(tApplied),
 			CollectFees:     time.Since(tPrefetched),
 			SkipReasons:     skipReasons,
@@ -1116,7 +1151,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(),
 			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillDepth", baseDepth, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillTreeWaitMs", baseTreeWait.Milliseconds(), "basePrefillCut", baseCut, "basePrefillSkip", baseSkip,
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
-			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
+			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "rcptOverlap", overlapRcpt, "rcptMs", rcptTook.Milliseconds(), "rcptWaitMs", rcptWait.Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
 	}
