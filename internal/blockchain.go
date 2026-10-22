@@ -1384,6 +1384,11 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 // bookkeeping write did, which is exactly what the separate transaction
 // guaranteed before.
 func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error) error {
+	return bc.commitToCanonicalWith(hash, inTx, false)
+}
+
+// Only the explicit performance executed-extension path selects batched rows.
+func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error, batchLookup bool) error {
 	var committedNumber uint64
 	var notify bool
 	var committedBlk *block.Block
@@ -1393,6 +1398,16 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	// a high gas ceiling -- measured at 2.7 s mean of a 3.53 s cycle.
 	var dRead, dWalk, dLookup, dLock, dBody time.Duration
 	var indexed *block.Block
+	var batchedLookupRows int
+	writeLookup := func(tx kv.RwTx, blk *block.Block) {
+		if batchLookup {
+			if rawdb.WriteTxLookupEntriesBatch(tx, blk) {
+				batchedLookupRows += len(blk.Transactions())
+			}
+		} else {
+			rawdb.WriteTxLookupEntries(tx, blk)
+		}
+	}
 	tCommit := time.Now()
 	// The committed block is two views old and almost always the instance
 	// this node imported, still in the block cache with every transaction
@@ -1483,7 +1498,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 				// is timed as txlookup, not folded into the body phase.
 				if bc.txIndexer == nil {
 					tLookup := time.Now()
-					rawdb.WriteTxLookupEntries(tx, blk)
+					writeLookup(tx, blk)
 					dLookup = time.Since(tLookup)
 				}
 				return nil
@@ -1574,7 +1589,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		// scattered pages and made mdbx_txn_commit 94.6% of this phase.
 		tLookup := time.Now()
 		if bc.txIndexer == nil {
-			rawdb.WriteTxLookupEntries(tx, blk)
+			writeLookup(tx, blk)
 		} else {
 			indexed = blk
 		}
@@ -1650,7 +1665,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	}
 	log.Info("commit-to-canonical phases",
 		"number", committedNumber, "lock", dLock, "read", dRead, "walk", dWalk,
-		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total)
+		"txlookup", dLookup, "txlookup_batch_rows", batchedLookupRows, "body", dBody, "commit", total-dLock-dBody, "total", total)
 	// HotStuff imports candidates as side blocks and advances the canonical
 	// head only here. Notify after the database transaction commits: the
 	// import-time canonical callback is intentionally bypassed on this path.

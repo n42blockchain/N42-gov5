@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -85,6 +86,12 @@ type unixProfileFreshCommitCounts struct {
 	JoinedCallers  uint64 `json:"joined_callers"`
 }
 
+type unixProfileLookupBatchCounts struct {
+	Batches       uint64 `json:"batches"`
+	AttemptedRows uint64 `json:"attempted_rows"`
+	WrittenRows   uint64 `json:"written_rows"`
+}
+
 type unixProfileResult struct {
 	Kind                           string                         `json:"kind"`
 	Passed                         bool                           `json:"passed"`
@@ -112,6 +119,12 @@ type unixProfileResult struct {
 	PreparedRetainedBytes          int                            `json:"prepared_retained_bytes_after_build"`
 	CertifiedReadsBeforeDuplicates unixProfileCertifiedReadCounts `json:"certified_reads_before_duplicates"`
 	CertifiedReadsAfterDuplicates  unixProfileCertifiedReadCounts `json:"certified_reads_after_duplicates"`
+	LookupReopenVerified           bool                           `json:"lookup_reopen_verified"`
+	LookupReopenRows               int                            `json:"lookup_reopen_rows"`
+	LookupReopenDurationNS         int64                          `json:"lookup_reopen_duration_ns"`
+	LookupBatchBeforeFresh         unixProfileLookupBatchCounts   `json:"lookup_batch_before_fresh"`
+	LookupBatchAfterFresh          unixProfileLookupBatchCounts   `json:"lookup_batch_after_fresh"`
+	LookupBatchAfterDuplicates     unixProfileLookupBatchCounts   `json:"lookup_batch_after_duplicates"`
 	FreshCommitCallers             int                            `json:"fresh_commit_callers"`
 	FreshCommitWallNS              [7]int64                       `json:"fresh_commit_wall_ns"`
 	FreshCohortsBefore             unixProfileFreshCommitCounts   `json:"fresh_cohorts_before"`
@@ -464,6 +477,15 @@ func TestUnix163kOperationProfile(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
+			index := len(results)
+			// Register first: this runs after the mode's HTTP/server, chain,
+			// engines and original MDBX environment have all closed.
+			t.Cleanup(func() {
+				if t.Failed() || len(results) <= index {
+					return
+				}
+				unixProfileReopenLookups(t, filepath.Join(dir, name), &results[index])
+			})
 			results = append(results, unixProfileMode(t, filepath.Join(dir, name), in, reuse, profileCores))
 		})
 		if t.Failed() {
@@ -597,6 +619,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 	})
 	commit := CommitRequest{Identity: server.Identity(), BlockHash: signed.Hash(), ParentHash: signed.ParentHash(), Number: 1}
 	proof := commitProof(in.keys, signed.Hash(), 5, false)
+	out.LookupBatchBeforeFresh.Batches, out.LookupBatchBeforeFresh.AttemptedRows, out.LookupBatchBeforeFresh.WrittenRows = mdbx.SameValueBatchStats()
 	out.FreshCommitCallers = len(out.FreshCommitWallNS)
 	out.FreshCohortsBefore.CreatedCohorts, out.FreshCohortsBefore.JoinedCallers = server.CertifiedFreshCommitCounts()
 	out.CertifiedReadsBeforeFresh.StartedFlights, out.CertifiedReadsBeforeFresh.JoinedCallers = server.CertifiedDuplicateReadCounts()
@@ -633,6 +656,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 		}
 		return nil
 	})
+	out.LookupBatchAfterFresh.Batches, out.LookupBatchAfterFresh.AttemptedRows, out.LookupBatchAfterFresh.WrittenRows = mdbx.SameValueBatchStats()
 	out.FreshCohortsAfter.CreatedCohorts, out.FreshCohortsAfter.JoinedCallers = server.CertifiedFreshCommitCounts()
 	out.CertifiedReadsAfterFresh.StartedFlights, out.CertifiedReadsAfterFresh.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	out.CertifiedReadsBeforeDuplicates.StartedFlights, out.CertifiedReadsBeforeDuplicates.JoinedCallers = server.CertifiedDuplicateReadCounts()
@@ -669,6 +693,7 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 		}
 		return nil
 	})
+	out.LookupBatchAfterDuplicates.Batches, out.LookupBatchAfterDuplicates.AttemptedRows, out.LookupBatchAfterDuplicates.WrittenRows = mdbx.SameValueBatchStats()
 	out.CertifiedReadsAfterDuplicates.StartedFlights, out.CertifiedReadsAfterDuplicates.JoinedCallers = server.CertifiedDuplicateReadCounts()
 	beforeRejected, err := server.StrictIngressStatus()
 	if err != nil {
@@ -699,6 +724,62 @@ func unixProfileMode(t *testing.T, dir string, in unixProfileInput, reuse bool, 
 	out.ProcessPeakRSSKiB = unixProfilePeakRSS(t)
 	unixProfileWrite(t, filepath.Join(dir, "result.json"), func(f *os.File) error { return json.NewEncoder(f).Encode(out) })
 	return out
+}
+
+// This verification is outside every measured stage and uses a newly opened
+// physical environment after all original owners have closed it.
+func unixProfileReopenLookups(t *testing.T, dir string, out *unixProfileResult) {
+	t.Helper()
+	started := time.Now()
+	db, err := mdbx.NewMDBX(log.New()).Path(filepath.Join(dir, "chaindata")).Label(kv.ChainDB).WriteMergeThreshold(4 * 8192).MapSize(8 * datasize.GB).GrowthStep(256 * datasize.MB).Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	flags, err := db.(*mdbx.MdbxKV).Env().Flags()
+	if err != nil || flags&uint(mdbxlib.SafeNoSync|mdbxlib.NoMetaSync|mdbxlib.WriteMap) != 0 {
+		t.Fatal("physical reopen durability flags differ", err)
+	}
+	rows := 0
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		head := rawdb.ReadHeadBlockHash(tx)
+		if head != out.BlockHash {
+			return errors.New("physical reopen canonical head changed")
+		}
+		canonical, err := rawdb.ReadCanonicalHash(tx, 1)
+		if err != nil {
+			return err
+		}
+		b, err := rawdb.ReadBlockByHash(tx, head)
+		if err != nil {
+			return err
+		}
+		if b == nil || canonical != head || b.Hash() != head || b.Number64().Uint64() != 1 || len(b.Transactions()) != out.Transactions {
+			return errors.New("physical reopen canonical block changed")
+		}
+		h := b.Header().(*block.Header)
+		if h.Root != out.Root || h.ReceiptHash != out.ReceiptHash || h.GasUsed != out.GasUsed {
+			return errors.New("physical reopen root/receipts changed")
+		}
+		for _, txn := range b.Transactions() {
+			hash := txn.Hash()
+			value, err := tx.GetOne(modules.TxLookup, hash[:])
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(value, []byte{1}) {
+				return errors.New("physical reopen transaction lookup changed")
+			}
+			rows++
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out.LookupReopenVerified = true
+	out.LookupReopenRows = rows
+	out.LookupReopenDurationNS = time.Since(started).Nanoseconds()
+	unixProfileWrite(t, filepath.Join(dir, "result.json"), func(f *os.File) error { return json.NewEncoder(f).Encode(out) })
 }
 
 func unixProfileValidate(t *testing.T, client *Client, chain *internal.BlockChain, in unixProfileInput, b *block.Block, status StrictIngressStatus) types.Hash {
