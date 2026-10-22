@@ -25,6 +25,22 @@ func (r *Replica) CurrentBlock() block.IBlock {
 	}
 	return b
 }
+
+// currentHeader reads canonical head metadata in one snapshot, without decoding
+// the availability body. Callers that serve a block still use the full readers.
+func (r *Replica) currentHeader() *block.Header {
+	var header *block.Header
+	_ = r.db.View(r.ctx, func(tx kv.Tx) error {
+		var err error
+		header, err = rawdb.ReadHeaderByHash(tx, rawdb.ReadHeadBlockHash(tx))
+		return err
+	})
+	if header == nil {
+		return r.genesis.Header().(*block.Header)
+	}
+	return header
+}
+
 func (r *Replica) GetHeader(hash types.Hash, number *uint256.Int) block.IHeader {
 	if number == nil || !number.IsUint64() {
 		return nil
