@@ -83,14 +83,30 @@ func NewMapIndex() Index { return newMapIndex() }
 // compare: the dynamic type here is a map, and comparing two interface values
 // holding maps is a runtime panic, not a compile error.
 func reserve(idx Index, n int) (Index, bool) {
-	m, ok := idx.(mapIndex)
-	if !ok || len(m) != 0 || n <= 0 {
+	if n <= 0 {
+		return idx, false
+	}
+	sharded := false
+	switch m := idx.(type) {
+	case mapIndex:
+		if len(m) != 0 {
+			return idx, false
+		}
+	case *shardedMapIndex:
+		if m.Len() != 0 {
+			return idx, false
+		}
+		sharded = true
+	default:
 		return idx, false
 	}
 	// N42_QMDB_INDEX_PRESIZE=0 keeps the grow-from-empty behaviour, so the two
 	// can be compared on one binary.
 	if v, err := strconv.ParseBool(os.Getenv("N42_QMDB_INDEX_PRESIZE")); err == nil && !v {
 		return idx, false
+	}
+	if sharded {
+		return newShardedMapIndex(n), true
 	}
 	return newMapIndexSized(n), true
 }

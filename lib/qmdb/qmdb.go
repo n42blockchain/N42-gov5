@@ -404,6 +404,10 @@ type Tree struct {
 	// views and is collected — no pinning in the production sliding-window
 	// mode either.
 	arena []byte
+
+	// lastApply is the most recent sharded ApplyOps' time split
+	// (shard_apply.go); zero after a batch on another path.
+	lastApply ApplyPhases
 }
 
 // arenaChunkSize is the value-arena allocation unit.
