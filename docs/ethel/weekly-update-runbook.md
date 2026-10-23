@@ -366,6 +366,71 @@ mainnet cadence) with no state-root mismatch in the log.
 
 ## 8. Run log
 
+### 2026-10-22/23 (full cycle + three-mode test)
+
+Source: geth ancient frozen **26,245,275** -> target **26,245,274** (hash
+`0x1250c94800f8b542293457ef520612658ffcae3edabd8adff523f5f34c236d6b`, stateRoot
+`0xdb7cc3d3081ed21beaea6dea42bf4d925703acffff9797790fd14ea55ed0df17`; prior week
+26,130,711; d 114,563). reth2k finished at exactly 26,245,274 (`n42-reth-head`:
+`BlockBodyIndices lastKey`). geth, reth and the fleet were stopped. Every tool
+was rebuilt from source first into `C:\N42\wk-20261022\` (commit `47f13947`,
+including `wk-eth-el` with `-tags n42el`); logs in `D:\weekly-20261022\`.
+
+- Step 1: senders 58 s / 56 s, headerc 2 s, bodyc 6m36s, receipts 4m33s (421 blk/s).
+  headerc and bodyc both rewound the PARTIAL tail segment. All exit 0.
+- Step 2 replay: **1h09m @ ~26-33 blk/s**; `SyncStageProgress/ethel-last-block` =
+  26245274 (read with `n42-read-ethel-progress -dir d:/N42-eth1177`; the log has no
+  completion line). Witness spot-check 26,180,000 / 26,220,000 / 26,245,274: **gas
+  diff +0**.
+- Step 2b txindex: archive 8m19s (27 segments, 3,804,829,443 tx, 16.90 GB,
+  35.53 bits/key, resumed from 26,000,000 after rewinding the partial tail); window
+  8m28s (base 23,000,000, 4 segments, 896,886,812 tx, 4.92 GB, 43.88 bits/key), built
+  on a COPY of last week's directory (`d:/n42-txindex-window-26245274`).
+  `wk-ethexec txlookup-query --dir <d> --ancient <geth> --blocks
+  26130712,26180000,26245274` on both: 10 checked, 0 failed, negative probe correct.
+- Step 3 codes 12m08s: **2,897,481** codes, 6.7 GB, `codes.coverage=26245274`.
+- Snapshot 1h35m28s (A 55m43s scan, B 7m42s, C 32m02s zstd): storage 1,678,895,704
+  entries (.val 25.93 GB -> .zst 19.53 GB, 75.3%), 16 shards, 56 GB.
+  `snapshot-verify --snap d:/n42-snapshot-26245274 --acc-prefix accounts.0-26245274
+  --sto-prefix storage.0-26245274 --limit 3000000`: 3M accounts + 3M storage rows OK
+  (4m23s). The prefixes are required: the files carry the height suffix.
+- N42-hashed migration about 2h (finished 02:29:49): acc 426,803,115 / sto 1,678,895,704 / tacc 31,860,548 /
+  tsto 147,074,704 / code 2,897,481, decodeFail/shortVal/badSub 0, **vtrie OK: root ==
+  expect**, `ethel-last-block=26245274`, 164 GB. sto and code counts equal the snapshot
+  and codes exports. Progress goes to `migrate.err.log`, not stdout.
+- **Three-mode test (E:, :30403 / 20115, serialized) - all three PASS.** archive caught
+  up 42 min after a slow start (below), minimal 20 min, full 23 min, each to within a few
+  blocks of the network head (~26,253,9xx, 8.6k blocks from the seed), then followed
+  8 min: +40 / +41 / +41 blocks, `eth_syncing=false`, 0 `level=error` / panic / state-root
+  mismatch. Dirs: archive 169 GB, minimal 44 GB (no `.val.zst`), full 143 GB (56 bodyc
+  segments + `bodyc.cidx` + window txindex). Assembled by copy from D: (NVMe, ~1.9 GB/s).
+- **Manifests** (hard-link roots, active tails copied, checked file-by-file: 0 missing,
+  0 size mismatch): minimal `d:/n42-publish-26245274` 106 files / 36.82 GiB
+  `e529c202dc6fb7bb…`; archive same root 491 files / 831.6 GiB `fc52cef548dd33fc…`;
+  full `d:/n42-publish-26245274-full` 168 files / 135.0 GiB `27653c11b6e7596c…`. The
+  `height` field is 0 in all three, as in the previous week (`-height` was not passed).
+- Traps hit:
+  1. **`eldevp2p: caught up` can be false.** The node saw one lagging peer (tip 26,238,405,
+     below the local head) and logged `caught up ... lag=0` every 12 s while the network
+     head was 8.6k blocks ahead; `eth_blockNumber` answers 0 until the first block is
+     imported. Judge catch-up by the RPC height against the highest recent peer
+     `handshake complete head=`, not by that line.
+  2. **Good peers disconnect within about 1 s** (`too many peers` sent by the remote); of
+     1,255 peers only three stayed, all lagging. archive started importing after ~17
+     min; minimal and full connected at once. The code under `internal/devp2p`,
+     `internal/ethel/eldevp2p` and `cmd/eth-el` had not changed since 10-05, so this is
+     the public network, not a regression. Wait; do not restart.
+  3. A PowerShell function that logs with `Tee-Object` returns the log text as well as its
+     value, so `if ((Run ...) -ne 0)` is always true and the driver stopped after a
+     successful step. Log with `Out-File` and read `$LASTEXITCODE` directly.
+  4. `n42-ancient-seal`, `txindex-watermark` and the like in `C:\N42\` can be months old;
+     rebuild before use (see the replay runbook).
+  5. A background waiter was reaped under memory pressure again; the jobs themselves were
+     detached with `Start-Process` and were unaffected.
+- NOT run: DATC, anchors/bpp, the Linux cross-check on n42dev. Cleanup of the
+  superseded `E:\ethel-*-26130711` test dirs (383 GB) and older publish roots is pending
+  the operator's go-ahead.
+
 ### 2026-10-19 (n42dev `/data` space: what is a Windows copy, what was removed)
 
 `/data` on n42dev was 7.0T, 6.5T used, **519 GB free** (93%); after the cleanup
