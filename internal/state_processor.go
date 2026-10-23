@@ -78,6 +78,9 @@ type ProcessPhases struct {
 	// fold into the state, the pending-credit prefetch and the deferred fee
 	// credit.
 	CollectReceipts, CollectApply, CollectPrefetch, CollectFees time.Duration
+	// CollectApply's parts: the final-versions walk, the account pass
+	// (wipes, accounts, credits) and the storage and code passes.
+	ApplyWalk, ApplyAccounts, ApplyStorage time.Duration
 	// Skipped counts the transactions a frame block skipped (skip rule,
 	// frame_exec.go); always zero for other blocks.
 	Skipped int
