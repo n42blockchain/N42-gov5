@@ -1484,7 +1484,11 @@ func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockStat
 		if bulk, ok := decodeAccountApplies(len(accounts), w, func(i int) (types.Address, []byte, *uint256.Int) {
 			return accounts[i].addr, accounts[i].value, accounts[i].delta
 		}); ok {
-			ibs.ApplyAccounts(bulk, w)
+			if collectShardWorkers > 1 {
+				ibs.ApplyAccountsSharded(bulk, collectShardWorkers)
+			} else {
+				ibs.ApplyAccounts(bulk, w)
+			}
 			pass1 = nil
 		}
 	}
@@ -1543,6 +1547,22 @@ func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockStat
 // applyBulkEnabled gates applyMVSToIBS's bulk account pass (P13c);
 // N42_APPLY_BULK=0 restores the per-entry loop.
 var applyBulkEnabled = os.Getenv("N42_APPLY_BULK") != "0"
+
+// collectShardWorkers, from N42_COLLECT_SHARD, splits the bulk account
+// pass's serial part across that many goroutines
+// (state.ApplyAccountsSharded); 0, 1 or unset keeps ApplyAccounts.
+var collectShardWorkers = parseCollectShard(os.Getenv("N42_COLLECT_SHARD"))
+
+func parseCollectShard(v string) int {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
+}
 
 // applyBulkMinAccounts is the account-entry count from which the bulk
 // pass is taken.
