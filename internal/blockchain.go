@@ -2782,13 +2782,17 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// Executed ahead: exec/collect above ran while the parent was
 				// rooted and written; aheadWait is what this import waited
 				// for it, aheadRun its whole run. launch*: the launch against
-				// the parent's snapshot publication (lagPipeLaunch).
+				// the parent's snapshot publication (lagPipeLaunch); c*/apply*:
+				// collect's parts and the MVS fold's split.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took, "aheadPre", ahead.pre,
 					"queueWaitMs", ahead.queueWait.Milliseconds(),
 					"launchBy", lagLaunchName(ahead.launchBy), "launchLag", ahead.launchLag,
 					"childArriveAfterHook", ahead.queuedAfterHook, "childAvailCheck", ahead.availCheck,
 					"takeAfterHook", aheadTakeAfterHook(ahead, tAhead),
-					"setupAff", procPhases.SetupAffinity, "setupSys", procPhases.SetupBlockStart)
+					"setupAff", procPhases.SetupAffinity, "setupSys", procPhases.SetupBlockStart,
+					"cRcpt", procPhases.CollectReceipts, "cApply", procPhases.CollectApply,
+					"cPref", procPhases.CollectPrefetch, "cFees", procPhases.CollectFees,
+					"applyWalk", procPhases.ApplyWalk, "applyAcct", procPhases.ApplyAccounts, "applySto", procPhases.ApplyStorage)
 			}
 			// The root's own split (P7: the fleet logged only the total):
 			// the wait for the tree's readers, the dirty-set collection, the

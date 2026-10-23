@@ -978,7 +978,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// the block end take them from that cache instead of the store.
 		pf.SetKnown(baseCache)
 	}
-	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
+	applySplit, err := applyMVSToIBSTimed(executor.MVS(), numTxs, ibs)
+	if err != nil {
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
 	executor.Release()
@@ -1062,6 +1063,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			// Collect's parts.
 			CollectReceipts: tApplyStart.Sub(tRunEnd),
 			CollectApply:    tApplied.Sub(tApplyStart),
+			ApplyWalk:       applySplit.walk,
+			ApplyAccounts:   applySplit.accounts,
+			ApplyStorage:    applySplit.storage,
 			CollectPrefetch: tPrefetched.Sub(tApplied),
 			CollectFees:     time.Since(tPrefetched),
 			SkipReasons:     skipReasons,
@@ -1329,6 +1333,19 @@ func parallelApplyTx(
 // This ordering ensures that storage/code changes are only applied to accounts
 // that actually exist, preventing phantom account creation for deleted accounts.
 func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) error {
+	_, err := applyMVSToIBSTimed(mvs, numTxs, ibs)
+	return err
+}
+
+// applyMVSSplit is applyMVSToIBS's split: the final-versions walk, the
+// account pass (wipes, accounts, credits), the storage and code passes.
+type applyMVSSplit struct {
+	walk, accounts, storage time.Duration
+}
+
+// applyMVSToIBSTimed is applyMVSToIBS, also returning its split.
+func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) (split applyMVSSplit, err error) {
+	t0 := time.Now()
 	// Collect all MVS entries, separated by type.
 	type accountEntry struct {
 		addr  types.Address
@@ -1420,9 +1437,11 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	}
 	for i := range parts {
 		if parts[i].err != nil {
-			return parts[i].err
+			return split, parts[i].err
 		}
 	}
+	tWalk := time.Now()
+	split.walk = tWalk.Sub(t0)
 
 	full := 0
 	for i := range accounts {
@@ -1485,13 +1504,16 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 		} else {
 			acc, err := parallel.DecodeAccount(ae.value)
 			if err != nil {
-				return fmt.Errorf("decode account %v: %w", ae.addr, err)
+				return split, fmt.Errorf("decode account %v: %w", ae.addr, err)
 			}
 			ibs.SetBalance(ae.addr, &acc.Balance)
 			ibs.SetNonce(ae.addr, acc.Nonce)
 			// incarnation removed from StateAccount
 		}
 	}
+
+	tAccounts := time.Now()
+	split.accounts = tAccounts.Sub(tWalk)
 
 	// Pass 2: Apply storage changes (skip deleted accounts).
 	for _, se := range storages {
@@ -1513,8 +1535,9 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 		}
 		ibs.SetCode(ce.addr, ce.code)
 	}
+	split.storage = time.Since(tAccounts)
 
-	return nil
+	return split, nil
 }
 
 // applyBulkEnabled gates applyMVSToIBS's bulk account pass (P13c);
