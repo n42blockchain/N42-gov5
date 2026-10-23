@@ -129,6 +129,11 @@ func (t *Tree) EndLeafBatch() {
 // Prefetching is only a hint, so a stale old slot (the same key written twice
 // in one batch) is harmless: the apply loop re-resolves authoritatively.
 func (t *Tree) ApplyOps(ops []Op) {
+	t.lastApply = ApplyPhases{}
+	if w := ShardApplyWorkers; w > 0 && t.shardApplyEligible(ops) {
+		t.applyOpsSharded(ops, w)
+		return
+	}
 	if w := ParallelApplyWorkers; w > 0 && t.parallelApplyEligible(ops) {
 		t.applyOpsParallel(ops, w)
 		return

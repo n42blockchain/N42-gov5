@@ -240,6 +240,10 @@ func NewIndexFor(t *Tree, sizeHint int) Index {
 	if truncIndexEnabled() {
 		return NewTruncIndex(t.SlotKeyResolver(), sizeHint)
 	}
+	if ShardApplyWorkers > 0 {
+		// The sharded apply writes this shape from several goroutines.
+		return newShardedMapIndex(sizeHint)
+	}
 	if sizeHint > 0 {
 		return newMapIndexSized(sizeHint)
 	}
