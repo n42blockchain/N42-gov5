@@ -313,8 +313,14 @@ func (rs *RecSplit) ResetNextSalt() {
 	rs.built = false
 	rs.collision = false
 	rs.keysAdded = 0
+	rs.gr = GolombRice{}
 	rs.salt++
 	rs.hasher = murmur3.New128WithSeed(rs.salt)
+	if rs.existenceF != nil {
+		// Discard buffered old-salt fingerprints and overwrite the old prefix.
+		// Write failures still propagate through AddKey or the final flush.
+		rs.existenceW.Reset(io.NewOffsetWriter(rs.existenceF, 0))
+	}
 	if rs.inMemory {
 		rs.memKeys = rs.memKeys[:0]
 		rs.memOffsets = rs.memOffsets[:0]
