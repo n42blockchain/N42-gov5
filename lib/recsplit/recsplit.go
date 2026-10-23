@@ -226,6 +226,7 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 		// verify candidates externally (e.g. txlookup.Service.SetVerifier).
 		logger.Warn("recsplit: LessFalsePositives requested without Enums — fingerprint NOT built, lookups will phantom-hit", "file", fname)
 	}
+	constructed := false
 	if rs.enums && args.KeyCount > 0 && rs.lessFalsePositives {
 		bufferFile, err := os.CreateTemp(rs.tmpDir, "erigon-lfp-buf-")
 		if err != nil {
@@ -233,6 +234,11 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 		}
 		rs.existenceF = bufferFile
 		rs.existenceW = bufio.NewWriter(rs.existenceF)
+		defer func() {
+			if !constructed {
+				rs.closeExistenceFilter()
+			}
+		}()
 	}
 	rs.currentBucket = make([]uint64, 0, args.BucketSize)
 	rs.currentBucketOffs = make([]uint64, 0, args.BucketSize)
@@ -250,6 +256,7 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 	}
 	rs.startSeed = args.StartSeed
 	rs.count = make([]uint16, rs.secondaryAggrBound)
+	constructed = true
 	return rs, nil
 }
 
@@ -257,15 +264,26 @@ func (rs *RecSplit) Close() {
 	if rs.indexF != nil {
 		rs.indexF.Close()
 	}
-	if rs.existenceF != nil {
-		rs.existenceF.Close()
-	}
+	rs.closeExistenceFilter()
 	if rs.bucketCollector != nil {
 		rs.bucketCollector.Close()
 	}
 	if rs.offsetCollector != nil {
 		rs.offsetCollector.Close()
 	}
+}
+
+// closeExistenceFilter removes only the scratch file owned by this builder.
+// Its bytes are copied into the index, so the scratch path is never published.
+func (rs *RecSplit) closeExistenceFilter() {
+	if rs.existenceF == nil {
+		return
+	}
+	name := rs.existenceF.Name()
+	rs.existenceF.Close()
+	os.Remove(name)
+	rs.existenceF = nil
+	rs.existenceW = nil
 }
 
 func (rs *RecSplit) LogLvl(lvl log.Lvl) { rs.lvl = lvl }
@@ -892,7 +910,7 @@ func (rs *RecSplit) flushExistenceFilter() error {
 	if !rs.enums || rs.keysAdded == 0 || !rs.lessFalsePositives {
 		return nil
 	}
-	defer rs.existenceF.Close()
+	defer rs.closeExistenceFilter()
 
 	//Write len of array
 	binary.BigEndian.PutUint64(rs.numBuf[:], rs.keysAdded)
