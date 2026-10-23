@@ -79,7 +79,8 @@ type availableState struct {
 type lagQueued struct {
 	blk      *block.Block
 	since    time.Time
-	lastAuth time.Time // last import attempt with switch authority
+	avail    time.Duration // the passing availability check that queued it
+	lastAuth time.Time     // last import attempt with switch authority
 	stuckLog bool
 }
 
@@ -308,6 +309,7 @@ func (bc *BlockChain) LagReady(parent types.Hash) (ready bool, waitFor types.Has
 // the lag executor. retry asks the caller to run the check again (the parent
 // is not known yet, or frames could not be pulled).
 func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, body *block.Body) (retry bool, err error) {
+	t0 := time.Now()
 	number := hdr.Number.Uint64()
 	tx, err := bc.ChainDB.BeginRo(context.Background())
 	if err != nil {
@@ -348,7 +350,7 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	}
 	if b, ok := blk.(*block.Block); ok {
 		bc.RememberAvailable(b)
-		bc.enqueueLagImport(b, true)
+		bc.enqueueLagImportTimed(b, true, time.Since(t0))
 	}
 	return false, nil
 }
@@ -451,6 +453,12 @@ func (bc *BlockChain) EnqueueLagImport(b *block.Block) {
 // queued by its availability check) also prepares its parallel run ahead
 // of its execution (ahead_prep.go).
 func (bc *BlockChain) enqueueLagImport(b *block.Block, prep bool) {
+	bc.enqueueLagImportTimed(b, prep, 0)
+}
+
+// enqueueLagImportTimed is enqueueLagImport recording avail, the duration
+// of the availability check that queued b (logging only).
+func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail time.Duration) {
 	if b == nil {
 		return
 	}
@@ -462,7 +470,7 @@ func (bc *BlockChain) enqueueLagImport(b *block.Block, prep bool) {
 	}
 	fresh := false
 	if _, ok := le.queued[b.Hash()]; !ok {
-		le.queued[b.Hash()] = &lagQueued{blk: b, since: time.Now()}
+		le.queued[b.Hash()] = &lagQueued{blk: b, since: time.Now(), avail: avail}
 		fresh = true
 	}
 	kick := le.kick
@@ -483,7 +491,7 @@ func (bc *BlockChain) enqueueLagImport(b *block.Block, prep bool) {
 	default:
 	}
 	// A child queued while its parent is being rooted starts ahead.
-	bc.lagPipeLaunch()
+	bc.lagPipeLaunch(lagLaunchEnqueue)
 }
 
 func (bc *BlockChain) lagLoop() {
@@ -641,16 +649,16 @@ func (bc *BlockChain) lagExecUnqueue(hash types.Hash) {
 	bc.dropAheadPrep(hash)
 }
 
-// lagQueuedSince returns when hash was queued for the lag executor (zero
-// when it is not queued).
-func (bc *BlockChain) lagQueuedSince(hash types.Hash) time.Time {
+// lagQueuedTimes returns when hash was queued for the lag executor and the
+// availability check that queued it (zero when it is not queued).
+func (bc *BlockChain) lagQueuedTimes(hash types.Hash) (time.Time, time.Duration) {
 	le := &bc.lagExec
 	le.mu.Lock()
 	defer le.mu.Unlock()
 	if q := le.queued[hash]; q != nil {
-		return q.since
+		return q.since, q.avail
 	}
-	return time.Time{}
+	return time.Time{}, 0
 }
 
 func (bc *BlockChain) lagDone(b *block.Block, imported bool) {

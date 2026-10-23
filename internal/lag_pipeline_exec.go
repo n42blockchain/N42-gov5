@@ -173,6 +173,29 @@ type lagPipeline struct {
 	// by the child's own import.
 	late       atomic.Uint64
 	takeLaunch atomic.Uint64
+	// Launches by the path that started them: at the parent's snapshot
+	// publication (the child was queued first), when the child was queued
+	// (it came after the publication), or by the child's own import.
+	launchAtHook, launchAtEnqueue atomic.Uint64
+}
+
+// Launch paths (aheadExec.launchBy).
+const (
+	lagLaunchHook = iota + 1
+	lagLaunchEnqueue
+	lagLaunchTake
+)
+
+func lagLaunchName(by int) string {
+	switch by {
+	case lagLaunchHook:
+		return "hook"
+	case lagLaunchEnqueue:
+		return "enqueue"
+	case lagLaunchTake:
+		return "take"
+	}
+	return "none"
 }
 
 // dropParentLocked unpublishes the snapshot (p.mu held), counting a written
@@ -280,6 +303,9 @@ type lagPipeParent struct {
 	launched bool
 	skip     int
 	written  bool
+	// hookAt: when the snapshot was published (the parent's root post-state
+	// hook), the origin of the child's launch timings.
+	hookAt time.Time
 }
 
 // aheadExec is one block executed ahead of its parent's root and write.
@@ -294,6 +320,15 @@ type aheadExec struct {
 	// queueWait: from the block's queueing for the lag executor to the
 	// start of its ahead run (zero when it was not queued).
 	queueWait time.Duration
+	// Launch timings against the parent's snapshot publication (hookAt):
+	// launchLag to the launch, queuedAfterHook to the child's queueing
+	// (negative when it was queued first), availCheck the passing
+	// availability check that queued it; launchBy the launching path.
+	launchLag       time.Duration
+	queuedAfterHook time.Duration
+	availCheck      time.Duration
+	hookAt          time.Time
+	launchBy        int
 
 	// Set by the executing goroutine before done closes.
 	ibs    *state.IntraBlockState
@@ -364,7 +399,17 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 		"aheadSkipNotAvail", p.skipNotAvail.Load(), "aheadSkipParent", p.skipParent.Load(),
 		"aheadSkipBusy", p.skipBusy.Load(), "aheadSkipOff", p.skipOff.Load(),
 		"aheadLate", p.late.Load(), "aheadTakeLaunch", p.takeLaunch.Load(),
+		"launchAtHook", p.launchAtHook.Load(), "launchAtEnqueue", p.launchAtEnqueue.Load(),
 	}
+}
+
+// aheadTakeAfterHook is the time from the parent's snapshot publication to
+// the child's import reaching lagPipeTake at take (zero without a hook time).
+func aheadTakeAfterHook(a *aheadExec, take time.Time) time.Duration {
+	if a == nil || a.hookAt.IsZero() {
+		return 0
+	}
+	return take.Sub(a.hookAt)
 }
 
 // lagPipeUsable: the chain can run ahead executions at all.
@@ -425,7 +470,7 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
 	}
 	p.mu.Lock()
 	p.dropParentLocked()
-	p.parent = &lagPipeParent{hash: h, number: hdr.Number.Uint64(), header: hdr, post: post}
+	p.parent = &lagPipeParent{hash: h, number: hdr.Number.Uint64(), header: hdr, post: post, hookAt: time.Now()}
 	if s := p.spec; s != nil && s.parent != h {
 		// An ahead execution on another parent cannot be used any more.
 		p.spec = nil
@@ -438,7 +483,7 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
 			time.Sleep(time.Millisecond)
 		}
 	}
-	bc.lagPipeLaunch()
+	bc.lagPipeLaunch(lagLaunchHook)
 	if fn := lagPipeAfterPublishForTest; fn != nil {
 		fn(h)
 	}
@@ -501,7 +546,7 @@ func (bc *BlockChain) lagQueuedAtHeight(number uint64) bool {
 // (its parent already published). Whether the child runs on Block-STM at
 // all is decided after its frames are resolved (runAhead): a block sealed
 // here holds only frame hashes until then.
-func (bc *BlockChain) lagPipeLaunch() {
+func (bc *BlockChain) lagPipeLaunch(by int) {
 	if !bc.lagPipeUsable() {
 		return
 	}
@@ -530,7 +575,7 @@ func (bc *BlockChain) lagPipeLaunch() {
 		p.mu.Unlock()
 		return
 	}
-	a := p.newAheadLocked(child, par)
+	a := p.newAheadLocked(child, par, by)
 	p.spec = a
 	p.mu.Unlock()
 	go bc.runAhead(a, par)
@@ -538,8 +583,18 @@ func (bc *BlockChain) lagPipeLaunch() {
 
 // newAheadLocked creates the ahead execution of child on par's snapshot
 // (p.mu held); the caller starts runAhead.
-func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent) *aheadExec {
-	a := &aheadExec{blk: child, parent: par.hash, parentOK: par.written, done: make(chan struct{}), started: time.Now(), pipe: p}
+func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent, by int) *aheadExec {
+	a := &aheadExec{blk: child, parent: par.hash, parentOK: par.written, done: make(chan struct{}), started: time.Now(), pipe: p,
+		hookAt: par.hookAt, launchBy: by}
+	if !par.hookAt.IsZero() {
+		a.launchLag = a.started.Sub(par.hookAt)
+	}
+	switch by {
+	case lagLaunchHook:
+		p.launchAtHook.Add(1)
+	case lagLaunchEnqueue:
+		p.launchAtEnqueue.Add(1)
+	}
 	p.seq++
 	a.seq = p.seq
 	par.launched = true
@@ -554,8 +609,12 @@ func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent) *ah
 func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	defer close(a.done)
 	defer func() { a.took = time.Since(a.started) }()
-	if since := bc.lagQueuedSince(a.blk.Hash()); !since.IsZero() {
+	if since, avail := bc.lagQueuedTimes(a.blk.Hash()); !since.IsZero() {
 		a.queueWait = time.Since(since)
+		a.availCheck = avail
+		if !a.hookAt.IsZero() {
+			a.queuedAfterHook = since.Sub(a.hookAt)
+		}
 	}
 	// A discarded run of the same block may still be filling its
 	// transactions' senders.
@@ -674,7 +733,7 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		// the parent's still-published snapshot it runs the ahead path now.
 		if par := p.parent; par != nil && par.hash == blk.ParentHash() && par.written && !par.launched && bc.lagPipeUsable() {
 			if child, ok := blk.(*block.Block); ok && bc.LagImportQueued(child.Hash()) {
-				a = p.newAheadLocked(child, par)
+				a = p.newAheadLocked(child, par, lagLaunchTake)
 				p.takeLaunch.Add(1)
 				go bc.runAhead(a, par)
 			}
