@@ -922,7 +922,10 @@ func (r *QMDBRootComputer) ComputeRoot(
 		cold, hits := qmdb.ReadCounters()
 		dCold := cold - lastLoggedColdReads.Swap(cold)
 		dHits := hits - lastLoggedResidentHits.Swap(hits)
+		ap := r.t.LastApplyPhases() // zero unless the batch took the sharded apply
 		log.Info("qmdb root phases", "ops", len(ops), "applyWorkers", qmdb.ParallelApplyWorkers,
+			"shardWorkers", ap.Workers, "shardProbeNs", ap.Probe.Nanoseconds(), "shardSerialNs", ap.Serial.Nanoseconds(),
+			"shardCommitNs", ap.Commit.Nanoseconds(), "shardFoldNs", ap.Fold.Nanoseconds(),
 			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds(),
 			"coldReads", dCold, "residentHits", dHits, "evictLag", r.evictLag.K)
 	}
