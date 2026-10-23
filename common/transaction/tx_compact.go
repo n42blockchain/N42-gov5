@@ -75,6 +75,10 @@ func appendUvarint(b []byte, v uint64) []byte {
 
 type txCompactReader struct {
 	p []byte
+	// u256Fields is the number of uint256 pointers in this transaction type.
+	// It is set before decoding so legacy and access-list transactions do not
+	// retain unused slots from the dynamic-fee layout.
+	u256Fields int
 	// arena backs the uint256 fields of the transaction being decoded.
 	//
 	// Each field used to get its own new(uint256.Int): up to seven 32-byte
@@ -125,7 +129,11 @@ func (r *txCompactReader) u256() (*uint256.Int, error) {
 		return nil, err
 	}
 	if len(r.arena) == 0 {
-		r.arena = make([]uint256.Int, u256ArenaSize)
+		n := r.u256Fields
+		if n == 0 {
+			n = u256ArenaSize
+		}
+		r.arena = make([]uint256.Int, n)
 	}
 	out := &r.arena[0]
 	r.arena = r.arena[1:]
@@ -297,7 +305,14 @@ func (tx *Transaction) unmarshalCompactStorage(data []byte) error {
 	}
 	typ := data[2]
 	flags := uint16(data[3]) | uint16(data[4])<<8
-	r := &txCompactReader{p: data[5:]}
+	u256Fields := u256ArenaSize
+	switch typ {
+	case LegacyTxType:
+		u256Fields = 5 // gas price, value, v, r, s
+	case AccessListTxType:
+		u256Fields = 6 // chain ID plus the legacy fields
+	}
+	r := &txCompactReader{p: data[5:], u256Fields: u256Fields}
 
 	var (
 		chainID, p1, p2, value, v, rr, s *uint256.Int
