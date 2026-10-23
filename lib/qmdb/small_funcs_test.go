@@ -266,6 +266,15 @@ func TestTruncIndexEnabledAndNewIndexFor(t *testing.T) {
 		t.Fatalf("truncIndexEnabled() = true with env unset, want false")
 	}
 	tr := New()
+	// The sharded apply selects its own in-RAM shape; pin it off here.
+	prevShard := ShardApplyWorkers
+	ShardApplyWorkers = 0
+	t.Cleanup(func() { ShardApplyWorkers = prevShard })
+	withShardApplyWorkers(8, func() {
+		if idx, ok := NewIndexFor(tr, 16).(*shardedMapIndex); !ok {
+			t.Fatalf("NewIndexFor under the sharded apply returned %T, want *shardedMapIndex", idx)
+		}
+	})
 	idx := NewIndexFor(tr, 16)
 	if _, ok := idx.(mapIndex); !ok {
 		t.Fatalf("NewIndexFor with trunc disabled returned %T, want mapIndex", idx)
