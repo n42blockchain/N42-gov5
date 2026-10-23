@@ -5,6 +5,7 @@ package transaction
 
 import (
 	"bytes"
+	"runtime"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -18,6 +19,63 @@ func addrOf(b byte) *types.Address {
 		a[i] = b
 	}
 	return &a
+}
+
+// Decoded integer pointers must keep their own backing allocation after the
+// compact input is reused and other transaction types are decoded.
+func TestCompactTxIntegerArenaLifetime(t *testing.T) {
+	fixtures := txsForCompactTest()
+	for _, name := range []string{"legacyTransfer", "accessList", "dynamicFee"} {
+		t.Run(name, func(t *testing.T) {
+			want := fixtures[name]
+			encoded := want.MarshalCompactStorage()
+			var got Transaction
+			if err := got.Unmarshal(encoded); err != nil {
+				t.Fatal(err)
+			}
+			clear(encoded)
+			for i := 0; i < 100; i++ {
+				var other Transaction
+				if err := other.Unmarshal(fixtures["dynamicFee"].MarshalCompactStorage()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runtime.GC()
+			for field, pair := range map[string][2]*uint256.Int{
+				"chainID":   {want.ChainId(), got.ChainId()},
+				"gasPrice":  {want.GasPrice(), got.GasPrice()},
+				"gasTipCap": {want.GasTipCap(), got.GasTipCap()},
+				"gasFeeCap": {want.GasFeeCap(), got.GasFeeCap()},
+				"value":     {want.Value(), got.Value()},
+			} {
+				if (pair[0] == nil) != (pair[1] == nil) || (pair[0] != nil && !pair[0].Eq(pair[1])) {
+					t.Fatalf("%s changed after input reuse", field)
+				}
+			}
+			wv, wr, ws := want.RawSignatureValues()
+			gv, gr, gs := got.RawSignatureValues()
+			for field, pair := range map[string][2]*uint256.Int{"v": {wv, gv}, "r": {wr, gr}, "s": {ws, gs}} {
+				if (pair[0] == nil) != (pair[1] == nil) || (pair[0] != nil && !pair[0].Eq(pair[1])) {
+					t.Fatalf("signature %s changed after input reuse", field)
+				}
+			}
+		})
+	}
+}
+
+func TestCompactTxIntegerArenaTruncatedInput(t *testing.T) {
+	fixtures := txsForCompactTest()
+	for _, name := range []string{"legacyTransfer", "accessList", "dynamicFee"} {
+		t.Run(name, func(t *testing.T) {
+			encoded := fixtures[name].MarshalCompactStorage()
+			for n := 0; n < len(encoded); n++ {
+				var got Transaction
+				if err := got.unmarshalCompactStorage(encoded[:n]); err == nil {
+					t.Fatalf("prefix length %d decoded without error", n)
+				}
+			}
+		})
+	}
 }
 
 func txsForCompactTest() map[string]*Transaction {
