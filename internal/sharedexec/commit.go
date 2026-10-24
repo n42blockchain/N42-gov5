@@ -308,12 +308,15 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 		}
 	}
 	if !certifiedDuplicate {
-		phases.phase("durable_evidence")
-		transactions, verifyErr := s.durableStoredCommit(request)
-		if verifyErr != nil {
-			return CommitResult{}, false, verifyErr
+		combinedFresh := certificate != nil && !duplicate
+		if !combinedFresh {
+			phases.phase("durable_evidence")
+			transactions, verifyErr := s.durableStoredCommit(request)
+			if verifyErr != nil {
+				return CommitResult{}, false, verifyErr
+			}
+			phases.transactions = transactions
 		}
-		phases.transactions = transactions
 
 		phases.phase("ingress_gate")
 		if q := s.ingress; q != nil {
@@ -332,7 +335,13 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 			}()
 		}
 		phases.phase("canonical_commit")
-		if certificate != nil {
+		if combinedFresh {
+			transactions, verifyErr := s.chain.CommitCertifiedDurableExtension(certificate, request.Number, request.ParentHash)
+			if verifyErr != nil {
+				return CommitResult{}, false, verifyErr
+			}
+			phases.transactions = transactions
+		} else if certificate != nil {
 			if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
 				return CommitResult{}, false, err
 			}
