@@ -422,7 +422,8 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 			"behindNs", dBehind.Nanoseconds(), "committedNs", dCommitted.Nanoseconds(),
 			"appliedNs", dApplied.Nanoseconds(), "totalNs", time.Since(tGate).Nanoseconds())
 	}
-	if behind := s.heightBehind(); behind > blockProductionSyncGate {
+	behind := s.heightBehind()
+	if behind > blockProductionSyncGate {
 		dBehind = time.Since(tGate)
 		logGates("behind")
 		log.Warn("hotstuff: behind peers, skipping block production and catching up",
@@ -433,6 +434,34 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 		return
 	}
 	dBehind = time.Since(tGate)
+	if parentHash == (types.Hash{}) && behind > 0 {
+		// No lock (fresh or reset consensus state): the producer would build
+		// on this node's own committed head. A peer ahead of it may have
+		// committed the block above that head, and a proposal here is then a
+		// sibling of that committed block, which those peers refuse to vote
+		// for -- round S131: nodes 0-3, one block short after a reset,
+		// proposed sibling 88e236 of f343 that nodes 4-6 had committed. Catch
+		// up instead; a validator at the top height leads a later view and
+		// its child of the higher block extends every node's committed head.
+		logGates("behind-unlocked")
+		log.Warn("hotstuff: no consensus lock and behind peers, catching up instead of proposing on the local head",
+			"view", view, "behind", behind)
+		if s.blockFetcher != nil {
+			go s.blockFetcher.CatchUp()
+		}
+		return
+	}
+	if parentHash != (types.Hash{}) && s.engine != nil {
+		if ce := s.engine.Engine(); ce != nil && ce.ConflictsWithCommitted(parentHash) {
+			// The lock names a block off this node's committed chain; the
+			// proposal (which the leader also votes for) would conflict with
+			// it. Peers' timeouts carry a higher QC that replaces the lock.
+			logGates("parent-conflicts-committed")
+			log.Error("hotstuff: consensus parent conflicts with this node's committed block, not producing",
+				"view", view, "parent", parentHash)
+			return
+		}
+	}
 	if s.lagGate != nil {
 		// P2a, deferred depth k > 1: the leader builds without executing,
 		// so the parent need not be applied; it needs this node's result of
