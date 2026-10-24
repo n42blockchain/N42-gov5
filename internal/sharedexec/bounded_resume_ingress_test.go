@@ -78,6 +78,89 @@ func (f *boundedExecutionFixture) prefixOptions() BoundedResumeIngressOptions {
 	return BoundedResumeIngressOptions{ManifestRaw: f.manifestRaw, GenesisRaw: f.genesisRaw, SourceRoot: f.sourceRoot, PlanDocumentRaw: f.prefixRaw, SourceProofRaw: f.proofRaw, ExpectedPlanID: f.prefixID, MaxTransactions: 2000, MaxEncodedBytes: 1 << 20}
 }
 
+func TestBoundedResumeDiagnosticsExplicitOwnerLifecycle(t *testing.T) {
+	f := newBoundedExecutionFixture(t)
+	path := filepath.Join(t.TempDir(), "bounded-observer.jsonl")
+	options := f.prefixOptions()
+	options.DiagnosticsJSONL = path
+	if err := f.server.EnableBoundedResumeIngress(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	status, err := f.server.StrictIngressStatus()
+	if err != nil || f.server.resumeDiagnostics == nil {
+		t.Fatal("bounded observer not installed", err)
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Count(raw, []byte{'\n'}) >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bounded observer did not emit periodic samples")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	f.closeOwner()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := bytes.Split(bytes.TrimSpace(raw), []byte{'\n'})
+	if len(rows) < 3 {
+		t.Fatal("bounded observer missed periodic or terminal samples")
+	}
+	for i, row := range rows {
+		var sample struct {
+			Epoch            [16]byte `json:"epoch"`
+			TerminalComplete bool     `json:"terminal_complete"`
+		}
+		if err := json.Unmarshal(row, &sample); err != nil || sample.Epoch != status.Epoch || sample.TerminalComplete != (i == len(rows)-1) {
+			t.Fatalf("bounded observer sample %d invalid: %v", i, err)
+		}
+	}
+	var final struct {
+		Complete bool `json:"complete"`
+	}
+	statusRaw, err := os.ReadFile(path + ".status.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(statusRaw, &final); err != nil || !final.Complete {
+		t.Fatalf("bounded observer did not close cleanly: %v", err)
+	}
+}
+
+func TestBoundedResumeDiagnosticsExistingFileFailsWithoutPublication(t *testing.T) {
+	f := newBoundedExecutionFixture(t)
+	path := filepath.Join(t.TempDir(), "existing.jsonl")
+	if err := os.WriteFile(path, []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	options := f.prefixOptions()
+	options.DiagnosticsJSONL = path
+	if err := f.server.EnableBoundedResumeIngress(context.Background(), options); err == nil || f.server.ingress != nil || f.server.resumeDiagnostics != nil {
+		t.Fatalf("existing observer file did not fail closed: %v", err)
+	}
+	if actual, err := os.ReadFile(path); err != nil || string(actual) != "existing" {
+		t.Fatalf("observer rejection modified existing file: %q, %v", actual, err)
+	}
+	options.DiagnosticsJSONL = ""
+	if err := f.server.EnableBoundedResumeIngress(context.Background(), options); err != nil || f.server.ingress == nil || f.server.resumeDiagnostics != nil {
+		t.Fatalf("default-off bounded ingress failed after observer rejection: %v", err)
+	}
+}
+
+func TestFourFrameResumeRejectsBoundedDiagnosticsPath(t *testing.T) {
+	var server Server
+	if err := server.EnableResumeIngress(context.Background(), ResumeIngressOptions{DiagnosticsJSONL: "/tmp/not-created.jsonl"}); err == nil {
+		t.Fatal("four-frame resume accepted a bounded-only observer path")
+	}
+}
+
 func executeBoundedFixtureQueue(t *testing.T, f *resumeExecutionFixture, view hotstuff.ViewNumber, expected int) *block.Block {
 	t.Helper()
 	f.leader.Engine().RestoreState(view, f.lastQC, f.lastQC, 0)
