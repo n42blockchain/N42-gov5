@@ -1102,6 +1102,11 @@ func (bc *BlockChain) repairCanonicalLinkageOnStartup() {
 // be reverted so the node rejoins the network from its last committed state
 // and converges via consensus (proposals + JustifyQC), not by replaying stale
 // local candidates against live traffic.
+//
+// Only the applied state is reverted: the blocks' headers and bodies stay
+// stored. Consensus may still extend one of them (it can carry the highest
+// QC, round S132), and the lag executor then executes it again from storage
+// before its child (lag_replay.go).
 func (bc *BlockChain) revertSpeculativeOnStartup() {
 	var (
 		appliedNum  uint64

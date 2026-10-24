@@ -555,7 +555,13 @@ func (bc *BlockChain) lagStep() bool {
 	for _, q := range list {
 		b := q.blk
 		n := b.Number64().Uint64()
-		if bc.blockStored(b.Hash(), n) {
+		// Stored is not applied: a block the startup revert unwound keeps
+		// its header and body (lag_replay.go). Only a stored AND applied
+		// block was written by another path; a stored, unapplied one must
+		// execute again, which only an authorized import does (a plain one
+		// skips it as known).
+		stored := bc.blockStored(b.Hash(), n)
+		if stored && bc.lagStoredApplied(b.Hash(), n) {
 			bc.lagDone(b, false)
 			return true
 		}
@@ -565,7 +571,7 @@ func (bc *BlockChain) lagStep() bool {
 			return true
 		}
 		ready := bc.lagParentReady(b.ParentHash(), n-1)
-		authorized := false
+		authorized := stored
 		if !ready {
 			if !bc.blockStored(b.ParentHash(), n-1) || time.Since(q.since) < lagAuthorizedGrace ||
 				time.Since(q.lastAuth) < lagAuthorizedGrace {
@@ -573,6 +579,12 @@ func (bc *BlockChain) lagStep() bool {
 			}
 			authorized = true
 			q.lastAuth = time.Now()
+			// The parent is stored but its state is not applied: when it
+			// descends from the applied head, execute it (and any stored
+			// block between) first (S132).
+			if bc.lagReplayStoredAncestors(b) {
+				return true
+			}
 		}
 		handed, err := bc.insertChainLag(b, authorized)
 		if handed {
@@ -583,7 +595,7 @@ func (bc *BlockChain) lagStep() bool {
 			return true
 		}
 		// The pipeline was settled inside the import (lagPipeSettle).
-		written := err == nil && bc.blockStored(b.Hash(), n)
+		written := err == nil && bc.blockStored(b.Hash(), n) && bc.lagStoredApplied(b.Hash(), n)
 		if written {
 			bc.lagDone(b, true)
 			return true
