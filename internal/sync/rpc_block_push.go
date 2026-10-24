@@ -42,7 +42,7 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	// failure or a nil notifier is silently ignored; the ordinary decode and
 	// deferredCheck below are completely unaffected either way.
 	blk, _, _, err := ReadChunkedBlockPeekHeader(stream, s.cfg.p2p, func(h *block.Header) {
-		if n := s.cfg.blockImportNotifier; n != nil && h.Number != nil {
+		if n := s.cfg.blockImportNotifier; n != nil && h.Number != nil && s.parentHeaderHere(h) {
 			n.NotifyBlockHeaderKnown(h.Hash(), h.ParentHash, h.Number.Uint64())
 		}
 	}, lookup)
@@ -168,6 +168,26 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 	}
 	s.retryDeferredChildren(blk.Hash())
+}
+
+// parentHeaderHere reports whether this node holds h's parent header
+// (stored or available). The header-only prepare vote needs it: a vote for
+// a block whose parent is missing here helps commit a block this node cannot
+// execute (round S132). Without it the vote waits for the deferred check,
+// which requires the parent too. A chain that cannot answer allows the vote.
+func (s *Service) parentHeaderHere(h *block.Header) bool {
+	hk, ok := s.cfg.chain.(interface {
+		HeaderKnownHere(types.Hash, uint64) bool
+	})
+	if !ok || h.Number == nil || h.Number.IsZero() {
+		return true
+	}
+	if hk.HeaderKnownHere(h.ParentHash, h.Number.Uint64()-1) {
+		return true
+	}
+	log.Info("block push: parent header not held here, the header alone does not release a vote",
+		"number", h.Number.Uint64(), "parent", h.ParentHash.Hex()[:12])
+	return false
 }
 
 // lagExecutorOwns reports whether the chain's lag executor imports blk once
