@@ -180,7 +180,19 @@ func (s *Server) EnableBoundedResumeIngress(ctx context.Context, options Bounded
 	if s.closed || s.started || !s.resumeArming || work.Err() != nil || s.ctx.Err() != nil || s.ingress != nil || len(s.jobs) != 0 || len(s.builds) != 0 || len(s.queuePlans) != 0 {
 		return errors.New("resume owner closed or startup canceled before publication")
 	}
+	var diagnostics *resumeDiagnostics
+	if options.DiagnosticsJSONL != "" {
+		diagnostics, err = newResumeDiagnostics(options.DiagnosticsJSONL)
+		if err != nil {
+			return err
+		}
+	}
 	s.ingress = q
 	s.resumeArming = false
+	if diagnostics != nil {
+		s.resumeDiagnostics = diagnostics
+		s.resumeObserverWG.Add(1)
+		go diagnostics.run(s, q)
+	}
 	return nil
 }

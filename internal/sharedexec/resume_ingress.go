@@ -24,6 +24,8 @@ type ResumeIngressOptions struct {
 	PlanDocumentRaw, SourceProofRaw  []byte
 	ExpectedPlanID                   types.Hash
 	MaxTransactions, MaxEncodedBytes int
+	// DiagnosticsJSONL is an explicit, bounded-resume-only owner observer path.
+	DiagnosticsJSONL string
 }
 
 type resumeIngressSession struct {
@@ -40,6 +42,9 @@ type resumeIngressSession struct {
 func (s *Server) EnableResumeIngress(ctx context.Context, options ResumeIngressOptions) error {
 	if ctx == nil || ctx.Err() != nil {
 		return errors.New("active resume startup context required")
+	}
+	if options.DiagnosticsJSONL != "" {
+		return errors.New("resume diagnostics require bounded ingress")
 	}
 	if len(options.ManifestRaw) == 0 || len(options.ManifestRaw) > CorpusMaxManifestBytes || len(options.GenesisRaw) == 0 || len(options.GenesisRaw) > 16<<20 || len(options.PlanDocumentRaw) == 0 || len(options.PlanDocumentRaw) > ResumeMaxPlanDocumentBytes || len(options.SourceProofRaw) == 0 || len(options.SourceProofRaw) > 16<<20 || options.ExpectedPlanID == (types.Hash{}) || options.MaxTransactions < 1417 || options.MaxTransactions > 2_000_000 || options.MaxEncodedBytes < 1 || options.MaxEncodedBytes > 512<<20 {
 		return errors.New("invalid bounded resume startup options")

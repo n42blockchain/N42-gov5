@@ -58,6 +58,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	boundedSource := flags.String("bounded-ingress-source", "", "Original immutable signed corpus root for bounded ingress")
 	boundedManifest := flags.String("bounded-ingress-manifest", "", "Exact finalized manifest for bounded prefix ingress")
 	boundedPlanID := flags.String("bounded-ingress-plan-id", "", "Locally pinned expected bounded prefix plan ID")
+	resumeDiagnosticsJSONL := flags.String("resume-diagnostics-jsonl", "", "Optional fresh private JSONL observer file for explicit bounded ingress")
 	ingressMaxTx := flags.Int("ingress-max-transactions", 0, "Strict queue global credits (0 selects 2000000; maximum 2000000)")
 	ingressMaxBytes := flags.Int("ingress-max-encoded-bytes", 0, "Strict queue encoded credits (0 selects 512MiB; maximum 512MiB)")
 	if err := flags.Parse(args); err != nil {
@@ -80,6 +81,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 	})
 	resumeRequested := *resumePlan != "" || *resumeProof != "" || *resumeSource != "" || *resumeManifest != "" || *resumePlanID != ""
 	boundedRequested := *boundedPlan != "" || *boundedProof != "" || *boundedSource != "" || *boundedManifest != "" || *boundedPlanID != ""
+	if *resumeDiagnosticsJSONL != "" && (!boundedRequested || !filepath.IsAbs(*resumeDiagnosticsJSONL)) {
+		return errors.New("resume diagnostics requires explicit bounded ingress and an absolute file path")
+	}
 	if (resumeRequested && *ingressManifest != "") || (boundedRequested && (resumeRequested || *ingressManifest != "")) {
 		return errors.New("strict, four-frame resume and bounded ingress are mutually exclusive")
 	}
@@ -99,6 +103,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}
 	if err != nil {
 		return err
+	}
+	if boundedOptions != nil {
+		boundedOptions.DiagnosticsJSONL = *resumeDiagnosticsJSONL
 	}
 	var commitOwner [32]byte
 	if *commitOwnerFile != "" {
