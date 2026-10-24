@@ -1389,6 +1389,15 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 
 // Only the explicit performance executed-extension path selects batched rows.
 func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error, batchLookup bool) error {
+	return bc.commitToCanonicalWithPreflight(hash, inTx, batchLookup, nil)
+}
+
+// commitToCanonicalWithPreflight runs a chain-owned check in the same writer
+// transaction as the canonical mutation. A non-nil preflight returns the
+// physically validated block for that writer, including its lookup rows;
+// errors abort the entire write. Normal post-commit block publication remains.
+// Ordinary callers retain the existing cache path.
+func (bc *BlockChain) commitToCanonicalWithPreflight(hash types.Hash, inTx func(kv.RwTx) error, batchLookup bool, preflight func(kv.RwTx) (*block.Block, error)) error {
 	var committedNumber uint64
 	var notify bool
 	var committedBlk *block.Block
@@ -1416,7 +1425,7 @@ func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	// transaction index (~200 ms, serial) -- inside the HotStuff loop, before
 	// the next view could start (round 35zg's commit-to-canonical phases).
 	var cached *block.Block
-	if bc.blockCache != nil {
+	if preflight == nil && bc.blockCache != nil {
 		if b, ok := bc.blockCache.Get(hash); ok && b != nil {
 			cached = b
 		}
@@ -1426,8 +1435,17 @@ func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		dLock = tEnter.Sub(tCommit)
 		defer func() { dBody = time.Since(tEnter) }()
 		tRead := time.Now()
-		blk := cached
-		if blk == nil {
+		var blk *block.Block
+		if preflight != nil {
+			var err error
+			blk, err = preflight(tx)
+			if err != nil {
+				return err
+			}
+		} else {
+			blk = cached
+		}
+		if blk == nil && preflight == nil {
 			var err error
 			blk, err = rawdb.ReadBlockByHash(tx, hash)
 			if err != nil {

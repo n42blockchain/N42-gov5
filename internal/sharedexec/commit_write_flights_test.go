@@ -3,6 +3,7 @@ package sharedexec
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -247,6 +248,75 @@ func TestCertifiedFreshCommitFailureRetiresFlightAndWaiterRunsExclusiveFallback(
 	status, err := f.server.StrictIngressStatus()
 	if err != nil || status.CanonicalGeneration < 1 || status.Reconciling {
 		t.Fatalf("fallback failed to reconcile canonical ingress: %+v %v", status, err)
+	}
+}
+
+type freshDurableReadGateDB struct {
+	kv.RwDB
+	armed       atomic.Bool
+	key         []byte
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
+}
+
+type freshDurableReadGateTx struct {
+	kv.RwTx
+	db *freshDurableReadGateDB
+}
+
+func (d *freshDurableReadGateDB) Update(ctx context.Context, fn func(kv.RwTx) error) error {
+	return d.RwDB.Update(ctx, func(tx kv.RwTx) error {
+		return fn(freshDurableReadGateTx{RwTx: tx, db: d})
+	})
+}
+
+func (tx freshDurableReadGateTx) GetOne(table string, key []byte) ([]byte, error) {
+	if tx.db.armed.Load() && table == modules.Receipts && string(key) == string(tx.db.key) {
+		tx.db.once.Do(func() {
+			close(tx.db.entered)
+			<-tx.db.release
+		})
+	}
+	return tx.RwTx.GetOne(table, key)
+}
+
+func TestCertifiedFreshCombinedValidationFailureRetiresJoinedFlight(t *testing.T) {
+	var db *freshDurableReadGateDB
+	f, b, request := certifiedCanonicalFixtureWithDB(t, false, func(base kv.RwDB) kv.RwDB {
+		db = &freshDurableReadGateDB{RwDB: base, entered: make(chan struct{}), release: make(chan struct{})}
+		return db
+	})
+	db.key = modules.EncodeBlockNumber(request.Number)
+	defer db.releaseOnce.Do(func() { close(db.release) })
+	if err := f.chain.DB().Update(context.Background(), func(tx kv.RwTx) error {
+		return tx.Put(modules.Receipts, db.key, []byte{0xff})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.armed.Store(true)
+	creator := make(chan error, 1)
+	go func() { _, err := f.server.CommitCertified(context.Background(), request); creator <- err }()
+	awaitAdmissionEvent(t, db.entered, "combined durable receipt read")
+	key, job := activeFreshCommitFlight(t, f.server, request)
+	waiter := make(chan error, 1)
+	go func() { _, err := f.server.CommitCertified(context.Background(), request); waiter <- err }()
+	awaitFreshWriteJoins(t, f.server, 1)
+	db.releaseOnce.Do(func() { close(db.release) })
+	if err := <-creator; err == nil {
+		t.Fatal("creator accepted malformed durable receipts")
+	}
+	if err := <-waiter; err == nil {
+		t.Fatal("joined waiter accepted malformed durable receipts")
+	}
+	assertFreshCommitFailedAndRetired(t, f.server, key, job)
+	status, err := f.server.StrictIngressStatus()
+	if err != nil || status.Reconciling {
+		t.Fatalf("failed combined validation left ingress gate dirty: %+v %v", status, err)
+	}
+	if !freshCommitHeadMatches(f.chain.DB(), b.ParentHash()) {
+		t.Fatal("failed combined validation changed canonical head")
 	}
 }
 

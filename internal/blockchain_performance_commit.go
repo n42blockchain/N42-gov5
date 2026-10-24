@@ -224,6 +224,156 @@ func (bc *BlockChain) CommitCertifiedExtension(qc *hotstuff.QuorumCertificate) e
 	return bc.commitExecutedExtension(qc.BlockHash)
 }
 
+// performanceCommitSnapshotReader prevents certificate verification from using
+// a cached or differently timed parent header while the durable block and
+// canonical lineage are checked in one database snapshot.
+type performanceCommitSnapshotReader struct {
+	*BlockChain
+	tx kv.Tx
+}
+
+func (r performanceCommitSnapshotReader) GetHeaderByHash(hash types.Hash) (block.IHeader, error) {
+	header, err := rawdb.ReadHeaderByHash(r.tx, hash)
+	if err != nil || header == nil {
+		return nil, err
+	}
+	if header.Number == nil || !header.Number.IsUint64() || header.Hash() != hash {
+		return nil, errors.New("certified durable parent header identity mismatch")
+	}
+	return header, nil
+}
+
+// CommitCertifiedDurableExtension verifies a fresh certified block's durable
+// execution and lineage in the canonical writer transaction. That transaction
+// uses the decoded block for its canonical writes, then publishes it only after
+// commit; neither a prior caller observation nor a hot block cache authorizes
+// finality.
+func (bc *BlockChain) CommitCertifiedDurableExtension(qc *hotstuff.QuorumCertificate, number uint64, parent types.Hash) (int, error) {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	engine, ok := bc.engine.(*hotstuff.HotStuff)
+	if !ok || bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled || qc == nil {
+		return 0, errors.New("certified durable commit requires performance HotStuff QMDB executor")
+	}
+	if err := bc.joinLagWrite(); err != nil {
+		return 0, err
+	}
+	// Perform certificate crypto and sealed-header verification outside MDBX's
+	// single writer. The writer preflight below re-reads the header and all
+	// mutable authorization rows in its own transaction before any mutation.
+	var certificateHeader *block.Header
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		var err error
+		certificateHeader, err = rawdb.ReadHeaderByHash(tx, qc.BlockHash)
+		if err != nil {
+			return err
+		}
+		return engine.VerifyPerformanceCommitCertificate(performanceCommitSnapshotReader{bc, tx}, certificateHeader, qc)
+	}); err != nil {
+		return 0, err
+	}
+	var transactions int
+	preflight := func(tx kv.RwTx) (*block.Block, error) {
+		stored, err := rawdb.ReadBlockByHash(tx, qc.BlockHash)
+		if err != nil {
+			return nil, err
+		}
+		if stored == nil || stored.Number64() == nil || !stored.Number64().IsUint64() || stored.Number64().Uint64() != number || stored.Hash() != qc.BlockHash || stored.ParentHash() != parent {
+			return nil, errors.New("certified durable stored block identity mismatch or missing block")
+		}
+		header, ok := stored.Header().(*block.Header)
+		if !ok || header == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.Uint64() != number || header.Hash() != qc.BlockHash || certificateHeader == nil || header.Hash() != certificateHeader.Hash() {
+			return nil, errors.New("certified durable stored header identity mismatch")
+		}
+		head := rawdb.ReadHeadBlockHash(tx)
+		hn := rawdb.ReadHeaderNumber(tx, head)
+		if hn == nil {
+			return nil, errors.New("executed extension canonical head missing")
+		}
+		canonical, err := rawdb.ReadCanonicalHash(tx, *hn)
+		if err != nil {
+			return nil, err
+		}
+		if canonical != head {
+			return nil, errors.New("executed extension canonical head inconsistent")
+		}
+		headHeader := rawdb.ReadHeader(tx, head, *hn)
+		if headHeader == nil || headHeader.Number == nil || !headHeader.Number.IsUint64() || headHeader.Number.Uint64() != *hn || headHeader.Hash() != head {
+			return nil, errors.New("executed extension canonical head header inconsistent")
+		}
+		if *hn == ^uint64(0) {
+			return nil, errors.New("executed extension canonical height overflow")
+		}
+		finalized := rawdb.ReadHotStuffCommittedHead(tx)
+		if finalized != (types.Hash{}) {
+			fn := rawdb.ReadHeaderNumber(tx, finalized)
+			if fn == nil || *fn > *hn {
+				return nil, errors.New("certified durable finality marker inconsistent")
+			}
+			canonical, err = rawdb.ReadCanonicalHash(tx, *fn)
+			if err != nil {
+				return nil, err
+			}
+			if canonical != finalized {
+				return nil, errors.New("certified durable finality marker off canonical prefix")
+			}
+			finalHeader := rawdb.ReadHeader(tx, finalized, *fn)
+			if finalHeader == nil || finalHeader.Number == nil || !finalHeader.Number.IsUint64() || finalHeader.Number.Uint64() != *fn || finalHeader.Hash() != finalized {
+				return nil, errors.New("certified durable finality header inconsistent")
+			}
+		}
+		if number != *hn+1 || parent != head {
+			return nil, errors.New("executed extension requires direct canonical parent")
+		}
+		canonical, err = rawdb.ReadCanonicalHash(tx, number)
+		if err != nil {
+			return nil, err
+		}
+		if canonical != (types.Hash{}) && canonical != qc.BlockHash {
+			return nil, errors.New("commit durable receipts belong to a different canonical block")
+		}
+		an, ah, applied, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return nil, err
+		}
+		if !applied || number > an {
+			return nil, errors.New("executed extension applied marker missing")
+		}
+		cur, curN := types.Hash(ah), an
+		for curN > number && an-curN < 256 {
+			h := rawdb.ReadHeader(tx, cur, curN)
+			if h == nil || h.Number == nil || !h.Number.IsUint64() || h.Number.Uint64() != curN || h.Hash() != cur {
+				return nil, errors.New("executed extension applied lineage header differs")
+			}
+			cur, curN = h.ParentHash, curN-1
+		}
+		if curN != number || cur != qc.BlockHash {
+			return nil, errors.New("executed extension is no longer on applied lineage; retry")
+		}
+		senders, err := rawdb.ReadSenders(tx, qc.BlockHash, number)
+		if err != nil {
+			return nil, err
+		}
+		receipts, err := rawdb.ReadReceiptsForExecutionWithError(tx, stored, senders)
+		if err != nil {
+			return nil, err
+		}
+		if len(receipts) != len(stored.Transactions()) {
+			return nil, errors.New("certified durable receipt count mismatch")
+		}
+		executed := ExecutedResultFor(bc.chainConfig, number, header.Root, receipts)
+		if executed.ReceiptHash != header.ReceiptHash || executed.GasUsed != header.GasUsed || executed.Bloom != header.Bloom {
+			return nil, errors.New("durable execution result does not match stored header")
+		}
+		transactions = len(stored.Transactions())
+		return stored, nil
+	}
+	if err := bc.commitToCanonicalWithPreflight(qc.BlockHash, nil, true, preflight); err != nil {
+		return 0, err
+	}
+	return transactions, nil
+}
+
 func (bc *BlockChain) commitExecutedExtension(hash types.Hash) error {
 	if bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled {
 		return errors.New("executed extension requires explicit performance QMDB chain")

@@ -3,6 +3,7 @@ package sharedexec
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -51,12 +52,24 @@ func damageFreshCommitEvidence(t *testing.T, f strictIngressFixture, b *block.Bl
 			return tx.Delete(modules.BlockBody, bodyKey)
 		case "malformed-body":
 			return tx.Put(modules.BlockBody, bodyKey, []byte{0xff})
+		case "missing-tx", "malformed-tx":
+			body, err := rawdb.ReadStorageBody(tx, b.Hash(), b.Number64().Uint64())
+			if err != nil {
+				return err
+			}
+			key := modules.EncodeBlockNumber(body.BaseTxId + 1)
+			if mode == "missing-tx" {
+				return tx.Delete(modules.BlockTx, key)
+			}
+			return tx.Put(modules.BlockTx, key, []byte{0xff})
 		case "missing-receipts":
 			return tx.Delete(modules.Receipts, receiptKey)
 		case "malformed-receipts":
 			return tx.Put(modules.Receipts, receiptKey, []byte{0xff})
 		case "wrong-canonical-sibling":
 			return rawdb.WriteCanonicalHash(tx, types.Hash{1}, b.Number64().Uint64())
+		case "off-lineage-applied":
+			return rawdb.WriteQMDBApplied(tx, b.Number64().Uint64(), types.Hash{1})
 		}
 		receipts := rawdb.ReadRawReceipts(tx, b.Number64().Uint64())
 		if len(receipts) != 3 {
@@ -74,9 +87,12 @@ func damageFreshCommitEvidence(t *testing.T, f strictIngressFixture, b *block.Bl
 }
 
 func TestFreshCommitRejectsDamagedPhysicalEvidence(t *testing.T) {
-	for _, mode := range []string{"missing-body", "malformed-body", "missing-receipts", "malformed-receipts", "truncated-receipts", "changed-receipt", "wrong-canonical-sibling"} {
+	for _, mode := range []string{"missing-body", "malformed-body", "missing-tx", "malformed-tx", "missing-receipts", "malformed-receipts", "truncated-receipts", "changed-receipt", "wrong-canonical-sibling", "off-lineage-applied"} {
 		t.Run(mode, func(t *testing.T) {
 			f, b, request := certifiedCanonicalFixture(t, false)
+			if f.chain.GetBlock(b.Hash(), b.Number64().Uint64()) == nil {
+				t.Fatal("failed to prime the block cache")
+			}
 			damageFreshCommitEvidence(t, f, b, mode)
 			before, _ := f.server.StrictIngressStatus()
 
@@ -84,18 +100,92 @@ func TestFreshCommitRejectsDamagedPhysicalEvidence(t *testing.T) {
 				t.Fatalf("damaged evidence committed: %+v %v", result, err)
 			}
 			after, _ := f.server.StrictIngressStatus()
+			if after.CanonicalGeneration != before.CanonicalGeneration+1 || after.Reconciling {
+				t.Fatalf("failed durability check did not reconcile ingress gate: before=%+v after=%+v", before, after)
+			}
+			before.CanonicalGeneration = after.CanonicalGeneration
 			if !reflect.DeepEqual(before, after) {
-				t.Fatal("failed durability check changed queue or database")
+				t.Fatal("failed durability check changed ingress queue beyond its fence generation")
 			}
 			if err := f.chain.DB().View(context.Background(), func(tx kv.Tx) error {
 				if rawdb.ReadHeadBlockHash(tx) != b.ParentHash() || rawdb.ReadHotStuffCommittedHead(tx) == b.Hash() {
 					t.Fatal("damaged evidence changed canonical finality")
+				}
+				for _, transaction := range b.Transactions() {
+					entry, err := tx.GetOne(modules.TxLookup, transaction.Hash().Bytes())
+					if err != nil {
+						return err
+					}
+					if len(entry) != 0 {
+						t.Fatal("damaged evidence wrote a transaction lookup")
+					}
 				}
 				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// This writer bypasses bc.lock, as public canonical writers can. It changes
+// the database after certificate verification and just before the candidate's
+// writer transaction; the in-transaction preflight must see the new row.
+type freshCanonicalRaceDB struct {
+	kv.RwDB
+	armed  atomic.Bool
+	fired  atomic.Bool
+	number uint64
+}
+
+func (d *freshCanonicalRaceDB) Update(ctx context.Context, fn func(kv.RwTx) error) error {
+	if d.armed.Load() && d.fired.CompareAndSwap(false, true) {
+		if err := d.RwDB.Update(ctx, func(tx kv.RwTx) error {
+			return rawdb.WriteCanonicalHash(tx, types.Hash{1}, d.number)
+		}); err != nil {
+			return err
+		}
+	}
+	return d.RwDB.Update(ctx, fn)
+}
+
+func TestCertifiedFreshCommitRechecksCompetingCanonicalWriter(t *testing.T) {
+	var db *freshCanonicalRaceDB
+	f, b, request := certifiedCanonicalFixtureWithDB(t, false, func(base kv.RwDB) kv.RwDB {
+		db = &freshCanonicalRaceDB{RwDB: base}
+		return db
+	})
+	db.number = request.Number
+	db.armed.Store(true)
+	if result, err := f.server.CommitCertified(context.Background(), request); err == nil || result.Committed {
+		t.Fatalf("competing canonical row was overwritten: %+v %v", result, err)
+	}
+	if !db.fired.Load() {
+		t.Fatal("competing writer was not interposed before canonical transaction")
+	}
+	if err := f.chain.DB().View(context.Background(), func(tx kv.Tx) error {
+		if rawdb.ReadHeadBlockHash(tx) != b.ParentHash() || rawdb.ReadHotStuffCommittedHead(tx) == b.Hash() {
+			t.Fatal("failed fresh commit changed canonical head or finality")
+		}
+		canonical, err := rawdb.ReadCanonicalHash(tx, request.Number)
+		if err != nil {
+			return err
+		}
+		if canonical != (types.Hash{1}) {
+			t.Fatal("fresh commit overwrote competing canonical row")
+		}
+		for _, transaction := range b.Transactions() {
+			entry, err := tx.GetOne(modules.TxLookup, transaction.Hash().Bytes())
+			if err != nil {
+				return err
+			}
+			if len(entry) != 0 {
+				t.Fatal("failed fresh commit wrote a transaction lookup")
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
