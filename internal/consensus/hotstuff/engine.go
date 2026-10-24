@@ -178,6 +178,11 @@ type ConsensusEngine struct {
 	voteOnAvailability bool
 	pendingCommitQC *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
 
+	// committedChain is this node's own committed chain (committed_floor.go):
+	// no vote and no local commit may conflict with it. Nil disables the
+	// floor (unit tests, embedded harnesses).
+	committedChain CommittedChainReader
+
 	// Batch BLS verification buffers (votes await batch pairing before
 	// being added to the collector). Reset on every view change.
 	prepareVoteBuf []pendingVote

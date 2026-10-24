@@ -414,6 +414,21 @@ func (e *ConsensusEngine) processDecide(decide *Decide) error {
 		}
 	}
 
+	// Committed floor: a CommitQC for a block that provably conflicts with
+	// this node's own committed chain is not applied locally (the chain
+	// layer would refuse it anyway, leaving consensus and chain forked).
+	// The view still follows, so this node stays in step with the network.
+	// An unresolved ancestry is not a conflict: catch-up commits rely on it.
+	if e.checkCommittedFloor(decide.BlockHash) == floorRefuse {
+		log.Error("hotstuff: Decide NOT committed locally: block conflicts with this node's committed block",
+			"view", decide.View, "blockHash", decide.BlockHash)
+		metricVoteCommittedFloor.Inc()
+		if err := e.advanceToView(decide.View + 1); err != nil {
+			return err
+		}
+		return e.emit(EngineOutput{Type: OutputViewChanged, View: e.roundState.CurrentView()})
+	}
+
 	log.Info("received Decide, committing block", "view", decide.View, "blockHash", decide.BlockHash)
 
 	now := time.Now()

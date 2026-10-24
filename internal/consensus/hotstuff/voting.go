@@ -430,6 +430,14 @@ func (e *ConsensusEngine) tryFormCommitQC() error {
 	}
 
 	blockHash := e.commitCollector.BlockHash()
+	// Committed floor (see processDecide): never commit, or announce, a
+	// block that conflicts with this node's own committed chain.
+	if e.checkCommittedFloor(blockHash) == floorRefuse {
+		log.Error("hotstuff: CommitQC NOT committed locally: block conflicts with this node's committed block",
+			"view", view, "blockHash", blockHash)
+		metricVoteCommittedFloor.Inc()
+		return nil // the view times out; no Decide is broadcast
+	}
 	commitMsg := e.commitSigningMessage(view, blockHash)
 	commitQC, err := e.commitCollector.BuildQCWithMessage(vs, commitMsg)
 	if err != nil {
