@@ -132,8 +132,9 @@ func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
 //     independently kept at its highest view. A delayed same-view snapshot must
 //     never overwrite a newer lock learned later in that view.
 //
-// Both reset tools (cmd/hotstuff-reset, cmd/qs-hsreset) DELETE the key rather
-// than writing a lower state, so deliberate rollback still works.
+// Both reset tools (cmd/hotstuff-reset, cmd/qs-hsreset) DELETE the key before
+// writing anything lower (hotstuff-reset rewrites a floor record in the same
+// transaction), so deliberate rollback still works.
 func mergeMonotonic(tx kv.RwTx, state *ConsensusState) (*ConsensusState, error) {
 	prev, err := LoadConsensusState(tx)
 	if err != nil {

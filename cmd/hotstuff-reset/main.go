@@ -1,10 +1,28 @@
-// Command hotstuff-reset performs an emergency removal of a node's persisted
-// HotStuff round/vote journal. Deleting this record removes the crash-time
-// no-equivocation guard required by SR9, so it is only safe during a coordinated
-// stop after an operator has verified the applied chain and consensus state.
+// Command hotstuff-reset performs an emergency reset of a node's persisted
+// HotStuff round state. Run it with the node STOPPED.
+//
+// By default it keeps a floor: the persisted view, the vote commitments (the
+// SR9 crash-time no-equivocation guard) and the last committed QC survive,
+// and only the lock is lowered to that committed QC (clearing a LockedQC that
+// names a branch this node never applied, the wedge the node reports as
+// "PERSISTED CONSENSUS STATE HAS DIVERGED"). The committed QC is kept only
+// when its block is canonical locally; otherwise the tool refuses unless
+// -force-wipe is given, which deletes the whole record as older versions did
+// (views then restart at 1 and the vote guard is gone).
+//
+// Round S131 is why the floor exists: a full wipe on every datadir let nodes
+// that had committed f343 vote, after the restart, for a sibling of it.
+//
+// -print is read-only and prints one line for a runner's pre-reset check:
+//
+//	datadir=<dir> committed_height=<n> committed_hash=<0x..> canonical_height=<n> canonical_hash=<0x..> hs_committed_qc_view=<v> hs_committed_qc_hash=<0x..>
+//
+// committed_* is the QC-backed HotStuffCommittedHead marker (what the vote
+// floor reads), canonical_* the head block pointer, hs_committed_qc_* the
+// persisted HotStuff LastCommittedQC; an unknown height prints as "-".
 //
 // The chain data and epoch records are untouched. Applying requires an
-// exclusive, fsynced byte-for-byte backup. Run it with the node STOPPED.
+// exclusive, fsynced byte-for-byte backup.
 package main
 
 import (
@@ -15,11 +33,13 @@ import (
 	"io"
 	"os"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 var stateKey = []byte("state")
@@ -56,14 +76,123 @@ func writeExclusiveBackup(path string, data []byte) (retErr error) {
 	return nil
 }
 
+// chainPoint is a block height and hash; known is false when the height
+// could not be resolved.
+type chainPoint struct {
+	number uint64
+	hash   types.Hash
+	known  bool
+}
+
+func (p chainPoint) height() string {
+	if !p.known {
+		return "-"
+	}
+	return fmt.Sprintf("%d", p.number)
+}
+
+func readPoint(tx kv.Tx, hash types.Hash) chainPoint {
+	p := chainPoint{hash: hash}
+	if hash == (types.Hash{}) {
+		return p
+	}
+	if n := rawdb.ReadHeaderNumber(tx, hash); n != nil {
+		p.number, p.known = *n, true
+	}
+	return p
+}
+
+// printLine formats the -print output (see the package comment).
+func printLine(dataDir string, committed, canonical chainPoint, state *hotstuff.ConsensusState) string {
+	var qcView uint64
+	var qcHash types.Hash
+	if state != nil {
+		qcView, qcHash = uint64(state.LastCommittedQC.View), state.LastCommittedQC.BlockHash
+	}
+	return fmt.Sprintf("datadir=%s committed_height=%s committed_hash=%s canonical_height=%s canonical_hash=%s hs_committed_qc_view=%d hs_committed_qc_hash=%s",
+		dataDir, committed.height(), committed.hash.Hex(), canonical.height(), canonical.hash.Hex(), qcView, qcHash.Hex())
+}
+
+// floorState is the record the default reset writes: view, vote commitments
+// and committed QC kept, the lock lowered to the committed QC, the timeout
+// backoff cleared.
+func floorState(state *hotstuff.ConsensusState) *hotstuff.ConsensusState {
+	floor := *state
+	floor.ConsecutiveTimeouts = 0
+	floor.LockedQC = state.LastCommittedQC.Clone()
+	floor.LastCommittedQC = state.LastCommittedQC.Clone()
+	return &floor
+}
+
+// committedQCCanonical reports whether the persisted committed QC names a
+// block on this node's canonical chain (a genesis QC trivially does).
+func committedQCCanonical(tx kv.Tx, state *hotstuff.ConsensusState) (bool, error) {
+	h := state.LastCommittedQC.BlockHash
+	if h == (types.Hash{}) {
+		return true, nil
+	}
+	n := rawdb.ReadHeaderNumber(tx, h)
+	if n == nil {
+		return false, nil
+	}
+	ch, err := rawdb.ReadCanonicalHash(tx, *n)
+	if err != nil {
+		return false, err
+	}
+	return ch == h, nil
+}
+
+// applyReset rewrites (or, with wipe, deletes) the persisted state in one
+// transaction. Deleting first keeps SaveConsensusState's monotonic merge from
+// folding the old lock back in.
+func applyReset(ctx context.Context, db kv.RwDB, state *hotstuff.ConsensusState, wipe bool) error {
+	return db.Update(ctx, func(tx kv.RwTx) error {
+		if err := tx.Delete(modules.HotStuffState, stateKey); err != nil {
+			return err
+		}
+		if wipe {
+			return nil
+		}
+		return hotstuff.SaveConsensusState(tx, floorState(state))
+	})
+}
+
+// readDatadir reads everything both modes need in one read transaction.
+func readDatadir(ctx context.Context, db kv.RoDB) (raw []byte, state *hotstuff.ConsensusState, committed, canonical chainPoint, qcCanonical bool, err error) {
+	err = db.View(ctx, func(tx kv.Tx) error {
+		committed = readPoint(tx, rawdb.ReadHotStuffCommittedHead(tx))
+		canonical = readPoint(tx, rawdb.ReadHeadBlockHash(tx))
+		v, err := tx.GetOne(modules.HotStuffState, stateKey)
+		if err != nil {
+			return err
+		}
+		raw = append(raw[:0], v...)
+		if len(raw) == 0 {
+			return nil
+		}
+		if state, err = hotstuff.LoadConsensusState(tx); err != nil || state == nil {
+			return err
+		}
+		qcCanonical, err = committedQCCanonical(tx, state)
+		return err
+	})
+	return raw, state, committed, canonical, qcCanonical, err
+}
+
 func main() {
 	dataDir := flag.String("datadir", "", "node data dir (the one holding chaindata)")
-	apply := flag.Bool("apply", false, "delete the journal after all safety checks")
-	force := flag.Bool("force", false, "acknowledge loss of the crash-equivocation guard")
-	backup := flag.String("backup", "", "new file for the exact journal bytes (required with -apply)")
+	apply := flag.Bool("apply", false, "reset the state after all safety checks")
+	force := flag.Bool("force", false, "acknowledge the lowered lock")
+	forceWipe := flag.Bool("force-wipe", false, "delete the whole record, losing the committed floor and the crash-equivocation guard")
+	printOnly := flag.Bool("print", false, "read-only: print the committed and canonical heads as one line")
+	backup := flag.String("backup", "", "new file for the exact state bytes (required with -apply)")
 	flag.Parse()
 	if *dataDir == "" {
 		fmt.Fprintln(os.Stderr, "-datadir is required")
+		os.Exit(2)
+	}
+	if *printOnly && *apply {
+		fmt.Fprintln(os.Stderr, "-print is read-only and cannot be combined with -apply")
 		os.Exit(2)
 	}
 	if err := validateApplyFlags(*apply, *force, *backup); err != nil {
@@ -80,52 +209,56 @@ func main() {
 	}
 	defer db.Close()
 
-	var (
-		raw   []byte
-		state *hotstuff.ConsensusState
-	)
-	if err := db.View(ctx, func(tx kv.Tx) error {
-		v, err := tx.GetOne(modules.HotStuffState, stateKey)
-		if err != nil {
-			return err
-		}
-		raw = append(raw[:0], v...)
-		if len(raw) == 0 {
-			return nil
-		}
-		state, err = hotstuff.LoadConsensusState(tx)
-		return err
-	}); err != nil {
+	raw, state, committed, canonical, qcCanonical, err := readDatadir(ctx, db)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "read/decode: %v\n", err)
 		os.Exit(1)
 	}
-
+	if *printOnly {
+		fmt.Println(printLine(*dataDir, committed, canonical, state))
+		return
+	}
 	if len(raw) == 0 {
 		fmt.Printf("%s: no persisted hotstuff state\n", *dataDir)
 		return
 	}
-	fmt.Printf("%s: hotstuff journal present (%d bytes)\n", *dataDir, len(raw))
+	fmt.Printf("%s: hotstuff state present (%d bytes)\n", *dataDir, len(raw))
 	if state != nil {
-		fmt.Printf("view=%d lockedQC=%d committedQC=%d prepareVote=%d commitVote=%d\n",
+		fmt.Printf("view=%d lockedQC=%d committedQC=%d prepareVote=%d commitVote=%d committedQCCanonical=%v\n",
 			state.View, state.LockedQC.View, state.LastCommittedQC.View,
-			state.LastVotedView, state.LastCommitVotedView)
+			state.LastVotedView, state.LastCommitVotedView, qcCanonical)
+	}
+	wipe := *forceWipe
+	if !wipe && (state == nil || !qcCanonical) {
+		fmt.Fprintln(os.Stderr, "the persisted committed QC is not on this node's canonical chain (or the record does not decode); "+
+			"no floor can be kept. Re-run with -force-wipe to delete the whole record.")
+		os.Exit(1)
 	}
 	if !*apply {
-		fmt.Println("dry-run only; emergency apply requires -apply -force -backup <new-file>")
+		if wipe {
+			fmt.Println("dry-run only; -force-wipe would delete the whole record")
+		} else {
+			fmt.Printf("dry-run only; would keep view=%d, votes and committedQC=%d (%s), lowering lockedQC %d -> %d\n",
+				state.View, state.LastCommittedQC.View, state.LastCommittedQC.BlockHash.Hex(),
+				state.LockedQC.View, state.LastCommittedQC.View)
+		}
+		fmt.Println("emergency apply requires -apply -force -backup <new-file>")
 		return
 	}
 	if err := writeExclusiveBackup(*backup, raw); err != nil {
 		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
 		os.Exit(1)
 	}
-	if err := db.Update(ctx, func(tx kv.RwTx) error {
-		return tx.Delete(modules.HotStuffState, stateKey)
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "delete (backup retained at %s): %v\n", *backup, err)
+	if err := applyReset(ctx, db, state, wipe); err != nil {
+		fmt.Fprintf(os.Stderr, "reset (backup retained at %s): %v\n", *backup, err)
 		os.Exit(1)
 	}
+	what := "lowered the lock to the committed QC (view, votes and committed QC kept)"
+	if wipe {
+		what = "deleted the whole hotstuff record"
+	}
 	if _, err := io.WriteString(os.Stdout,
-		fmt.Sprintf("%s: cleared hotstuff journal; exact backup saved at %s\n", *dataDir, *backup)); err != nil {
+		fmt.Sprintf("%s: %s; exact backup saved at %s\n", *dataDir, what, *backup)); err != nil {
 		fmt.Fprintf(os.Stderr, "report result: %v\n", err)
 	}
 }
