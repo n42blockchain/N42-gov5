@@ -3,6 +3,7 @@ package sharedexec
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -31,6 +32,7 @@ type resumeReservation struct {
 	session      *resumeIngressSession
 	frame        ResumeFrame
 	lifetimeHeld bool
+	trace        *resumeFrameTrace
 }
 
 func (r *resumeIngressSession) frame(id CorpusFrameID) (ResumeFrame, bool) {
@@ -86,6 +88,8 @@ func (s *Server) admitResumeFrame(ctx context.Context, identity Identity, planID
 }
 
 func (s *Server) reserveResumeIngress(q *strictIngressQueue, planID types.Hash, epoch [16]byte, frame CorpusFrame, size int) (*resumeReservation, error) {
+	outcome := 4
+	defer func() { s.resumeDiagnostics.reservation(outcome) }()
 	r := q.resume
 	if r == nil || r.planID != planID {
 		return nil, errors.New("sealed resume plan differs")
@@ -94,12 +98,14 @@ func (s *Server) reserveResumeIngress(q *strictIngressQueue, planID types.Hash, 
 	if !ok || selected.PayloadHash != frame.PayloadHash || int(selected.PayloadBytes) != size || frame.Transactions != 500 {
 		return nil, errors.New("sealed resume frame outside exact original whitelist")
 	}
+	lockStart := time.Now()
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer func() { q.mu.Unlock(); s.resumeDiagnostics.add(0, time.Since(lockStart)) }()
 	if q.closed || s.ctx.Err() != nil || epoch != q.epoch {
 		return nil, errors.New("sealed resume epoch unavailable")
 	}
 	if q.reconciling {
+		outcome = 3
 		return nil, ErrIngressSnapshotChanged
 	}
 	count := int(selected.NewlyAdmitted)
@@ -112,7 +118,12 @@ func (s *Server) reserveResumeIngress(q *strictIngressQueue, planID types.Hash, 
 			return nil, err
 		}
 	}
-	if count > q.maxTx-q.pending-q.reservedTx || size > q.maxBytes-q.bytes-q.reservedBytes {
+	if count > q.maxTx-q.pending-q.reservedTx {
+		outcome = 1
+		return nil, ErrIngressCreditsExhausted
+	}
+	if size > q.maxBytes-q.bytes-q.reservedBytes {
+		outcome = 2
 		return nil, ErrIngressCreditsExhausted
 	}
 	q.reservedTx += count
@@ -125,16 +136,26 @@ func (s *Server) reserveResumeIngress(q *strictIngressQueue, planID types.Hash, 
 		r.window.reservedNew += uint64(selected.NewlyAdmitted)
 		reservation.lifetimeHeld = true
 	}
+	outcome = 0
 	return reservation, nil
 }
 
 func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue, frame CorpusFrame, r *resumeReservation) (ResumeIngressAck, error) {
+	validateStart := time.Now()
+	validated := false
+	defer func() {
+		if !validated {
+			r.trace.add(3, time.Since(validateStart))
+		}
+	}()
 	if frame.CorpusFrameID != r.frame.ID || frame.PayloadHash != r.frame.PayloadHash || len(frame.Payload) != int(r.frame.PayloadBytes) || frame.Transactions != 500 {
 		return ResumeIngressAck{}, errors.New("sealed resume body differs from its reserved original header")
 	}
 	if err := frame.Validate(q.descriptor); err != nil {
 		return ResumeIngressAck{}, err
 	}
+	r.trace.add(3, time.Since(validateStart))
+	validated = true
 	sender := r.session.plan.Senders[r.frame.SenderIndex]
 	signer := transaction.NewEIP155Signer(s.chain.Config().ChainID)
 	verified := make([]ingressVerified, 0, r.frame.NewlyAdmitted)
@@ -145,31 +166,40 @@ func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue
 	}
 	nonce := firstNonce
 	offset := 0
-	err := WalkCorpusPayload(frame.Payload, frame.Transactions, func(raw []byte) error {
-		if err := ctx.Err(); err != nil {
-			return err
+	walkStart := time.Now()
+	var err error
+	func() {
+		if r.trace != nil {
+			s.resumeDiagnostics.verify(true)
+			defer s.resumeDiagnostics.verify(false)
 		}
-		if r.session.window != nil && len(raw) > 102 {
-			return errors.New("bounded resume original transaction exceeds recipe byte cap")
-		}
-		from, err := resumeSourceSender(raw, q.descriptor, signer, sender.Index, nonce)
-		if err != nil || from != sender.Address {
-			return errors.New("sealed resume original signature/sender/recipe differs")
-		}
-		q.verified.Add(1)
-		start := offset + 4
-		offset = start + len(raw)
-		if nonce-firstNonce >= uint64(r.frame.CanonicalSkipped) {
-			tx, err := transaction.DecodeEthereumTransaction(raw)
-			if err != nil {
+		err = WalkCorpusPayload(frame.Payload, frame.Transactions, func(raw []byte) error {
+			if err := ctx.Err(); err != nil {
 				return err
 			}
-			verified = append(verified, ingressVerified{sender: from, nonce: nonce, hash: tx.Hash(), start: start, end: offset, cost: *uint256.NewInt(21001), gasPrice: *uint256.NewInt(1)})
-			addresses = append(addresses, *tx.To())
-		}
-		nonce++
-		return nil
-	})
+			if r.session.window != nil && len(raw) > 102 {
+				return errors.New("bounded resume original transaction exceeds recipe byte cap")
+			}
+			from, err := resumeSourceSender(raw, q.descriptor, signer, sender.Index, nonce)
+			if err != nil || from != sender.Address {
+				return errors.New("sealed resume original signature/sender/recipe differs")
+			}
+			q.verified.Add(1)
+			start := offset + 4
+			offset = start + len(raw)
+			if nonce-firstNonce >= uint64(r.frame.CanonicalSkipped) {
+				tx, err := transaction.DecodeEthereumTransaction(raw)
+				if err != nil {
+					return err
+				}
+				verified = append(verified, ingressVerified{sender: from, nonce: nonce, hash: tx.Hash(), start: start, end: offset, cost: *uint256.NewInt(21001), gasPrice: *uint256.NewInt(1)})
+				addresses = append(addresses, *tx.To())
+			}
+			nonce++
+			return nil
+		})
+	}()
+	r.trace.add(4, time.Since(walkStart))
 	if err != nil {
 		return ResumeIngressAck{}, err
 	}
@@ -191,7 +221,20 @@ func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue
 		return ack, nil
 	}
 	q.mu.Unlock()
-	snapshot, err := s.chain.ReadPerformanceCanonicalAccounts(ctx, addresses)
+	var snapshot internal.PerformanceCanonicalAccounts
+	if r.trace != nil {
+		snapshot, err = s.chain.ReadPerformanceCanonicalAccountsObserved(ctx, addresses, func(lockWait, joinLag, read time.Duration) {
+			r.trace.add(5, lockWait)
+			if joinLag > 0 {
+				r.trace.add(6, joinLag)
+			}
+			if read > 0 {
+				r.trace.add(7, read)
+			}
+		})
+	} else {
+		snapshot, err = s.chain.ReadPerformanceCanonicalAccounts(ctx, addresses)
+	}
 	if errors.Is(err, internal.ErrPerformanceCanonicalNotApplied) {
 		return ResumeIngressAck{}, ErrIngressSnapshotChanged
 	}
@@ -211,8 +254,14 @@ func (s *Server) verifyReservedResume(ctx context.Context, q *strictIngressQueue
 }
 
 func (s *Server) publishResumeIngress(ctx context.Context, q *strictIngressQueue, frame CorpusFrame, r *resumeReservation, snapshot internal.PerformanceCanonicalAccounts, verified []ingressVerified) (ResumeIngressAck, error) {
+	lockStart := time.Now()
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	locked := time.Now()
+	defer func() {
+		q.mu.Unlock()
+		r.trace.add(8, locked.Sub(lockStart))
+		r.trace.add(9, time.Since(locked))
+	}()
 	if err := ctx.Err(); err != nil {
 		return ResumeIngressAck{}, err
 	}
