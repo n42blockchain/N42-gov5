@@ -55,6 +55,13 @@ var (
 	// happening upstream.
 	metricProposalSelfJustify = prometheus.GetOrCreateCounter("hotstuff_proposal_self_justify_total", false)
 
+	// A vote or local commit refused because the block does not extend this
+	// node's own committed block (committed_floor.go). Non-zero means a
+	// proposal or Decide reached this node on a branch that conflicts with
+	// what it has committed -- after a consensus-state reset, the signature
+	// of a fleet split.
+	metricVoteCommittedFloor = prometheus.GetOrCreateCounter("hotstuff_vote_committed_floor_refused_total", false)
+
 	// Vote counts of the last committed view (gauges).
 	metricPrepareVotes = prometheus.GetOrCreateCounter("hotstuff_prepare_votes", true)
 	metricCommitVotes  = prometheus.GetOrCreateCounter("hotstuff_commit_votes", true)

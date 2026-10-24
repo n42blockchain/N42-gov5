@@ -125,6 +125,23 @@ type HotStuff struct {
 	// checks that link, continuing the resealed chain's BLS multi-sig.
 	committeePool CommitteePool
 	ceReader      CEReader
+
+	// committedChain is the node's own committed chain, handed to the
+	// engine's vote floor (committed_floor.go). Kept here so an engine
+	// created after SetCommittedChain still receives it.
+	committedChain CommittedChainReader
+}
+
+// SetCommittedChain exposes this node's committed chain to the consensus
+// engine: no vote and no local commit may conflict with the committed block
+// it reports. Call before the service starts. Nil disables the floor.
+func (h *HotStuff) SetCommittedChain(r CommittedChainReader) {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	h.committedChain = r
+	if h.engine != nil {
+		h.engine.SetCommittedChain(r)
+	}
 }
 
 // SetCommitteeEvidence injects the live BLS committee pool and the consensus-
@@ -250,6 +267,9 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		h.engine.removed = true // inactive until reconfig adds it; still processes events
 	}
 
+	if h.committedChain != nil {
+		h.engine.SetCommittedChain(h.committedChain)
+	}
 	if h.config.TwoPhaseVoteGate {
 		h.engine.SetTwoPhaseVote(true)
 		log.Info("HotStuff two-phase vote gate ENABLED (order-then-execute: R1 static, R2 import-gated)")

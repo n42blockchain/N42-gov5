@@ -573,7 +573,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 	// of failing open; refuse the commit vote if it does not extend its own
 	// JustifyQC block (recorded from this view's Proposal).
 	if !e.extendsJustify(view, pqc.BlockHash) {
-		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block",
+		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block or the committed block",
 			"view", view, "blockHash", pqc.BlockHash)
 		return nil
 	}
@@ -695,9 +695,16 @@ func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
 // can pair a high-view JustifyQC with a block on a DIFFERENT branch and voters
 // certify a conflicting chain (observed live: a dead same-height sibling
 // re-proposed at a committed height seeded conflicting commits at 13014242).
-// Fail-open when either side is unknown (genesis justify, parent not tracked) —
-// the rule tightens as information is available, never blocks the honest path.
+// The JustifyQC comparison fails open when either side is unknown (genesis
+// justify, parent not tracked), but the committed floor below does not: the
+// block must also extend this node's own committed block, and an ancestry
+// that cannot be resolved yet means "do not vote now". A genesis/empty
+// justify is exactly what a reset node sees, so it is no pass on its own
+// (round S131: nodes that had committed f343 voted for its sibling).
 func (e *ConsensusEngine) extendsJustify(view ViewNumber, blockHash types.Hash) bool {
+	if !e.extendsCommitted(view, blockHash) {
+		return false
+	}
 	justify, ok := e.pendingJustifyBlocks[view]
 	if !ok || justify == (types.Hash{}) {
 		return true
