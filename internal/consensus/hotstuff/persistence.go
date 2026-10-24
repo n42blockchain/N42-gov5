@@ -145,6 +145,12 @@ func mergeMonotonic(tx kv.RwTx, state *ConsensusState) (*ConsensusState, error) 
 	return mergeConsensusStates(state, prev)
 }
 
+// MergeConsensusStates is mergeConsensusStates for tools that must predict
+// what recovery builds from two records (cmd/hotstuff-reset).
+func MergeConsensusStates(state, prev *ConsensusState) (*ConsensusState, error) {
+	return mergeConsensusStates(state, prev)
+}
+
 // mergeConsensusStates folds prev into state with the rules of
 // mergeMonotonic. A nil prev returns state unchanged.
 func mergeConsensusStates(state, prev *ConsensusState) (*ConsensusState, error) {
