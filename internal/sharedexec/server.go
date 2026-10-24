@@ -78,6 +78,8 @@ type Server struct {
 	jobs                  map[importKey]*importJob
 	completed             []importKey
 	wg                    sync.WaitGroup
+	resumeObserverWG      sync.WaitGroup
+	resumeObserverClosed  sync.Once
 	imports               atomic.Uint64
 	closed                bool
 	started               bool // mu: external or direct execution use has begun
@@ -101,6 +103,7 @@ type Server struct {
 	prepared              *internal.PreparedUnsignedCandidate // execute lock; one pending candidate
 	ownBuildReuses        atomic.Uint64
 	ingress               *strictIngressQueue                     // configured before serving; immutable pointer
+	resumeDiagnostics     *resumeDiagnostics                      // startup-only optional observer
 	queuePlans            map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
 	queueExpiredView      hotstuff.ViewNumber                     // execute
 }
@@ -140,6 +143,12 @@ func (s *Server) Close() {
 	s.cancel()
 	s.mu.Unlock()
 	s.wg.Wait()
+	s.resumeObserverWG.Wait()
+	s.resumeObserverClosed.Do(func() {
+		if s.resumeDiagnostics != nil && s.ingress != nil {
+			s.resumeDiagnostics.finish(s.ingress)
+		}
+	})
 	s.execute.Lock()
 	s.prepared = nil
 	if q := s.ingress; q != nil {

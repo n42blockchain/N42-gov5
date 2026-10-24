@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -143,6 +144,16 @@ func (s *Server) EnableStrictIngress(options StrictIngressOptions) error {
 		return errors.New("execution service closed or initializing resume")
 	}
 	s.ingress = q
+	if path := os.Getenv("N42_RESUME_DIAGNOSTICS_JSONL"); path != "" {
+		d, err := newResumeDiagnostics(path)
+		if err != nil {
+			s.ingress = nil
+			return err
+		}
+		s.resumeDiagnostics = d
+		s.resumeObserverWG.Add(1)
+		go d.run(s, q)
+	}
 	return nil
 }
 

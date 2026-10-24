@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -34,15 +35,45 @@ type PerformanceCanonicalAccounts struct {
 }
 
 func (bc *BlockChain) ReadPerformanceCanonicalAccounts(ctx context.Context, addresses []types.Address) (PerformanceCanonicalAccounts, error) {
+	return bc.readPerformanceCanonicalAccounts(ctx, addresses, nil)
+}
+
+// ReadPerformanceCanonicalAccountsObserved reports phase durations after the
+// snapshot lock has been released. The callback is for opt-in diagnostics only.
+func (bc *BlockChain) ReadPerformanceCanonicalAccountsObserved(ctx context.Context, addresses []types.Address, observe func(lockWait, joinLag, read time.Duration)) (PerformanceCanonicalAccounts, error) {
+	return bc.readPerformanceCanonicalAccounts(ctx, addresses, observe)
+}
+
+func (bc *BlockChain) readPerformanceCanonicalAccounts(ctx context.Context, addresses []types.Address, observe func(lockWait, joinLag, read time.Duration)) (PerformanceCanonicalAccounts, error) {
+	start := time.Now()
 	bc.lock.Lock()
-	defer bc.lock.Unlock()
+	locked := time.Now()
+	joined := locked
+	joinAttempted, readStarted := false, false
+	defer func() {
+		bc.lock.Unlock()
+		if observe != nil {
+			var joinLag, read time.Duration
+			if joinAttempted {
+				joinLag = joined.Sub(locked)
+			}
+			if readStarted {
+				read = time.Since(joined)
+			}
+			observe(locked.Sub(start), joinLag, read)
+		}
+	}()
 	var out PerformanceCanonicalAccounts
 	if bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled || !bc.canonicalByCommitOnly() || len(addresses) > 1000 {
 		return out, errors.New("canonical accounts require bounded performance QMDB owner")
 	}
-	if err := bc.joinLagWrite(); err != nil {
-		return out, err
+	joinAttempted = true
+	joinErr := bc.joinLagWrite()
+	joined = time.Now()
+	if joinErr != nil {
+		return out, joinErr
 	}
+	readStarted = true
 	tx, err := bc.ChainDB.BeginRo(ctx)
 	if err != nil {
 		return out, err

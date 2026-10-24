@@ -96,6 +96,8 @@ func decodeBoundedHistoricalOuter(inputs resumePlanInputs, m supplyManifest, rec
 			return fail()
 		}
 		return boundedHistoricalProjection{outer.NonceSum, outer.VectorSHA256, outer.Canonical}, nil
+	case boundedQ21HistoricalKind:
+		return decodeBoundedQ21HistoricalOuter(inputs, m, recovery, raw)
 	case boundedFiniteHistoricalKind:
 		var outer boundedFiniteHistoricalOuter
 		if err := resumeDecodeJSON(raw, &outer, false); err != nil {

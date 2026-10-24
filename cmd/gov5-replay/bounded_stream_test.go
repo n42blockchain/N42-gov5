@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -213,6 +214,32 @@ func TestBoundedWindowConservativeReadBracketsExcludeDrain(t *testing.T) {
 		if _, err := boundedWindowRate(before, bad); err == nil {
 			t.Fatal("short window/regression/fork accepted")
 		}
+	}
+}
+
+func TestBoundedCanonicalObservationAbsoluteClockSchema(t *testing.T) {
+	start, err := boundedAbsoluteMonotonicNS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	end, err := boundedAbsoluteMonotonicNS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start <= 0 || end <= start {
+		t.Fatalf("nonmonotonic absolute clock: %d..%d", start, end)
+	}
+	raw, err := json.Marshal(boundedCanonicalObservation{RequestAbsoluteNS: start, ResponseAbsoluteNS: end})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract map[string]any
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if contract["request_start_absolute_monotonic_ns"] == nil || contract["response_end_absolute_monotonic_ns"] == nil {
+		t.Fatalf("missing absolute endpoint fields: %s", raw)
 	}
 }
 

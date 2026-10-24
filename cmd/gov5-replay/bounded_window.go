@@ -12,15 +12,27 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/sharedexec"
 	"github.com/n42blockchain/N42/internal/sharedvalidator"
 )
 
 type boundedCanonicalObservation struct {
-	RequestStartNS int64                        `json:"request_start_monotonic_ns"`
-	ResponseEndNS  int64                        `json:"response_end_monotonic_ns"`
-	Canonical      sharedvalidator.StatusResult `json:"single_validator_canonical"`
+	RequestStartNS     int64                        `json:"request_start_monotonic_ns"`
+	ResponseEndNS      int64                        `json:"response_end_monotonic_ns"`
+	RequestAbsoluteNS  int64                        `json:"request_start_absolute_monotonic_ns"`
+	ResponseAbsoluteNS int64                        `json:"response_end_absolute_monotonic_ns"`
+	Canonical          sharedvalidator.StatusResult `json:"single_validator_canonical"`
+}
+
+func boundedAbsoluteMonotonicNS() (int64, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0, err
+	}
+	return ts.Nano(), nil
 }
 
 func boundedWindowRate(start, end boundedCanonicalObservation) (float64, error) {
@@ -315,12 +327,20 @@ func runBoundedWindowMode(parent context.Context, suffix bool, root, runtimePath
 	close(start)
 	last := initial[0]
 	observe := func(readContext context.Context) (boundedCanonicalObservation, error) {
-		out := boundedCanonicalObservation{RequestStartNS: time.Since(pacer.start).Nanoseconds()}
+		absoluteStart, clockErr := boundedAbsoluteMonotonicNS()
+		if clockErr != nil {
+			return boundedCanonicalObservation{}, clockErr
+		}
+		out := boundedCanonicalObservation{RequestStartNS: time.Since(pacer.start).Nanoseconds(), RequestAbsoluteNS: absoluteStart}
 		probe, cancel := context.WithTimeout(readContext, 2*time.Second)
 		defer cancel()
 		status, readErr := validators[0].Status(probe)
 		out.Canonical = status
 		out.ResponseEndNS = time.Since(pacer.start).Nanoseconds()
+		out.ResponseAbsoluteNS, clockErr = boundedAbsoluteMonotonicNS()
+		if clockErr != nil {
+			return out, clockErr
+		}
 		if readErr != nil {
 			return out, readErr
 		}
