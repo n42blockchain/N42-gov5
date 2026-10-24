@@ -86,9 +86,10 @@ func s131State() *hotstuff.ConsensusState {
 	}
 }
 
-// TestApplyResetKeepsTheCommittedFloor: the default reset keeps view, vote
-// commitments and the committed QC, lowering only the lock -- the record a
-// full wipe destroyed in round S131.
+// TestApplyResetKeepsTheCommittedFloor: the default reset keeps the committed
+// QC -- the record a full wipe destroyed in round S131 -- and lowers the
+// lock, both votes and the view to it (S132: votes and a lock on a
+// speculative block survived a lock-only reset and wedged the fleet).
 func TestApplyResetKeepsTheCommittedFloor(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	ctx := context.Background()
@@ -110,9 +111,10 @@ func TestApplyResetKeepsTheCommittedFloor(t *testing.T) {
 	if got == nil {
 		t.Fatal("floor record missing after reset")
 	}
-	if got.View != st.View || got.LastVotedView != st.LastVotedView || got.LastVotedHash != st.LastVotedHash ||
-		got.LastCommitVotedView != st.LastCommitVotedView || got.LastCommitVotedHash != st.LastCommitVotedHash {
-		t.Fatalf("view/votes not kept: %+v", got)
+	qc := st.LastCommittedQC
+	if got.View != qc.View+1 || got.LastVotedView != qc.View || got.LastVotedHash != qc.BlockHash ||
+		got.LastCommitVotedView != qc.View || got.LastCommitVotedHash != qc.BlockHash {
+		t.Fatalf("view/votes not lowered to the committed QC: %+v", got)
 	}
 	if got.LastCommittedQC.View != 25750 || got.LastCommittedQC.BlockHash != st.LastCommittedQC.BlockHash {
 		t.Fatalf("committed QC not kept: %+v", got.LastCommittedQC)
@@ -193,5 +195,71 @@ func TestPrintLineAndCommittedQCCanonical(t *testing.T) {
 	if empty != "datadir=/d/x committed_height=- committed_hash="+(types.Hash{}).Hex()+
 		" canonical_height=- canonical_hash="+(types.Hash{}).Hex()+" hs_committed_qc_view=0 hs_committed_qc_hash="+(types.Hash{}).Hex() {
 		t.Fatalf("empty print line: %s", empty)
+	}
+}
+
+// TestS132ResetClearsTheVoteJournal: the S132 B3 state -- view 46713, lock
+// and both votes at 46713 on the speculative 14152208, committed QC 46712 --
+// with the same record in the separate vote journal. After the reset and
+// the journal clear, the record recovery builds (chain record merged with
+// the journal, as mergeVoteJournal does) sits at the committed QC; with the
+// journal left in place the merge raised the lock to 46713 again.
+func TestS132ResetClearsTheVoteJournal(t *testing.T) {
+	ctx := context.Background()
+	committed := types.Hash{0xec, 0x31}
+	spec := types.Hash{0x39, 0xe2}
+	st := &hotstuff.ConsensusState{
+		View:                46713,
+		LockedQC:            hotstuff.QuorumCertificate{View: 46713, BlockHash: spec},
+		LastCommittedQC:     hotstuff.QuorumCertificate{View: 46712, BlockHash: committed},
+		LastVotedView:       46713,
+		LastVotedHash:       spec,
+		LastCommitVotedView: 46713,
+		LastCommitVotedHash: spec,
+	}
+	chain := memdb.NewTestDB(t)
+	journal := memdb.NewTestDB(t)
+	for _, db := range []kv.RwDB{chain, journal} {
+		if err := db.Update(ctx, func(tx kv.RwTx) error { return hotstuff.SaveConsensusState(tx, st) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := applyReset(ctx, chain, st, false); err != nil {
+		t.Fatal(err)
+	}
+	load := func(db kv.RwDB) *hotstuff.ConsensusState {
+		var got *hotstuff.ConsensusState
+		if err := db.View(ctx, func(tx kv.Tx) error {
+			var err error
+			got, err = hotstuff.LoadConsensusState(tx)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	// Left in place, the journal undoes the reset.
+	if merged, err := hotstuff.MergeConsensusStates(load(chain), load(journal)); err != nil {
+		t.Fatal(err)
+	} else if merged.LockedQC.View != 46713 {
+		t.Fatalf("expected the stale journal to raise the lock, got %d", merged.LockedQC.View)
+	}
+	raw, err := readJournal(ctx, journal)
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("journal record: %d bytes, %v", len(raw), err)
+	}
+	if err := clearJournal(ctx, journal); err != nil {
+		t.Fatal(err)
+	}
+	if j := load(journal); j != nil {
+		t.Fatalf("journal record survived the clear: %+v", j)
+	}
+	got := load(chain)
+	if got.View != 46713 || got.LockedQC.View != 46712 || got.LockedQC.BlockHash != committed ||
+		got.LastVotedView != 46712 || got.LastCommitVotedView != 46712 || got.LastCommittedQC.BlockHash != committed {
+		t.Fatalf("recovered record not at the committed floor: %+v", got)
+	}
+	if p := defaultJournalPath("/data/blockchain/qs-node1/chaindata/"); p != "/data/blockchain/qs-node1/hotstuff-journal" {
+		t.Fatalf("default journal path %s", p)
 	}
 }

@@ -1,14 +1,26 @@
 // Command hotstuff-reset performs an emergency reset of a node's persisted
 // HotStuff round state. Run it with the node STOPPED.
 //
-// By default it keeps a floor: the persisted view, the vote commitments (the
-// SR9 crash-time no-equivocation guard) and the last committed QC survive,
-// and only the lock is lowered to that committed QC (clearing a LockedQC that
-// names a branch this node never applied, the wedge the node reports as
-// "PERSISTED CONSENSUS STATE HAS DIVERGED"). The committed QC is kept only
-// when its block is canonical locally; otherwise the tool refuses unless
-// -force-wipe is given, which deletes the whole record as older versions did
-// (views then restart at 1 and the vote guard is gone).
+// By default it keeps a floor: the last committed QC survives and everything
+// above it is lowered to it -- the lock (highQC), both vote commitments --
+// and the view restarts at committedView+1. That clears a LockedQC naming a
+// branch this node never applied (the wedge the node reports as "PERSISTED
+// CONSENSUS STATE HAS DIVERGED") and a vote or lock on a speculative block
+// the node's startup revert unwinds (round S132: votes at view 46713 for the
+// uncommitted 14152208 made the fleet extend it after the restart). The
+// committed QC is kept only when its block is canonical locally; otherwise
+// the tool refuses unless -force-wipe is given, which deletes the whole
+// record as older versions did (views then restart at 1).
+//
+// Lowering the votes gives up the crash-time no-equivocation guard for the
+// views between the committed QC and the old vote: run it on every
+// validator of the fleet together, with every node stopped, never on one
+// node of a live fleet.
+//
+// The separate vote journal (<node datadir>/hotstuff-journal, the parent of
+// -datadir, or -journal) is cleared too: recovery merges it monotonically
+// into the chain record and would raise the lowered lock and votes again
+// (S132: three nodes came back locked at 46713 after a lock-only reset).
 //
 // Round S131 is why the floor exists: a full wipe on every datadir let nodes
 // that had committed f343 vote, after the restart, for a sibling of it.
@@ -32,6 +44,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -113,15 +126,20 @@ func printLine(dataDir string, committed, canonical chainPoint, state *hotstuff.
 		dataDir, committed.height(), committed.hash.Hex(), canonical.height(), canonical.hash.Hex(), qcView, qcHash.Hex())
 }
 
-// floorState is the record the default reset writes: view, vote commitments
-// and committed QC kept, the lock lowered to the committed QC, the timeout
-// backoff cleared.
+// floorState is the record the default reset writes: the committed QC kept,
+// the lock and both vote commitments lowered to it, the view at
+// committedView+1, the timeout backoff cleared.
 func floorState(state *hotstuff.ConsensusState) *hotstuff.ConsensusState {
-	floor := *state
-	floor.ConsecutiveTimeouts = 0
-	floor.LockedQC = state.LastCommittedQC.Clone()
-	floor.LastCommittedQC = state.LastCommittedQC.Clone()
-	return &floor
+	qc := state.LastCommittedQC
+	return &hotstuff.ConsensusState{
+		View:                qc.View + 1,
+		LockedQC:            qc.Clone(),
+		LastCommittedQC:     qc.Clone(),
+		LastVotedView:       qc.View,
+		LastVotedHash:       qc.BlockHash,
+		LastCommitVotedView: qc.View,
+		LastCommitVotedHash: qc.BlockHash,
+	}
 }
 
 // committedQCCanonical reports whether the persisted committed QC names a
@@ -157,6 +175,37 @@ func applyReset(ctx context.Context, db kv.RwDB, state *hotstuff.ConsensusState,
 	})
 }
 
+// defaultJournalPath is the separate vote journal's store for a chaindata
+// directory: <node datadir>/hotstuff-journal, the node datadir being the
+// parent of chaindata.
+func defaultJournalPath(chaindata string) string {
+	return filepath.Join(filepath.Dir(filepath.Clean(chaindata)), "hotstuff-journal")
+}
+
+// readJournal returns the journal store's raw record (nil when absent).
+func readJournal(ctx context.Context, db kv.RoDB) ([]byte, error) {
+	var raw []byte
+	err := db.View(ctx, func(tx kv.Tx) error {
+		v, err := tx.GetOne(modules.HotStuffState, stateKey)
+		raw = append(raw, v...)
+		return err
+	})
+	return raw, err
+}
+
+// clearJournal deletes the journal store's record: recovery then takes the
+// chain database's record as it is (mergeVoteJournal).
+func clearJournal(ctx context.Context, db kv.RwDB) error {
+	return db.Update(ctx, func(tx kv.RwTx) error {
+		return tx.Delete(modules.HotStuffState, stateKey)
+	})
+}
+
+func openJournal(ctx context.Context, path string) (kv.RwDB, error) {
+	return mdbx.NewMDBX(log.New()).Path(path).Label(kv.ConsensusDB).
+		WithTableCfg(hotstuff.VoteJournalTables).Accede().Open(ctx)
+}
+
 // readDatadir reads everything both modes need in one read transaction.
 func readDatadir(ctx context.Context, db kv.RoDB) (raw []byte, state *hotstuff.ConsensusState, committed, canonical chainPoint, qcCanonical bool, err error) {
 	err = db.View(ctx, func(tx kv.Tx) error {
@@ -186,6 +235,7 @@ func main() {
 	forceWipe := flag.Bool("force-wipe", false, "delete the whole record, losing the committed floor and the crash-equivocation guard")
 	printOnly := flag.Bool("print", false, "read-only: print the committed and canonical heads as one line")
 	backup := flag.String("backup", "", "new file for the exact state bytes (required with -apply)")
+	journal := flag.String("journal", "", "separate vote journal store (default <parent of -datadir>/hotstuff-journal, skipped when absent)")
 	flag.Parse()
 	if *dataDir == "" {
 		fmt.Fprintln(os.Stderr, "-datadir is required")
@@ -238,22 +288,59 @@ func main() {
 		if wipe {
 			fmt.Println("dry-run only; -force-wipe would delete the whole record")
 		} else {
-			fmt.Printf("dry-run only; would keep view=%d, votes and committedQC=%d (%s), lowering lockedQC %d -> %d\n",
-				state.View, state.LastCommittedQC.View, state.LastCommittedQC.BlockHash.Hex(),
-				state.LockedQC.View, state.LastCommittedQC.View)
+			f := floorState(state)
+			fmt.Printf("dry-run only; would keep committedQC=%d (%s), lowering lockedQC %d -> %d, prepareVote %d -> %d, commitVote %d -> %d, view %d -> %d\n",
+				state.LastCommittedQC.View, state.LastCommittedQC.BlockHash.Hex(),
+				state.LockedQC.View, f.LockedQC.View, state.LastVotedView, f.LastVotedView,
+				state.LastCommitVotedView, f.LastCommitVotedView, state.View, f.View)
 		}
 		fmt.Println("emergency apply requires -apply -force -backup <new-file>")
 		return
+	}
+	// The journal first: a reset whose journal still holds the old votes is
+	// undone at the next start.
+	jpath := *journal
+	if jpath == "" {
+		jpath = defaultJournalPath(*dataDir)
+	}
+	var jdb kv.RwDB
+	if _, statErr := os.Stat(jpath); statErr == nil {
+		if jdb, err = openJournal(ctx, jpath); err != nil {
+			fmt.Fprintf(os.Stderr, "open vote journal %s: %v\n", jpath, err)
+			os.Exit(1)
+		}
+		defer jdb.Close()
+	} else if *journal != "" {
+		fmt.Fprintf(os.Stderr, "vote journal %s: %v\n", jpath, statErr)
+		os.Exit(1)
 	}
 	if err := writeExclusiveBackup(*backup, raw); err != nil {
 		fmt.Fprintf(os.Stderr, "backup: %v\n", err)
 		os.Exit(1)
 	}
+	if jdb != nil {
+		jraw, err := readJournal(ctx, jdb)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read vote journal: %v\n", err)
+			os.Exit(1)
+		}
+		if len(jraw) > 0 {
+			if err := writeExclusiveBackup(*backup+".journal", jraw); err != nil {
+				fmt.Fprintf(os.Stderr, "journal backup: %v\n", err)
+				os.Exit(1)
+			}
+			if err := clearJournal(ctx, jdb); err != nil {
+				fmt.Fprintf(os.Stderr, "clear vote journal (backup retained at %s.journal): %v\n", *backup, err)
+				os.Exit(1)
+			}
+			fmt.Printf("%s: cleared the vote journal record; exact backup saved at %s.journal\n", jpath, *backup)
+		}
+	}
 	if err := applyReset(ctx, db, state, wipe); err != nil {
 		fmt.Fprintf(os.Stderr, "reset (backup retained at %s): %v\n", *backup, err)
 		os.Exit(1)
 	}
-	what := "lowered the lock to the committed QC (view, votes and committed QC kept)"
+	what := "lowered the lock, both votes and the view to the committed QC (committed QC kept)"
 	if wipe {
 		what = "deleted the whole hotstuff record"
 	}
