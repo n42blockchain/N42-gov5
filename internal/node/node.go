@@ -1897,6 +1897,10 @@ func (n *Node) Start() error {
 			svc.SetH2V4Identity(identity)
 		}
 		svc.SetBlockProducer(n.miner)
+		// Committed-block vote floor: the engine never votes for, or locally
+		// commits, a block that conflicts with what this node has committed,
+		// whatever its (possibly reset) round state says.
+		hs.SetCommittedChain(hotstuff.NewDBCommittedChain(n.ctx, n.db))
 		if hotstuff.SeparateVoteJournalEnabled() && n.config.NodeCfg.DataDir != "" {
 			jdb, err := openVoteJournalDB(n.ctx, filepath.Join(n.config.NodeCfg.DataDir, "hotstuff-journal"))
 			if err != nil {
