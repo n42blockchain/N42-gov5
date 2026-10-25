@@ -1943,8 +1943,8 @@ func (n *Node) Start() error {
 				// without executing and may propose height N once it has
 				// executed N-k.
 				svc.SetLagGate(realBC.LagReady)
-				log.Warn("Deferred execution depth above 1 (bench rule; every node must run the same N42_DEFERRED_DEPTH and N42_DEFERRED_DEPTH_FROM)",
-					"depth", block.DeferredDepth(), "from", block.DeferredDepthFrom(), "voteOnAvailability", block.VoteOnAvailability())
+				log.Warn("Deferred execution depth above 1 (bench rule; every node must run the same N42_DEFERRED_DEPTH, N42_DEFERRED_DEPTH_PREV and N42_DEFERRED_DEPTH_FROM)",
+					"depth", block.DeferredDepth(), "prev", block.DeferredDepthPrev(), "from", block.DeferredDepthFrom(), "voteOnAvailability", block.VoteOnAvailability())
 			}
 		}
 	}
