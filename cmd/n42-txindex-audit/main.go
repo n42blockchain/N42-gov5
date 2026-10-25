@@ -51,6 +51,7 @@ type result struct {
 
 type blockResult struct {
 	Number       uint64 `json:"number"`
+	Coinbase     string `json:"coinbase"`
 	Hash         string `json:"hash"`
 	StateRoot    string `json:"state_root"`
 	ReceiptsRoot string `json:"receipts_root"`
@@ -75,11 +76,11 @@ func run(ctx context.Context) error {
 	wantIdentity := flag.String("expect-chain-identity", "", "Optional identity digest from a prior physical audit")
 	minSegments := flag.Int("min-segments", 2, "Minimum physically published segments")
 	minTailBlocks := flag.Uint64("min-tail-blocks", 1, "Minimum residual tail blocks")
-	wantTxPerBlock := flag.Uint64("expect-tx-per-block", 0, "Exact transactions in every non-genesis block")
+	wantTxPerBlock := flag.Uint64("expect-tx-per-block", 0, "Exact transactions in every non-genesis block (0 allows variable block sizes)")
 	wantTotalTx := flag.Uint64("expect-total-tx", 0, "Exact transactions across all audited blocks")
 	flag.Parse()
-	if flag.NArg() != 0 || !filepath.IsAbs(*dataDir) || *wantHead != 25 || *wantChainID == "" || *minSegments < 2 || *minTailBlocks == 0 || *wantTxPerBlock == 0 || *wantTotalTx == 0 {
-		return fmt.Errorf("absolute --data-dir, --expect-head 25, positive min-tail-blocks/expect-tx-per-block/expect-total-tx and min-segments >=2 required")
+	if err := validateAuditOptions(flag.NArg(), *dataDir, *wantHead, *wantChainID, *minSegments, *minTailBlocks, *wantTotalTx); err != nil {
+		return err
 	}
 	expectedGenesis, err := parseHash(*wantGenesis)
 	if err != nil {
@@ -227,8 +228,8 @@ func run(ctx context.Context) error {
 			canonicalDigest.Write(ordinal[:])
 			canonicalDigest.Write(previous[:])
 			txs := block.Transactions()
-			if n > 0 && uint64(len(txs)) != *wantTxPerBlock {
-				return fmt.Errorf("block %d has %d transactions, want %d", n, len(txs), *wantTxPerBlock)
+			if err := checkBlockTransactionCount(n, len(txs), *wantTxPerBlock); err != nil {
+				return err
 			}
 			header := block.Header().(*blockpkg.Header)
 			if blockpkg.BodyTxRoot(block.Body().(*blockpkg.Body), header.Time) != header.TxHash {
@@ -244,7 +245,7 @@ func run(ctx context.Context) error {
 					return fmt.Errorf("block %d receipt root/gas/bloom mismatch", n)
 				}
 			}
-			answer.Blocks = append(answer.Blocks, blockResult{Number: n, Hash: block.Hash().Hex(), StateRoot: header.Root.Hex(), ReceiptsRoot: header.ReceiptHash.Hex(), GasUsed: header.GasUsed, Transactions: len(txs)})
+			answer.Blocks = append(answer.Blocks, blockResult{Number: n, Coinbase: header.Coinbase.Hex(), Hash: block.Hash().Hex(), StateRoot: header.Root.Hex(), ReceiptsRoot: header.ReceiptHash.Hex(), GasUsed: header.GasUsed, Transactions: len(txs)})
 			hashes := make([]types.Hash, len(txs))
 			for i, txn := range txs {
 				hashes[i] = txn.Hash()
@@ -312,6 +313,22 @@ func run(ctx context.Context) error {
 	return json.NewEncoder(os.Stdout).Encode(answer)
 }
 
+func validateAuditOptions(extraArgs int, dataDir string, head uint64, chainID string, minSegments int, minTailBlocks, totalTx uint64) error {
+	if extraArgs != 0 || !filepath.IsAbs(dataDir) || head == 0 || chainID == "" || minSegments < 2 || minTailBlocks == 0 || totalTx == 0 {
+		return fmt.Errorf("absolute --data-dir, positive --expect-head/min-tail-blocks/expect-total-tx, --expect-chain-id and min-segments >=2 required")
+	}
+	return nil
+}
+
+// A zero expectation disables only the uniform block-size assertion. Both
+// audit modes still check the exact total and every transaction lookup.
+func checkBlockTransactionCount(number uint64, count int, expected uint64) error {
+	if number > 0 && expected > 0 && uint64(count) != expected {
+		return fmt.Errorf("block %d has %d transactions, want %d", number, count, expected)
+	}
+	return nil
+}
+
 func parseHash(value string) (types.Hash, error) {
 	if len(value) != 66 || value[:2] != "0x" {
 		return types.Hash{}, fmt.Errorf("64 hex digits with 0x prefix required")
@@ -328,10 +345,10 @@ func parseHash(value string) (types.Hash, error) {
 }
 
 // diskChain is intentionally separate from the producer's BlockChain and
-// caches the fixed 26-block audit corpus. The resolver's position verifier
+// caches the externally pinned audit corpus. The resolver's position verifier
 // probes other blocks on RecSplit false positives; a two-entry cache would
 // re-decode 163k transactions thousands of times. This cache stays bounded
-// by the required head 25 and belongs only to the short-lived audit process.
+// by the externally required head and belongs only to the short-lived audit process.
 type diskChain struct {
 	db            kv.RwDB
 	config        *params.ChainConfig
@@ -351,7 +368,7 @@ func (c *diskChain) remember(n uint64, b *blockpkg.Block) {
 	defer c.mu.Unlock()
 	c.currentNumber, c.current = n, b
 	if c.blocks == nil {
-		c.blocks = make(map[uint64]*blockpkg.Block, 26)
+		c.blocks = make(map[uint64]*blockpkg.Block)
 	}
 	c.blocks[n] = b
 }
@@ -390,7 +407,7 @@ func runResolver(ctx context.Context, dataDir string, wantHead, wantTxPerBlock, 
 		return err
 	}
 	defer db.Close()
-	chain := &diskChain{db: db, blocks: make(map[uint64]*blockpkg.Block, 26)}
+	chain := &diskChain{db: db, blocks: make(map[uint64]*blockpkg.Block)}
 	var actualIdentity types.Hash
 	err = db.View(ctx, func(tx kv.Tx) error {
 		var err error
@@ -446,8 +463,8 @@ func runResolver(ctx context.Context, dataDir string, wantHead, wantTxPerBlock, 
 				return fmt.Errorf("resolver canonical block %d unavailable: %w", n, err)
 			}
 			txs := b.Transactions()
-			if uint64(len(txs)) != wantTxPerBlock {
-				return fmt.Errorf("resolver block %d tx count %d differs from %d", n, len(txs), wantTxPerBlock)
+			if err := checkBlockTransactionCount(n, len(txs), wantTxPerBlock); err != nil {
+				return fmt.Errorf("resolver: %w", err)
 			}
 			chain.remember(n, b)
 			var number [8]byte
