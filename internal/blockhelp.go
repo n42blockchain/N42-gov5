@@ -250,6 +250,19 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	noop := state.NewNoopWriter()
 	requests := make([]hexutil.Bytes, 0, 2)
 	var callNs, finNs int64
+	// N42_SYSCALL_FINALIZE_ONCE on a state that keeps its pending credits
+	// detached: both calls, then one FinalizeTx over their union. The
+	// first finalize after the parallel fold is the one that walks the
+	// whole block; the second only re-walked the pending credits the first
+	// left in the journal. Nothing the second call does reads what the
+	// first finalize changes: the two contracts' storage is disjoint
+	// (storageEpoch and transient storage only matter per slot of the
+	// same address), the access list and the refund are not reset by
+	// FinalizeTx's effect on the call (the refund of a system call is
+	// discarded), the call's snapshot reverts only its own entries, and
+	// the one account both calls touch, the system address, is touched
+	// empty by each (EIP-161: deleted by the one finalize as by the two).
+	once := state.SyscallFinalizeOnceOn() && ibs.DetachedPendingCredits()
 	for _, systemCall := range registry.executionRequests {
 		t0 := time.Now()
 		if ibs.GetCodeSize(systemCall.contract) == 0 {
@@ -261,11 +274,22 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 		}
 		requests = appendExecutionRequest(requests, systemCall.requestType, ret)
 		t1 := time.Now()
+		if once {
+			callNs += int64(t1.Sub(t0))
+			continue
+		}
 		if err := ibs.FinalizeTx(rules, noop); err != nil {
 			return nil, err
 		}
 		callNs += int64(t1.Sub(t0))
 		finNs += int64(time.Since(t1))
+	}
+	if once {
+		t1 := time.Now()
+		if err := ibs.FinalizeTx(rules, noop); err != nil {
+			return nil, err
+		}
+		finNs = int64(time.Since(t1))
 	}
 	lastBlockEndCallNanos.Store(callNs)
 	lastBlockEndFinalizeNanos.Store(finNs)
