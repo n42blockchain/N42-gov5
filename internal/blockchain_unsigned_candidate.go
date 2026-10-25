@@ -98,7 +98,9 @@ func (bc *BlockChain) buildUnsignedCandidate(ctx context.Context, template *bloc
 	ibs.SetDetachedPendingCredits(true)
 	ibs.SetRootComputer(rc)
 	getHash := GetHashFn(header, func(hash types.Hash, number uint64) *block.Header { return rawdb.ReadHeader(tx, hash, number) })
+	executionStart := startExecutionInterval(ctx)
 	included, receipts, gas, failed, err := bc.BuildParallel(header, template.Transactions(), ibs, getHash)
+	observeExecutionInterval(ctx, executionStart, err)
 	if err != nil {
 		return nil, zero, nil, err
 	}

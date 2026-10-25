@@ -1389,6 +1389,10 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 
 // Only the explicit performance executed-extension path selects batched rows.
 func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error, batchLookup bool) error {
+	return bc.commitToCanonicalWithObserved(hash, inTx, batchLookup, nil)
+}
+
+func (bc *BlockChain) commitToCanonicalWithObserved(hash types.Hash, inTx func(kv.RwTx) error, batchLookup bool, observe CanonicalWriterObserver) error {
 	var committedNumber uint64
 	var notify bool
 	var committedBlk *block.Block
@@ -1421,7 +1425,14 @@ func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 			cached = b
 		}
 	}
+	if observe != nil {
+		observe("db_update_call_begin", time.Now())
+	}
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		if observe != nil {
+			observe("db_update_callback_begin", time.Now())
+			defer func() { observe("db_update_callback_end", time.Now()) }()
+		}
 		tEnter := time.Now()
 		dLock = tEnter.Sub(tCommit)
 		defer func() { dBody = time.Since(tEnter) }()
@@ -1623,6 +1634,9 @@ func (bc *BlockChain) commitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		}
 		return nil
 	})
+	if observe != nil {
+		observe("db_update_call_end", time.Now())
+	}
 	if err != nil {
 		return err
 	}

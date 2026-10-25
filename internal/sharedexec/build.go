@@ -6,11 +6,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
@@ -160,10 +162,27 @@ func (s *Server) executeBuildWithIngressLocked(input []byte, templateHash types.
 	var prepared *internal.PreparedUnsignedCandidate
 	var buildErr error
 	phases.phase("chain_build")
+	buildCtx := s.ctx
+	if s.trace != nil {
+		view, _ := hotstuff.ExtractViewFromExtra(header.Extra)
+		var queueEpoch [16]byte
+		if epoch != nil {
+			queueEpoch = *epoch
+		}
+		count := len(template.Transactions())
+		buildCtx = internal.WithExecutionIntervalObserver(s.ctx, func(start, end time.Time, executionErr error) {
+			s.trace.record(start, "evm_ordinary_begin", "started", header.ParentHash, header.Number.Uint64(), uint64(view), queueEpoch, types.Hash{}, count, types.Hash{}, templateHash)
+			outcome := "ok"
+			if executionErr != nil {
+				outcome = "error"
+			}
+			s.trace.record(end, "evm_ordinary_end", outcome, header.ParentHash, header.Number.Uint64(), uint64(view), queueEpoch, types.Hash{}, count, types.Hash{}, templateHash)
+		})
+	}
 	if s.reuseOwnBuild {
-		built, executed, prepared, buildErr = s.chain.BuildPreparedUnsignedCandidate(s.ctx, &template)
+		built, executed, prepared, buildErr = s.chain.BuildPreparedUnsignedCandidate(buildCtx, &template)
 	} else {
-		built, executed, buildErr = s.chain.BuildUnsignedCandidate(s.ctx, &template)
+		built, executed, buildErr = s.chain.BuildUnsignedCandidate(buildCtx, &template)
 	}
 	if buildErr != nil {
 		return BuildResult{}, buildErr

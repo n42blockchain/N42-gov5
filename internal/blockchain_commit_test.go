@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -50,8 +51,22 @@ func TestCommitToCanonicalAdvancesBlockAndHeaderHeads(t *testing.T) {
 	bc.currentBlock.Store(parent)
 	var committed []uint64
 	bc.SetOnBlockCommitted(func(number uint64) { committed = append(committed, number) })
-	if err := bc.CommitToCanonical(child.Hash()); err != nil {
+	var writerStages []string
+	var writerTimes []time.Time
+	if err := bc.commitToCanonicalWithObserved(child.Hash(), nil, false, func(stage string, at time.Time) {
+		writerStages = append(writerStages, stage)
+		writerTimes = append(writerTimes, at)
+	}); err != nil {
 		t.Fatal(err)
+	}
+	wantStages := []string{"db_update_call_begin", "db_update_callback_begin", "db_update_callback_end", "db_update_call_end"}
+	if len(writerStages) != len(wantStages) {
+		t.Fatalf("writer stage count %v, want %v", writerStages, wantStages)
+	}
+	for i, want := range wantStages {
+		if writerStages[i] != want || writerTimes[i].IsZero() || (i > 0 && writerTimes[i].Before(writerTimes[i-1])) {
+			t.Fatalf("writer stage %d = %s at %s, want %s monotonic", i, writerStages[i], writerTimes[i], want)
+		}
 	}
 	if len(committed) != 1 || committed[0] != 9 {
 		t.Fatalf("commit callback = %v, want [9]", committed)
