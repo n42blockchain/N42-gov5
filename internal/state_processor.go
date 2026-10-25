@@ -78,6 +78,9 @@ type ProcessPhases struct {
 	// fold into the state, the pending-credit prefetch and the deferred fee
 	// credit.
 	CollectReceipts, CollectApply, CollectPrefetch, CollectFees time.Duration
+	// CollectRcptRun: the receipts assembly's own time when it ran beside
+	// the fold (N42_LAG_EARLY_PUBLISH); zero otherwise.
+	CollectRcptRun time.Duration
 	// CollectApply's parts: the final-versions walk, the account pass
 	// (wipes, accounts, credits) and the storage and code passes.
 	ApplyWalk, ApplyAccounts, ApplyStorage time.Duration
