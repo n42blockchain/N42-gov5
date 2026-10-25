@@ -61,6 +61,7 @@ type ffBlock struct {
 	post  *PostState
 	reads []types.Address
 	rows  []string
+	fin   string // FinalizeDigestForTest after the block-end finalizations
 }
 
 // runFFBlock builds a random block from seed over a fresh state: plain
@@ -173,6 +174,7 @@ func runFFBlock(t *testing.T, seed int64, nAccts, nOps int, detach bool) *ffBloc
 			t.Fatal(err)
 		}
 	}
+	out.fin = ibs.FinalizeDigestForTest()
 	ibs.AddBalance(addr(1), uint256.NewInt(2)) // the reward
 	ibs.SetRootPostStateHook(func(p *PostState) { out.post = p })
 	ibs.IntermediateRoot()
@@ -214,6 +216,9 @@ func requireSameFFBlock(t *testing.T, tag string, want, got *ffBlock) {
 	}
 	if fmt.Sprint(want.reads) != fmt.Sprint(got.reads) {
 		t.Fatalf("%s: read order differs (%d vs %d reads)", tag, len(got.reads), len(want.reads))
+	}
+	if want.fin != got.fin {
+		t.Fatalf("%s: state after the block-end finalize differs", tag)
 	}
 	if fmt.Sprint(want.rows) != fmt.Sprint(got.rows) {
 		t.Fatalf("%s: CommitBlock rows differ", tag)
