@@ -552,6 +552,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	defer func() {
 		if !success {
 			cancel()
+			if nodeTxIndexer != nil {
+				nodeTxIndexer.Stop()
+			}
 			if dirLockNode.dirLock != nil {
 				dirLockNode.dirLock.Unlock()
 			}
@@ -901,8 +904,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		// actually comes up: a chain with no indexer keeps writing the MDBX
 		// table, whereas a chain that stopped writing it and has no working
 		// indexer would leave its transactions findable nowhere.
-		ix := txindexer.New(ctx, realBC, chainKv, filepath.Join(cfg.NodeCfg.DataDir, "txindex"))
-		if ix.Start() {
+		ix, err := txindexer.OpenFromEnvironment(ctx, realBC, chainKv, filepath.Join(cfg.NodeCfg.DataDir, "txindex"))
+		if err != nil {
+			return nil, fmt.Errorf("open transaction lookup tail: %w", err)
+		}
+		if ix != nil {
 			realBC.SetTxIndexer(ix)
 			nodeTxIndexer = ix
 		}
@@ -1826,6 +1832,11 @@ func (n *Node) Start() error {
 	if n.performanceValidator != nil {
 		return n.startPerformanceValidator()
 	}
+	if n.txIndexer != nil {
+		if err := n.txIndexer.FatalError(); err != nil {
+			return n.stopAfterTxIndexFailure("before node start", err)
+		}
+	}
 
 	// A scheduled MobileAnchor fork makes MobileRegistryRoot mandatory in
 	// HotStuff headers. Fail before starting any service if this node can become
@@ -2323,9 +2334,36 @@ func (n *Node) Start() error {
 		n.startTxGenerator()
 	}
 
+	if n.txIndexer != nil {
+		if err := n.txIndexer.FatalError(); err != nil {
+			return n.stopAfterTxIndexFailure("during node start", err)
+		}
+		go func() {
+			select {
+			case err := <-n.txIndexer.FatalSeal():
+				log.Error("transaction lookup tail publication failed; stopping node", "err", err)
+				if closeErr := n.Close(); closeErr != nil && !errors.Is(closeErr, ErrNodeStopped) {
+					log.Error("node shutdown after transaction lookup tail failure", "err", closeErr)
+				}
+			case <-n.ctx.Done():
+			}
+		}()
+	}
 	log.PrintSuccess("All services started")
 
 	return nil
+}
+
+// Start holds startStopLock. Schedule shutdown from another goroutine so a
+// pre-existing sealer fault cannot leave an initialized or partly started
+// node alive, and a caller racing shutdown cannot restart the sticky fault.
+func (n *Node) stopAfterTxIndexFailure(phase string, err error) error {
+	go func() {
+		if closeErr := n.Close(); closeErr != nil && !errors.Is(closeErr, ErrNodeStopped) {
+			log.Error("node shutdown after transaction lookup tail failure", "err", closeErr)
+		}
+	}()
+	return fmt.Errorf("transaction lookup tail failed %s: %w", phase, err)
 }
 
 // startTxGenerator initializes and starts the transaction generator for development testing.
@@ -3475,6 +3513,9 @@ func (n *Node) Close() error {
 	switch state {
 	case initializingState:
 		// The node was never started.
+		if n.txIndexer != nil {
+			n.txIndexer.Stop()
+		}
 		return n.doClose(nil)
 	case runningState:
 		// The node was started, release resources acquired by Start().

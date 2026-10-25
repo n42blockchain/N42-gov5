@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
+
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // TestNewNodeBadDatadirPermissionsFails confirms that NewNode surfaces an
@@ -85,5 +88,48 @@ func TestNewNodeInconsistentStateSchemeFails(t *testing.T) {
 	_, err = NewNode(nodeTNewContext(), ethCfg)
 	if err == nil {
 		t.Fatal("expected a state scheme mismatch error when reopening under a different profile")
+	}
+}
+
+func TestTxIndexFatalBeforeStartCannotBeClearedByRetry(t *testing.T) {
+	t.Setenv("N42_TXINDEX_TAIL", "1")
+	t.Setenv("N42_TXINDEX_SEAL_MIN_TX", "1")
+	t.Setenv("N42_TXINDEX_KEEP_BLOCKS", "1")
+	dir := t.TempDir()
+	n, err := NewNode(nodeTNewContext(), nodeTMinimalConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	if n.txIndexer == nil {
+		t.Fatal("enabled transaction lookup tier did not start")
+	}
+	// Corrupt the index after its initial reader opened. The next seal fails
+	// during publication, so a normal node must stop rather than retry an
+	// ambiguous committed prefix or continue growing its in-memory tail.
+	if err := os.WriteFile(filepath.Join(dir, "txindex", "txindex.cidx"), []byte{1}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for number := uint64(1); number <= 3; number++ {
+		n.txIndexer.Add(number, []types.Hash{{byte(number)}})
+	}
+	deadline := time.After(8 * time.Second)
+	for n.txIndexer.FatalError() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("expected a bounded fatal publication error")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	if err := n.Start(); err == nil {
+		t.Fatal("Start accepted an indexer with a pending fatal error")
+	}
+	if err := n.Start(); err == nil {
+		t.Fatal("retry accepted an indexer whose fatal notification was consumed")
+	}
+	select {
+	case <-n.shutDown:
+	case <-time.After(8 * time.Second):
+		t.Fatal("fatal-before-start did not close the node and drain the indexer")
 	}
 }
