@@ -22,14 +22,16 @@ var lagPipePerFrameForTest, lagPipeFramesForTest int
 // executed result once the harness compared it with the serial chain's.
 var lagPipeResultSinkForTest func(n uint64, r rawdb.ExecutedResult)
 
-// TestLagFinalizeLevers: the pipeline harness with N42_LAG_EARLY_PUBLISH
-// and N42_FINALIZE_FAST off and on. Every block's executed result -- state
-// root, receipt root, bloom, gas -- must equal the serial chain's (the
-// harness checks) and be the same under every setting, and each lever must
+// TestLagFinalizeLevers: the pipeline harness with N42_LAG_EARLY_PUBLISH,
+// N42_FINALIZE_FAST and N42_SYSCALL_FINALIZE_ONCE off and on. Every
+// block's executed result -- state root, receipt root, bloom, gas -- must
+// equal the serial chain's (the harness checks) and be the same under
+// every setting, and each lever must
 // have run when on (receipts assembled beside the fold; the parallel root
 // walk, its threshold lowered so every block takes it).
 func TestLagFinalizeLevers(t *testing.T) {
 	defer state.SetFinalizeFastMinForTest(64)()
+	defer state.SetSyscallFinalizeParMinForTest(64)()
 	lagPipeRotateToForTest = true
 	defer func() { lagPipeRotateToForTest = false }()
 	prevGas := lagChainGasLimit
@@ -46,17 +48,20 @@ func TestLagFinalizeLevers(t *testing.T) {
 	for _, sz := range sizes {
 		var ref map[uint64]rawdb.ExecutedResult
 		for _, tc := range []struct {
-			name        string
-			early, fast bool
+			name              string
+			early, fast, once bool
 		}{
-			{"off", false, false},
-			{"earlyPublish", true, false},
-			{"finalizeFast", false, true},
-			{"both", true, true},
+			{"off", false, false, false},
+			{"earlyPublish", true, false, false},
+			{"finalizeFast", false, true, false},
+			{"both", true, true, false},
+			{"syscallOnce", false, false, true},
+			{"all", true, true, true},
 		} {
 			t.Run(fmt.Sprintf("%s/%dx%d", tc.name, sz.frames, sz.perFrame), func(t *testing.T) {
 				defer SetLagEarlyPublishForTest(tc.early)()
 				defer state.SetFinalizeFastForTest(tc.fast)()
+				defer state.SetSyscallFinalizeOnceForTest(tc.once)()
 				prevF, prevP := lagPipeFramesForTest, lagPipePerFrameForTest
 				lagPipeFramesForTest, lagPipePerFrameForTest = sz.frames, sz.perFrame
 				defer func() { lagPipeFramesForTest, lagPipePerFrameForTest = prevF, prevP }()
