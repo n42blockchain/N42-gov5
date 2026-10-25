@@ -31,8 +31,8 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
-	"github.com/n42blockchain/N42/lib/recsplit"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -41,9 +41,9 @@ import (
 // are built from, so it must be the block's own order, not a sorted one.
 type BlockTxSource func(blockNum uint64) ([]types.Hash, error)
 
-// rangesFileName holds each segment's [startBlock, blockCount] so the reader
-// can enumerate segments of differing widths. Its absence means every segment
-// is SegmentSize wide, which is what every index built before this was.
+// rangesFileName is a historical hint. Readers derive authoritative ranges
+// from committed frames and embedded RecSplit BaseDataID, even if this sidecar
+// is absent or stale after a crash.
 const rangesFileName = "txindex.ranges"
 
 // SegmentRange describes one built segment.
@@ -124,8 +124,11 @@ func CommitBuiltSegments(outputDir string, segs []*BuiltSegment) (int, error) {
 			return i, err
 		}
 		s.idxPath = "" // WriteSegment consumed and removed it
+		// The frame and cidx are authoritative. The historical sidecar is only
+		// a hint; its append may be lost after a committed segment and must not
+		// make the caller retry that already-published range.
 		if err := appendSegmentRange(outputDir, SegmentRange{StartBlock: s.StartBlock, BlockCount: s.EndBlock - s.StartBlock}); err != nil {
-			return i, err
+			log.Warn("txindex range hint not updated", "err", err)
 		}
 	}
 	return len(segs), nil
@@ -214,8 +217,7 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 	return buildDatV2Bytes(blockCount, uint64(totalTx), txPerBlock), nil
 }
 
-// appendSegmentRange records a segment's range so a reader can enumerate
-// segments that are not all SegmentSize wide.
+// appendSegmentRange retains the historical advisory range listing.
 func appendSegmentRange(dir string, r SegmentRange) error {
 	f, err := os.OpenFile(filepath.Join(dir, rangesFileName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -226,9 +228,8 @@ func appendSegmentRange(dir string, r SegmentRange) error {
 	return err
 }
 
-// readSegmentRanges returns the recorded ranges, or nil when the file is
-// absent — which means the store predates variable sizing and every segment is
-// SegmentSize wide.
+// readSegmentRanges reads the advisory listing for legacy inspection tools.
+// It must not choose where a live owner's tail rebuild starts.
 func readSegmentRanges(dir string) []SegmentRange {
 	data, err := os.ReadFile(filepath.Join(dir, rangesFileName))
 	if err != nil {
@@ -260,16 +261,11 @@ func datBlockCount(dat []byte) uint64 {
 	return uint64(binary.LittleEndian.Uint32(dat[4:8]))
 }
 
-// SealedEnd returns the first block NOT covered by a segment, or 0 when the
-// store has no recorded ranges. A live tier uses it to know where its tail has
-// to start after a restart.
+// SealedEnd returns the first block NOT covered by a segment. Owner startup
+// must use SealedEndChecked to preserve inventory errors rather than treat a
+// malformed store as an empty one.
 func SealedEnd(dir string) uint64 {
-	var end uint64
-	for _, r := range readSegmentRanges(dir) {
-		if e := r.StartBlock + r.BlockCount; e > end {
-			end = e
-		}
-	}
+	end, _ := SealedEndChecked(dir)
 	return end
 }
 
