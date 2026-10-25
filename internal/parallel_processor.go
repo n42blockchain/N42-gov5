@@ -49,6 +49,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
@@ -499,6 +500,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// transactions, and the block, rather than reading through anything shared.
 	mode := commitment.QMDBStateReadMode()
 	useQMDB := mode != commitment.QMDBReadOff && p.bc != nil && p.bc.qmdbEnabled && p.bc.qmdbRootComputer != nil
+	if _, _, speculative := ibs.SpeculativePlainParent(); speculative {
+		useQMDB = false
+	}
 	if p.bc == nil || p.bc.ChainDB == nil {
 		return nil, fmt.Errorf("ProcessParallel: no chain database for per-worker readers")
 	}
@@ -565,6 +569,10 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
+		}
+		if err := verifySpeculativePlainParent(tx, ibs); err != nil {
+			tx.Rollback()
+			return nil, nil, fmt.Errorf("parallel worker %d: %w", workerID, err)
 		}
 		base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers)
 		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
@@ -1012,6 +1020,23 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 
 	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay, phases: aheadPhases}, nil
+}
+
+// verifySpeculativePlainParent prevents worker transactions opened after a
+// concurrent import from reading a different applied state generation.
+func verifySpeculativePlainParent(tx kv.Tx, ibs *state.IntraBlockState) error {
+	hash, number, speculative := ibs.SpeculativePlainParent()
+	if !speculative {
+		return nil
+	}
+	an, ah, applied, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil {
+		return err
+	}
+	if !applied || an != number || ah != hash {
+		return ErrPerformanceParentNotHead
+	}
+	return nil
 }
 
 // parallelBaseReader is the base state reader of one goroutine of a
@@ -1584,6 +1609,10 @@ func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *
 				return
 			}
 			defer tx.Rollback()
+			if err := verifySpeculativePlainParent(tx, ibs); err != nil {
+				errs[w] = fmt.Errorf("prefetch worker %d: %w", w, err)
+				return
+			}
 			base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers)
 			for i := lo; i < hi; i++ {
 				a, err := base.ReadAccountData(addrs[i])
