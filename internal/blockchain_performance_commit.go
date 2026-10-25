@@ -204,6 +204,12 @@ func (bc *BlockChain) CommitExecutedExtension(hash types.Hash) error {
 // CommitCertifiedExtension verifies a strict CommitQC before changing finality.
 // This first bridge uses the fixed seven-member genesis validator set only.
 func (bc *BlockChain) CommitCertifiedExtension(qc *hotstuff.QuorumCertificate) error {
+	return bc.CommitCertifiedExtensionObserved(qc, nil)
+}
+
+// CommitCertifiedExtensionObserved scopes writer timing to this certified
+// request. The observer never affects canonical validity or durability.
+func (bc *BlockChain) CommitCertifiedExtensionObserved(qc *hotstuff.QuorumCertificate, observe CanonicalWriterObserver) error {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
 	engine, ok := bc.engine.(*hotstuff.HotStuff)
@@ -221,10 +227,14 @@ func (bc *BlockChain) CommitCertifiedExtension(qc *hotstuff.QuorumCertificate) e
 	if err := engine.VerifyPerformanceCommitCertificate(bc, header, qc); err != nil {
 		return err
 	}
-	return bc.commitExecutedExtension(qc.BlockHash)
+	return bc.commitExecutedExtensionObserved(qc.BlockHash, observe)
 }
 
 func (bc *BlockChain) commitExecutedExtension(hash types.Hash) error {
+	return bc.commitExecutedExtensionObserved(hash, nil)
+}
+
+func (bc *BlockChain) commitExecutedExtensionObserved(hash types.Hash, observe CanonicalWriterObserver) error {
 	if bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled {
 		return errors.New("executed extension requires explicit performance QMDB chain")
 	}
@@ -279,5 +289,5 @@ func (bc *BlockChain) commitExecutedExtension(hash types.Hash) error {
 	if !bc.HasAppliedBlock(hash, number) {
 		return errors.New("executed extension is no longer on applied lineage; retry")
 	}
-	return bc.commitToCanonicalWith(hash, nil, true)
+	return bc.commitToCanonicalWithObserved(hash, nil, true, observe)
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
@@ -62,7 +63,15 @@ func (s *Server) Commit(ctx context.Context, request CommitRequest, owner [32]by
 func (s *Server) commit(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate) (result CommitResult, err error) {
 	phases := newOwnerOperationPhases("commit", s)
 	phases.hash, phases.parent, phases.number = request.BlockHash, request.ParentHash, request.Number
-	defer func() { phases.finish(err) }()
+	var traceEpoch [16]byte
+	defer func() {
+		outcome := "ok"
+		if err != nil {
+			outcome = "error"
+		}
+		s.trace.mark("commit_response", outcome, request.BlockHash, request.Number, 0, traceEpoch, types.Hash{}, 0)
+		phases.finish(err)
+	}()
 	phases.phase("request_binding")
 	if request.Identity != s.identity || request.Number == 0 || request.BlockHash == (types.Hash{}) {
 		return CommitResult{}, errors.New("commit chain identity, hash or height mismatch")
@@ -168,7 +177,7 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 	}
 	for {
 		var retry bool
-		result, retry, err = s.commitExclusiveAttemptWithFresh(ctx, request, certificate, phases, allowShared, freshComplete)
+		result, retry, err = s.commitExclusiveAttemptWithFresh(ctx, request, certificate, phases, allowShared, freshComplete, &traceEpoch)
 		if !retry {
 			return result, err
 		}
@@ -179,10 +188,11 @@ func (s *Server) commit(ctx context.Context, request CommitRequest, certificate 
 // commitExclusiveAttempt classifies every request after all earlier writers.
 // A shared fallback is retried once by commit with no reusable observation.
 func (s *Server) commitExclusiveAttempt(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, allowShared bool) (result CommitResult, retry bool, err error) {
-	return s.commitExclusiveAttemptWithFresh(ctx, request, certificate, phases, allowShared, nil)
+	return s.commitExclusiveAttemptWithFresh(ctx, request, certificate, phases, allowShared, nil, nil)
 }
 
-func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, allowShared bool, complete func(CommitResult, error, bool)) (result CommitResult, retry bool, err error) {
+func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request CommitRequest, certificate *hotstuff.QuorumCertificate, phases *ownerOperationPhases, allowShared bool, complete func(CommitResult, error, bool), responseEpoch *[16]byte) (result CommitResult, retry bool, err error) {
+	var traceEpoch [16]byte
 	phases.phase("execute_wait")
 	s.execute.Lock()
 	held := true
@@ -338,6 +348,10 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 			q.mu.Lock()
 			before := q.stamp
 			epoch := q.epoch
+			traceEpoch = epoch
+			if responseEpoch != nil {
+				*responseEpoch = epoch
+			}
 			q.reconciling = true
 			q.stamp.generation++
 			q.mu.Unlock()
@@ -348,6 +362,11 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 				if reconcileErr := s.reconcileStrictIngress(phases); reconcileErr != nil && err == nil {
 					err = reconcileErr
 				}
+				outcome := "ok"
+				if err != nil {
+					outcome = "error"
+				}
+				s.trace.mark("ingress_reconcile_done", outcome, request.BlockHash, request.Number, 0, traceEpoch, types.Hash{}, 0)
 				if canonicalWrote && err == nil && result.Committed && certificate != nil {
 					q.mu.Lock()
 					after, clean := q.stamp, !q.reconciling && !q.closed
@@ -363,8 +382,33 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 		}
 		phases.phase("canonical_commit")
 		if certificate != nil {
-			if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
-				return CommitResult{}, false, err
+			observe := internal.CanonicalWriterObserver(nil)
+			var writerTimes [4]time.Time
+			writerStages := [4]string{"db_update_call_begin", "db_update_callback_begin", "db_update_callback_end", "db_update_call_end"}
+			if s.trace != nil {
+				observe = func(stage string, at time.Time) {
+					switch stage {
+					case writerStages[0]:
+						writerTimes[0] = at
+					case writerStages[1]:
+						writerTimes[1] = at
+					case writerStages[2]:
+						writerTimes[2] = at
+					case writerStages[3]:
+						writerTimes[3] = at
+					}
+				}
+			}
+			writerErr := s.chain.CommitCertifiedExtensionObserved(certificate, observe)
+			if s.trace != nil {
+				for i, at := range writerTimes {
+					if !at.IsZero() {
+						s.trace.record(at, writerStages[i], "observed", request.BlockHash, request.Number, 0, traceEpoch, types.Hash{}, 0)
+					}
+				}
+			}
+			if writerErr != nil {
+				return CommitResult{}, false, writerErr
 			}
 			canonicalWrote = true
 		} else if !duplicate {

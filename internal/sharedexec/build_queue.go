@@ -207,6 +207,9 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (respo
 	}
 	phases.phase("execute_build")
 	result, buildErr := s.executeQueuePlanLocked(plan, r, header, view)
+	if buildErr == nil && s.trace != nil {
+		s.trace.mark("build_result", "ok", header.ParentHash, header.Number.Uint64(), uint64(view), r.Epoch, types.Hash{}, 0, r.PreparedHash, crypto.Keccak256Hash(plan.input), result.BlockHash)
+	}
 	phases.phase("publish_accounting")
 	// Publish accounting while execute remains held: canonical pruning cannot
 	// delete a plan and race a late worker completion which resurrects it.
@@ -240,14 +243,17 @@ func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan, request QueueBuild
 	}()
 	if s.speculativeEnabled {
 		if child, binding, cancel := s.takeSpeculativeQueueChild(request, header, view); cancel != nil {
+			s.trace.mark("take_speculative", "ready", header.ParentHash, header.Number.Uint64(), uint64(view), request.Epoch, binding, 0, request.PreparedHash, binding)
 			defer cancel()
 			if child != nil {
 				defer child.Close()
 				if speculative, specErr := s.completeSpeculativeQueuePlan(plan, child, binding); specErr == nil {
+					s.trace.mark("consume_speculative", "ok", header.ParentHash, header.Number.Uint64(), uint64(view), request.Epoch, binding, 0, request.PreparedHash, binding, speculative.BlockHash)
 					return speculative, nil
 				}
 			}
 		}
+		s.trace.mark("speculative_fallback", "ordinary", header.ParentHash, header.Number.Uint64(), uint64(view), request.Epoch, types.Hash{}, 0, request.PreparedHash, types.Hash{})
 	}
 	return s.executeBuildWithIngressLocked(plan.input, crypto.Keccak256Hash(plan.input), plan.bytes, &request.Epoch)
 }

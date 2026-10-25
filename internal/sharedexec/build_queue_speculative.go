@@ -46,21 +46,22 @@ type speculativeCommitTransition struct {
 }
 
 type speculativeQueueSlot struct {
-	mu       sync.Mutex
-	done     chan struct{}
-	cleanup  chan struct{} // closed after child.Close and specDraining retirement
-	cancel   context.CancelFunc
-	timer    *time.Timer
-	child    *internal.SpeculativeAppliedChild
-	err      error
-	epoch    [16]byte
-	stamp    ingressStamp
-	parent   types.Hash
-	number   uint64
-	view     hotstuff.ViewNumber
-	maxTx    int
-	maxBytes int
-	binding  types.Hash
+	mu           sync.Mutex
+	done         chan struct{}
+	cleanup      chan struct{} // closed after child.Close and specDraining retirement
+	cancel       context.CancelFunc
+	timer        *time.Timer
+	child        *internal.SpeculativeAppliedChild
+	err          error
+	epoch        [16]byte
+	stamp        ingressStamp
+	parent       types.Hash
+	number       uint64
+	view         hotstuff.ViewNumber
+	maxTx        int
+	maxBytes     int
+	binding      types.Hash
+	preparedHash types.Hash
 }
 
 // DrainSpeculativeQueueRequest binds the irreversible recovery barrier to the
@@ -278,6 +279,12 @@ func (s *Server) prepareSpeculativeQueueBuild(r QueueBuildRequest) error {
 	if err != nil {
 		return err
 	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			s.trace.mark("hint_rejected", "error", header.ParentHash, header.Number.Uint64(), uint64(view), r.Epoch, types.Hash{}, 0, r.PreparedHash, r.PreparedHash)
+		}
+	}()
 	// Reserve the one advisory allocation before copying any retained queue
 	// slabs. Parallel HTTP hints cannot each allocate the 64 MiB bound.
 	s.specMu.Lock()
@@ -317,7 +324,7 @@ func (s *Server) prepareSpeculativeQueueBuild(r QueueBuildRequest) error {
 	binary.LittleEndian.PutUint64(lease[:], stamp.generation)
 	binding := crypto.Keccak256Hash([]byte("gov5-speculative-queue-v1\x00"), r.Epoch[:], stamp.hash[:], lease[:], r.PreparedHash[:])
 	ctx, cancel := context.WithCancel(s.ctx)
-	slot := &speculativeQueueSlot{done: make(chan struct{}), cleanup: make(chan struct{}), cancel: cancel, epoch: r.Epoch, stamp: stamp, parent: header.ParentHash, number: header.Number.Uint64(), view: view, maxTx: r.MaxTransactions, maxBytes: r.MaxEncodedBytes, binding: binding}
+	slot := &speculativeQueueSlot{done: make(chan struct{}), cleanup: make(chan struct{}), cancel: cancel, epoch: r.Epoch, stamp: stamp, parent: header.ParentHash, number: header.Number.Uint64(), view: view, maxTx: r.MaxTransactions, maxBytes: r.MaxEncodedBytes, binding: binding, preparedHash: r.PreparedHash}
 	// Register the worker before exposing the slot to Close. A shutdown after
 	// installation may wait on slot.done, so every installed slot must launch.
 	s.mu.Lock()
@@ -342,6 +349,8 @@ func (s *Server) prepareSpeculativeQueueBuild(r QueueBuildRequest) error {
 		s.expireSpeculativeQueueSlot(slot)
 	})
 	s.specMu.Unlock()
+	accepted = true
+	s.trace.mark("hint_accepted", "accepted", slot.parent, slot.number, uint64(slot.view), slot.epoch, slot.binding, 0, slot.preparedHash, slot.binding)
 	go func() {
 		defer s.wg.Done()
 		defer close(slot.done)
@@ -372,7 +381,19 @@ func (s *Server) prepareSpeculativeQueueBuild(r QueueBuildRequest) error {
 				selected := block.CopyHeader(header)
 				selected.TxHash = block.TxRootAt(txs, selected.Time)
 				selected.ResetHashCache()
-				child, err = s.chain.BeginSpeculativeAppliedChild(ctx, slot.parent, slot.number-1, slot.binding, block.NewBlock(selected, txs).(*block.Block))
+				traceCtx := ctx
+				if s.trace != nil {
+					count := len(txs)
+					traceCtx = internal.WithExecutionIntervalObserver(ctx, func(start, end time.Time, executionErr error) {
+						s.trace.record(start, "evm_speculative_begin", "started", slot.parent, slot.number, uint64(slot.view), slot.epoch, slot.binding, count, slot.preparedHash, slot.binding)
+						outcome := "ok"
+						if executionErr != nil {
+							outcome = "error"
+						}
+						s.trace.record(end, "evm_speculative_end", outcome, slot.parent, slot.number, uint64(slot.view), slot.epoch, slot.binding, count, slot.preparedHash, slot.binding)
+					})
+				}
+				child, err = s.chain.BeginSpeculativeAppliedChild(traceCtx, slot.parent, slot.number-1, slot.binding, block.NewBlock(selected, txs).(*block.Block))
 			}
 		}
 		slot.mu.Lock()

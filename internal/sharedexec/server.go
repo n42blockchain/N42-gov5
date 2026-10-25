@@ -111,7 +111,8 @@ type Server struct {
 	specExecutionBlocks   int
 	specTimerWG           sync.WaitGroup
 	speculativeEnabled    bool
-	specRecoveryEpoch     [16]byte // specMu; recovery barrier tombstone for this owner epoch
+	specRecoveryEpoch     [16]byte         // specMu; recovery barrier tombstone for this owner epoch
+	trace                 *ownerChildTrace // startup only; nil is the zero-cost default
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -168,6 +169,9 @@ func (s *Server) Close() {
 	s.buildCompleted = nil
 	s.buildBytes = 0
 	s.mu.Unlock()
+	if err := s.trace.close(); err != nil {
+		fmt.Fprintln(os.Stderr, "owner child trace incomplete:", err)
+	}
 }
 
 func (s *Server) Import(ctx context.Context, request ImportRequest) (response ImportResult, err error) {
@@ -248,6 +252,13 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 		if phaseErr == nil && result.Error != "" {
 			phaseErr = errors.New("import worker did not establish durable execution")
 		}
+		if s.trace != nil {
+			outcome := "failed"
+			if result.Durable {
+				outcome = "durable"
+			}
+			s.trace.mark("import_result", outcome, b.ParentHash(), b.Number64().Uint64(), 0, [16]byte{}, types.Hash{}, len(b.Transactions()), types.Hash{}, b.Hash(), b.Hash())
+		}
 		phases.finish(phaseErr)
 	}()
 	defer func() {
@@ -300,11 +311,26 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	if prepared != nil {
 		reused, err = s.chain.ImportPreparedCandidate(s.ctx, b, prepared)
 	}
+	if reused {
+		if s.trace != nil {
+			s.trace.mark("import_prepared_reuse", "yes", b.ParentHash(), b.Number64().Uint64(), 0, [16]byte{}, types.Hash{}, len(b.Transactions()), types.Hash{}, b.Hash(), b.Hash())
+		}
+	}
 	if err == nil && !reused {
 		phases.phase("ingress_sender_memos")
 		phases.verifiedSenderMemos = s.seedLiveIngressSenderMemos(b, nil)
 		phases.phase("chain_import")
+		if s.trace != nil {
+			s.trace.mark("import_chain_begin", "started", b.ParentHash(), b.Number64().Uint64(), 0, [16]byte{}, types.Hash{}, len(b.Transactions()), types.Hash{}, b.Hash(), b.Hash())
+		}
 		_, err = s.chain.InsertPerformanceExtension(s.ctx, b)
+		if s.trace != nil {
+			outcome := "ok"
+			if err != nil {
+				outcome = "error"
+			}
+			s.trace.mark("import_chain_end", outcome, b.ParentHash(), b.Number64().Uint64(), 0, [16]byte{}, types.Hash{}, len(b.Transactions()), types.Hash{}, b.Hash(), b.Hash())
+		}
 	}
 	if reused {
 		s.ownBuildReuses.Add(1)

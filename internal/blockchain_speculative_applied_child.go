@@ -226,7 +226,9 @@ func (bc *BlockChain) BeginSpeculativeAppliedChild(ctx context.Context, parentHa
 	ibs.SetSpeculativePlainReaders(parentHash, parentNumber)
 	child.state = ibs
 	getHash := GetHashFn(header, func(hash types.Hash, number uint64) *block.Header { return rawdb.ReadHeader(tx, hash, number) })
+	executionStart := startExecutionInterval(ctx)
 	included, receipts, gas, failed, err := bc.BuildParallel(header, child.txs, ibs, getHash)
+	observeExecutionInterval(ctx, executionStart, err)
 	if err != nil {
 		return nil, err
 	}
