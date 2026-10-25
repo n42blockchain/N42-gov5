@@ -9,6 +9,7 @@ package txindexer
 import (
 	"context"
 	"encoding/binary"
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -18,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/params"
 )
 
 // stubChain serves synthetic blocks whose single transaction hash is
@@ -38,6 +40,9 @@ func (c *stubChain) blockAt(n uint64) block.IBlock {
 }
 
 func (c *stubChain) CurrentBlock() block.IBlock { return c.blockAt(c.head) }
+
+func (c *stubChain) Config() *params.ChainConfig { return &params.ChainConfig{ChainID: big.NewInt(1)} }
+func (c *stubChain) GenesisBlock() block.IBlock  { return c.blockAt(0) }
 
 func (c *stubChain) GetBlockByNumber(number *uint256.Int) (block.IBlock, error) {
 	return c.blockAt(number.Uint64()), nil
