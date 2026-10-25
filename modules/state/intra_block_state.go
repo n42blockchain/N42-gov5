@@ -1387,7 +1387,12 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	// root and CommitBlock take an unloaded credit's account from there):
 	// the journal then drops only the other addresses (drop).
 	var drop []types.Address
-	if noop {
+	parallel := noop && syscallFinalizeOnceOn && len(sdb.journal.dirties) >= syscallFinalizeParMin
+	if parallel {
+		// N42_SYSCALL_FINALIZE_ONCE: the loop below and clearCurrentTxFlags
+		// in one parallel pass (finalizeNoopParallel).
+		drop = sdb.finalizeNoopParallel(policy, keepPending)
+	} else if noop {
 		// With the no-op writer the only state updateAccount changes is the
 		// deleted flag; every writer call is a no-op and updateTrie only
 		// reads. The parallel processor leaves a whole block's dirty set in
@@ -1432,7 +1437,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 		}
 	}
 	sdb.promoteWipes()
-	sdb.clearCurrentTxFlags()
+	if !parallel {
+		sdb.clearCurrentTxFlags()
+	}
 	if keepPending {
 		dirties := sdb.journal.dirties
 		for _, addr := range drop {
