@@ -170,6 +170,7 @@ func runSFOBlock(t *testing.T, once, detach bool, txFinalize string, nRecipients
 	r := sfoReader{accts: map[types.Address]*account.StateAccount{}, code: map[types.Hash][]byte{}, stor: map[types.Address]map[types.Hash]uint256.Int{}}
 	putCode := func(a types.Address, code []byte, bal uint64) {
 		acc := account.NewAccount()
+		acc.Initialised = true
 		acc.Nonce = 1
 		acc.Balance.SetUint64(bal)
 		acc.CodeHash = crypto.Keccak256Hash(code)
@@ -183,11 +184,13 @@ func runSFOBlock(t *testing.T, once, detach bool, txFinalize string, nRecipients
 	r.stor[victim] = map[types.Hash]uint256.Int{{1}: *uint256.NewInt(3)}
 	empty := addr("empty", 0) // exists, empty, touched
 	ea := account.NewAccount()
+	ea.Initialised = true
 	r.accts[empty] = &ea
 	users := make([]types.Address, 4)
 	for i := range users {
 		users[i] = addr("user", i)
 		a := account.NewAccount()
+		a.Initialised = true
 		a.Balance.SetUint64(1e18)
 		r.accts[users[i]] = &a
 	}
@@ -196,6 +199,7 @@ func runSFOBlock(t *testing.T, once, detach bool, txFinalize string, nRecipients
 		recipients[i] = addr("rcpt", i)
 		if i%3 != 0 { // every third absent
 			a := account.NewAccount()
+			a.Initialised = true
 			a.Balance.SetUint64(uint64(i + 1))
 			r.accts[recipients[i]] = &a
 		}
@@ -313,10 +317,10 @@ func TestSyscallFinalizeOnceMatchesPerCall(t *testing.T) {
 							require.Greater(t, state.SyscallFinalizeParWalks(), w0, sub)
 						}
 						require.Equal(t, want.requests, got.requests, sub)
-						require.Equal(t, want.fin, got.fin, sub)
 						require.Equal(t, want.rootSet, got.rootSet, sub)
 						require.Equal(t, want.root, got.root, sub)
 						require.Equal(t, want.rows, got.rows, sub)
+						require.Equal(t, want.fin, got.fin, sub)
 					}()
 				}
 			}
