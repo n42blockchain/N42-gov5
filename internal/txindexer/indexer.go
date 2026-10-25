@@ -31,10 +31,12 @@ package txindexer
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -65,12 +67,106 @@ type Indexer struct {
 	txIndexMu   sync.RWMutex
 	txIndexStop chan struct{}
 	txIndexDone chan struct{}
+	// explicitEnabled overrides the legacy environment switch only for an
+	// execution owner that passed a typed startup option.
+	explicitEnabled *bool
+	fatalErr        atomic.Pointer[sealFailure]
+	resolverRemove  func() bool
+	fatalSeal       chan error
 }
+
+type sealFailure struct{ err error }
 
 // New returns an indexer that is not started. Start reports whether the tier
 // came up; when it did not, the caller keeps writing the MDBX table.
 func New(ctx context.Context, chain Chain, db kv.RwDB, segmentDir string) *Indexer {
-	return &Indexer{ctx: ctx, chain: chain, db: db, txIndexDir: segmentDir}
+	return &Indexer{ctx: ctx, chain: chain, db: db, txIndexDir: segmentDir, fatalSeal: make(chan error, 1)}
+}
+
+// FatalSeal reports a seal publication failure to an owner, which must stop
+// accepting new blocks rather than let a non-sealing in-memory tail grow.
+func (x *Indexer) FatalSeal() <-chan error { return x.fatalSeal }
+
+// FatalError is sticky even after FatalSeal has been received. A node cannot
+// safely retry startup with an indexer whose sealing already failed.
+func (x *Indexer) FatalError() error {
+	if x == nil {
+		return nil
+	}
+	if failure := x.fatalErr.Load(); failure != nil {
+		return failure.err
+	}
+	return nil
+}
+
+func (x *Indexer) poisonSeal(err error) {
+	if x.fatalErr.CompareAndSwap(nil, &sealFailure{err: err}) {
+		select {
+		case x.fatalSeal <- err:
+		default:
+		}
+	}
+}
+
+// OpenExplicit starts the lookup tier under a typed standalone-owner option.
+// A prior tail watermark makes an off startup unsafe: those blocks were never
+// written to the MDBX TxLookup table, so disabling the tier would hide them.
+// The ordinary node uses OpenFromEnvironment for the same restart safety.
+func OpenExplicit(ctx context.Context, chain Chain, db kv.RwDB, segmentDir string, enabled bool) (*Indexer, error) {
+	return openChecked(ctx, chain, db, segmentDir, enabled, true)
+}
+
+// OpenFromEnvironment preserves the ordinary node's legacy environment
+// switch, while refusing to start without the tier after a tail watermark
+// exists. Once the table was skipped, an unavailable tier is not optional.
+func OpenFromEnvironment(ctx context.Context, chain Chain, db kv.RwDB, segmentDir string) (*Indexer, error) {
+	return openChecked(ctx, chain, db, segmentDir, txIndexEnabled(), false)
+}
+
+func openChecked(ctx context.Context, chain Chain, db kv.RwDB, segmentDir string, enabled, explicit bool) (*Indexer, error) {
+	watermark, err := tailWatermark(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	if !enabled {
+		if watermark != 0 {
+			return nil, fmt.Errorf("transaction lookup tail was previously enabled at block %d; restart with --txindex-tail or rebuild lookup entries", watermark)
+		}
+		return nil, nil
+	}
+	x := New(ctx, chain, db, segmentDir)
+	if explicit {
+		x.explicitEnabled = &enabled
+	}
+	if !x.Start() {
+		return nil, errors.New("transaction lookup tail failed to start; refusing to serve an incomplete lookup index")
+	}
+	return x, nil
+}
+
+func tailWatermark(ctx context.Context, db kv.RwDB) (uint64, error) {
+	if db == nil {
+		return 0, errors.New("transaction lookup database required")
+	}
+	var mark uint64
+	err := db.View(ctx, func(tx kv.Tx) error {
+		value, err := tx.GetOne(modules.ChainConfig, txIndexStartKey)
+		if err != nil {
+			return err
+		}
+		if len(value) == 0 {
+			return nil
+		}
+		if len(value) != 8 {
+			return errors.New("transaction lookup tail watermark is malformed")
+		}
+		mark = binary.BigEndian.Uint64(value)
+		if mark == 0 {
+			return errors.New("transaction lookup tail watermark is zero")
+		}
+		return nil
+	})
+	return mark, err
 }
 
 // Enabled reports whether the tier is switched on and running.
@@ -176,11 +272,17 @@ func txIndexEnvInt(name string, def int) int {
 
 // LookupTx implements rawdb.TxLookupResolver over the tail and the segments.
 func (x *Indexer) LookupTx(txHash types.Hash) (uint64, bool) {
+	n, ok, _ := x.LookupTxWithError(txHash)
+	return n, ok
+}
+
+// LookupTxWithError preserves physical read failures for rawdb callers.
+func (x *Indexer) LookupTxWithError(txHash types.Hash) (uint64, bool, error) {
 	if x.txTail == nil {
-		return 0, false
+		return 0, false, nil
 	}
 	if n, ok := x.txTail.Lookup(txHash); ok {
-		return n, true
+		return n, true, nil
 	}
 	// Keep the reader alive for the whole lookup. Reopen and Stop take the
 	// write lock before closing a service, so its mmap cannot disappear under
@@ -188,13 +290,16 @@ func (x *Indexer) LookupTx(txHash types.Hash) (uint64, bool) {
 	x.txIndexMu.RLock()
 	defer x.txIndexMu.RUnlock()
 	if x.txSegments == nil {
-		return 0, false
+		return 0, false, nil
 	}
 	n, err := x.txSegments.Lookup(nil, txHash)
-	if err != nil || n == nil {
-		return 0, false
+	if err != nil {
+		return 0, false, err
 	}
-	return *n, true
+	if n == nil {
+		return 0, false, nil
+	}
+	return *n, true, nil
 }
 
 // txSegmentVerifier rejects a segment's phantom hits.
@@ -204,17 +309,20 @@ func (x *Indexer) LookupTx(txHash types.Hash) (uint64, bool) {
 // newest-first probe would stop there — measured at 28 wrong blocks in 7,680
 // transactions across three segments. Confirming the candidate against the
 // block's own transactions is what makes a multi-segment answer trustworthy.
-func (x *Indexer) txSegmentVerifier(blockNum uint64, txHash types.Hash) (uint64, bool) {
+func (x *Indexer) txSegmentVerifierWithError(blockNum uint64, txHash types.Hash) (uint64, bool, error) {
 	blk, err := x.chain.GetBlockByNumber(uint256.NewInt(blockNum))
-	if err != nil || blk == nil {
-		return 0, false
+	if err != nil {
+		return 0, false, fmt.Errorf("read canonical block %d for tx lookup: %w", blockNum, err)
+	}
+	if blk == nil {
+		return 0, false, fmt.Errorf("canonical block %d missing during tx lookup", blockNum)
 	}
 	for i, tx := range blk.Transactions() {
 		if tx.Hash() == txHash {
-			return uint64(i), true
+			return uint64(i), true, nil
 		}
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 // initTxIndex prepares the tail tier. A failure here leaves the chain on the
@@ -257,7 +365,11 @@ func (x *Indexer) Start() bool {
 	if x == nil {
 		return false
 	}
-	if !txIndexEnabled() {
+	enabled := txIndexEnabled()
+	if x.explicitEnabled != nil {
+		enabled = *x.explicitEnabled
+	}
+	if !enabled {
 		x.warnDisabledWithWatermark()
 		return false
 	}
@@ -274,7 +386,7 @@ func (x *Indexer) Start() bool {
 		log.Error("txindex tail disabled: cannot open segments", "err", err)
 		return false
 	}
-	svc.SetVerifier(x.txSegmentVerifier)
+	svc.SetVerifierWithError(x.txSegmentVerifierWithError)
 
 	head := x.chain.CurrentBlock()
 	if head == nil {
@@ -283,6 +395,11 @@ func (x *Indexer) Start() bool {
 		return false
 	}
 	headNum := head.Number64().Uint64()
+	if headNum == ^uint64(0) {
+		log.Error("txindex tail disabled: canonical head cannot be incremented")
+		svc.Close()
+		return false
+	}
 
 	start, err := x.txIndexStart(headNum)
 	if err != nil {
@@ -292,7 +409,14 @@ func (x *Indexer) Start() bool {
 	}
 	// Sealed segments already cover up to their end; only what follows needs
 	// rebuilding.
-	if sealed := txlookup.SealedEnd(x.txIndexDir); sealed > start {
+	first, sealed := svc.Coverage()
+	if sealed > headNum+1 || (sealed > 0 && first > start) {
+		log.Error("txindex tail disabled: segment inventory does not cover the watermark/head",
+			"first", first, "sealed", sealed, "start", start, "head", headNum)
+		svc.Close()
+		return false
+	}
+	if sealed > start {
 		start = sealed
 	}
 
@@ -327,7 +451,18 @@ func (x *Indexer) Start() bool {
 		}
 	}
 
-	rawdb.SetTxLookupResolver(x)
+	remove, ok := rawdb.TryInstallTxLookupResolver(x)
+	if !ok {
+		log.Error("txindex tail disabled: another lookup resolver owns this process")
+		active := x.txSegments
+		x.txTail = nil
+		x.txSegments = nil
+		close(x.txIndexStop)
+		close(x.txIndexDone)
+		active.Close()
+		return false
+	}
+	x.resolverRemove = remove
 	go x.txIndexSealLoop()
 	log.Info("txindex tail enabled",
 		"dir", x.txIndexDir, "segments", svc.SegmentCount(),
@@ -351,7 +486,13 @@ func (x *Indexer) txIndexStart(headNum uint64) (uint64, error) {
 		}
 		if len(v) == 8 {
 			start = binary.BigEndian.Uint64(v)
+			if start == 0 || start > headNum+1 {
+				return fmt.Errorf("invalid transaction lookup watermark %d for head %d", start, headNum)
+			}
 			return nil
+		}
+		if len(v) != 0 {
+			return fmt.Errorf("malformed transaction lookup watermark: %d bytes", len(v))
 		}
 		start = headNum + 1
 		var buf [8]byte
@@ -453,6 +594,9 @@ func (x *Indexer) txIndexSealLoop() {
 // Sealing then dropping, in that order and never the reverse: a block dropped
 // from the tail before it is in a segment is findable nowhere.
 func (x *Indexer) sealTxIndexOnce() bool {
+	if x.FatalError() != nil {
+		return false
+	}
 	ranges := x.txTail.SealRanges(txIndexSealMinTxVar(), txIndexSealMaxBlocks, txIndexKeepBlocksVar(), txIndexKeepTx, txIndexSealWorkersVar())
 	if len(ranges) == 0 {
 		return false
@@ -470,32 +614,43 @@ func (x *Indexer) sealTxIndexOnce() bool {
 		}(i, r)
 	}
 	wg.Wait()
-	// Append the contiguous prefix that built; anything after a failed build
-	// is discarded and stays in the tail, answerable, for the next tick.
-	ok := len(ranges)
+	// A failed build can be an out-of-space condition. Stop this owner instead
+	// of retrying forever while the unsealed tail grows without a bound.
 	for i, err := range errs {
 		if err != nil {
 			log.Error("txindex seal failed", "from", ranges[i].Start, "to", ranges[i].End, "err", err)
-			ok = i
-			break
+			for _, b := range built {
+				b.Discard()
+			}
+			// An uncommitted build is safe to retry for the ordinary node,
+			// preserving its existing sealer behavior. The explicit owner must
+			// stop rather than let a permanently failing tail grow unbounded.
+			if x.explicitEnabled != nil {
+				x.poisonSeal(err)
+			}
+			return false
 		}
 	}
-	for _, b := range built[ok:] {
-		b.Discard()
-	}
-	n, err := txlookup.CommitBuiltSegments(x.txIndexDir, built[:ok])
+	n, err := txlookup.CommitBuiltSegments(x.txIndexDir, built)
 	if err != nil {
-		log.Error("txindex seal: append failed", "appended", n, "of", ok, "err", err)
+		log.Error("txindex seal: append failed", "appended", n, "of", len(built), "err", err)
+		// A failed sync or rename has an ambiguous publication outcome. Keep
+		// the full tail answerable and do not append the same range again.
+		x.poisonSeal(err)
+		return false
 	}
 	if n == 0 {
 		return false
 	}
 	end := ranges[n-1].End
-	x.txTail.DropBelow(end)
 	if err := x.reopenTxSegments(); err != nil {
 		log.Error("txindex: sealed but could not reopen segments", "err", err)
+		x.poisonSeal(err)
 		return false
 	}
+	// The new reader now covers every block being dropped. A concurrent
+	// lookup either finds it in the tail or in the published segment reader.
+	x.txTail.DropBelow(end)
 	log.Info("txindex sealed", "from", ranges[0].Start, "to", end-1, "segments", n,
 		"tailBlocks", x.txTail.Len(), "tailTxs", x.txTail.TxCount(), "took", time.Since(t0).Truncate(time.Millisecond))
 	return n == len(ranges)
@@ -507,7 +662,7 @@ func (x *Indexer) reopenTxSegments() error {
 	if err != nil {
 		return err
 	}
-	svc.SetVerifier(x.txSegmentVerifier)
+	svc.SetVerifierWithError(x.txSegmentVerifierWithError)
 	x.txIndexMu.Lock()
 	old := x.txSegments
 	x.txSegments = svc
@@ -532,7 +687,9 @@ func (x *Indexer) Stop() {
 		close(x.txIndexStop)
 	}
 	<-x.txIndexDone
-	rawdb.SetTxLookupResolver(nil)
+	if x.resolverRemove != nil {
+		x.resolverRemove()
+	}
 	// Release the segment mmaps. Detaching the resolver prevents new calls;
 	// the write lock waits for calls that loaded the resolver just before it
 	// was detached.

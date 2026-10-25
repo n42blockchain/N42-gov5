@@ -24,6 +24,7 @@ import (
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/internal/sharedexec"
 	"github.com/n42blockchain/N42/internal/sharedvalidator"
+	"github.com/n42blockchain/N42/internal/txindexer"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -46,6 +47,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	profileDir := flags.String("profile-dir", "", "Optional fresh private CPU/block/mutex profile output directory; default disabled, no listener")
 	parallelEVM := flags.Bool("parallel-evm", false, "Explicitly use existing Block-STM for performance imports above four transactions")
 	reuseOwnBuild := flags.Bool("reuse-own-build", false, "Reuse one matching owner-local candidate execution after public sealed-header validation (live root replay remains)")
+	txIndexTail := flags.Bool("txindex-tail", false, "Explicitly serve transaction lookups from the restart-rebuilt tail and sealed segments; fail closed if previously enabled but now disabled")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
 	ingressManifest := flags.String("strict-ingress-manifest", "", "Explicit finalized performance corpus manifest; enables private strict ingress and owner queue")
 	resumePlan := flags.String("resume-ingress-plan", "", "Explicit four-frame resume plan; mutually exclusive with strict ingress")
@@ -236,6 +238,16 @@ func run(ctx context.Context, args []string) (runErr error) {
 	root.EnableUndoRecording()
 	bc.SetQMDBRootComputer(root)
 	bc.SetParallelEVM(*parallelEVM)
+	indexer, err := txindexer.OpenExplicit(ctx, bc, db, filepath.Join(*datadir, "txindex"), *txIndexTail)
+	if err != nil {
+		return err
+	}
+	if indexer != nil {
+		bc.SetTxIndexer(indexer)
+		// Server.Close drains accepted requests first; then Stop drains the
+		// sealer and detaches the resolver before bc/db are closed.
+		defer indexer.Stop()
+	}
 	var server *sharedexec.Server
 	if *commitOwnerFile != "" {
 		server, err = sharedexec.NewWithTrustedCommitOwner(bc, *capacity, commitOwner)
@@ -282,5 +294,22 @@ func run(ctx context.Context, args []string) (runErr error) {
 	if err := os.Mkdir(socketDir, 0700); err != nil && !os.IsExist(err) {
 		return err
 	}
-	return server.ServePrivateUnix(ctx, socketDir, ingressOptions != nil || resumeOptions != nil || boundedOptions != nil)
+	strict := ingressOptions != nil || resumeOptions != nil || boundedOptions != nil
+	if indexer == nil {
+		return server.ServePrivateUnix(ctx, socketDir, strict)
+	}
+	ownerCtx, stopOwner := context.WithCancel(ctx)
+	defer stopOwner()
+	served := make(chan error, 1)
+	go func() { served <- server.ServePrivateUnix(ownerCtx, socketDir, strict) }()
+	select {
+	case err := <-indexer.FatalSeal():
+		// A failed seal has an ambiguous durable prefix. Keep the tail alive
+		// until accepted work drains, then stop this owner for recovery.
+		stopOwner()
+		<-served
+		return fmt.Errorf("transaction lookup tail publication failed; owner stopped: %w", err)
+	case err := <-served:
+		return err
+	}
 }
