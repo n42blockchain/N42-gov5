@@ -182,3 +182,63 @@ func (bc *BlockChain) ReadPerformanceParentAccounts(ctx context.Context, hash ty
 	}
 	return out, nil
 }
+
+// ReadSpeculativeAppliedParentAccounts reads a durable applied parent without
+// taking the chain mutation lock. It is only a selection snapshot for an
+// advisory child: the later build revalidates the exact parent under that
+// lock before it can publish a root. PlainState and the applied marker come
+// from one MVCC transaction, so a concurrent canonical write cannot mix
+// account generations in the selection.
+func (bc *BlockChain) ReadSpeculativeAppliedParentAccounts(ctx context.Context, hash types.Hash, number uint64, addresses []types.Address) (PerformanceParentAccounts, error) {
+	var out PerformanceParentAccounts
+	if bc.chainConfig == nil || bc.chainConfig.Performance == nil || !bc.qmdbEnabled || !bc.canonicalByCommitOnly() || len(addresses) > 12500 || number == ^uint64(0) {
+		return out, errors.New("speculative parent accounts require bounded performance QMDB owner")
+	}
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
+	tx, err := bc.ChainDB.BeginRo(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback()
+	an, ah, applied, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil {
+		return out, err
+	}
+	if !applied || an != number || ah != hash {
+		return out, ErrPerformanceParentNotHead
+	}
+	parent := rawdb.ReadHeader(tx, hash, number)
+	if parent == nil || parent.Hash() != hash || parent.Number == nil || !parent.Number.IsUint64() || parent.Number.Uint64() != number || (bc.chainConfig.IsLondon(number) && parent.BaseFee == nil) {
+		return out, errors.New("speculative parent header/fee missing")
+	}
+	out.Hash, out.Number, out.GasLimit = hash, number, parent.GasLimit
+	if number > 0 {
+		out.View, err = hotstuff.ExtractViewFromExtra(parent.Extra)
+		if err != nil {
+			return out, err
+		}
+	}
+	if bc.chainConfig.IsLondon(number + 1) {
+		fee, overflow := uint256.FromBig(misc.CalcBaseFee(bc.chainConfig, parent))
+		if overflow || fee == nil {
+			return out, errors.New("speculative parent fee overflow")
+		}
+		out.NextBaseFee = *fee
+	}
+	reader := state.NewPlainStateReader(tx)
+	out.Accounts = make(map[types.Address]account.StateAccount, len(addresses))
+	for _, address := range addresses {
+		a, err := reader.ReadAccountData(address)
+		if err != nil {
+			return out, err
+		}
+		value := account.NewAccount()
+		if a != nil {
+			value = *a
+		}
+		out.Accounts[address] = value
+	}
+	return out, nil
+}

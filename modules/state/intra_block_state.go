@@ -234,6 +234,11 @@ type IntraBlockState struct {
 	// postLayers: the unwritten-parent snapshots layered on stateReader,
 	// carried explicitly for readers that bypass it (SetPostStateLayers).
 	postLayers []*PostState
+	// speculativePlainReaders keeps an applied-child speculative execution
+	// off the live QMDB tree while canonical bookkeeping may be writing.
+	speculativePlainReaders bool
+	speculativeParentHash   types.Hash
+	speculativeParentNum    uint64
 
 	// beforeRoot runs once, inside the next root computation, after the
 	// dirty set is final (rewards, pending credits and journal merged) and

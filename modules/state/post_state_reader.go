@@ -252,3 +252,16 @@ func (sdb *IntraBlockState) SetPostStateLayers(layers []*PostState) {
 func (sdb *IntraBlockState) PostStateLayers() []*PostState {
 	return sdb.postLayers
 }
+
+// SetSpeculativePlainReaders makes an applied child read plain MVCC rows
+// instead of the live QMDB tree while canonical bookkeeping may be writing.
+// Every separately opened worker transaction must carry this exact marker.
+func (sdb *IntraBlockState) SetSpeculativePlainReaders(hash types.Hash, number uint64) {
+	sdb.speculativePlainReaders = true
+	sdb.speculativeParentHash = hash
+	sdb.speculativeParentNum = number
+}
+
+func (sdb *IntraBlockState) SpeculativePlainParent() (types.Hash, uint64, bool) {
+	return sdb.speculativeParentHash, sdb.speculativeParentNum, sdb.speculativePlainReaders
+}
