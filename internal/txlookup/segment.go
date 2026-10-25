@@ -14,7 +14,6 @@
 package txlookup
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -31,6 +30,7 @@ const SegmentSize = 1_000_000
 // datMagicV2 identifies Elias-Fano compressed .dat files.
 // V1 (no magic) stored raw uint32 per tx; V2 uses Elias-Fano block boundaries.
 var datMagicV2 = [4]byte{'E', 'F', 'D', '2'}
+var datMagicV3 = [4]byte{'E', 'F', 'D', '3'}
 
 // TxSegment is a read-only RecSplit-indexed tx hash lookup segment.
 type TxSegment struct {
@@ -44,6 +44,9 @@ type TxSegment struct {
 	ef         *eliasfano32.EliasFano
 	blockCount uint64
 	txCount    uint64
+	version    uint8
+	identity   types.Hash
+	endHash    types.Hash
 
 	// V1 fallback: raw uint32 array.
 	dat []byte // nil when using V2
@@ -52,6 +55,22 @@ type TxSegment struct {
 // OpenSegment opens a segment's .idx and .dat files.
 // Auto-detects V1 (raw) vs V2 (Elias-Fano) format.
 func OpenSegment(idxPath, datPath string) (*TxSegment, error) {
+	ri, err := os.ReadFile(idxPath)
+	if err != nil {
+		return nil, fmt.Errorf("read idx: %w", err)
+	}
+	digestDat, err := os.ReadFile(datPath)
+	if err != nil {
+		return nil, fmt.Errorf("read dat: %w", err)
+	}
+	if err := rejectUnknownDatMagic(digestDat); err != nil {
+		return nil, err
+	}
+	if len(digestDat) >= 4 && string(digestDat[:4]) == string(datMagicV3[:]) {
+		if err := verifyV3Digest(digestDat, ri); err != nil {
+			return nil, err
+		}
+	}
 	idx, err := recsplit.OpenIndex(idxPath)
 	if err != nil {
 		return nil, fmt.Errorf("open idx: %w", err)
@@ -81,84 +100,52 @@ func OpenSegment(idxPath, datPath string) (*TxSegment, error) {
 
 	startBlock := idx.BaseDataID()
 
-	// Detect format: V2 starts with "EFD2" magic.
-	if len(dat) >= 16 && bytes.Equal(dat[:4], datMagicV2[:]) {
-		return openSegmentV2(idx, datFile, dat, startBlock)
-	}
-	return openSegmentV1(idx, datFile, dat, startBlock)
-}
-
-func openSegmentV1(idx *recsplit.Index, datFile *os.File, dat []byte, startBlock uint64) (*TxSegment, error) {
-	txCount := idx.KeyCount()
-	expectedDatSize := int64(txCount) * 4
-	if int64(len(dat)) != expectedDatSize {
+	decoded, err := decodeSegmentPayload(dat, idx, ri)
+	if err != nil {
 		datFile.Close()
 		idx.Close()
-		return nil, fmt.Errorf("dat v1 size mismatch: got %d, want %d (txCount=%d)",
-			len(dat), expectedDatSize, txCount)
+		return nil, err
 	}
-	return &TxSegment{
-		startBlock: startBlock,
-		endBlock:   startBlock + SegmentSize,
-		idx:        idx,
-		reader:     recsplit.NewIndexReader(idx),
-		datFile:    datFile,
-		dat:        dat,
-		txCount:    txCount,
-	}, nil
-}
-
-func openSegmentV2(idx *recsplit.Index, datFile *os.File, dat []byte, startBlock uint64) (*TxSegment, error) {
-	// V2 header: [4]magic + [4]blockCount + [8]txCount + [variable]EliasFano
-	blockCount := uint64(binary.LittleEndian.Uint32(dat[4:8]))
-	txCount := binary.LittleEndian.Uint64(dat[8:16])
-
-	if txCount != idx.KeyCount() {
-		datFile.Close()
-		idx.Close()
-		return nil, fmt.Errorf("dat v2 txCount mismatch: dat=%d idx=%d", txCount, idx.KeyCount())
-	}
-
-	var ef *eliasfano32.EliasFano
-	if blockCount > 0 && txCount > 0 {
-		// EF needs at least 16 bytes (count + u) plus data.
-		if len(dat) < 32 {
-			datFile.Close()
-			idx.Close()
-			return nil, fmt.Errorf("dat v2 truncated: %d bytes", len(dat))
-		}
-		ef, _ = eliasfano32.ReadEliasFano(dat[16:])
-	}
-
-	return &TxSegment{
-		startBlock: startBlock,
-		endBlock:   startBlock + blockCount,
-		idx:        idx,
-		reader:     recsplit.NewIndexReader(idx),
-		datFile:    datFile,
-		ef:         ef,
-		blockCount: blockCount,
-		txCount:    txCount,
-	}, nil
+	return &TxSegment{startBlock: startBlock, endBlock: startBlock + decoded.blockCount,
+		idx: idx, reader: recsplit.NewIndexReader(idx), datFile: datFile,
+		ef: decoded.ef, dat: decoded.raw, blockCount: decoded.blockCount,
+		txCount: decoded.txCount, version: decoded.version,
+		identity: decoded.identity, endHash: decoded.endHash}, nil
 }
 
 // Lookup returns the block number for txHash, or nil if not found.
 func (s *TxSegment) Lookup(txHash types.Hash) *uint64 {
-	if s.idx.Empty() {
-		return nil
-	}
-	enumOrdinal, found := s.reader.Lookup(txHash[:])
+	block, _, found := s.LookupPosition(txHash)
 	if !found {
 		return nil
 	}
+	return &block
+}
+
+// LookupPosition returns a candidate block and transaction offset. The offset
+// is exact for Elias-Fano segments, whose ordinals follow block transaction
+// order. V1 has no block boundary table and returns an unknown offset.
+func (s *TxSegment) LookupPosition(txHash types.Hash) (uint64, uint64, bool) {
+	if s.idx.Empty() {
+		return 0, 0, false
+	}
+	enumOrdinal, found := s.reader.Lookup(txHash[:])
+	if !found {
+		return 0, 0, false
+	}
 	if enumOrdinal >= s.txCount {
-		return nil
+		return 0, 0, false
 	}
 
 	if s.ef != nil {
-		return s.lookupV2(enumOrdinal)
+		block, offset, ok := s.lookupV2Position(enumOrdinal)
+		return block, offset, ok
 	}
-	return s.lookupV1(enumOrdinal)
+	block := s.lookupV1(enumOrdinal)
+	if block == nil {
+		return 0, 0, false
+	}
+	return *block, 0, true
 }
 
 func (s *TxSegment) lookupV1(ordinal uint64) *uint64 {
@@ -173,9 +160,19 @@ func (s *TxSegment) lookupV1(ordinal uint64) *uint64 {
 
 // lookupV2 maps ordinal → block number via binary search on Elias-Fano
 // block boundaries. The EF sequence stores cumulative tx counts:
-//   ef[i] = total txs in blocks [startBlock, startBlock+i)
+//
+//	ef[i] = total txs in blocks [startBlock, startBlock+i)
+//
 // So block for ordinal o = largest i where ef[i] <= o.
 func (s *TxSegment) lookupV2(ordinal uint64) *uint64 {
+	block, _, ok := s.lookupV2Position(ordinal)
+	if !ok {
+		return nil
+	}
+	return &block
+}
+
+func (s *TxSegment) lookupV2Position(ordinal uint64) (uint64, uint64, bool) {
 	// Binary search: find first i where ef[i] > ordinal → block = i - 1.
 	// ef has blockCount+1 entries: ef[0]=0, ef[blockCount]=txCount.
 	n := int(s.blockCount + 1)
@@ -184,10 +181,10 @@ func (s *TxSegment) lookupV2(ordinal uint64) *uint64 {
 	}) - 1
 
 	if blockIdx < 0 || uint64(blockIdx) >= s.blockCount {
-		return nil
+		return 0, 0, false
 	}
 	blockNum := s.startBlock + uint64(blockIdx)
-	return &blockNum
+	return blockNum, ordinal - s.ef.Get(uint64(blockIdx)), true
 }
 
 // TxCount returns the number of transactions indexed in this segment.

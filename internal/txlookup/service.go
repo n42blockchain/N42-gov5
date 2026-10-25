@@ -23,7 +23,6 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
@@ -44,12 +43,20 @@ type TxVerifier func(blockNum uint64, txHash types.Hash) (index uint64, present 
 // for a segment candidate cannot be treated as a valid transaction miss.
 type TxVerifierWithError func(blockNum uint64, txHash types.Hash) (index uint64, present bool, err error)
 
+// TxPositionVerifier checks one transaction at a known ordinal within a
+// canonical block. It must report body read failures as errors.
+type TxPositionVerifier func(blockNum, txIndex uint64, txHash types.Hash) (present bool, err error)
+
+// CanonicalAnchorReader returns the canonical block hash at a given height.
+type CanonicalAnchorReader func(blockNum uint64) (types.Hash, error)
+
 // Service provides tiered tx hash lookup (L0 MDBX + L1 RecSplit segments).
 type Service struct {
 	store             *cscompact.SegmentStoreReader
 	segments          []*txSegmentCached // sorted by startBlock descending
 	verifier          TxVerifier         // optional; rejects phantom hits (no-LFP indexes)
 	verifierWithError TxVerifierWithError
+	positionVerifier  TxPositionVerifier
 	firstStart        uint64
 	sealedEnd         uint64
 }
@@ -59,6 +66,7 @@ type Service struct {
 func (s *Service) SetVerifier(v TxVerifier) { s.verifier = v }
 
 func (s *Service) SetVerifierWithError(v TxVerifierWithError) { s.verifierWithError = v }
+func (s *Service) SetPositionVerifier(v TxPositionVerifier)   { s.positionVerifier = v }
 
 type txSegmentCached struct {
 	segNum     uint64
@@ -70,6 +78,31 @@ type txSegmentCached struct {
 
 // NewService opens all existing segments using SegmentStoreReader.
 func NewService(segmentDir string) (*Service, error) {
+	return openService(segmentDir, nil, false)
+}
+
+// NewLegacyService is the native indexer's admission path. A native owner
+// cannot skip a canonical tail rebuild using EFD3 without checking anchors.
+func NewLegacyService(segmentDir string) (*Service, error) {
+	return openService(segmentDir, nil, true)
+}
+
+// NewAnchoredService is for an explicit owner. It refuses legacy segments and
+// checks every committed anchor before Coverage can skip canonical rebuilding.
+func NewAnchoredService(segmentDir string, identity types.Hash, canonical CanonicalAnchorReader, durableHead uint64) (*Service, error) {
+	if identity == (types.Hash{}) || canonical == nil {
+		return nil, fmt.Errorf("canonical anchor identity and reader required")
+	}
+	return openService(segmentDir, &ownerAnchor{identity: identity, canonical: canonical, durableHead: durableHead}, false)
+}
+
+type ownerAnchor struct {
+	identity    types.Hash
+	canonical   CanonicalAnchorReader
+	durableHead uint64
+}
+
+func openService(segmentDir string, owner *ownerAnchor, legacyOnly bool) (*Service, error) {
 	store, err := cscompact.OpenSegmentStore(segmentDir, "txindex")
 	if err != nil {
 		return nil, err
@@ -87,22 +120,60 @@ func NewService(segmentDir string) (*Service, error) {
 			store.Close()
 			return nil, fmt.Errorf("read txindex segment %d: %w", i, err)
 		}
+		if err := rejectUnknownDatMagic(data); err != nil {
+			store.Close()
+			return nil, fmt.Errorf("txindex segment %d: %w", i, err)
+		}
+		var ri []byte
+		if len(data) >= 4 && string(data[:4]) == string(datMagicV3[:]) {
+			ri, err = store.ReadRecSplitBytes(i)
+			if err != nil {
+				store.Close()
+				return nil, fmt.Errorf("read txindex index %d: %w", i, err)
+			}
+			if err := verifyV3Digest(data, ri); err != nil {
+				store.Close()
+				return nil, fmt.Errorf("txindex segment %d: %w", i, err)
+			}
+		}
 		idx, err := store.GetRecSplitIndex(i)
 		if err != nil {
 			store.Close()
 			return nil, fmt.Errorf("read txindex index %d: %w", i, err)
 		}
 		start := idx.BaseDataID()
-		if err := validateSegmentPayload(data, idx); err != nil {
+		payload, err := decodeSegmentPayload(data, idx, ri)
+		if err != nil {
 			store.Close()
 			return nil, fmt.Errorf("txindex segment %d: %w", i, err)
 		}
-		count := uint64(SegmentSize)
-		if len(data) >= 4 && string(data[:4]) == string(datMagicV2[:]) {
-			count = uint64(binary.LittleEndian.Uint32(data[4:8]))
-		} else if len(data) == 0 {
+		count := payload.blockCount
+		if legacyOnly && payload.version == 3 {
 			store.Close()
-			return nil, fmt.Errorf("txindex segment %d: empty data", i)
+			return nil, fmt.Errorf("native txindex owner cannot admit anchored EFD3 segment %d", i)
+		}
+		if owner != nil {
+			if payload.version != 3 {
+				store.Close()
+				return nil, fmt.Errorf("txindex segment %d is unanchored EFD%d", i, payload.version)
+			}
+			if payload.identity != owner.identity {
+				store.Close()
+				return nil, fmt.Errorf("txindex segment %d chain identity mismatch", i)
+			}
+			if start+count-1 > owner.durableHead {
+				store.Close()
+				return nil, fmt.Errorf("txindex segment %d exceeds durable canonical head", i)
+			}
+			actual, err := owner.canonical(start + count - 1)
+			if err != nil {
+				store.Close()
+				return nil, fmt.Errorf("txindex segment %d canonical hash: %w", i, err)
+			}
+			if actual == (types.Hash{}) || actual != payload.endHash {
+				store.Close()
+				return nil, fmt.Errorf("txindex segment %d canonical hash mismatch", i)
+			}
 		}
 		if count == 0 || start > ^uint64(0)-count || (i > 0 && start != previousEnd) {
 			store.Close()
@@ -178,7 +249,18 @@ func (s *Service) Lookup(tx kv.Tx, txHash types.Hash) (*uint64, error) {
 		}
 		seg := sc.seg
 		sc.mu.Unlock()
-		if result := seg.Lookup(txHash); result != nil {
+		if blockNum, txIndex, found := seg.LookupPosition(txHash); found {
+			result := &blockNum
+			if s.positionVerifier != nil && seg.version >= 2 {
+				present, err := s.positionVerifier(blockNum, txIndex, txHash)
+				if err != nil {
+					return nil, err
+				}
+				if present {
+					return result, nil
+				}
+				continue
+			}
 			if s.verifierWithError != nil {
 				_, present, err := s.verifierWithError(*result, txHash)
 				if err != nil {
@@ -207,34 +289,6 @@ func (s *Service) Lookup(tx kv.Tx, txHash types.Hash) (*uint64, error) {
 // validateSegmentPayload runs before an owner may skip canonical tail
 // reconstruction through this segment. A valid range header alone is not
 // enough: a corrupt body/index would later turn into a silent lookup miss.
-func validateSegmentPayload(data []byte, idx *recsplit.Index) error {
-	if len(data) >= 4 && string(data[:4]) == string(datMagicV2[:]) {
-		if len(data) < 16 {
-			return fmt.Errorf("truncated V2 header")
-		}
-		count := uint64(binary.LittleEndian.Uint32(data[4:8]))
-		txs := binary.LittleEndian.Uint64(data[8:16])
-		if count == 0 || txs != idx.KeyCount() {
-			return fmt.Errorf("V2 count mismatch blocks=%d transactions=%d index=%d", count, txs, idx.KeyCount())
-		}
-		if txs == 0 {
-			if len(data) != 16 {
-				return fmt.Errorf("empty V2 segment has trailing payload")
-			}
-			return nil
-		}
-		if len(data) < 40 || (len(data)-32)%8 != 0 || txs == ^uint64(0) {
-			return fmt.Errorf("invalid V2 Elias-Fano size")
-		}
-		_, err := validatedEliasFano(data[16:], count, txs)
-		return err
-	}
-	if idx.KeyCount() > ^uint64(0)/4 || uint64(len(data)) != idx.KeyCount()*4 {
-		return fmt.Errorf("V1 index/data count mismatch")
-	}
-	return nil
-}
-
 func validatedEliasFano(data []byte, blockCount, txCount uint64) (ef *eliasfano32.EliasFano, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -268,35 +322,41 @@ func (s *Service) loadSegment(sc *txSegmentCached) (*TxSegment, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectUnknownDatMagic(data); err != nil {
+		return nil, err
+	}
+	var ri []byte
+	if len(data) >= 4 && string(data[:4]) == string(datMagicV3[:]) {
+		ri, err = s.store.ReadRecSplitBytes(sc.segNum)
+		if err != nil {
+			return nil, err
+		}
+		if err := verifyV3Digest(data, ri); err != nil {
+			return nil, err
+		}
+	}
 	reader, err := s.store.GetRecSplitReader(sc.segNum)
 	if err != nil {
 		return nil, err
 	}
 	idx, _ := s.store.GetRecSplitIndex(sc.segNum)
 
-	// Parse dat format (V1 or V2).
+	decoded, err := decodeSegmentPayload(data, idx, ri)
+	if err != nil {
+		return nil, err
+	}
 	seg := &TxSegment{
 		startBlock: sc.startBlock,
-		endBlock:   sc.startBlock + SegmentSize,
+		endBlock:   sc.startBlock + decoded.blockCount,
 		idx:        idx,
 		reader:     reader,
-	}
-
-	if len(data) >= 16 && string(data[:4]) == string(datMagicV2[:]) {
-		// V2: Elias-Fano.
-		seg.blockCount = uint64(binary.LittleEndian.Uint32(data[4:8]))
-		seg.txCount = binary.LittleEndian.Uint64(data[8:16])
-		seg.endBlock = seg.startBlock + seg.blockCount
-		if seg.blockCount > 0 && seg.txCount > 0 {
-			seg.ef, err = validatedEliasFano(data[16:], seg.blockCount, seg.txCount)
-			if err != nil {
-				return nil, err
-			}
-		}
-	} else {
-		// V1: raw uint32 array.
-		seg.txCount = idx.KeyCount()
-		seg.dat = data
+		blockCount: decoded.blockCount,
+		txCount:    decoded.txCount,
+		ef:         decoded.ef,
+		dat:        decoded.raw,
+		version:    decoded.version,
+		identity:   decoded.identity,
+		endHash:    decoded.endHash,
 	}
 	return seg, nil
 }
