@@ -258,6 +258,11 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 		if err = rt.producer.UseOwnerQueue(ctx, sharedvalidator.OwnerQueueOptions{MaxTransactions: cfg.NodeCfg.PerformanceQueueMaxTransactions, MaxEncodedBytes: cfg.NodeCfg.PerformanceQueueMaxEncodedBytes}); err != nil {
 			return nil, fmt.Errorf("performance owner queue startup: %w", err)
 		}
+		if cfg.NodeCfg.PerformanceOwnerChildPipeline {
+			if err = rt.producer.EnableSpeculativeOwnerQueue(); err != nil {
+				return nil, fmt.Errorf("performance owner child pipeline startup: %w", err)
+			}
+		}
 	}
 	if cfg.NodeCfg.PerformanceRecoveryOnly {
 		if _, err = rt.producer.EnterRecoveryOnly(ctx); err != nil {

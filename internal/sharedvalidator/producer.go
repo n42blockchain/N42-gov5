@@ -35,29 +35,34 @@ type pendingTransaction struct {
 // Producer builds remotely and signs only in this validator. Per-view sealed
 // candidates are durable before import/proposal; retries cannot swap payloads.
 type Producer struct {
-	replica           *Replica
-	ctx               context.Context
-	cancel            context.CancelFunc
-	produceMu         sync.Mutex
-	mu                sync.Mutex
-	started, closed   bool
-	done              chan struct{}
-	wake              chan types.Hash
-	pending           map[types.Hash]pendingTransaction
-	order             []types.Hash
-	bytes             int
-	pruned            uint64
-	published         hotstuff.ViewNumber
-	interval          time.Duration
-	lastProduced      time.Time
-	lastError         string
-	ownerQueue        *OwnerQueueBinding
-	productionStarted bool
-	recoveryOnly      bool
-	drainDone         chan struct{}
-	drainAcknowledged bool
-	freshBuilds       uint64
-	wg                sync.WaitGroup
+	replica            *Replica
+	ctx                context.Context
+	cancel             context.CancelFunc
+	produceMu          sync.Mutex
+	mu                 sync.Mutex
+	started, closed    bool
+	done               chan struct{}
+	wake               chan types.Hash
+	pending            map[types.Hash]pendingTransaction
+	order              []types.Hash
+	bytes              int
+	pruned             uint64
+	published          hotstuff.ViewNumber
+	interval           time.Duration
+	lastProduced       time.Time
+	lastError          string
+	ownerQueue         *OwnerQueueBinding
+	speculativeEnabled bool
+	speculativeBusy    bool
+	speculativeParent  types.Hash
+	speculativeView    hotstuff.ViewNumber
+	speculativeCancel  context.CancelFunc
+	productionStarted  bool
+	recoveryOnly       bool
+	drainDone          chan struct{}
+	drainAcknowledged  bool
+	freshBuilds        uint64
+	wg                 sync.WaitGroup
 }
 
 func NewProducer(ctx context.Context, replica *Replica, interval time.Duration) (*Producer, error) {
@@ -406,6 +411,11 @@ func (p *Producer) Produce(ctx context.Context, parentHash types.Hash) (produced
 	if parentHash == (types.Hash{}) {
 		parentHash = p.replica.CurrentBlock().Hash()
 	}
+	p.mu.Lock()
+	if p.speculativeBusy && (p.speculativeParent != parentHash || p.speculativeView != view) && p.speculativeCancel != nil {
+		p.speculativeCancel()
+	}
+	p.mu.Unlock()
 	ih, err := p.replica.GetHeaderByHash(parentHash)
 	if err != nil {
 		return nil, err

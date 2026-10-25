@@ -44,6 +44,9 @@ func (p *Producer) EnterRecoveryOnly(ctx context.Context) (RecoveryOnlyState, er
 	}
 	if p.drainDone == nil {
 		p.recoveryOnly = true
+		if p.speculativeCancel != nil {
+			p.speculativeCancel()
+		}
 		p.drainDone = make(chan struct{})
 		p.wg.Add(1)
 		go p.finishRecoveryBarrier()
@@ -71,9 +74,23 @@ func (p *Producer) finishRecoveryBarrier() {
 	defer p.wg.Done()
 	p.produceMu.Lock()
 	defer p.produceMu.Unlock()
+	// The owner tombstone is the remote half of the barrier. It rejects an
+	// advisory HTTP request that reaches the owner after local cancellation,
+	// and drains a worker installed before this call. No ACK precedes it.
+	p.mu.Lock()
+	binding := p.ownerQueue
+	p.mu.Unlock()
+	var drainErr error
+	if binding != nil && p.speculativeEnabled {
+		if p.replica == nil || p.replica.client == nil {
+			drainErr = errors.New("speculative owner drain client unavailable")
+		} else {
+			drainErr = p.replica.client.DrainQueueSpeculative(p.ctx, binding.Epoch)
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.drainAcknowledged = !p.closed && p.ctx.Err() == nil
+	p.drainAcknowledged = drainErr == nil && !p.closed && p.ctx.Err() == nil
 	close(p.drainDone)
 }
 func (p *Producer) recoveryStateLocked() RecoveryOnlyState {

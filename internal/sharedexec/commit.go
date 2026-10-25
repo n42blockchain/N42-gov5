@@ -191,6 +191,23 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 			s.execute.Unlock()
 		}
 	}()
+	s.beginSpeculativeExecutionExclusion()
+	defer s.endSpeculativeExecutionExclusion()
+	s.stopSpeculativeQueueUnlessCertifiedParent(certificate, request)
+	defer func() {
+		// A failed matching writer may have advanced the queue generation
+		// without canonicalizing its parent. Revoke its child immediately;
+		// generation arithmetic alone must never authorize reuse.
+		if caught := recover(); caught != nil {
+			if certificate != nil {
+				s.discardSpeculativeQueueSlot()
+			}
+			panic(caught)
+		}
+		if err != nil && certificate != nil {
+			s.discardSpeculativeQueueSlot()
+		}
+	}()
 	classifiedFresh := false
 	if complete != nil {
 		// Later reconciliation runs first. Publish only its final result while
@@ -315,9 +332,12 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 		}
 		phases.transactions = transactions
 
+		canonicalWrote := false
 		phases.phase("ingress_gate")
 		if q := s.ingress; q != nil {
 			q.mu.Lock()
+			before := q.stamp
+			epoch := q.epoch
 			q.reconciling = true
 			q.stamp.generation++
 			q.mu.Unlock()
@@ -328,6 +348,16 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 				if reconcileErr := s.reconcileStrictIngress(phases); reconcileErr != nil && err == nil {
 					err = reconcileErr
 				}
+				if canonicalWrote && err == nil && result.Committed && certificate != nil {
+					q.mu.Lock()
+					after, clean := q.stamp, !q.reconciling && !q.closed
+					q.mu.Unlock()
+					if clean && before.number+1 == request.Number && after.number == request.Number && after.hash == request.BlockHash && after.generation == before.generation+1 {
+						s.specMu.Lock()
+						s.specTransition = &speculativeCommitTransition{from: before, to: after, epoch: epoch}
+						s.specMu.Unlock()
+					}
+				}
 				phases.pause()
 			}()
 		}
@@ -336,6 +366,7 @@ func (s *Server) commitExclusiveAttemptWithFresh(ctx context.Context, request Co
 			if err := s.chain.CommitCertifiedExtension(certificate); err != nil {
 				return CommitResult{}, false, err
 			}
+			canonicalWrote = true
 		} else if !duplicate {
 			// Do not use CommitToCanonicalWith's bookkeeping hook for authorization:
 			// hook errors are swallowed. The service owns canonical decisions;

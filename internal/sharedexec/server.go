@@ -103,6 +103,15 @@ type Server struct {
 	ingress               *strictIngressQueue                     // configured before serving; immutable pointer
 	queuePlans            map[hotstuff.ViewNumber]*queueBuildPlan // execute; registry size/accounting also mu
 	queueExpiredView      hotstuff.ViewNumber                     // execute
+	specMu                sync.Mutex
+	specSlot              *speculativeQueueSlot
+	specDraining          *speculativeQueueSlot
+	specPending           bool
+	specTransition        *speculativeCommitTransition
+	specExecutionBlocks   int
+	specTimerWG           sync.WaitGroup
+	speculativeEnabled    bool
+	specRecoveryEpoch     [16]byte // specMu; recovery barrier tombstone for this owner epoch
 }
 
 // New requires one explicitly configured performance chain. Deferred and frame
@@ -139,7 +148,9 @@ func (s *Server) Close() {
 	s.closed = true
 	s.cancel()
 	s.mu.Unlock()
+	s.discardSpeculativeQueueSlot()
 	s.wg.Wait()
+	s.specTimerWG.Wait()
 	s.execute.Lock()
 	s.prepared = nil
 	if q := s.ingress; q != nil {
@@ -258,6 +269,9 @@ func (s *Server) run(key importKey, job *importJob, b *block.Block) {
 	phases.phase("execute_wait")
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	s.beginSpeculativeExecutionExclusion()
+	defer s.endSpeculativeExecutionExclusion()
+	s.discardSpeculativeQueueSlot()
 	phases.phase("durable_before")
 	if s.ctx.Err() != nil {
 		phaseErr = s.ctx.Err()
@@ -357,7 +371,7 @@ func (s *Server) durable(b *block.Block) (*ImportResult, error) {
 // unrelated pre-existing background goroutines. Ingress framing is not tagged.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/v1/build-queue", "/v1/build", "/v1/import", "/v1/import-ref", "/v1/applied-child", "/v1/commit-qc":
+	case "/v1/prepare-queue", "/v1/build-queue", "/v1/build", "/v1/import", "/v1/import-ref", "/v1/applied-child", "/v1/commit-qc":
 		pprof.Do(r.Context(), pprof.Labels("gov5_rpc", r.URL.Path), func(ctx context.Context) { s.serveHTTP(w, r.WithContext(ctx)) })
 	default:
 		s.serveHTTP(w, r)
@@ -387,6 +401,14 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/build-queue" {
 		s.serveQueueBuild(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/prepare-queue" {
+		s.serveSpeculativeQueueBuild(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/drain-prepare-queue" {
+		s.serveDrainSpeculativeQueue(w, r)
 		return
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/v1/applied-child" {

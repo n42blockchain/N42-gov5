@@ -114,6 +114,8 @@ func (s *Server) runBuild(key importKey, job *buildJob, input []byte) {
 	}()
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	s.beginSpeculativeExecutionExclusion()
+	defer s.endSpeculativeExecutionExclusion()
 	result, err = s.executeBuildLocked(input, key.hash, job.bytes)
 }
 
@@ -125,6 +127,7 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 }
 
 func (s *Server) executeBuildWithIngressLocked(input []byte, templateHash types.Hash, reserved int, epoch *[16]byte) (response BuildResult, err error) {
+	s.discardSpeculativeQueueSlot()
 	phases := newOwnerOperationPhases("execute_build", s)
 	phases.hash = templateHash
 	defer func() { phases.finish(err) }()
