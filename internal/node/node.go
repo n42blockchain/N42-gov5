@@ -1422,6 +1422,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	node = Node{
+		dirLock:         dirLockNode.dirLock,
 		cliCtx:          cliCtx,
 		ctx:             ctx,
 		cancel:          cancel,

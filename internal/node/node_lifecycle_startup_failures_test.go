@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,38 @@ func TestNewNodeInconsistentStateSchemeFails(t *testing.T) {
 	_, err = NewNode(nodeTNewContext(), ethCfg)
 	if err == nil {
 		t.Fatal("expected a state scheme mismatch error when reopening under a different profile")
+	}
+}
+
+func TestTxIndexTailStopsWhenNodeClosesBeforeStart(t *testing.T) {
+	t.Setenv("N42_TXINDEX_TAIL", "1")
+	dir := t.TempDir()
+	cfg := nodeTMinimalConfig(dir)
+	first, err := NewNode(nodeTNewContext(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.txIndexer == nil {
+		t.Fatal("enabled transaction lookup tier did not start")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening in the same process verifies that the first indexer detached
+	// its exclusive resolver and closed its sealer before the database closed.
+	second, err := NewNode(nodeTNewContext(), cfg)
+	if err != nil {
+		t.Fatalf("reopen after pre-start close: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("N42_TXINDEX_TAIL", "0")
+	if off, err := NewNode(nodeTNewContext(), cfg); err == nil || off != nil || !strings.Contains(err.Error(), "previously enabled") {
+		if off != nil {
+			_ = off.Close()
+		}
+		t.Fatalf("disabled tier after persistent watermark must fail closed: (%v, %v)", off, err)
 	}
 }
 
