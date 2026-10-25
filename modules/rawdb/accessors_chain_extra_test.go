@@ -5,6 +5,7 @@ package rawdb
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -355,9 +356,37 @@ func TestCanonicalTxnByID(t *testing.T) {
 		if got.Hash() != txs[0].Hash() {
 			t.Fatalf("CanonicalTxnByID hash mismatch")
 		}
+		missing, err := CanonicalTxnByID(tx, base+100)
+		if err != nil || missing != nil {
+			t.Fatalf("CanonicalTxnByID missing row = %v, %v; want nil, nil", missing, err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type canonicalTxRowGetter struct {
+	kv.Getter
+	value []byte
+	err   error
+}
+
+func (g canonicalTxRowGetter) GetOne(string, []byte) ([]byte, error) {
+	return g.value, g.err
+}
+
+func TestCanonicalTxnByIDMissingAndReadError(t *testing.T) {
+	for _, value := range [][]byte{nil, []byte{}} {
+		got, err := CanonicalTxnByID(canonicalTxRowGetter{value: value}, 81)
+		if got != nil || err != nil {
+			t.Fatalf("missing transaction = %v, %v; want nil, nil", got, err)
+		}
+	}
+	want := errors.New("BlockTx read failed")
+	got, err := CanonicalTxnByID(canonicalTxRowGetter{err: want}, 81)
+	if got != nil || !errors.Is(err, want) {
+		t.Fatalf("GetOne error = %v, %v; want nil, %v", got, err, want)
 	}
 }
 

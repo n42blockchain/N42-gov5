@@ -327,7 +327,21 @@ func (x *Indexer) txSegmentVerifierWithError(blockNum uint64, txHash types.Hash)
 	return 0, false, nil
 }
 
+// canonicalPositionReader is optional. Auditors can verify one canonical
+// transaction without decoding an entire block for each fingerprint hit.
+// Ordinary chain readers keep the existing block-based verification path.
+type canonicalPositionReader interface {
+	CanonicalTxHashAtPosition(blockNum, txIndex uint64) (types.Hash, error)
+}
+
 func (x *Indexer) txPositionVerifier(blockNum, txIndex uint64, txHash types.Hash) (bool, error) {
+	if reader, ok := x.chain.(canonicalPositionReader); ok {
+		got, err := reader.CanonicalTxHashAtPosition(blockNum, txIndex)
+		if err != nil {
+			return false, err
+		}
+		return got == txHash, nil
+	}
 	blk, err := x.chain.GetBlockByNumber(uint256.NewInt(blockNum))
 	if err != nil {
 		return false, fmt.Errorf("read canonical block %d for tx lookup: %w", blockNum, err)

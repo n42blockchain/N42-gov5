@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -344,11 +345,9 @@ func parseHash(value string) (types.Hash, error) {
 	return h, nil
 }
 
-// diskChain is intentionally separate from the producer's BlockChain and
-// caches the externally pinned audit corpus. The resolver's position verifier
-// probes other blocks on RecSplit false positives; a two-entry cache would
-// re-decode 163k transactions thousands of times. This cache stays bounded
-// by the externally required head and belongs only to the short-lived audit process.
+// diskChain is intentionally separate from the producer's BlockChain. The
+// resolver holds only its current block; position verification reads a single
+// canonical transaction, including for RecSplit fingerprint false positives.
 type diskChain struct {
 	db            kv.RwDB
 	config        *params.ChainConfig
@@ -357,7 +356,6 @@ type diskChain struct {
 	mu            sync.Mutex
 	currentNumber uint64
 	current       *blockpkg.Block
-	blocks        map[uint64]*blockpkg.Block
 }
 
 func (c *diskChain) Config() *params.ChainConfig   { return c.config }
@@ -367,10 +365,6 @@ func (c *diskChain) remember(n uint64, b *blockpkg.Block) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.currentNumber, c.current = n, b
-	if c.blocks == nil {
-		c.blocks = make(map[uint64]*blockpkg.Block)
-	}
-	c.blocks[n] = b
 }
 func (c *diskChain) GetBlockByNumber(number *uint256.Int) (blockpkg.IBlock, error) {
 	n := number.Uint64()
@@ -379,15 +373,44 @@ func (c *diskChain) GetBlockByNumber(number *uint256.Int) (blockpkg.IBlock, erro
 	if c.current != nil && c.currentNumber == n {
 		return c.current, nil
 	}
-	if b := c.blocks[n]; b != nil {
-		return b, nil
-	}
 	var b *blockpkg.Block
 	err := c.db.View(context.Background(), func(tx kv.Tx) error { var err error; b, err = rawdb.ReadBlockByNumber(tx, n); return err })
-	if err == nil && b != nil {
-		c.blocks[n] = b
-	}
 	return b, err
+}
+
+func (c *diskChain) CanonicalTxHashAtPosition(blockNum, txIndex uint64) (types.Hash, error) {
+	var hash types.Hash
+	err := c.db.View(context.Background(), func(tx kv.Tx) error {
+		var err error
+		hash, err = canonicalTxHashAtPosition(tx, blockNum, txIndex)
+		return err
+	})
+	return hash, err
+}
+
+func canonicalTxHashAtPosition(tx kv.Tx, blockNum, txIndex uint64) (types.Hash, error) {
+	canonical, err := rawdb.ReadCanonicalHash(tx, blockNum)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	if canonical == (types.Hash{}) {
+		return types.Hash{}, fmt.Errorf("canonical block %d missing", blockNum)
+	}
+	body, err := rawdb.ReadStorageBody(tx, canonical, blockNum)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("canonical block %d body: %w", blockNum, err)
+	}
+	if body.TxAmount < 2 || txIndex >= uint64(body.TxAmount-2) || body.BaseTxId > math.MaxUint64-uint64(body.TxAmount-1) {
+		return types.Hash{}, fmt.Errorf("canonical block %d transaction index %d out of range or invalid body", blockNum, txIndex)
+	}
+	txn, err := rawdb.CanonicalTxnByID(tx, body.BaseTxId+1+txIndex)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("canonical block %d transaction index %d: %w", blockNum, txIndex, err)
+	}
+	if txn == nil {
+		return types.Hash{}, fmt.Errorf("canonical block %d transaction index %d missing", blockNum, txIndex)
+	}
+	return txn.Hash(), nil
 }
 
 func runResolver(ctx context.Context, dataDir string, wantHead, wantTxPerBlock, wantTotalTx uint64, wantChainID string, wantGenesis, wantHeadHash, wantIdentity types.Hash) error {
@@ -407,7 +430,7 @@ func runResolver(ctx context.Context, dataDir string, wantHead, wantTxPerBlock, 
 		return err
 	}
 	defer db.Close()
-	chain := &diskChain{db: db, blocks: make(map[uint64]*blockpkg.Block)}
+	chain := &diskChain{db: db}
 	var actualIdentity types.Hash
 	err = db.View(ctx, func(tx kv.Tx) error {
 		var err error
