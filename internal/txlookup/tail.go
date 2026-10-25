@@ -34,6 +34,7 @@ package txlookup
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -278,6 +279,24 @@ func (t *Tail) Source() BlockTxSource {
 		}
 		return t.blocks[i].hashes, nil
 	}
+}
+
+// SnapshotSource pins one contiguous immutable range for an anchored build.
+// AddOwned transfers ownership of each hashes slice, so retaining the entries
+// under one lock prevents a concurrent reset from mixing two chain prefixes.
+func (t *Tail) SnapshotSource(start, end uint64) (BlockTxSource, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if end <= start || len(t.blocks) == 0 || start < t.firstBlock || end > t.firstBlock+uint64(len(t.blocks)) {
+		return nil, fmt.Errorf("tail does not cover snapshot %d-%d", start, end)
+	}
+	entries := append([]*tailEntry(nil), t.blocks[start-t.firstBlock:end-t.firstBlock]...)
+	return func(n uint64) ([]types.Hash, error) {
+		if n < start || n >= end {
+			return nil, fmt.Errorf("block %d outside tail snapshot", n)
+		}
+		return entries[n-start].hashes, nil
+	}, nil
 }
 
 // DropBelow releases blocks below number, which the caller must already have

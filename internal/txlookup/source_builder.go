@@ -63,6 +63,15 @@ func BuildSegmentFromSource(ctx context.Context, outputDir string, startBlock, e
 	return err
 }
 
+func BuildSegmentFromSourceAnchored(ctx context.Context, outputDir string, startBlock, endBlock uint64, src BlockTxSource, anchor SegmentAnchor, check func(*BuiltSegment) error) error {
+	seg, err := BuildSegmentFileAnchored(ctx, outputDir, startBlock, endBlock, src, anchor)
+	if err != nil {
+		return err
+	}
+	_, err = CommitBuiltSegmentsChecked(outputDir, []*BuiltSegment{seg}, check)
+	return err
+}
+
 // BuiltSegment is a segment built but not yet appended to the store. Builds
 // of different ranges are independent and may run concurrently; appending
 // is not, and must happen in block order (CommitBuiltSegments).
@@ -70,6 +79,7 @@ type BuiltSegment struct {
 	StartBlock, EndBlock uint64
 	dat                  []byte
 	idxPath              string
+	anchor               *SegmentAnchor
 }
 
 // Discard removes a built segment's temporary files.
@@ -85,6 +95,18 @@ func (b *BuiltSegment) Discard() {
 // BuildSegmentFile builds the segment for [startBlock, endBlock) into a
 // temporary index file in outputDir without touching the segment store.
 func BuildSegmentFile(ctx context.Context, outputDir string, startBlock, endBlock uint64, src BlockTxSource) (*BuiltSegment, error) {
+	return buildSegmentFile(ctx, outputDir, startBlock, endBlock, src, nil)
+}
+
+// BuildSegmentFileAnchored writes EFD3 for an explicit canonical owner.
+func BuildSegmentFileAnchored(ctx context.Context, outputDir string, startBlock, endBlock uint64, src BlockTxSource, anchor SegmentAnchor) (*BuiltSegment, error) {
+	if anchor.Identity == (types.Hash{}) || anchor.EndCanonicalHash == (types.Hash{}) {
+		return nil, fmt.Errorf("canonical segment anchor required")
+	}
+	return buildSegmentFile(ctx, outputDir, startBlock, endBlock, src, &anchor)
+}
+
+func buildSegmentFile(ctx context.Context, outputDir string, startBlock, endBlock uint64, src BlockTxSource, anchor *SegmentAnchor) (*BuiltSegment, error) {
 	if endBlock <= startBlock {
 		return nil, fmt.Errorf("empty range %d-%d", startBlock, endBlock)
 	}
@@ -92,13 +114,16 @@ func BuildSegmentFile(ctx context.Context, outputDir string, startBlock, endBloc
 		return nil, err
 	}
 	tmpIdx := filepath.Join(outputDir, fmt.Sprintf("tmp_txindex_%d.ri", startBlock))
-	datBytes, err := buildFromSource(ctx, startBlock, endBlock, src, tmpIdx)
+	datBytes, err := buildFromSourceAnchored(ctx, startBlock, endBlock, src, tmpIdx, anchor)
+	if err == nil && anchor != nil {
+		err = sealV3Digest(datBytes, tmpIdx)
+	}
 	if err != nil {
 		os.Remove(tmpIdx)
 		os.Remove(tmpIdx + ".tmp")
 		return nil, fmt.Errorf("build segment %d-%d: %w", startBlock, endBlock, err)
 	}
-	return &BuiltSegment{StartBlock: startBlock, EndBlock: endBlock, dat: datBytes, idxPath: tmpIdx}, nil
+	return &BuiltSegment{StartBlock: startBlock, EndBlock: endBlock, dat: datBytes, idxPath: tmpIdx, anchor: anchor}, nil
 }
 
 // CommitBuiltSegments appends built segments to outputDir's store, in the
@@ -106,6 +131,12 @@ func BuildSegmentFile(ctx context.Context, outputDir string, startBlock, endBloc
 // already holds. It stops at the first failure; segments not appended are
 // discarded either way. It returns how many were appended.
 func CommitBuiltSegments(outputDir string, segs []*BuiltSegment) (int, error) {
+	return CommitBuiltSegmentsChecked(outputDir, segs, nil)
+}
+
+// CommitBuiltSegmentsChecked rechecks the canonical prefix immediately before
+// each cidx publication. A failed check leaves that segment unpublished.
+func CommitBuiltSegmentsChecked(outputDir string, segs []*BuiltSegment, check func(*BuiltSegment) error) (int, error) {
 	defer func() {
 		for _, s := range segs {
 			s.Discard()
@@ -120,6 +151,11 @@ func CommitBuiltSegments(outputDir string, segs []*BuiltSegment) (int, error) {
 	}
 	defer store.Close()
 	for i, s := range segs {
+		if check != nil {
+			if err := check(s); err != nil {
+				return i, err
+			}
+		}
 		if _, err := store.WriteSegment(s.dat, s.idxPath); err != nil {
 			return i, err
 		}
@@ -141,6 +177,10 @@ func CommitBuiltSegments(outputDir string, segs []*BuiltSegment) (int, error) {
 // buys nothing, and re-reading a source that has since advanced would build an
 // index that disagrees with itself between its two passes.
 func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src BlockTxSource, idxPath string) ([]byte, error) {
+	return buildFromSourceAnchored(ctx, startBlock, endBlock, src, idxPath, nil)
+}
+
+func buildFromSourceAnchored(ctx context.Context, startBlock, endBlock uint64, src BlockTxSource, idxPath string, anchor *SegmentAnchor) ([]byte, error) {
 	blockCount := endBlock - startBlock
 	txPerBlock := make([]uint32, blockCount)
 	perBlock := make([][]types.Hash, blockCount)
@@ -181,9 +221,13 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 	if err != nil {
 		return nil, err
 	}
+	defer rs.Close()
 	if totalTx == 0 {
 		if err := rs.Build(ctx); err != nil {
 			return nil, err
+		}
+		if anchor != nil {
+			return buildDatV3Bytes(startBlock, blockCount, 0, txPerBlock, *anchor), nil
 		}
 		return buildEmptyDatV2(blockCount), nil
 	}
@@ -214,7 +258,18 @@ func buildFromSource(ctx context.Context, startBlock, endBlock uint64, src Block
 	}
 	log.Info("txindex segment built from source",
 		"blocks", fmt.Sprintf("%d-%d", startBlock, endBlock-1), "txs", totalTx)
+	if anchor != nil {
+		return buildDatV3Bytes(startBlock, blockCount, uint64(totalTx), txPerBlock, *anchor), nil
+	}
 	return buildDatV2Bytes(blockCount, uint64(totalTx), txPerBlock), nil
+}
+
+// Anchor returns the binding supplied for an EFD3 build.
+func (b *BuiltSegment) Anchor() (SegmentAnchor, bool) {
+	if b == nil || b.anchor == nil {
+		return SegmentAnchor{}, false
+	}
+	return *b.anchor, true
 }
 
 // appendSegmentRange retains the historical advisory range listing.
@@ -255,10 +310,13 @@ func readSegmentRanges(dir string) []SegmentRange {
 
 // datBlockCount reads the block count out of v2 dat bytes; 0 when it is not v2.
 func datBlockCount(dat []byte) uint64 {
-	if len(dat) < 16 || !bytes.Equal(dat[:4], datMagicV2[:]) {
-		return 0
+	if len(dat) >= datV3HeaderSize && bytes.Equal(dat[:4], datMagicV3[:]) && binary.LittleEndian.Uint32(dat[4:8]) == datV3HeaderSize {
+		return binary.LittleEndian.Uint64(dat[16:24])
 	}
-	return uint64(binary.LittleEndian.Uint32(dat[4:8]))
+	if len(dat) >= 16 && bytes.Equal(dat[:4], datMagicV2[:]) {
+		return uint64(binary.LittleEndian.Uint32(dat[4:8]))
+	}
+	return 0
 }
 
 // SealedEnd returns the first block NOT covered by a segment. Owner startup

@@ -18,9 +18,9 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
-	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
@@ -54,6 +54,7 @@ func NewSegmentBuilder(input *freezer.Freezer, outputDir string, decodeBody Body
 //   - enums=true replaces the fixed-width per-key offset (bytesPerRec, ~28 bit
 //     at 250M keys) with an Elias-Fano enumeration of the dense ordinals
 //     (~2.5 bit/key). This is the main lever: ~33.7 → ~12 bit/key with LFP on.
+//
 //   - lessFalsePositives=true keeps the 8-bit existence fingerprint. With it
 //     off, every out-of-set hash gets a phantom ordinal (the MPHF always maps
 //     to [0,N)), so a newer segment falsely answers for a tx that lives in an
@@ -228,6 +229,7 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 		if err != nil {
 			return nil, err
 		}
+		defer rs.Close()
 		if err := rs.Build(ctx); err != nil {
 			return nil, err
 		}
@@ -242,6 +244,7 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 	if err != nil {
 		return nil, err
 	}
+	defer rs.Close()
 
 	// Pass 2: add tx hashes to RecSplit.
 	ordinal := uint64(0)
@@ -333,12 +336,33 @@ func partialTailSegments(dir string) (int, error) {
 		return 0, err
 	}
 	defer st.Close()
+	for i := uint64(0); i < st.SegmentCount(); i++ {
+		data, err := st.ReadSegmentData(i)
+		if err != nil {
+			return 0, err
+		}
+		if err := rejectUnknownDatMagic(data); err != nil {
+			return 0, err
+		}
+		if len(data) >= 4 && string(data[:4]) == string(datMagicV3[:]) {
+			return 0, fmt.Errorf("legacy V2 builder cannot resume an anchored EFD3 store")
+		}
+	}
 
 	count := 0
 	for n := st.SegmentCount(); n > 0; n-- {
 		data, err := st.ReadSegmentData(n - 1)
-		if err != nil || len(data) < 8 || string(data[:4]) != string(datMagicV2[:]) {
+		if err != nil {
+			return count, err
+		}
+		if err := rejectUnknownDatMagic(data); err != nil {
+			return count, err
+		}
+		if len(data) < 4 || string(data[:4]) != string(datMagicV2[:]) {
 			break
+		}
+		if len(data) < 16 {
+			return count, fmt.Errorf("truncated EFD2 header")
 		}
 		if uint64(binary.LittleEndian.Uint32(data[4:8])) >= SegmentSize {
 			break

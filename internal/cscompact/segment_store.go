@@ -514,7 +514,7 @@ func (r *SegmentStoreReader) GetRecSplitIndex(segNum uint64) (*recsplit.Index, e
 		return idx, nil
 	}
 
-	fileNum, _, riOff, err := r.readIdxEntry(segNum)
+	_, _, riOff, err := r.readIdxEntry(segNum)
 	if err != nil {
 		return nil, err
 	}
@@ -535,9 +535,29 @@ func (r *SegmentStoreReader) GetRecSplitIndex(segNum uint64) (*recsplit.Index, e
 		return nil, fmt.Errorf("segment %d has no embedded RecSplit", segNum)
 	}
 
-	// mmap the data file and reference the embedded ri region in place — no
-	// heap copy. The OS pages only the touched index bytes; this is what keeps
-	// a fan-out lookup from residenting every segment's index in the Go heap.
+	riData, err := r.ReadRecSplitBytes(segNum)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := recsplit.OpenIndexFromBytes(riData, fmt.Sprintf("seg%06d", segNum))
+	if err != nil {
+		return nil, fmt.Errorf("parse recsplit for segment %d: %w", segNum, err)
+	}
+	r.riCache[segNum] = idx
+	return idx, nil
+}
+
+// ReadRecSplitBytes exposes the exact embedded frame bytes for integrity
+// checks before parsing. The returned slice is backed by this reader's mmap
+// and is valid until Close; callers must not modify it.
+func (r *SegmentStoreReader) ReadRecSplitBytes(segNum uint64) ([]byte, error) {
+	fileNum, _, riOff, err := r.readIdxEntry(segNum)
+	if err != nil {
+		return nil, err
+	}
+	if riOff == 0 {
+		return nil, fmt.Errorf("segment %d has no embedded RecSplit", segNum)
+	}
 	mm, err := r.getDataMmap(fileNum)
 	if err != nil {
 		return nil, err
@@ -557,13 +577,7 @@ func (r *SegmentStoreReader) GetRecSplitIndex(segNum uint64) (*recsplit.Index, e
 	// 8-byte load is tolerated, and the ② rebuild pads each segment's ri to an
 	// 8-byte file offset so this is also alignment-correct for portable builds.
 	riData := mm[start:end:end]
-
-	idx, err := recsplit.OpenIndexFromBytes(riData, fmt.Sprintf("seg%06d", segNum))
-	if err != nil {
-		return nil, fmt.Errorf("parse recsplit for segment %d: %w", segNum, err)
-	}
-	r.riCache[segNum] = idx
-	return idx, nil
+	return riData, nil
 }
 
 func (r *SegmentStoreReader) Close() {
