@@ -321,6 +321,9 @@ func CanonicalTxnByID(db kv.Getter, id uint64) (*transaction.Transaction, error)
 	if err != nil {
 		return nil, err
 	}
+	if len(v) == 0 {
+		return nil, nil
+	}
 	return decodeStoredTransaction(v)
 }
 
