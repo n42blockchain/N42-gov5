@@ -260,8 +260,9 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	// same address), the access list and the refund are not reset by
 	// FinalizeTx's effect on the call (the refund of a system call is
 	// discarded), the call's snapshot reverts only its own entries, and
-	// the one account both calls touch, the system address, is touched
-	// empty by each (EIP-161: deleted by the one finalize as by the two).
+	// the one account both calls touch, the system address, is finalized
+	// between them (FinalizeSharedCaller) when the skipped finalize would
+	// have deleted it, so the second call replaces it as before.
 	once := state.SyscallFinalizeOnceOn() && ibs.DetachedPendingCredits()
 	for _, systemCall := range registry.executionRequests {
 		t0 := time.Now()
@@ -275,7 +276,10 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 		requests = appendExecutionRequest(requests, systemCall.requestType, ret)
 		t1 := time.Now()
 		if once {
-			callNs += int64(t1.Sub(t0))
+			// What the skipped FinalizeTx does that the next call sees:
+			// the caller both calls share, touched empty, is deleted.
+			ibs.FinalizeSharedCaller(rules, state.SystemAddress)
+			callNs += int64(time.Since(t0))
 			continue
 		}
 		if err := ibs.FinalizeTx(rules, noop); err != nil {
