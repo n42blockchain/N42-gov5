@@ -102,6 +102,9 @@ func (s *IntraBlockState) detachPendingCredits(pending []types.Address) (pending
 	if workers < 1 {
 		workers = 1
 	}
+	if finalizeFastOn {
+		return s.detachPendingCreditsFast(pending, seeded, workers)
+	}
 	// Read-only over the state's maps: nothing else touches this state
 	// while its root is computed.
 	per := (len(pending) + workers - 1) / workers

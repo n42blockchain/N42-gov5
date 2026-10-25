@@ -1724,6 +1724,17 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		for addr := range s.journal.dirties {
 			s.stateObjectsDirty[addr] = struct{}{}
 		}
+	} else if finalizeFastOn {
+		// A detached credit is never loaded here (the detach skipped every
+		// loaded address and only the other pending credits were
+		// materialised since): its balanceInc entry alone decides.
+		for addr := range s.journal.dirties {
+			if bi := s.balanceInc[addr]; bi != nil && bi.detached {
+				continue
+			}
+			s.stateObjectsDirty[addr] = struct{}{}
+		}
+		detached.release()
 	} else {
 		for addr := range s.journal.dirties {
 			if _, loaded := s.stateObjects[addr]; !loaded {
@@ -1754,6 +1765,11 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	dirtyAddrs := sortedAddresses(s.stateObjectsDirty)
 	rp.Dirty = len(dirtyAddrs)
 	rp.Sort, tStep = stepSince(tStep)
+	if finalizeFastOn && !ltEnabled && len(dirtyAddrs) >= finalizeFastMin {
+		s.collectDirtyParallel(dirtyAddrs, accounts, storage, post, &detached)
+		dirtyAddrs = nil
+		detached = pendingCredits{} // put in by the parallel walk
+	}
 	for _, addr := range dirtyAddrs {
 		obj := s.getStateObject(addr)
 		// Selfdestructed accounts must be treated as deleted for hashed state,
