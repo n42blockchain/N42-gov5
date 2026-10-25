@@ -41,6 +41,10 @@ type SegmentStoreWriter struct {
 	idxFile  *os.File
 	headFile uint16
 	headSize int64
+	segments uint64
+	poisoned bool
+	// fault is set only by package tests to interrupt durability boundaries.
+	fault func(string) error
 }
 
 // NewSegmentStoreWriter opens or creates a segment store for the given prefix.
@@ -55,36 +59,64 @@ func NewSegmentStoreWriter(dir, prefix string) (*SegmentStoreWriter, error) {
 		return nil, err
 	}
 
-	fi, _ := idxFile.Stat()
+	fi, err := idxFile.Stat()
+	if err != nil {
+		idxFile.Close()
+		return nil, err
+	}
+	if fi.Size()%segIdxEntrySize != 0 {
+		idxFile.Close()
+		return nil, fmt.Errorf("%s: incomplete segment index entry", idxPath)
+	}
 	existingSegs := fi.Size() / segIdxEntrySize
 	var headFile uint16
 	var headSize int64
 	if existingSegs > 0 {
 		var lastEntry [segIdxEntrySize]byte
-		idxFile.ReadAt(lastEntry[:], (existingSegs-1)*segIdxEntrySize)
+		if _, err := idxFile.ReadAt(lastEntry[:], (existingSegs-1)*segIdxEntrySize); err != nil {
+			idxFile.Close()
+			return nil, err
+		}
 		headFile = binary.LittleEndian.Uint16(lastEntry[0:2])
 		cdatPath := filepath.Join(dir, fmt.Sprintf("%s.%04d.cdat", prefix, headFile))
-		if dfi, err := os.Stat(cdatPath); err == nil {
+		dfi, err := os.Stat(cdatPath)
+		if err != nil {
+			idxFile.Close()
+			return nil, err
+		}
+		headSize = dfi.Size()
+	} else {
+		// A crash may leave an orphan data frame before the first cidx
+		// publication. The next frame must never point into that orphan.
+		if dfi, err := os.Stat(filepath.Join(dir, fmt.Sprintf("%s.%04d.cdat", prefix, headFile))); err == nil {
 			headSize = dfi.Size()
+		} else if !os.IsNotExist(err) {
+			idxFile.Close()
+			return nil, err
 		}
 	}
-	idxFile.Seek(0, 2)
+	if _, err := idxFile.Seek(0, 2); err != nil {
+		idxFile.Close()
+		return nil, err
+	}
 
 	return &SegmentStoreWriter{
 		dir: dir, prefix: prefix, idxFile: idxFile,
-		headFile: headFile, headSize: headSize,
+		headFile: headFile, headSize: headSize, segments: uint64(existingSegs),
 	}, nil
 }
 
 func (w *SegmentStoreWriter) SegmentCount() uint64 {
-	fi, _ := w.idxFile.Stat()
-	return uint64(fi.Size()) / segIdxEntrySize
+	return w.segments
 }
 
 // WriteSegment writes dat + ri data as a single frame in the cdat file.
 // recSplitPath is the temp file produced by RecSplit Build(), read into
 // memory then deleted. Pass "" for batch-only data (no RecSplit).
 func (w *SegmentStoreWriter) WriteSegment(datBytes []byte, recSplitPath string) (uint64, error) {
+	if w.poisoned {
+		return 0, fmt.Errorf("segment writer poisoned after failed publication")
+	}
 	segNum := w.SegmentCount()
 
 	var riBytes []byte
@@ -94,53 +126,185 @@ func (w *SegmentStoreWriter) WriteSegment(datBytes []byte, recSplitPath string) 
 		if err != nil {
 			return 0, fmt.Errorf("read recsplit %s: %w", recSplitPath, err)
 		}
-		os.Remove(recSplitPath)
-		os.Remove(recSplitPath + ".tmp")
+		// Keep the temporary index until the frame is fully published. A
+		// failed write must not consume its input or invite a blind retry.
 	}
 
 	frameSize := int64(4 + len(datBytes))
 	if len(riBytes) > 0 {
 		frameSize += int64(4 + len(riBytes))
 	}
-	if w.headSize+frameSize > segStoreMaxFileSize {
+	if frameSize > segStoreMaxFileSize {
+		w.poisoned = true
+		return 0, fmt.Errorf("segment frame exceeds maximum data file size")
+	}
+	var cdatFile *os.File
+	var cdatPath string
+	var newDataFile bool
+	var datOffset int64
+	var err error
+	for {
+		cdatPath = filepath.Join(w.dir, fmt.Sprintf("%s.%04d.cdat", w.prefix, w.headFile))
+		_, statErr := os.Stat(cdatPath)
+		newDataFile = os.IsNotExist(statErr)
+		if statErr != nil && !newDataFile {
+			w.poisoned = true
+			return 0, statErr
+		}
+		cdatFile, err = os.OpenFile(cdatPath, os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			w.poisoned = true
+			return 0, err
+		}
+		if datOffset, err = cdatFile.Seek(0, 2); err != nil {
+			cdatFile.Close()
+			w.poisoned = true
+			return 0, err
+		}
+		if datOffset+frameSize <= segStoreMaxFileSize {
+			break
+		}
+		if err := cdatFile.Close(); err != nil {
+			w.poisoned = true
+			return 0, err
+		}
+		if w.headFile == ^uint16(0) {
+			w.poisoned = true
+			return 0, fmt.Errorf("segment data file number exhausted")
+		}
 		w.headFile++
-		w.headSize = 0
 	}
-
-	cdatPath := filepath.Join(w.dir, fmt.Sprintf("%s.%04d.cdat", w.prefix, w.headFile))
-	cdatFile, err := os.OpenFile(cdatPath, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return 0, err
-	}
-	cdatFile.Seek(0, 2)
-
-	datOffset := w.headSize
 	var riOffset int64
 
 	var sizeBuf [4]byte
 	binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(datBytes)))
-	cdatFile.Write(sizeBuf[:])
-	cdatFile.Write(datBytes)
-
-	if len(riBytes) > 0 {
-		riOffset = datOffset + 4 + int64(len(datBytes))
-		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(riBytes)))
-		cdatFile.Write(sizeBuf[:])
-		cdatFile.Write(riBytes)
+	if err = writeAll(cdatFile, sizeBuf[:]); err == nil {
+		err = writeAll(cdatFile, datBytes)
 	}
 
-	cdatFile.Sync()
-	cdatFile.Close()
+	if err == nil && len(riBytes) > 0 {
+		riOffset = datOffset + 4 + int64(len(datBytes))
+		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(riBytes)))
+		if err = writeAll(cdatFile, sizeBuf[:]); err == nil {
+			err = writeAll(cdatFile, riBytes)
+		}
+	}
+	if err == nil {
+		err = cdatFile.Sync()
+	}
+	if closeErr := cdatFile.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil && newDataFile {
+		err = syncSegmentDirectory(w.dir)
+	}
+	if err == nil && w.fault != nil {
+		err = w.fault("data-durable")
+	}
+	if err != nil {
+		w.poisoned = true
+		return 0, fmt.Errorf("write segment data: %w", err)
+	}
 
 	var idxEntry [segIdxEntrySize]byte
 	binary.LittleEndian.PutUint16(idxEntry[0:2], w.headFile)
 	binary.LittleEndian.PutUint32(idxEntry[4:8], uint32(datOffset))
 	binary.LittleEndian.PutUint32(idxEntry[8:12], uint32(riOffset))
-	w.idxFile.Write(idxEntry[:])
-	w.idxFile.Sync()
+	// Publish one complete cidx generation. A reader may hold the old inode;
+	// after rename, a new reader sees the entire new entry or the old file.
+	if err := w.publishIndex(idxEntry[:]); err != nil {
+		w.poisoned = true
+		return 0, err
+	}
+	if recSplitPath != "" {
+		os.Remove(recSplitPath)
+		os.Remove(recSplitPath + ".tmp")
+	}
 
-	w.headSize += frameSize
+	w.headSize = datOffset + frameSize
+	w.segments++
 	return segNum, nil
+}
+
+func writeAll(f *os.File, p []byte) error {
+	for len(p) > 0 {
+		n, err := f.Write(p)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("short segment write")
+		}
+		p = p[n:]
+	}
+	return nil
+}
+
+func syncSegmentDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func (w *SegmentStoreWriter) publishIndex(entry []byte) error {
+	path := filepath.Join(w.dir, w.prefix+".cidx")
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(current)%segIdxEntrySize != 0 {
+		return fmt.Errorf("%s: incomplete segment index entry", path)
+	}
+	if uint64(len(current)/segIdxEntrySize) != w.segments {
+		return fmt.Errorf("%s: segment index changed during publication", path)
+	}
+	tmp, err := os.CreateTemp(w.dir, w.prefix+".cidx-next-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err = writeAll(tmp, current); err == nil {
+		err = writeAll(tmp, entry)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if w.fault != nil {
+		if err := w.fault("index-temp-durable"); err != nil {
+			return err
+		}
+	}
+	if err := renameWithRetry(tmpPath, path); err != nil {
+		return err
+	}
+	if w.fault != nil {
+		if err := w.fault("index-renamed"); err != nil {
+			return err
+		}
+	}
+	if err := syncSegmentDirectory(w.dir); err != nil {
+		return err
+	}
+	next, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	old := w.idxFile
+	w.idxFile = next
+	return old.Close()
 }
 
 func (w *SegmentStoreWriter) Close() {
@@ -209,7 +373,15 @@ func OpenSegmentStore(dir, prefix string) (*SegmentStoreReader, error) {
 		}
 		return nil, err
 	}
-	fi, _ := idxFile.Stat()
+	fi, err := idxFile.Stat()
+	if err != nil {
+		idxFile.Close()
+		return nil, err
+	}
+	if fi.Size()%segIdxEntrySize != 0 {
+		idxFile.Close()
+		return nil, fmt.Errorf("%s: incomplete segment index entry", idxPath)
+	}
 	segments := uint64(fi.Size()) / segIdxEntrySize
 
 	return &SegmentStoreReader{
@@ -306,12 +478,22 @@ func (r *SegmentStoreReader) ReadSegmentData(segNum uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	fi, err := df.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if int64(datOff)+4 > fi.Size() {
+		return nil, fmt.Errorf("segment %d data offset beyond file", segNum)
+	}
 
 	var sizeBuf [4]byte
 	if _, err := df.ReadAt(sizeBuf[:], int64(datOff)); err != nil {
 		return nil, err
 	}
 	dataSize := binary.LittleEndian.Uint32(sizeBuf[:])
+	if int64(dataSize) > fi.Size()-int64(datOff)-4 {
+		return nil, fmt.Errorf("segment %d data frame truncated", segNum)
+	}
 	data := make([]byte, dataSize)
 	if _, err := df.ReadAt(data, int64(datOff)+4); err != nil {
 		return nil, err
@@ -465,5 +647,6 @@ func (w *SegmentStoreWriter) TruncateLastSegment() error {
 	}
 	w.headFile = fileNum
 	w.headSize = datOff
+	w.segments--
 	return nil
 }
