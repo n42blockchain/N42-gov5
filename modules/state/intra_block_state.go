@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 	"unsafe"
 
 	"github.com/holiman/uint256"
@@ -254,6 +255,10 @@ type IntraBlockState struct {
 	// (LastIntermediateRoot); the deferred-execution write reads it.
 	lastIntermediateRoot    types.Hash
 	lastIntermediateRootSet bool
+
+	// rootPrep is the most recent computeRootViaComputer's split
+	// (LastRootPrepPhases).
+	rootPrep RootPrepPhases
 
 	// accountPrefetch: the layer under stateReader that serves accounts
 	// read ahead across the parallel processor's workers (SetAccountPrefetch).
@@ -1695,16 +1700,22 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// Check if LtHash is supported — if so, collect originals.
 	ltRC, ltEnabled := s.rootComputer.(LtHashRootComputer)
 
+	rp := &s.rootPrep
+	*rp = RootPrepPhases{Enter: time.Now()}
 	pending := s.pendingIncreaseAddrs()
+	tStep := time.Now()
+	rp.Pending = tStep.Sub(rp.Enter)
 	var detached pendingCredits
 	if !ltEnabled {
 		detached, pending = s.detachPendingCredits(pending)
 	}
 	lastRootCredits.Store(int64(len(detached.addrs))<<32 | int64(len(pending)))
+	rp.Detach, tStep = stepSince(tStep)
 	for _, addr := range pending {
 		s.getStateObject(addr)
 		s.stateObjectsDirty[addr] = struct{}{}
 	}
+	rp.Mat, tStep = stepSince(tStep)
 	// Merge journal.dirties — Finalize (block rewards) and post-block system
 	// calls write to journal but there's no FinalizeTx after them. A
 	// detached credit stays out: it has no object, and CommitBlock merges it
@@ -1724,6 +1735,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		}
 		detached.release()
 	}
+	rp.Merge, tStep = stepSince(tStep)
 
 	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty)+len(detached.addrs))
 	storage := make(map[types.Address]map[types.Hash]*uint256.Int)
@@ -1739,7 +1751,10 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		originalStorage = make(map[types.Address]map[types.Hash]*uint256.Int)
 	}
 
-	for _, addr := range sortedAddresses(s.stateObjectsDirty) {
+	dirtyAddrs := sortedAddresses(s.stateObjectsDirty)
+	rp.Dirty = len(dirtyAddrs)
+	rp.Sort, tStep = stepSince(tStep)
+	for _, addr := range dirtyAddrs {
 		obj := s.getStateObject(addr)
 		// Selfdestructed accounts must be treated as deleted for hashed state,
 		// even though obj.deleted is only set later in CommitBlock/MakeWriteSet.
@@ -1872,6 +1887,8 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		}
 	}
 
+	rp.Loop, tStep = stepSince(tStep)
+
 	// The detached credits: accounts the block only credited and never
 	// loaded, read from the prefetch layer (no storage, never deleted).
 	for i, addr := range detached.addrs {
@@ -1881,6 +1898,8 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			post.wiped[addr] = struct{}{}
 		}
 	}
+
+	rp.Tail, tStep = stepSince(tStep)
 
 	// The dirty set is final here: everything the root walk is about to
 	// commit is in the state objects, and nothing below changes them.
@@ -1892,6 +1911,8 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		s.rootPostHook = nil
 		hook(post)
 	}
+	rp.Hook, tStep = stepSince(tStep)
+	defer func() { rp.Compute = time.Since(tStep) }()
 
 	// Use LtHash-aware path if available.
 	if ltEnabled {
