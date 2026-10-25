@@ -48,6 +48,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/params"
 )
 
 // Chain is the block access the indexer needs.
@@ -73,6 +74,7 @@ type Indexer struct {
 	fatalErr        atomic.Pointer[sealFailure]
 	resolverRemove  func() bool
 	fatalSeal       chan error
+	anchorIdentity  types.Hash
 }
 
 type sealFailure struct{ err error }
@@ -325,6 +327,162 @@ func (x *Indexer) txSegmentVerifierWithError(blockNum uint64, txHash types.Hash)
 	return 0, false, nil
 }
 
+func (x *Indexer) txPositionVerifier(blockNum, txIndex uint64, txHash types.Hash) (bool, error) {
+	blk, err := x.chain.GetBlockByNumber(uint256.NewInt(blockNum))
+	if err != nil {
+		return false, fmt.Errorf("read canonical block %d for tx lookup: %w", blockNum, err)
+	}
+	if blk == nil {
+		return false, fmt.Errorf("canonical block %d missing during tx lookup", blockNum)
+	}
+	txs := blk.Transactions()
+	if txIndex >= uint64(len(txs)) {
+		return false, fmt.Errorf("canonical block %d transaction index %d out of range", blockNum, txIndex)
+	}
+	return txs[txIndex].Hash() == txHash, nil
+}
+
+type anchorChain interface {
+	Config() *params.ChainConfig
+	GenesisBlock() block.IBlock
+}
+
+func (x *Indexer) establishAnchorIdentity() error {
+	chain, ok := x.chain.(anchorChain)
+	if !ok || chain.Config() == nil || chain.GenesisBlock() == nil {
+		return fmt.Errorf("explicit txindex owner requires chain config and genesis block")
+	}
+	identity, err := txlookup.CanonicalChainIdentity(chain.Config().ChainID, chain.GenesisBlock().Hash())
+	if err != nil {
+		return err
+	}
+	genesis, err := x.canonicalHash(0)
+	if err != nil {
+		return err
+	}
+	if genesis != chain.GenesisBlock().Hash() {
+		return fmt.Errorf("canonical genesis differs from owner genesis")
+	}
+	x.anchorIdentity = identity
+	return nil
+}
+
+func (x *Indexer) canonicalHash(n uint64) (types.Hash, error) {
+	if x.db == nil {
+		return types.Hash{}, fmt.Errorf("canonical database unavailable")
+	}
+	var hash types.Hash
+	err := x.db.View(x.ctx, func(tx kv.Tx) error {
+		var err error
+		hash, err = rawdb.ReadCanonicalHash(tx, n)
+		return err
+	})
+	return hash, err
+}
+
+func (x *Indexer) durableCanonicalHead() (uint64, error) {
+	if x.db == nil {
+		return 0, fmt.Errorf("canonical database unavailable")
+	}
+	var head uint64
+	err := x.db.View(x.ctx, func(tx kv.Tx) error {
+		value, err := tx.GetOne(modules.HeadBlockKey, []byte("HotStuffCommittedHead"))
+		if err != nil {
+			return err
+		}
+		if len(value) == 0 {
+			chain, ok := x.chain.(anchorChain)
+			if !ok || chain.GenesisBlock() == nil {
+				return fmt.Errorf("durable committed head missing")
+			}
+			genesis := chain.GenesisBlock().Hash()
+			headValue, err := tx.GetOne(modules.HeadBlockKey, []byte(modules.HeadBlockKey))
+			if err != nil {
+				return err
+			}
+			canonical, err := rawdb.ReadCanonicalHash(tx, 0)
+			if err != nil {
+				return err
+			}
+			genesisNumber, err := tx.GetOne(modules.HeaderNumber, genesis[:])
+			if err != nil {
+				return err
+			}
+			if len(headValue) != len(genesis) || types.BytesToHash(headValue) != genesis || canonical != genesis {
+				return fmt.Errorf("durable committed head missing outside genesis")
+			}
+			if len(genesisNumber) != 8 || binary.BigEndian.Uint64(genesisNumber) != 0 {
+				return fmt.Errorf("genesis header number missing")
+			}
+			return nil
+		}
+		if len(value) != 32 {
+			return fmt.Errorf("durable committed head malformed")
+		}
+		hash := types.BytesToHash(value)
+		if hash == (types.Hash{}) {
+			return fmt.Errorf("durable committed head zero")
+		}
+		value, err = tx.GetOne(modules.HeaderNumber, hash[:])
+		if err != nil {
+			return err
+		}
+		if len(value) != 8 {
+			return fmt.Errorf("durable committed head number missing")
+		}
+		head = binary.BigEndian.Uint64(value)
+		canonical, err := rawdb.ReadCanonicalHash(tx, head)
+		if err != nil {
+			return err
+		}
+		if canonical != hash {
+			return fmt.Errorf("durable committed head is not canonical")
+		}
+		return nil
+	})
+	return head, err
+}
+
+func (x *Indexer) segmentAnchor(end uint64) (txlookup.SegmentAnchor, error) {
+	head, err := x.durableCanonicalHead()
+	if err != nil {
+		return txlookup.SegmentAnchor{}, err
+	}
+	if end == 0 || end-1 > head {
+		return txlookup.SegmentAnchor{}, fmt.Errorf("txindex segment end %d exceeds durable canonical head %d", end, head)
+	}
+	hash, err := x.canonicalHash(end - 1)
+	if err != nil {
+		return txlookup.SegmentAnchor{}, err
+	}
+	if hash == (types.Hash{}) {
+		return txlookup.SegmentAnchor{}, fmt.Errorf("canonical block %d missing", end-1)
+	}
+	return txlookup.SegmentAnchor{Identity: x.anchorIdentity, EndCanonicalHash: hash}, nil
+}
+
+func (x *Indexer) checkBuiltAnchor(seg *txlookup.BuiltSegment) error {
+	anchor, ok := seg.Anchor()
+	if !ok || anchor.Identity != x.anchorIdentity {
+		return fmt.Errorf("built segment missing owner anchor")
+	}
+	head, err := x.durableCanonicalHead()
+	if err != nil {
+		return err
+	}
+	if seg.EndBlock == 0 || seg.EndBlock-1 > head {
+		return fmt.Errorf("built segment exceeds durable canonical head")
+	}
+	actual, err := x.canonicalHash(seg.EndBlock - 1)
+	if err != nil {
+		return err
+	}
+	if actual == (types.Hash{}) || actual != anchor.EndCanonicalHash {
+		return fmt.Errorf("canonical hash changed before txindex publication at %d", seg.EndBlock-1)
+	}
+	return nil
+}
+
 // initTxIndex prepares the tail tier. A failure here leaves the chain on the
 // table-only path rather than starting with a lookup that answers nothing.
 // warnDisabledWithWatermark shouts when the node boots WITHOUT the tail tier
@@ -381,25 +539,45 @@ func (x *Indexer) Start() bool {
 		log.Error("txindex tail disabled: cannot create segment dir", "dir", x.txIndexDir, "err", err)
 		return false
 	}
-	svc, err := txlookup.NewService(x.txIndexDir)
-	if err != nil {
-		log.Error("txindex tail disabled: cannot open segments", "err", err)
-		return false
-	}
-	svc.SetVerifierWithError(x.txSegmentVerifierWithError)
-
 	head := x.chain.CurrentBlock()
 	if head == nil {
 		log.Error("txindex tail disabled: no chain head")
-		svc.Close()
 		return false
 	}
 	headNum := head.Number64().Uint64()
 	if headNum == ^uint64(0) {
 		log.Error("txindex tail disabled: canonical head cannot be incremented")
-		svc.Close()
 		return false
 	}
+	if x.explicitEnabled != nil {
+		durable, err := x.durableCanonicalHead()
+		if err != nil {
+			log.Error("txindex tail disabled: no durable canonical head", "err", err)
+			return false
+		}
+		headNum = durable
+		if headNum == ^uint64(0) {
+			log.Error("txindex tail disabled: durable canonical head cannot be incremented")
+			return false
+		}
+		if err := x.establishAnchorIdentity(); err != nil {
+			log.Error("txindex tail disabled: cannot establish canonical identity", "err", err)
+			return false
+		}
+	}
+	var svc *txlookup.Service
+	var err error
+	if x.explicitEnabled != nil {
+		svc, err = txlookup.NewAnchoredService(x.txIndexDir, x.anchorIdentity, x.canonicalHash, headNum)
+	} else {
+		svc, err = txlookup.NewLegacyService(x.txIndexDir)
+	}
+	if err != nil {
+		log.Error("txindex tail disabled: cannot open segments", "err", err)
+		return false
+	}
+	svc.SetVerifierWithError(x.txSegmentVerifierWithError)
+	svc.SetPositionVerifier(x.txPositionVerifier)
 
 	start, err := x.txIndexStart(headNum)
 	if err != nil {
@@ -521,7 +699,17 @@ func (x *Indexer) rebuildTxTail(start, head uint64) (sealed bool, err error) {
 		end := start + txIndexMaxRebuildBlocks
 		log.Info("txindex: sealing a backlog range before rebuilding the tail",
 			"from", start, "to", end-1)
-		if err := txlookup.BuildSegmentFromSource(x.ctx, x.txIndexDir, start, end, x.blockTxSource); err != nil {
+		var err error
+		if x.explicitEnabled != nil {
+			var anchor txlookup.SegmentAnchor
+			anchor, err = x.segmentAnchor(end)
+			if err == nil {
+				err = txlookup.BuildSegmentFromSourceAnchored(x.ctx, x.txIndexDir, start, end, x.blockTxSource, anchor, x.checkBuiltAnchor)
+			}
+		} else {
+			err = txlookup.BuildSegmentFromSource(x.ctx, x.txIndexDir, start, end, x.blockTxSource)
+		}
+		if err != nil {
 			return sealed, fmt.Errorf("seal backlog %d-%d: %w", start, end, err)
 		}
 		sealed = true
@@ -605,13 +793,35 @@ func (x *Indexer) sealTxIndexOnce() bool {
 	built := make([]*txlookup.BuiltSegment, len(ranges))
 	errs := make([]error, len(ranges))
 	src := x.txTail.Source()
+	anchors := make([]txlookup.SegmentAnchor, len(ranges))
+	if x.explicitEnabled != nil {
+		var err error
+		for i, r := range ranges {
+			anchors[i], err = x.segmentAnchor(r.End)
+			if err != nil {
+				x.poisonSeal(err)
+				return false
+			}
+		}
+		// The explicit owner has append-only canonical history. Pin the tail
+		// after reading anchors and recheck each anchor before publication.
+		src, err = x.txTail.SnapshotSource(ranges[0].Start, ranges[len(ranges)-1].End)
+		if err != nil {
+			x.poisonSeal(err)
+			return false
+		}
+	}
 	var wg sync.WaitGroup
 	for i, r := range ranges {
 		wg.Add(1)
-		go func(i int, r txlookup.BlockRange) {
+		go func(i int, r txlookup.BlockRange, anchor txlookup.SegmentAnchor) {
 			defer wg.Done()
-			built[i], errs[i] = txlookup.BuildSegmentFile(x.ctx, x.txIndexDir, r.Start, r.End, src)
-		}(i, r)
+			if x.explicitEnabled != nil {
+				built[i], errs[i] = txlookup.BuildSegmentFileAnchored(x.ctx, x.txIndexDir, r.Start, r.End, src, anchor)
+			} else {
+				built[i], errs[i] = txlookup.BuildSegmentFile(x.ctx, x.txIndexDir, r.Start, r.End, src)
+			}
+		}(i, r, anchors[i])
 	}
 	wg.Wait()
 	// A failed build can be an out-of-space condition. Stop this owner instead
@@ -631,7 +841,13 @@ func (x *Indexer) sealTxIndexOnce() bool {
 			return false
 		}
 	}
-	n, err := txlookup.CommitBuiltSegments(x.txIndexDir, built)
+	var n int
+	var err error
+	if x.explicitEnabled != nil {
+		n, err = txlookup.CommitBuiltSegmentsChecked(x.txIndexDir, built, x.checkBuiltAnchor)
+	} else {
+		n, err = txlookup.CommitBuiltSegments(x.txIndexDir, built)
+	}
 	if err != nil {
 		log.Error("txindex seal: append failed", "appended", n, "of", len(built), "err", err)
 		// A failed sync or rename has an ambiguous publication outcome. Keep
@@ -658,11 +874,22 @@ func (x *Indexer) sealTxIndexOnce() bool {
 
 // reopenTxSegments swaps in a reader that includes the segment just written.
 func (x *Indexer) reopenTxSegments() error {
-	svc, err := txlookup.NewService(x.txIndexDir)
+	var svc *txlookup.Service
+	var err error
+	if x.explicitEnabled != nil {
+		head, herr := x.durableCanonicalHead()
+		if herr != nil {
+			return herr
+		}
+		svc, err = txlookup.NewAnchoredService(x.txIndexDir, x.anchorIdentity, x.canonicalHash, head)
+	} else {
+		svc, err = txlookup.NewLegacyService(x.txIndexDir)
+	}
 	if err != nil {
 		return err
 	}
 	svc.SetVerifierWithError(x.txSegmentVerifierWithError)
+	svc.SetPositionVerifier(x.txPositionVerifier)
 	x.txIndexMu.Lock()
 	old := x.txSegments
 	x.txSegments = svc
