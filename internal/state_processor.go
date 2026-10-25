@@ -81,6 +81,16 @@ type ProcessPhases struct {
 	// CollectApply's parts: the final-versions walk, the account pass
 	// (wipes, accounts, credits) and the storage and code passes.
 	ApplyWalk, ApplyAccounts, ApplyStorage time.Duration
+	// Finalize's split on an ahead run's FinishParallel: the block end
+	// (Prague system calls), the engine's part before the root (rewards),
+	// the root's own steps (state.RootPrepPhases), all of it up to the
+	// post-state hook (FinPreHook: the child launches at its end) and what
+	// follows the root computer.
+	FinBlockEnd, FinEngine, FinPreHook, FinAfter time.Duration
+	// FinBlockEnd's parts: the Prague system calls and their FinalizeTx.
+	FinSysCall, FinSysFinalize time.Duration
+	RootPrep                                     state.RootPrepPhases
+	finEngineStart                               time.Time
 	// Skipped counts the transactions a frame block skipped (skip rule,
 	// frame_exec.go); always zero for other blocks.
 	Skipped int

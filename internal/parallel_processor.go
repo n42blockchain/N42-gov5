@@ -329,13 +329,14 @@ func (p *StateProcessor) FinishParallel(b *block.Block, ibs *state.IntraBlockSta
 	if !ok {
 		return nil, nil, nil, 0, fmt.Errorf("FinishParallel: invalid header type assertion for block %v", b.Number64())
 	}
+	ph := run.phases
 	t0 := time.Now()
-	nopay, err := p.finishStrict(hdr, ibs, b.Transactions(), run.UsedGas)
+	nopay, err := p.finishStrictTimed(hdr, ibs, b.Transactions(), run.UsedGas, &ph)
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
-	ph := run.phases
 	ph.Finalize = time.Since(t0)
+	ph.noteFinalizeSpan(t0, ibs)
 	p.lastPhases.Store(&ph)
 	return run.Receipts, nopay, run.Logs, run.UsedGas, nil
 }
@@ -343,17 +344,46 @@ func (p *StateProcessor) FinishParallel(b *block.Block, ibs *state.IntraBlockSta
 // finishStrict is the strict tail of a parallel run: gas against the
 // header, block end, Finalize.
 func (p *StateProcessor) finishStrict(concreteHeader *block.Header, ibs *state.IntraBlockState, txs []*transaction.Transaction, usedGas uint64) (map[types.Address]*uint256.Int, error) {
+	return p.finishStrictTimed(concreteHeader, ibs, txs, usedGas, nil)
+}
+
+// finishStrictTimed is finishStrict recording the block end's duration in
+// ph (nil: not recorded).
+func (p *StateProcessor) finishStrictTimed(concreteHeader *block.Header, ibs *state.IntraBlockState, txs []*transaction.Transaction, usedGas uint64, ph *ProcessPhases) (map[types.Address]*uint256.Int, error) {
 	if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
 		return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 	}
+	t0 := time.Now()
 	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
 		return nil, err
 	}
+	tEnd := time.Now()
 	_, nopay, err := p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
 	if err != nil {
 		return nil, err
 	}
+	if ph != nil {
+		ph.FinBlockEnd = tEnd.Sub(t0)
+		ph.FinSysCall = time.Duration(lastBlockEndCallNanos.Load())
+		ph.FinSysFinalize = time.Duration(lastBlockEndFinalizeNanos.Load())
+		ph.finEngineStart = tEnd
+	}
 	return nopay, nil
+}
+
+// noteFinalizeSpan fills the Finalize span's split (FinishParallel, t0 its
+// start) from the root computation ibs just ran: the engine's part before
+// the root (rewards), the root's preamble steps up to the post-state hook,
+// the hook, the root computer and whatever follows it.
+func (ph *ProcessPhases) noteFinalizeSpan(t0 time.Time, ibs *state.IntraBlockState) {
+	rp := ibs.LastRootPrepPhases()
+	if rp.Enter.IsZero() || rp.Enter.Before(ph.finEngineStart) {
+		return
+	}
+	ph.FinEngine = rp.Enter.Sub(ph.finEngineStart)
+	ph.RootPrep = rp
+	ph.FinPreHook = rp.Enter.Sub(t0) + rp.Pending + rp.Detach + rp.Mat + rp.Merge + rp.Sort + rp.Loop + rp.Tail
+	ph.FinAfter = ph.Finalize - ph.FinPreHook - rp.Hook - rp.Compute
 }
 
 // BuildParallel is the builder's lenient run over a candidate list: the

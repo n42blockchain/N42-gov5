@@ -2806,6 +2806,16 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			if cr := commitment.LastComputeRootPhases(); cr != nil {
 				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply)
 			}
+			// Finalize's span on an ahead run up to the post-state hook (the
+			// child's launch), step by step, then the hook, the root
+			// computer and what follows it (ProcessPhases.FinPreHook).
+			if rp := procPhases.RootPrep; ahead != nil && !rp.Enter.IsZero() {
+				fields = append(fields, "fPreHook", procPhases.FinPreHook, "fBlockEnd", procPhases.FinBlockEnd,
+					"fSysCall", procPhases.FinSysCall, "fSysFin", procPhases.FinSysFinalize,
+					"fEngine", procPhases.FinEngine, "fPending", rp.Pending, "fDetach", rp.Detach, "fMat", rp.Mat,
+					"fMerge", rp.Merge, "fSort", rp.Sort, "fLoop", rp.Loop, "fTail", rp.Tail, "fDirty", rp.Dirty,
+					"fHook", rp.Hook, "fCompute", rp.Compute, "fAfter", procPhases.FinAfter)
+			}
 			if det, mat := state.LastRootCredits(); det+mat > 0 {
 				fields = append(fields, "creditsDetached", det, "creditsMaterialised", mat)
 			}

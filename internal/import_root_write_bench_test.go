@@ -500,6 +500,25 @@ func TestQMDBImportRootWriteBench(t *testing.T) {
 			add("a.c.pref", ms(ph.CollectPrefetch))
 			add("a.c.fees", ms(ph.CollectFees))
 			add("a.gap", ms(r.at.Run-r.at.Pre-ph.Recover-ph.Setup-ph.Exec-ph.Collect))
+			// Finalize's span up to the post-state hook (the child's
+			// launch), step by step (ProcessPhases.FinPreHook).
+			rp := ph.RootPrep
+			add("f.preHook", ms(ph.FinPreHook))
+			add("f.blockEnd", ms(ph.FinBlockEnd))
+			add("f.sysCall", ms(ph.FinSysCall))
+			add("f.sysFin", ms(ph.FinSysFinalize))
+			add("f.engine", ms(ph.FinEngine))
+			add("f.pending", ms(rp.Pending))
+			add("f.detach", ms(rp.Detach))
+			add("f.mat", ms(rp.Mat))
+			add("f.merge", ms(rp.Merge))
+			add("f.sort", ms(rp.Sort))
+			add("f.loop", ms(rp.Loop))
+			add("f.tail", ms(rp.Tail))
+			add("f.hook", ms(rp.Hook))
+			add("f.compute", ms(rp.Compute))
+			add("f.after", ms(ph.FinAfter))
+			add("f.dirty", float64(rp.Dirty))
 		}
 	}
 	names := make([]string, 0, len(cols))

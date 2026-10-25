@@ -19,6 +19,8 @@ package internal
 
 import (
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -247,7 +249,9 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 
 	noop := state.NewNoopWriter()
 	requests := make([]hexutil.Bytes, 0, 2)
+	var callNs, finNs int64
 	for _, systemCall := range registry.executionRequests {
+		t0 := time.Now()
 		if ibs.GetCodeSize(systemCall.contract) == 0 {
 			return nil, fmt.Errorf("System contract address %s has empty code", systemCall.contract.Hex())
 		}
@@ -256,12 +260,23 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 			return nil, fmt.Errorf("system call failed to execute: %w", err)
 		}
 		requests = appendExecutionRequest(requests, systemCall.requestType, ret)
+		t1 := time.Now()
 		if err := ibs.FinalizeTx(rules, noop); err != nil {
 			return nil, err
 		}
+		callNs += int64(t1.Sub(t0))
+		finNs += int64(time.Since(t1))
 	}
+	lastBlockEndCallNanos.Store(callNs)
+	lastBlockEndFinalizeNanos.Store(finNs)
 	return requests, nil
 }
+
+// lastBlockEndCallNanos / lastBlockEndFinalizeNanos split the most recent
+// Prague block end (ProcessPragueSystemCalls): the system calls themselves
+// and their FinalizeTx, for the import phases line (whichever state ran it
+// last: observability only).
+var lastBlockEndCallNanos, lastBlockEndFinalizeNanos atomic.Int64
 
 // ProcessExecutionBlockEnd applies shared end-of-block execution hooks and
 // returns any execution requests emitted by the active fork.
