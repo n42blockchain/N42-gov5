@@ -49,7 +49,11 @@ type TxLookupEntry struct {
 func ReadTxLookupEntry(db kv.Getter, txnHash types.Hash) (*uint64, error) {
 	// The newest blocks may not be in the table at all; see
 	// txlookup_resolver.go.
-	if n, ok := resolveTxLookup(txnHash); ok {
+	n, ok, err := resolveTxLookup(txnHash)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
 		return &n, nil
 	}
 	data, err := db.GetOne(modules.TxLookup, txnHash.Bytes())

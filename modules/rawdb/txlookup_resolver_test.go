@@ -4,6 +4,7 @@
 package rawdb
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -12,6 +13,34 @@ import (
 
 type stubTxLookupResolver struct {
 	known map[types.Hash]uint64
+}
+
+type failingTxLookupResolver struct{ stubTxLookupResolver }
+
+func (*failingTxLookupResolver) LookupTxWithError(types.Hash) (uint64, bool, error) {
+	return 0, false, errors.New("segment read failed")
+}
+
+func TestOwnedResolverExclusiveAndReadFailure(t *testing.T) {
+	SetTxLookupResolver(nil)
+	defer SetTxLookupResolver(nil)
+	first := &failingTxLookupResolver{}
+	removeFirst, ok := TryInstallTxLookupResolver(first)
+	if !ok {
+		t.Fatal("first resolver did not acquire process slot")
+	}
+	second := &stubTxLookupResolver{}
+	if _, ok := TryInstallTxLookupResolver(second); ok {
+		t.Fatal("second resolver displaced first")
+	}
+	_, tx := memdb.NewTestTx(t)
+	if _, err := ReadTxLookupEntry(tx, types.HexToHash("0x05")); err == nil || err.Error() != "segment read failed" {
+		t.Fatalf("physical read failure was hidden as a lookup miss: %v", err)
+	}
+	SetTxLookupResolver(second) // A foreign replacement must survive old Stop.
+	if removeFirst() {
+		t.Fatal("old owner removed a different resolver")
+	}
 }
 
 func (s *stubTxLookupResolver) LookupTx(txHash types.Hash) (uint64, bool) {
