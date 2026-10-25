@@ -29,6 +29,17 @@ type fakeSpeculativeProducer struct {
 	parent   types.Hash
 }
 
+type fakeSpeculativeProducerWithView struct {
+	fakeSpeculativeProducer
+	view ViewNumber
+}
+
+func (f *fakeSpeculativeProducerWithView) PrepareSpeculativeBlockForView(parentHash types.Hash, view ViewNumber) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.parent, f.view, f.prepared = parentHash, view, true
+}
+
 func (f *fakeSpeculativeProducer) PrepareSpeculativeBlock(parentHash types.Hash) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -85,6 +96,18 @@ func TestHandleOutput_SpeculativeBuild(t *testing.T) {
 	defer prod.mu.Unlock()
 	if !prod.prepared || prod.parent != hash {
 		t.Fatalf("expected PrepareSpeculativeBlock called with %x, got prepared=%v parent=%x", hash, prod.prepared, prod.parent)
+	}
+}
+
+func TestHandleOutput_SpeculativeBuildPrefersExactView(t *testing.T) {
+	prod := &fakeSpeculativeProducerWithView{}
+	s := &Service{blockProducer: prod, pendingExecutions: make(map[types.Hash]struct{})}
+	hash := types.Hash{0x23}
+	s.handleOutput(EngineOutput{Type: OutputSpeculativeBuild, Hash: hash, View: 7}, time.Time{})
+	prod.mu.Lock()
+	defer prod.mu.Unlock()
+	if !prod.prepared || prod.parent != hash || prod.view != 7 {
+		t.Fatalf("exact-view advisory differs: parent=%s view=%d prepared=%t", prod.parent, prod.view, prod.prepared)
 	}
 }
 

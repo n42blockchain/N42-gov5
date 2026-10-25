@@ -645,6 +645,53 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	if !ok {
 		return errors.New("invalid header type: expected *block.Header")
 	}
+	var view ViewNumber
+	var committedQC *QuorumCertificate
+	if ce := h.Engine(); ce != nil {
+		view = ce.CurrentView()
+		lastCommittedQC := ce.LastCommittedQC()
+		if !isEmptyHeaderQC(&lastCommittedQC) {
+			committedQC = &lastCommittedQC
+		}
+	}
+	return h.prepareHeaderForView(chain, header, view, committedQC)
+}
+
+// PrepareUnsignedForView computes an advisory header for the next leader view.
+// It neither advances HotStuff nor signs or publishes a candidate. A later
+// production attempt must prepare and validate its own current-view header.
+func (h *HotStuff) PrepareUnsignedForView(chain consensus.ChainHeaderReader, iHeader block.IHeader, view ViewNumber) error {
+	header, ok := iHeader.(*block.Header)
+	if !ok || header == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() {
+		return errors.New("invalid advisory header")
+	}
+	ce := h.Engine()
+	if ce == nil || view == 0 || view != ce.CurrentView()+1 {
+		return errors.New("advisory view is not the next HotStuff view")
+	}
+	vs := ce.ValidatorSetForView(view)
+	if vs == nil || vs.IsEmpty() {
+		return errors.New("advisory validator set unavailable")
+	}
+	leader, err := vs.GetAddress(LeaderForView(view, vs))
+	if err != nil {
+		return err
+	}
+	h.lock.RLock()
+	signer := h.signer
+	h.lock.RUnlock()
+	if leader != signer {
+		return errors.New("advisory view leader differs from local signer")
+	}
+	lastCommittedQC := ce.LastCommittedQC()
+	var committedQC *QuorumCertificate
+	if !isEmptyHeaderQC(&lastCommittedQC) {
+		committedQC = &lastCommittedQC
+	}
+	return h.prepareHeaderForView(chain, header, view, committedQC)
+}
+
+func (h *HotStuff) prepareHeaderForView(chain consensus.ChainHeaderReader, header *block.Header, view ViewNumber, committedQC *QuorumCertificate) error {
 
 	h.lock.RLock()
 	signer := h.signer
@@ -664,17 +711,7 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// difficulty that BFT consensus does not use.
 	header.Difficulty = uint256.NewInt(0)
 
-	// Encode view number in extra-data.
-	var view ViewNumber
-	var committedQC *QuorumCertificate
-	if ce := h.Engine(); ce != nil {
-		view = ce.CurrentView()
-		lastCommittedQC := ce.LastCommittedQC()
-		if !isEmptyHeaderQC(&lastCommittedQC) {
-			committedQC = &lastCommittedQC
-		}
-	}
-
+	// Encode the chosen view and the captured public QC in extra-data.
 	extra, err := buildHeaderExtra(view, committedQC)
 	if err != nil {
 		return err

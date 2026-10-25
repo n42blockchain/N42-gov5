@@ -589,7 +589,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if err := validatePerformanceNetworkBinding(cfg, configuredGenesis); err != nil {
 		return nil, err
 	}
-	if cfg.NodeCfg.PerformanceRole != "" || cfg.NodeCfg.PerformanceExecutionSocket != "" || cfg.NodeCfg.PerformanceOwnerQueue || cfg.NodeCfg.PerformanceQueueMaxTransactions != 0 || cfg.NodeCfg.PerformanceQueueMaxEncodedBytes != 0 {
+	if cfg.NodeCfg.PerformanceRole != "" || cfg.NodeCfg.PerformanceExecutionSocket != "" || cfg.NodeCfg.PerformanceOwnerQueue || cfg.NodeCfg.PerformanceOwnerChildPipeline || cfg.NodeCfg.PerformanceQueueMaxTransactions != 0 || cfg.NodeCfg.PerformanceQueueMaxEncodedBytes != 0 {
 		metadataNode, err := newPerformanceValidatorNode(ctx, cancel, cliCtx, cfg, profile, configuredGenesis, performanceRuntimeRoot)
 		if err != nil {
 			return nil, err

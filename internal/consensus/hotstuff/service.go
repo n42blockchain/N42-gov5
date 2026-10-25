@@ -90,6 +90,13 @@ type SpeculativeBlockProducer interface {
 	PrepareSpeculativeBlock(parentHash types.Hash)
 }
 
+// SpeculativeBlockProducerWithView receives the exact next view carried by the
+// consensus advisory. Producers that need to bind a remote prepared header to
+// that view implement this interface; older producers keep the parent-only path.
+type SpeculativeBlockProducerWithView interface {
+	PrepareSpeculativeBlockForView(parentHash types.Hash, view ViewNumber)
+}
+
 // BlockFetcher fetches a proposed block by hash when it isn't already local
 // (fetch-on-miss), and catches a lagging/forked node up to the converged chain
 // by range (CatchUp). Implemented by the sync layer.
@@ -911,7 +918,9 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// Advisory: this node leads the next view; start building on the block
 		// it just voted for so the proposal is ready at the view change. The
 		// producer may drop or abort the guess at any time.
-		if sp, ok := s.blockProducer.(SpeculativeBlockProducer); ok && sp != nil {
+		if sp, ok := s.blockProducer.(SpeculativeBlockProducerWithView); ok && sp != nil {
+			sp.PrepareSpeculativeBlockForView(output.Hash, output.View)
+		} else if sp, ok := s.blockProducer.(SpeculativeBlockProducer); ok && sp != nil {
 			sp.PrepareSpeculativeBlock(output.Hash)
 		}
 	case OutputBlockCommitted:

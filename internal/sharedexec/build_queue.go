@@ -85,6 +85,8 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (respo
 	phases.phase("execute_wait")
 	s.execute.Lock()
 	defer s.execute.Unlock()
+	s.beginSpeculativeExecutionExclusion()
+	defer s.endSpeculativeExecutionExclusion()
 	phases.phase("prepared_validate")
 	if err := s.ctx.Err(); err != nil {
 		return QueueBuildResult{}, err
@@ -204,7 +206,7 @@ func (s *Server) BuildFromQueue(ctx context.Context, r QueueBuildRequest) (respo
 		plan.bytes += len(plan.input) + 4096
 	}
 	phases.phase("execute_build")
-	result, buildErr := s.executeQueuePlanLocked(plan, r.Epoch)
+	result, buildErr := s.executeQueuePlanLocked(plan, r, header, view)
 	phases.phase("publish_accounting")
 	// Publish accounting while execute remains held: canonical pruning cannot
 	// delete a plan and race a late worker completion which resurrects it.
@@ -228,7 +230,7 @@ func queueBuildResponse(r QueueBuildRequest, result BuildResult) QueueBuildResul
 	result.BlockRLP = append([]byte(nil), result.BlockRLP...)
 	return QueueBuildResult{Epoch: r.Epoch, PreparedHash: r.PreparedHash, BuildResult: result}
 }
-func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan, epoch [16]byte) (result BuildResult, err error) {
+func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan, request QueueBuildRequest, header *block.Header, view hotstuff.ViewNumber) (result BuildResult, err error) {
 	defer func() {
 		if recover() != nil {
 			s.prepared = nil
@@ -236,7 +238,18 @@ func (s *Server) executeQueuePlanLocked(plan *queueBuildPlan, epoch [16]byte) (r
 			err = errors.New("queue candidate execution failed")
 		}
 	}()
-	return s.executeBuildWithIngressLocked(plan.input, crypto.Keccak256Hash(plan.input), plan.bytes, &epoch)
+	if s.speculativeEnabled {
+		if child, binding, cancel := s.takeSpeculativeQueueChild(request, header, view); cancel != nil {
+			defer cancel()
+			if child != nil {
+				defer child.Close()
+				if speculative, specErr := s.completeSpeculativeQueuePlan(plan, child, binding); specErr == nil {
+					return speculative, nil
+				}
+			}
+		}
+	}
+	return s.executeBuildWithIngressLocked(plan.input, crypto.Keccak256Hash(plan.input), plan.bytes, &request.Epoch)
 }
 
 // Caller holds execute, but regular Build registration may run concurrently.

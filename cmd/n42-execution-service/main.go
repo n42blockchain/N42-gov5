@@ -47,6 +47,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	profileDir := flags.String("profile-dir", "", "Optional fresh private CPU/block/mutex profile output directory; default disabled, no listener")
 	parallelEVM := flags.Bool("parallel-evm", false, "Explicitly use existing Block-STM for performance imports above four transactions")
 	reuseOwnBuild := flags.Bool("reuse-own-build", false, "Reuse one matching owner-local candidate execution after public sealed-header validation (live root replay remains)")
+	ownerChildPipeline := flags.Bool("owner-child-pipeline", false, "Explicitly enable one advisory applied-child EVM slot for the strict owner queue")
 	txIndexTail := flags.Bool("txindex-tail", false, "Explicitly serve transaction lookups from the restart-rebuilt tail and sealed segments; fail closed if previously enabled but now disabled")
 	commitOwnerFile := flags.String("commit-owner-file", "", "Optional private 32-byte trusted finality owner capability file; default disables commit")
 	ingressManifest := flags.String("strict-ingress-manifest", "", "Explicit finalized performance corpus manifest; enables private strict ingress and owner queue")
@@ -101,6 +102,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}
 	if err != nil {
 		return err
+	}
+	if *ownerChildPipeline && ingressOptions == nil && resumeOptions == nil && boundedOptions == nil {
+		return errors.New("owner child pipeline requires explicit strict or resume ingress")
 	}
 	var commitOwner [32]byte
 	if *commitOwnerFile != "" {
@@ -283,6 +287,11 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}
 	if boundedOptions != nil {
 		if err := server.EnableBoundedResumeIngress(ctx, *boundedOptions); err != nil {
+			return err
+		}
+	}
+	if *ownerChildPipeline {
+		if err := server.EnableSpeculativeQueue(); err != nil {
 			return err
 		}
 	}

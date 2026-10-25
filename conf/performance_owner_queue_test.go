@@ -17,6 +17,10 @@ func TestOwnerQueueConfigurationIsExplicitAndBounded(t *testing.T) {
 			c.NodeCfg.PerformanceOwnerQueue = false
 			c.NodeCfg.PerformanceQueueMaxTransactions = 1
 		},
+		"pipeline without queue": func(c *Config) {
+			c.NodeCfg.PerformanceOwnerQueue = false
+			c.NodeCfg.PerformanceOwnerChildPipeline = true
+		},
 		"role":            func(c *Config) { c.NodeCfg.PerformanceRole = "" },
 		"executor role":   func(c *Config) { c.NodeCfg.PerformanceRole = "executor" },
 		"socket":          func(c *Config) { c.NodeCfg.PerformanceExecutionSocket = "" },
@@ -46,7 +50,7 @@ func TestOwnerQueueConfigurationIsExplicitAndBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw, _ := json.Marshal(c.NodeCfg)
-		if strings.Contains(string(raw), "performance_owner_queue") || c.NodeCfg.PerformanceOwnerQueue {
+		if strings.Contains(string(raw), "performance_owner_queue") || strings.Contains(string(raw), "performance_owner_child_pipeline") || c.NodeCfg.PerformanceOwnerQueue || c.NodeCfg.PerformanceOwnerChildPipeline {
 			t.Fatal("default node silently enabled owner queue")
 		}
 	}
@@ -60,6 +64,7 @@ func TestOwnerQueueYAMLReachesActualConfiguration(t *testing.T) {
   performance_genesis: /explicit/genesis.json
   performance_execution_socket: /explicit/execute.sock
   performance_owner_queue: true
+  performance_owner_child_pipeline: true
   performance_queue_max_transactions: 163000
   performance_queue_max_encoded_bytes: 33554432
 `
@@ -73,7 +78,7 @@ func TestOwnerQueueYAMLReachesActualConfiguration(t *testing.T) {
 	if err := Validate(&c); err != nil {
 		t.Fatal(err)
 	}
-	if !c.NodeCfg.PerformanceOwnerQueue || c.NodeCfg.PerformanceQueueMaxTransactions != 163000 || c.NodeCfg.PerformanceQueueMaxEncodedBytes != 32<<20 {
+	if !c.NodeCfg.PerformanceOwnerQueue || !c.NodeCfg.PerformanceOwnerChildPipeline || c.NodeCfg.PerformanceQueueMaxTransactions != 163000 || c.NodeCfg.PerformanceQueueMaxEncodedBytes != 32<<20 {
 		t.Fatal("YAML queue settings were lost")
 	}
 	c.NodeCfg.PerformanceRole = ""

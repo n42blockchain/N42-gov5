@@ -615,6 +615,7 @@ var (
 		Destination: &DefaultConfig.NodeCfg.PerformanceExecutionSocket,
 	}
 	PerformanceOwnerQueueFlag           = &cli.BoolFlag{Name: "performance.owner-queue", Usage: "Consume the explicit Go owner's strict queue (local Submit disabled)", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceOwnerQueue}
+	PerformanceOwnerChildPipelineFlag   = &cli.BoolFlag{Name: "performance.owner-child-pipeline", Usage: "Advisory applied-child EVM for the explicit owner queue; requires owner --owner-child-pipeline", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceOwnerChildPipeline}
 	PerformanceQueueMaxTransactionsFlag = &cli.IntFlag{Name: "performance.queue-max-transactions", Usage: "Owner queue block limit (0 selects 163000; maximum 200000)", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceQueueMaxTransactions}
 	PerformanceQueueMaxEncodedBytesFlag = &cli.IntFlag{Name: "performance.queue-max-encoded-bytes", Usage: "Owner queue selected encoded-byte limit (0 selects 32MiB; maximum 32MiB)", Category: "DEVELOPMENT", Destination: &DefaultConfig.NodeCfg.PerformanceQueueMaxEncodedBytes}
 )
@@ -724,7 +725,7 @@ var (
 		PerformanceGenesisFlag,
 		PerformanceRoleFlag,
 		PerformanceExecutionSocketFlag,
-		PerformanceOwnerQueueFlag, PerformanceQueueMaxTransactionsFlag, PerformanceQueueMaxEncodedBytesFlag,
+		PerformanceOwnerQueueFlag, PerformanceOwnerChildPipelineFlag, PerformanceQueueMaxTransactionsFlag, PerformanceQueueMaxEncodedBytesFlag,
 		MinFreeDiskSpaceFlag,
 		CSWarmDirFlag,
 	}

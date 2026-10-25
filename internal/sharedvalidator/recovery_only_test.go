@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -129,5 +132,69 @@ func TestRecoveryOnlyStoppedProducerNeverAcknowledges(t *testing.T) {
 	p.Stop()
 	if _, err := p.EnterRecoveryOnly(context.Background()); err == nil {
 		t.Fatal("stopped producer ACKed")
+	}
+}
+
+func TestRecoveryOnlySpeculativeBarrierWaitsForOwnerDrain(t *testing.T) {
+	p := recoveryProducer(t)
+	p.started = true
+	p.speculativeEnabled = true
+	listener, err := net.Listen("unix", filepath.Join(t.TempDir(), "owner.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/drain-prepare-queue" {
+			http.NotFound(w, r)
+			return
+		}
+		var request sharedexec.DrainSpeculativeQueueRequest
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Identity != p.replica.identity || request.Epoch != p.ownerQueue.Epoch {
+			http.Error(w, "bad drain binding", http.StatusBadRequest)
+			return
+		}
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		_ = server.Close()
+	})
+	p.replica.client = sharedexec.NewClient(listener.Addr().String(), p.replica.identity)
+	result := make(chan error, 1)
+	go func() { _, err := p.EnterRecoveryOnly(context.Background()); result <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("recovery barrier did not reach bound owner drain")
+	}
+	p.PrepareSpeculativeBlockForView(types.Hash{3}, 1)
+	p.mu.Lock()
+	ack, busy := p.drainAcknowledged, p.speculativeBusy
+	p.mu.Unlock()
+	if ack || busy {
+		t.Fatal("recovery barrier ACKed early or admitted a new hint")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("recovery barrier returned before owner drain: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery barrier did not ACK after owner drain")
 	}
 }
