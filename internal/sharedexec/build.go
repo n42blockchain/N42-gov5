@@ -125,6 +125,13 @@ func (s *Server) executeBuildLocked(input []byte, templateHash types.Hash, reser
 }
 
 func (s *Server) executeBuildWithIngressLocked(input []byte, templateHash types.Hash, reserved int, epoch *[16]byte) (response BuildResult, err error) {
+	return s.executeBuildTemplateWithIngressLocked(input, templateHash, reserved, epoch, nil)
+}
+
+// executeBuildTemplateWithIngressLocked may reuse a queue-selected block only
+// for its first, synchronous attempt. It never retains the mutable block;
+// retries and public Build reconstruct from the immutable authenticated bytes.
+func (s *Server) executeBuildTemplateWithIngressLocked(input []byte, templateHash types.Hash, reserved int, epoch *[16]byte, freshTemplate *block.Block) (response BuildResult, err error) {
 	phases := newOwnerOperationPhases("execute_build", s)
 	phases.hash = templateHash
 	defer func() { phases.finish(err) }()
@@ -135,20 +142,26 @@ func (s *Server) executeBuildWithIngressLocked(input []byte, templateHash types.
 	if crypto.Keccak256Hash(input) != templateHash {
 		return BuildResult{}, errors.New("owned candidate template hash mismatch")
 	}
-	var template block.Block
-	if err := template.Unmarshal(input); err != nil {
-		return BuildResult{}, err
+	var decoded block.Block
+	template := freshTemplate
+	if template == nil {
+		if err := decoded.Unmarshal(input); err != nil {
+			return BuildResult{}, err
+		}
+		template = &decoded
+	} else if epoch == nil {
+		return BuildResult{}, errors.New("fresh queue template requires ingress epoch")
 	}
 	phases.phase("template_validate_root")
 	header, ok := template.Header().(*block.Header)
 	body, bodyOK := template.Body().(*block.Body)
-	if !ok || header == nil || !bodyOK || body == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || body.IsFrameBody() || len(template.Transactions()) > MaxTransactions || template.TxHash() != block.BodyTxRoot(body, header.Time) {
+	if !ok || header == nil || !bodyOK || body == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.IsZero() || body.IsFrameBody() || len(template.Transactions()) > MaxTransactions || (freshTemplate == nil && template.TxHash() != block.BodyTxRoot(body, header.Time)) {
 		return BuildResult{}, errors.New("invalid candidate template header or body")
 	}
 	phases.parent, phases.number, phases.transactions = header.ParentHash, header.Number.Uint64(), len(template.Transactions())
 	if epoch != nil {
 		phases.phase("ingress_sender_memos")
-		phases.verifiedSenderMemos = s.seedLiveIngressSenderMemos(&template, epoch)
+		phases.verifiedSenderMemos = s.seedLiveIngressSenderMemos(template, epoch)
 	}
 	s.buildCalls.Add(1)
 	s.prepared = nil // a new build supersedes the only retained execution write
@@ -158,9 +171,9 @@ func (s *Server) executeBuildWithIngressLocked(input []byte, templateHash types.
 	var buildErr error
 	phases.phase("chain_build")
 	if s.reuseOwnBuild {
-		built, executed, prepared, buildErr = s.chain.BuildPreparedUnsignedCandidate(s.ctx, &template)
+		built, executed, prepared, buildErr = s.chain.BuildPreparedUnsignedCandidate(s.ctx, template)
 	} else {
-		built, executed, buildErr = s.chain.BuildUnsignedCandidate(s.ctx, &template)
+		built, executed, buildErr = s.chain.BuildUnsignedCandidate(s.ctx, template)
 	}
 	if buildErr != nil {
 		return BuildResult{}, buildErr

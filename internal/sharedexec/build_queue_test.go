@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -469,6 +470,34 @@ func TestQueueBuildRejectsInvalidSelectionBeforeBindingView(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestQueueFreshTemplateStillChecksChainRoot(t *testing.T) {
+	f := newStrictIngressFixture(t, 6, 1<<20)
+	status, err := f.server.StrictIngressStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := block.CopyHeader(f.template.Header().(*block.Header))
+	h.TxHash[0] ^= 1
+	h.ResetHashCache()
+	bad := block.NewBlock(h, f.template.Transactions()).(*block.Block)
+	raw, err := bad.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		f.server.execute.Lock()
+		defer f.server.execute.Unlock()
+		_, err = f.server.executeBuildTemplateWithIngressLocked(raw, crypto.Keccak256Hash(raw), 2*len(raw)+4096, &status.Epoch, bad)
+	}()
+	if err == nil || !strings.Contains(err.Error(), "body root/frame mismatch") {
+		t.Fatalf("fresh queue template bypassed chain root check: %v", err)
+	}
+	if _, err := f.server.Build(context.Background(), BuildRequest{Identity: f.server.Identity(), TemplateHash: crypto.Keccak256Hash(raw), TemplateRLP: raw}); err == nil {
+		t.Fatal("public build accepted a malformed transaction root")
+	}
+}
+
 func TestQueueBuildPinnedPlanSurvivesDefaultCachePressureAndChecksResponses(t *testing.T) {
 	f := newStrictIngressFixture(t, 6, 1<<20)
 	f.server.capacity = 1
@@ -481,6 +510,25 @@ func TestQueueBuildPinnedPlanSurvivesDefaultCachePressureAndChecksResponses(t *t
 	result, err := f.server.BuildFromQueue(ctx, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	f.server.mu.Lock()
+	selectedInput := append([]byte(nil), f.server.queuePlans[1].input...)
+	f.server.mu.Unlock()
+	var selected, resultBlock block.Block
+	if err := selected.Unmarshal(selectedInput); err != nil {
+		t.Fatal(err)
+	}
+	if err := resultBlock.Unmarshal(result.BlockRLP); err != nil {
+		t.Fatal(err)
+	}
+	encodedAgain, err := selected.Marshal()
+	if err != nil || !bytes.Equal(encodedAgain, selectedInput) || result.TemplateHash != crypto.Keccak256Hash(selectedInput) || selected.TxHash() != block.TxRootAt(selected.Transactions(), selected.Header().(*block.Header).Time) || len(selected.Transactions()) != len(resultBlock.Transactions()) {
+		t.Fatal("fresh selected template differs from the retained decoded byte reference")
+	}
+	for i, txn := range selected.Transactions() {
+		if txn.Hash() != resultBlock.Transactions()[i].Hash() {
+			t.Fatal("fresh selected transaction differs from decoded result")
+		}
 	}
 	if _, err := f.server.Build(ctx, buildRequest(t, f.server.Identity(), f.template)); err == nil {
 		t.Fatal("default Build evicted a pinned plan")
