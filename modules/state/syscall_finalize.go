@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params"
 )
 
 // N42_SYSCALL_FINALIZE_ONCE=1: the Prague block end's FinalizeTx work, two
@@ -149,6 +150,35 @@ func (sdb *IntraBlockState) finalizeNoopParallel(policy accountWritePolicy, keep
 	return drop
 }
 
+// FinalizeSharedCaller is the part of a FinalizeTx between two block-end
+// system calls that the second call can observe, for the one account both
+// calls touch: their caller (the system address). If addr is dirty in the
+// journal and finalizing it would delete it (EIP-161 empty, or
+// self-destructed), it is finalized now as the FinalizeTx would: deleted,
+// marked dirty and taken out of the journal's dirty set. The second call
+// then finds it deleted and replaces it (a reset, which dirties nothing),
+// exactly as after a full FinalizeTx, and the closing FinalizeTx leaves the
+// replacement alone. An address that would stay alive is left to the
+// closing FinalizeTx, which gives it the same flags. Only for the no-op
+// writer on a state that keeps its pending credits detached (the
+// FinalizeTx it stands in for drops every loaded address from the journal).
+func (s *IntraBlockState) FinalizeSharedCaller(chainRules *params.Rules, addr types.Address) {
+	if _, dirty := s.journal.dirties[addr]; !dirty {
+		return
+	}
+	so, ok := s.stateObjects[addr]
+	if !ok {
+		return
+	}
+	policy := newAccountWritePolicy(chainRules)
+	if !so.selfdestructed && !policy.shouldRemoveEmptyAccount(addr, so) {
+		return
+	}
+	finalizeFlags(policy, addr, so)
+	s.stateObjectsDirty[addr] = struct{}{}
+	delete(s.journal.dirties, addr)
+}
+
 // FinalizeDigestForTest describes what a FinalizeTx leaves behind, for
 // differential tests: every live object in address order with its
 // lifecycle flags, balance, nonce and stateObjectsDirty membership, then
@@ -158,16 +188,16 @@ func (s *IntraBlockState) FinalizeDigestForTest() string {
 	for _, addr := range sortedAddresses(s.stateObjects) {
 		so := s.stateObjects[addr]
 		_, dirty := s.stateObjectsDirty[addr]
-		fmt.Fprintf(&b, "%x del=%v cre=%v sd=%v dirty=%v bal=%s nonce=%d\n",
-			addr, so.deleted, so.created, so.selfdestructed, dirty, so.data.Balance.String(), so.data.Nonce)
+		fmt.Fprintf(&b, "%s del=%v cre=%v sd=%v dirty=%v bal=%s nonce=%d\n",
+			addr.Hex(), so.deleted, so.created, so.selfdestructed, dirty, so.data.Balance.String(), so.data.Nonce)
 	}
 	for _, addr := range sortedAddresses(s.stateObjectsDirty) {
 		if _, ok := s.stateObjects[addr]; !ok {
-			fmt.Fprintf(&b, "dirty-only %x\n", addr)
+			fmt.Fprintf(&b, "dirty-only %s\n", addr.Hex())
 		}
 	}
 	for _, addr := range sortedAddresses(s.journal.dirties) {
-		fmt.Fprintf(&b, "journal %x\n", addr)
+		fmt.Fprintf(&b, "journal %s\n", addr.Hex())
 	}
 	return b.String()
 }
