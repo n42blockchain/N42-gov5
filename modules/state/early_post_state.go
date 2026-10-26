@@ -65,6 +65,18 @@ func fullOrWait(src EarlySource, addr types.Address) (*PostState, error) {
 	return nil, nil
 }
 
+// A read on the early path checks Full before it reads the layers below,
+// which end in the live store. The block's root hook publishes the complete
+// post-state and its root computation then applies the block to that
+// store; a read that found no complete post-state but reached the store
+// after the apply (descheduled in between, or waiting on the tree's lock
+// behind the apply) sees the block's own writes there. Composed with the
+// early source's delta, a credited account then carried the block's credit
+// twice (round S141, node6, block 14137466). Every early read therefore
+// checks Full again after its reads below: the hook publishes before the
+// apply, so a store read that saw the block happened after the
+// publication, and the read is answered from the complete post-state.
+
 func (r *PostStateReader) earlyAccountData(src EarlySource, address types.Address) (*account.StateAccount, error) {
 	f, err := fullOrWait(src, address)
 	if err != nil {
@@ -75,12 +87,22 @@ func (r *PostStateReader) earlyAccountData(src EarlySource, address types.Addres
 	}
 	acc, delta, onBase, found := src.EarlyAccount(address)
 	if !found {
-		return r.base.ReadAccountData(address)
+		b, err := r.base.ReadAccountData(address)
+		if err == nil {
+			if f := src.Full(); f != nil {
+				return (&PostStateReader{post: f, base: r.base}).ReadAccountData(address)
+			}
+		}
+		return b, err
 	}
 	if onBase {
 		b, err := r.base.ReadAccountData(address)
 		if err != nil {
 			return nil, err
+		}
+		if f := src.Full(); f != nil {
+			// The store may already hold the block: delta is in it.
+			return (&PostStateReader{post: f, base: r.base}).ReadAccountData(address)
 		}
 		acc = &account.StateAccount{Initialised: true}
 		if b != nil {
@@ -106,7 +128,13 @@ func (r *PostStateReader) earlyAccountStorage(src EarlySource, address types.Add
 	if v, found := src.EarlyStorage(address, key); found {
 		return v, nil
 	}
-	return r.base.ReadAccountStorage(address, key)
+	v, err := r.base.ReadAccountStorage(address, key)
+	if err == nil {
+		if f := src.Full(); f != nil {
+			return (&PostStateReader{post: f, base: r.base}).ReadAccountStorage(address, key)
+		}
+	}
+	return v, err
 }
 
 func (r *PostStateReader) earlyAccountCode(src EarlySource, address types.Address, codeHash types.Hash) ([]byte, error) {
@@ -120,7 +148,13 @@ func (r *PostStateReader) earlyAccountCode(src EarlySource, address types.Addres
 	if c, ok := src.EarlyCode(address, codeHash); ok {
 		return c, nil
 	}
-	return r.base.ReadAccountCode(address, codeHash)
+	c, err := r.base.ReadAccountCode(address, codeHash)
+	if err == nil {
+		if f := src.Full(); f != nil {
+			return (&PostStateReader{post: f, base: r.base}).ReadAccountCode(address, codeHash)
+		}
+	}
+	return c, err
 }
 
 // earlyForEachStorage enumerates on the complete snapshot: an enumeration
