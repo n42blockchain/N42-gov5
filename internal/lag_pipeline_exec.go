@@ -414,7 +414,7 @@ func aheadTakeAfterHook(a *aheadExec, take time.Time) time.Duration {
 
 // lagPipeUsable: the chain can run ahead executions at all.
 func (bc *BlockChain) lagPipeUsable() bool {
-	if !lagPipelineOn || !bc.parallelEVM || bc.zkProving || !bc.qmdbEnabled || bc.qmdbRootComputer == nil || bc.ChainDB == nil {
+	if !lagPipelineOn || bc.E1Light() || !bc.parallelEVM || bc.zkProving || !bc.qmdbEnabled || bc.qmdbRootComputer == nil || bc.ChainDB == nil {
 		return false
 	}
 	_, ok := bc.process.(*StateProcessor)
