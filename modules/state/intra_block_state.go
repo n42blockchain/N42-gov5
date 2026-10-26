@@ -236,6 +236,10 @@ type IntraBlockState struct {
 	// carried explicitly for readers that bypass it (SetPostStateLayers).
 	postLayers []*PostState
 
+	// writeRec: the addresses written since StartWriteRecord (nil when not
+	// recording).
+	writeRec map[types.Address]struct{}
+
 	// beforeRoot runs once, inside the next root computation, after the
 	// dirty set is final (rewards, pending credits and journal merged) and
 	// before the root computer is called (SetBeforeRootHook).
@@ -508,6 +512,7 @@ func (sdb *IntraBlockState) traceAccountRead(addr types.Address) {
 
 // traceAccountWrite logs a tracer write event for the given address, if a tracer is set.
 func (sdb *IntraBlockState) traceAccountWrite(addr types.Address) {
+	sdb.recordWrite(addr)
 	if sdb.tracer != nil {
 		if err := sdb.tracer.CaptureAccountWrite(addr); err != nil && sdb.trace {
 			log.Trace("CaptureAccountWrite", "addr", addr, "err", err)
@@ -1045,6 +1050,7 @@ func (sdb *IntraBlockState) SetCode(addr types.Address, code []byte) {
 
 // SetState sets a storage value for the given address.
 func (sdb *IntraBlockState) SetState(addr types.Address, key *types.Hash, value uint256.Int) {
+	sdb.recordWrite(addr)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetState(key, value)
@@ -1054,6 +1060,7 @@ func (sdb *IntraBlockState) SetState(addr types.Address, key *types.Hash, value 
 // SetStorage replaces the entire storage for the specified account with given
 // storage. This function should only be used for debugging.
 func (sdb *IntraBlockState) SetStorage(addr types.Address, storage Storage) {
+	sdb.recordWrite(addr)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetStorage(storage)
@@ -2041,6 +2048,7 @@ func (sdb *IntraBlockState) HasSelfdestructed(addr types.Address) bool {
 // The account's state object is still available until the state is committed,
 // getStateObject will return a non-nil account after Suicide.
 func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
+	sdb.recordWrite(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {
 		return false
@@ -2069,6 +2077,7 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 // If the account was NOT created in the same transaction, only the balance is transferred -
 // the account keeps its code, storage, and nonce.
 func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary types.Address) {
+	sdb.recordWrite(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {
 		return
@@ -2124,6 +2133,7 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 // pre-existing account this is a full no-op: 6780 already preserves
 // code/storage, and with no beneficiary transfer the balance stays put.
 func (sdb *IntraBlockState) Selfdestruct8246(addr types.Address) {
+	sdb.recordWrite(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted || !stateObject.created {
 		return
