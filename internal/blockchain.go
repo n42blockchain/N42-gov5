@@ -2798,7 +2798,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 					"cRcpt", procPhases.CollectReceipts, "cApply", procPhases.CollectApply,
 					"cPref", procPhases.CollectPrefetch, "cFees", procPhases.CollectFees,
 					"applyWalk", procPhases.ApplyWalk, "applyAcct", procPhases.ApplyAccounts, "applySto", procPhases.ApplyStorage,
-					"cRcptRun", procPhases.CollectRcptRun, "earlyPub", lagEarlyPublishOn, "finFast", state.FinalizeFastOn())
+					"cRcptRun", procPhases.CollectRcptRun, "earlyPub", lagEarlyPublishOn, "finFast", state.FinalizeFastOn(), "foldNJ", state.FoldNoJournalOn())
 			}
 			// The root's own split (P7: the fleet logged only the total):
 			// the wait for the tree's readers, the dirty-set collection, the

@@ -1038,7 +1038,13 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// the block end take them from that cache instead of the store.
 		pf.SetKnown(baseCache)
 	}
+	// N42_FOLD_NOJOURNAL: a strict run's fold on a state that keeps its
+	// pending credits for the block end writes no journal
+	// (state/fold_nojournal.go).
+	foldNJ := state.FoldNoJournalOn() && !lenient && ibs.DetachedPendingCredits()
+	ibs.SetFoldNoJournal(foldNJ)
 	applySplit, err := applyMVSToIBSTimed(executor.MVS(), numTxs, ibs)
+	ibs.SetFoldNoJournal(false)
 	if err != nil {
 		joinRcpt()
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
