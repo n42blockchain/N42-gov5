@@ -393,17 +393,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// CE to derive ParentBeaconRoot from and the resealed chain's evidence
 		// chain broke at the first live block (7-node smoke, blocks 1001+).
 		if bc.committeePool != nil {
-			if hdr, ok := concreteBlock.Header().(*block.Header); ok && hdr != nil {
-				tPhase = time.Now()
-				ce, cerr := bc.committeePool.BuildBlockEvidence(blockNumber.Uint64(), blk.Hash(), hdr.ReceiptHash)
-				if cerr != nil {
-					return fmt.Errorf("build consensus evidence block %d: %w", blockNumber.Uint64(), cerr)
-				}
-				if err := rawdb.WriteConsensusEvidence(tx, blockNumber.Uint64(), ce); err != nil {
-					return fmt.Errorf("write consensus evidence block %d: %w", blockNumber.Uint64(), err)
-				}
-				dEvidence = time.Since(tPhase)
+			tPhase = time.Now()
+			if err := bc.writeConsensusEvidence(tx, concreteBlock); err != nil {
+				return err
 			}
+			dEvidence = time.Since(tPhase)
 		}
 
 		plainWriter := state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
@@ -888,6 +882,27 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		bc.futureBlocks.Remove(blk.Hash())
 	}
 	return status, nil
+}
+
+// writeConsensusEvidence writes blk's BLS committee evidence (nothing
+// without a committee pool).
+func (bc *BlockChain) writeConsensusEvidence(tx kv.RwTx, blk *block.Block) error {
+	if bc.committeePool == nil {
+		return nil
+	}
+	hdr, ok := blk.Header().(*block.Header)
+	if !ok || hdr == nil {
+		return nil
+	}
+	number := hdr.Number.Uint64()
+	ce, err := bc.committeePool.BuildBlockEvidence(number, blk.Hash(), hdr.ReceiptHash)
+	if err != nil {
+		return fmt.Errorf("build consensus evidence block %d: %w", number, err)
+	}
+	if err := rawdb.WriteConsensusEvidence(tx, number, ce); err != nil {
+		return fmt.Errorf("write consensus evidence block %d: %w", number, err)
+	}
+	return nil
 }
 
 func (bc *BlockChain) headWriteContext() context.Context {
