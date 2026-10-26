@@ -89,6 +89,12 @@ func buildTransferBlockFixture(tb testing.TB) *transferBlockFixture {
 // zipfV >= 1 (P(k) ~ (zipfV+k)^-zipf; seeded, so the block is the same on
 // every call).
 func newTransferBlockFixture(nTxs, nSenders, nRecipients int, zipf, zipfV float64) *transferBlockFixture {
+	return newTransferBlockFixtureTo(nTxs, nSenders, nRecipients, zipf, zipfV, nil)
+}
+
+// newTransferBlockFixtureTo is newTransferBlockFixture with tx i sent to
+// to(i) instead when that is not nil (with gas for a call).
+func newTransferBlockFixtureTo(nTxs, nSenders, nRecipients int, zipf, zipfV float64, to func(i int) *types.Address) *transferBlockFixture {
 	cfg := params.MainnetQMDBChainConfig
 	header := &block.Header{
 		Number:     uint256.NewInt(1),
@@ -142,12 +148,18 @@ func newTransferBlockFixture(nTxs, nSenders, nRecipients int, zipf, zipfV float6
 			defer wg.Done()
 			for i := w; i < nTxs; i += signers {
 				s := i % nSenders
-				to := recipients[toIdx[i]]
+				dst := recipients[toIdx[i]]
+				gas := uint64(21000)
+				if to != nil {
+					if a := to(i); a != nil {
+						dst, gas = *a, 200_000
+					}
+				}
 				inner := &transaction.LegacyTx{
 					Nonce:    uint64(i / nSenders),
 					GasPrice: uint256.NewInt(1_000_000_000),
-					Gas:      21000,
-					To:       &to,
+					Gas:      gas,
+					To:       &dst,
 					Value:    uint256.NewInt(1 + uint64(i%1000)),
 				}
 				signed, err := transaction.SignTx(transaction.NewTx(inner), signer, keys[s])
