@@ -1038,7 +1038,19 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// the block end take them from that cache instead of the store.
 		pf.SetKnown(baseCache)
 	}
-	applySplit, err := applyMVSToIBSTimed(executor.MVS(), numTxs, ibs)
+	var chk *mvsApplyCheck
+	var mvsCheckDur time.Duration
+	if parallel.MVSCheckEnabled() {
+		tChk := time.Now()
+		rep := executor.CheckStore(concreteHeader.Number.Uint64())
+		mvsCheckDur = time.Since(tChk)
+		chk = &mvsApplyCheck{block: concreteHeader.Number.Uint64(), numTxs: numTxs, base: baseCache, storeIssues: rep.Issues(), storeWrites: rep.Writes, storeEntries: rep.Entries}
+	}
+	applySplit, err := applyMVSToIBSChecked(executor.MVS(), numTxs, ibs, chk)
+	if chk != nil {
+		mvsCheckDur += chk.took
+		chk.summary(mvsCheckDur)
+	}
 	if err != nil {
 		joinRcpt()
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
@@ -1174,7 +1186,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
-			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
+			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain, "mvsCheckUs", mvsCheckDur.Microseconds())
 	}
 
 	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay, phases: aheadPhases}, nil
@@ -1410,6 +1422,12 @@ type applyMVSSplit struct {
 
 // applyMVSToIBSTimed is applyMVSToIBS, also returning its split.
 func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) (split applyMVSSplit, err error) {
+	return applyMVSToIBSChecked(mvs, numTxs, ibs, nil)
+}
+
+// applyMVSToIBSChecked is applyMVSToIBSTimed running the store check's
+// apply-walk check (mvs_apply_check.go) when chk is not nil.
+func applyMVSToIBSChecked(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState, chk *mvsApplyCheck) (split applyMVSSplit, err error) {
 	t0 := time.Now()
 	// Collect all MVS entries, separated by type.
 	type accountEntry struct {
@@ -1515,6 +1533,14 @@ func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockStat
 		}
 	}
 	ibs.Reserve(full+len(storages)+len(codes), len(accounts)-full)
+	var chkPre []mvsCreditProbe
+	if chk != nil {
+		chkPre = make([]mvsCreditProbe, len(accounts))
+		for i := range accounts {
+			chkPre[i].addr, chkPre[i].value, chkPre[i].delta = accounts[i].addr, accounts[i].value, accounts[i].delta
+		}
+		chk.before(chkPre, ibs)
+	}
 
 	// Track which accounts are deleted in the final state.
 	deletedAccounts := make(map[types.Address]bool)
@@ -1581,6 +1607,9 @@ func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockStat
 		}
 	}
 
+	if chk != nil {
+		chk.after(chkPre, mvs, numTxs, ibs)
+	}
 	tAccounts := time.Now()
 	split.accounts = tAccounts.Sub(tWalk)
 
