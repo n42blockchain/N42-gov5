@@ -79,6 +79,12 @@ func (bc *BlockChain) pendingExecutedResult(hash types.Hash) (rawdb.ExecutedResu
 	if !lagGateApplied {
 		return rawdb.ExecutedResult{}, false
 	}
+	return bc.inflightExecutedResult(hash)
+}
+
+// inflightExecutedResult is pendingExecutedResult whatever
+// N42_LAG_GATE_APPLIED says (the E=1 executor serves it, e1.go).
+func (bc *BlockChain) inflightExecutedResult(hash types.Hash) (rawdb.ExecutedResult, bool) {
 	j := bc.lagWritePending(hash)
 	if j == nil || !j.execRootOK || j.hdr == nil || bc.chainConfig == nil || !bc.chainConfig.IsDeferredExecution(j.hdr.Time) {
 		return rawdb.ExecutedResult{}, false
