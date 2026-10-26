@@ -99,7 +99,7 @@ func TestCatchUpRangeEndsRoundWhenPeerFailsOutright(t *testing.T) {
 	server.Close()
 
 	req := rangeReq(101, 2, 1)
-	done := svc.catchUpRange(req, []peer.ID{remote}, false, 101, 102)
+	done, _ := svc.catchUpRange(req, []peer.ID{remote}, false, 101, 102)
 	if !done {
 		t.Fatal("expected catchUpRange to report the round as done when every peer fails outright")
 	}
@@ -119,7 +119,7 @@ func TestCatchUpRangeImportFailureStillReturnsTrue(t *testing.T) {
 	go syncTServeRangeOnce(server, b1)
 
 	req := rangeReq(101, 1, 1)
-	done := svc.catchUpRange(req, []peer.ID{remote}, false, 101, 101)
+	done, _ := svc.catchUpRange(req, []peer.ID{remote}, false, 101, 101)
 	// A deterministic (non-unknown-ancestor) insert failure ends the round.
 	if !done {
 		t.Fatal("expected catchUpRange to end the round on a non-recoverable insert error")
