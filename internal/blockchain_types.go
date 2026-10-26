@@ -290,6 +290,8 @@ type BlockChain struct {
 	// reseal) and persists it alongside each block. Optional — nil leaves the
 	// chain's write path unchanged.
 	committeePool CommitteeEvidenceBuilder
+	// e1Src overrides N42_E1_SOURCE for this chain (tests; e1.go).
+	e1Src atomic.Pointer[string]
 }
 
 // CommitteeEvidenceBuilder builds the consensus evidence for a freshly persisted
