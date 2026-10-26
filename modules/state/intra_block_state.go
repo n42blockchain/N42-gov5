@@ -118,6 +118,9 @@ type BalanceIncrease struct {
 	transferred bool // Set to true when the corresponding stateObject is created and balance increase is transferred to the stateObject
 	count       int  // Number of increases - this needs tracking for proper reversion
 	detached    bool // taken by the running root walk without an object (root_dirty_set.go)
+	// fold: credited by the no-journal fold and standing in for the
+	// address in the journal's dirty set (fold_nojournal.go).
+	fold bool
 }
 
 // IntraBlockState is responsible for caching and managing state changes
@@ -186,6 +189,17 @@ type IntraBlockState struct {
 	// biSlab hands out balanceInc entries reserved in one allocation
 	// (Reserve).
 	biSlab []BalanceIncrease
+
+	// The no-journal fold (fold_nojournal.go): set around the fold; the
+	// accounts it wrote without records, until the next finalize; the
+	// credits it marked, in fold order; the marked credits folded into an
+	// object since the last keep-pending FinalizeTx.
+	foldNoJournal bool
+	foldWritten   []types.Address
+	foldCredits   []types.Address
+	foldBIs       []*BalanceIncrease
+	foldTouched   []types.Address
+	foldTouchedBI []*BalanceIncrease
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
@@ -595,6 +609,7 @@ func (sdb *IntraBlockState) Reset() {
 	}
 	sdb.balanceInc = reuseMap(sdb.balanceInc)
 	sdb.biSlab = nil
+	sdb.foldNoJournal = false
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -955,7 +970,16 @@ func (sdb *IntraBlockState) Reserve(accounts, credits int) {
 		sdb.balanceInc = inc
 		sdb.biSlab = make([]BalanceIncrease, credits)
 	}
-	if j := sdb.journal; j != nil && len(j.dirties) < 1024 {
+	if sdb.foldNoJournal {
+		// The fold writes no journal: its credits are listed instead.
+		if cap(sdb.foldCredits)-len(sdb.foldCredits) < credits {
+			sdb.foldCredits = append(make([]types.Address, 0, len(sdb.foldCredits)+credits), sdb.foldCredits...)
+			sdb.foldBIs = append(make([]*BalanceIncrease, 0, len(sdb.foldBIs)+credits), sdb.foldBIs...)
+		}
+		if cap(sdb.foldWritten)-len(sdb.foldWritten) < accounts {
+			sdb.foldWritten = append(make([]types.Address, 0, len(sdb.foldWritten)+accounts), sdb.foldWritten...)
+		}
+	} else if j := sdb.journal; j != nil && len(j.dirties) < 1024 {
 		d := make(map[types.Address]int, len(j.dirties)+accounts+credits)
 		for k, v := range j.dirties {
 			d[k] = v
@@ -1134,6 +1158,9 @@ func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stat
 	}
 	object.data.Balance.Add(&object.data.Balance, &bi.increase)
 	bi.transferred = true
+	if bi.fold {
+		sdb.noteFoldTouched(addr, bi)
+	}
 	a := addr
 	sdb.journal.push(balanceIncreaseTransfer{account: &a, bi: bi}.record())
 }
@@ -1374,6 +1401,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	// materialises the rest, which yields the same accounts.
 	keepPending := noop && sdb.detachPending
 	if !keepPending {
+		// The old code below on the journal's dirty set as the journaled
+		// fold leaves it.
+		sdb.spillFoldCredits()
 		// Sort addresses before iteration. getStateObject falls through to
 		// sdb.stateReader.ReadAccountData when the object isn't cached, and
 		// the reader here is the block-witness recorder (ethel). Map-order
@@ -1436,6 +1466,15 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			sdb.stateObjectsDirty[addr] = struct{}{}
 		}
 	}
+	if keepPending {
+		// The no-journal fold's written accounts are finalized already, and
+		// its credits loaded since the last finalize are finalized here
+		// (fold_nojournal.go); the others are kept, as below.
+		sdb.foldWritten = sdb.foldWritten[:0]
+		if len(sdb.foldTouched) != 0 {
+			sdb.finalizeFoldTouched(policy)
+		}
+	}
 	sdb.promoteWipes()
 	if !parallel {
 		sdb.clearCurrentTxFlags()
@@ -1446,7 +1485,7 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 			delete(dirties, addr)
 		}
 		sdb.journal.dirties = nil // kept from the reset below
-		sdb.clearJournalAndRefund()
+		sdb.resetJournalAndRefund()
 		sdb.journal.dirties = dirties
 	} else {
 		sdb.clearJournalAndRefund()
@@ -1458,6 +1497,7 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 }
 
 func (sdb *IntraBlockState) SoftFinalise() {
+	sdb.spillFoldCredits()
 	for addr := range sdb.journal.dirties {
 		if _, exist := sdb.stateObjects[addr]; !exist {
 			continue
@@ -1511,6 +1551,9 @@ func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter S
 	for addr := range sdb.journal.dirties {
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	sdb.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
+		sdb.stateObjectsDirty[addr] = struct{}{}
+	})
 	if r, ok := stateWriter.(accountWriteReserver); ok {
 		// At most one account write per dirty or wiped object below.
 		r.reserveAccountWrites(len(sdb.stateObjectsDirty) + len(sdb.storageWipes))
@@ -1532,6 +1575,7 @@ func (sdb *IntraBlockState) Print() {
 	for addr, stateObject := range sdb.stateObjects {
 		_, isDirty := sdb.stateObjectsDirty[addr]
 		_, isDirty2 := sdb.journal.dirties[addr]
+		isDirty2 = isDirty2 || sdb.foldPending(addr)
 
 		printAccount(addr, stateObject, isDirty || isDirty2)
 	}
@@ -1555,6 +1599,15 @@ func (sdb *IntraBlockState) Prepare(thash, bhash types.Hash, ti int) {
 // Reuses existing journal and transientStorage backing maps to
 // avoid ~2000 map allocations per block (1000 tx × 2 maps).
 func (sdb *IntraBlockState) clearJournalAndRefund() {
+	sdb.resetJournalAndRefund()
+	// The no-journal fold's credits leave the dirty set with the journal.
+	sdb.dropFoldCredits()
+}
+
+// resetJournalAndRefund is clearJournalAndRefund keeping the no-journal
+// fold's marked credits (a keep-pending FinalizeTx keeps the journal's
+// dirty set too).
+func (sdb *IntraBlockState) resetJournalAndRefund() {
 	sdb.journal.reset()
 	sdb.validRevisions = sdb.validRevisions[:0]
 	sdb.refund = 0
@@ -1727,10 +1780,15 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// calls write to journal but there's no FinalizeTx after them. A
 	// detached credit stays out: it has no object, and CommitBlock merges it
 	// once it has.
+	// The no-journal fold's marked credits are members of the journal's
+	// dirty set here (fold_nojournal.go), under the same rule.
 	if len(detached.addrs) == 0 {
 		for addr := range s.journal.dirties {
 			s.stateObjectsDirty[addr] = struct{}{}
 		}
+		s.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
+			s.stateObjectsDirty[addr] = struct{}{}
+		})
 	} else if finalizeFastOn {
 		// A detached credit is never loaded here (the detach skipped every
 		// loaded address and only the other pending credits were
@@ -1741,6 +1799,11 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			}
 			s.stateObjectsDirty[addr] = struct{}{}
 		}
+		s.forEachFoldPending(func(addr types.Address, bi *BalanceIncrease) {
+			if !bi.detached {
+				s.stateObjectsDirty[addr] = struct{}{}
+			}
+		})
 		detached.release()
 	} else {
 		for addr := range s.journal.dirties {
@@ -1751,6 +1814,12 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			}
 			s.stateObjectsDirty[addr] = struct{}{}
 		}
+		s.forEachFoldPending(func(addr types.Address, bi *BalanceIncrease) {
+			if _, loaded := s.stateObjects[addr]; !loaded && bi.detached {
+				return
+			}
+			s.stateObjectsDirty[addr] = struct{}{}
+		})
 		detached.release()
 	}
 	rp.Merge, tStep = stepSince(tStep)

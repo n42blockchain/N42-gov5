@@ -36,7 +36,13 @@ const (
 	shardSerial   uint8 = iota // the per-entry calls, in place
 	shardPrepared              // a prepared full entry (preparedAccount)
 	shardCredit                // a credit of an account with no live object
+	// shardPreparedJournal: a prepared full entry the no-journal fold
+	// journals (an empty account, which finalizing may delete), in place.
+	shardPreparedJournal
 )
+
+// inShardRun reports whether an entry of kind k takes the split pass.
+func inShardRun(k uint8) bool { return k == shardPrepared || k == shardCredit }
 
 // applyShardMinRun is the run length below which a run is applied in
 // place: its goroutines cost more than they save.
@@ -87,13 +93,18 @@ func (sdb *IntraBlockState) ApplyAccountsSharded(entries []AccountApply, workers
 	}
 
 	for i := 0; i < n; {
-		if kind[i] == shardSerial {
+		switch kind[i] {
+		case shardSerial:
 			sdb.applyAccountEntry(&entries[i])
+			i++
+			continue
+		case shardPreparedJournal:
+			sdb.applyPreparedJournaled(&entries[i], &prep[i])
 			i++
 			continue
 		}
 		j := i + 1
-		for j < n && kind[j] != shardSerial {
+		for j < n && inShardRun(kind[j]) {
 			j++
 		}
 		if j-i < applyShardMinRun {
@@ -126,6 +137,9 @@ func (sdb *IntraBlockState) classifyShardEntries(entries []AccountApply, prep []
 			bis[i] = sdb.balanceInc[e.Addr]
 		case prep[i].obj != nil:
 			kind[i] = shardPrepared
+			if sdb.foldNoJournal && prep[i].obj.empty() {
+				kind[i] = shardPreparedJournal
+			}
 		}
 	}
 }
@@ -134,9 +148,22 @@ func (sdb *IntraBlockState) classifyShardEntries(entries []AccountApply, prep []
 // serial pass does.
 func (sdb *IntraBlockState) applyShardEntryInPlace(e *AccountApply, p *preparedAccount, k uint8) {
 	if k != shardPrepared {
+		if sdb.foldNoJournal && e.Delta != nil {
+			sdb.foldCreditNoJournal(e.Addr, e.Delta)
+			return
+		}
 		sdb.applyAccountEntry(e)
 		return
 	}
+	if sdb.foldNoJournal && sdb.foldPreparedNoJournal(e.Addr, p.obj) {
+		return
+	}
+	sdb.applyPreparedJournaled(e, p)
+}
+
+// applyPreparedJournaled applies a prepared full entry with its journal
+// records, as ApplyAccounts' serial pass does.
+func (sdb *IntraBlockState) applyPreparedJournaled(e *AccountApply, p *preparedAccount) {
 	addr := e.Addr
 	j := sdb.journal
 	cnt := 2
@@ -156,6 +183,10 @@ func (sdb *IntraBlockState) applyShardEntryInPlace(e *AccountApply, p *preparedA
 // (record offsets, new credits' records) in entry order, then the maps one
 // goroutine each beside the journal fill.
 func (sdb *IntraBlockState) applyShardRun(entries []AccountApply, prep []preparedAccount, kind []uint8, bis []*BalanceIncrease, workers int) {
+	if sdb.foldNoJournal {
+		sdb.applyShardRunNoJournal(entries, prep, kind, bis, workers)
+		return
+	}
 	n := len(entries)
 	j := sdb.journal
 	// off[i]: entry i's first record, relative to the run's first; a new
@@ -254,6 +285,96 @@ func (sdb *IntraBlockState) applyShardRun(entries []AccountApply, prep []prepare
 				r[0] = balanceIncrease{account: &e.Addr, increase: *e.Delta}.record()
 				bi := bis[i]
 				bi.increase.Add(&bi.increase, e.Delta)
+				bi.count++
+			}
+		}(lo, hi)
+	}
+	wg.Wait()
+	if last >= 0 {
+		sdb.lastAddr, sdb.lastObj = entries[last].Addr, prep[last].obj
+	}
+}
+
+// applyShardRunNoJournal is applyShardRun for the no-journal fold
+// (fold_nojournal.go): no records; the prepared objects go into the live
+// map and stateObjectsDirty, the credits into balanceInc and the fold's
+// credit list, which take the same entries in the same order as
+// applyShardEntryInPlace's calls would. The run holds no empty prepared
+// object (classifyShardEntries leaves those in place).
+func (sdb *IntraBlockState) applyShardRunNoJournal(entries []AccountApply, prep []preparedAccount, kind []uint8, bis []*BalanceIncrease, workers int) {
+	n := len(entries)
+	fresh := make([]bool, n)
+	last := -1
+	for i := 0; i < n; i++ {
+		if kind[i] == shardPrepared {
+			sdb.foldWritten = append(sdb.foldWritten, entries[i].Addr)
+			last = i
+			continue
+		}
+		bi := bis[i]
+		if bi == nil {
+			if len(sdb.biSlab) > 0 {
+				bi = &sdb.biSlab[0]
+				sdb.biSlab = sdb.biSlab[1:]
+			} else {
+				bi = &BalanceIncrease{}
+			}
+			bis[i] = bi
+			fresh[i] = true
+		}
+		sdb.listFoldCredit(entries[i].Addr, bi)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := range entries {
+			if kind[i] == shardPrepared {
+				sdb.stateObjects[entries[i].Addr] = prep[i].obj
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		d := sdb.stateObjectsDirty
+		for i := range entries {
+			if kind[i] == shardPrepared {
+				d[entries[i].Addr] = struct{}{}
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		inc := sdb.balanceInc
+		for i := range entries {
+			if fresh[i] {
+				inc[entries[i].Addr] = bis[i]
+			}
+		}
+	}()
+	fill := workers - 3
+	if fill < 1 {
+		fill = 1
+	}
+	per := (n + fill - 1) / fill
+	for w := 0; w < fill; w++ {
+		lo, hi := w*per, (w+1)*per
+		if hi > n {
+			hi = n
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				if kind[i] != shardCredit {
+					continue
+				}
+				bi := bis[i]
+				bi.increase.Add(&bi.increase, entries[i].Delta)
 				bi.count++
 			}
 		}(lo, hi)

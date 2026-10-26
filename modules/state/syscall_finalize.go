@@ -163,7 +163,7 @@ func (sdb *IntraBlockState) finalizeNoopParallel(policy accountWritePolicy, keep
 // writer on a state that keeps its pending credits detached (the
 // FinalizeTx it stands in for drops every loaded address from the journal).
 func (s *IntraBlockState) FinalizeSharedCaller(chainRules *params.Rules, addr types.Address) {
-	if _, dirty := s.journal.dirties[addr]; !dirty {
+	if _, dirty := s.journal.dirties[addr]; !dirty && !s.foldPending(addr) {
 		return
 	}
 	so, ok := s.stateObjects[addr]
@@ -177,6 +177,9 @@ func (s *IntraBlockState) FinalizeSharedCaller(chainRules *params.Rules, addr ty
 	finalizeFlags(policy, addr, so)
 	s.stateObjectsDirty[addr] = struct{}{}
 	delete(s.journal.dirties, addr)
+	if bi := s.balanceInc[addr]; bi != nil {
+		bi.fold = false
+	}
 }
 
 // FinalizeDigestForTest describes what a FinalizeTx leaves behind, for
@@ -201,7 +204,19 @@ func (s *IntraBlockState) FinalizeDigestForTest() string {
 		bi := s.balanceInc[addr]
 		fmt.Fprintf(&b, "credit %s inc=%s count=%d transferred=%v\n", addr.Hex(), bi.increase.String(), bi.count, bi.transferred)
 	}
-	for _, addr := range sortedAddresses(s.journal.dirties) {
+	// The no-journal fold's marked credits are members of the journal's
+	// dirty set (fold_nojournal.go).
+	journal := make(map[types.Address]struct{}, len(s.journal.dirties))
+	for addr := range s.journal.dirties {
+		journal[addr] = struct{}{}
+	}
+	s.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
+		journal[addr] = struct{}{}
+	})
+	for _, addr := range s.foldWritten {
+		journal[addr] = struct{}{}
+	}
+	for _, addr := range sortedAddresses(journal) {
 		fmt.Fprintf(&b, "journal %s\n", addr.Hex())
 	}
 	return b.String()

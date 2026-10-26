@@ -108,10 +108,20 @@ func (sdb *IntraBlockState) ApplyAccounts(entries []AccountApply, workers int) {
 		pf.hits += h
 	}
 
+	nj := sdb.foldNoJournal
 	for i := range entries {
 		p := &prep[i]
 		if p.obj == nil {
+			if nj && entries[i].Delta != nil {
+				sdb.foldCreditNoJournal(entries[i].Addr, entries[i].Delta)
+				continue
+			}
 			sdb.applyAccountEntry(&entries[i])
+			continue
+		}
+		// N42_FOLD_NOJOURNAL: the object where the block end's FinalizeTx
+		// would leave it, without the records (fold_nojournal.go).
+		if nj && sdb.foldPreparedNoJournal(entries[i].Addr, p.obj) {
 			continue
 		}
 		// What SetBalance+SetNonce leave on a miss of every live map:

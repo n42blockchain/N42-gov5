@@ -52,6 +52,9 @@ func CapturePostState(sdb *IntraBlockState) *PostState {
 	for addr := range sdb.journal.dirties {
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
+	sdb.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
+		sdb.stateObjectsDirty[addr] = struct{}{}
+	})
 	for addr := range sdb.stateObjectsDirty {
 		obj := sdb.stateObjects[addr]
 		// An empty account is absent: the store readers answer nil for one
