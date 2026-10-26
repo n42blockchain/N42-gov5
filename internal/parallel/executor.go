@@ -589,6 +589,9 @@ func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
 	a := arenaFor(numTxs)
 	mvs := NewMVS()
 	mvs.va = takeVersionArena()
+	if presizeMVS {
+		mvs.SizeFor(numTxs)
+	}
 	return &Executor{
 		mvs:         mvs,
 		numTxs:      numTxs,

@@ -24,6 +24,7 @@ package parallel
 
 import (
 	"encoding/binary"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,9 @@ type MVS struct {
 	// va, when set, holds the version lists (version_arena.go): an
 	// executor's store, reused across blocks. Nil: lists grow by append.
 	va *versionArena
+	// minSlots is the size a shard's table takes at its first insert
+	// (SizeFor); 0 keeps the doubling from mvsShardSlots.
+	minSlots int
 }
 
 // mvsShards splits the location index so inserts of new locations rarely
@@ -128,7 +132,40 @@ type mvsShard struct {
 	mu  sync.Mutex // serialises inserts and table growth; lookups skip it
 	tab atomic.Pointer[mvTable]
 	n   int // entries in tab, under mu
-	_   [40]byte
+	// slab holds entries not yet handed out (under mu, SizeFor only): one
+	// allocation per mvsEntrySlab new locations instead of one each.
+	slab []mvEntry
+	_    [16]byte
+}
+
+// mvsEntrySlab is how many entries a shard allocates at once.
+const mvsEntrySlab = 32
+
+// mvsKeysPerTx estimates the distinct locations a transaction adds to the
+// store: a transfer from its own sender adds the sender's balance and nonce
+// (a 163k-transfer block: ~343k locations, ~1,340 per shard, so the 2,048
+// slots doubling would end at). A block that adds more still grows.
+const mvsKeysPerTx = 2
+
+// presizeMVS is N42_MVS_PRESIZE (default on; "0" disables): an executor's
+// store sizes its shard tables for the block (SizeFor). Grown by doubling
+// from 64 slots, a 163k-transfer block's ~1,400 locations per shard rehash
+// five times, each under the shard's mutex while other workers insert.
+var presizeMVS = os.Getenv("N42_MVS_PRESIZE") != "0"
+
+// SizeFor sizes the store's shard tables for about numTxs transactions'
+// locations at the table's load factor; each shard takes its size at its
+// first insert, so the allocation falls on the workers. New entries then
+// come from per-shard slabs. Call before the store is used.
+func (m *MVS) SizeFor(numTxs int) {
+	want := (numTxs*mvsKeysPerTx/mvsShards*4)/3 + 1
+	size := mvsShardSlots
+	for size < want {
+		size <<= 1
+	}
+	if size > mvsShardSlots {
+		m.minSlots = size
+	}
 }
 
 // mvTable is an insert-only linear-probing table. A slot, once set, never
@@ -248,13 +285,22 @@ func (m *MVS) getOrCreateEntry(key LocationKey) *mvEntry {
 	if e := t.find(&key, h); e != nil {
 		return e
 	}
-	if (sh.n+1)*4 > len(t.slots)*3 {
-		g := newMVTable(len(t.slots) * 2)
+	if (sh.n+1)*4 > len(t.slots)*3 || len(t.slots) < m.minSlots {
+		g := newMVTable(max(len(t.slots)*2, m.minSlots))
 		t.each(g.place)
 		sh.tab.Store(g)
 		t = g
 	}
-	e := &mvEntry{key: key, hash: h}
+	var e *mvEntry
+	if m.minSlots > 0 {
+		if len(sh.slab) == 0 {
+			sh.slab = make([]mvEntry, mvsEntrySlab)
+		}
+		e, sh.slab = &sh.slab[0], sh.slab[1:]
+		e.key, e.hash = key, h
+	} else {
+		e = &mvEntry{key: key, hash: h}
+	}
 	t.place(e)
 	sh.n++
 	return e
