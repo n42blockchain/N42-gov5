@@ -478,7 +478,9 @@ var arenaFree struct {
 	list []*txArena
 }
 
-const arenaFreeMax = 2
+// Three: with N42_LAG_EARLY_SNAPSHOT a block's executor stays alive until
+// its child's run ends, while the grandchild's run takes another.
+const arenaFreeMax = 3
 
 func arenaTake() *txArena {
 	arenaFree.mu.Lock()

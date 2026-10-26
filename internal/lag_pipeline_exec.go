@@ -25,6 +25,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/parallel"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
@@ -140,6 +141,18 @@ type lagPipeline struct {
 	parent *lagPipeParent
 	// spec: the one ahead execution.
 	spec *aheadExec
+	// early: the early snapshot of the spec's block, published when its
+	// Block-STM run ended and switched at its root hook; next: the ahead
+	// run of that block's child on it, the spec once the hook publishes
+	// (N42_LAG_EARLY_SNAPSHOT, lag_early_snapshot.go). earlyHold: the
+	// addresses blocks wrote after their fold, learned.
+	early *earlySnap
+	next  *aheadExec
+	// taken: the ahead run an import took and waits for (it may still
+	// publish its early snapshot).
+	taken      *aheadExec
+	earlyHold  []types.Address
+	earlyStats lagEarlyStats
 	// older: the snapshots of the last written parents before parent,
 	// newest first, at most aheadBaseDepth-1: a child's base prefill read
 	// below its parent layers them (aheadLayersLocked). Each is a block's
@@ -160,6 +173,7 @@ type lagPipeline struct {
 	discErr, discNotApplicable, discParent, discHash, discHead atomic.Uint64
 	discFail, discReset, discForget, discSuperseded            atomic.Uint64
 	discFull, discWorkMs                                       atomic.Uint64
+	discEarly                                                  atomic.Uint64
 	openTxs                                                    atomic.Int64
 
 	// Parents written without a child executed ahead, by the reason the
@@ -344,6 +358,12 @@ type aheadExec struct {
 
 	once sync.Once
 	pipe *lagPipeline
+
+	// es: the early snapshot this run reads its parent through (a next
+	// run); parPost/parHeader: its parent's post-state and header.
+	es        *earlySnap
+	parPost   *state.PostState
+	parHeader *block.Header
 }
 
 // release closes the ahead execution's read transaction (once its goroutine
@@ -388,7 +408,7 @@ func (bc *BlockChain) LagPipelineSkipStats() LagPipelineSkips {
 // "blockimport phases" line.
 func (bc *BlockChain) lagPipeLogFields() []interface{} {
 	p := &bc.lagPipe
-	return []interface{}{
+	f := []interface{}{
 		"aheadAtt", p.launched.Load(), "aheadUsed", p.used.Load(), "aheadDisc", p.discarded.Load(),
 		"aheadDiscErr", p.discErr.Load(), "aheadDiscNotApplicable", p.discNotApplicable.Load(),
 		"aheadDiscParent", p.discParent.Load(), "aheadDiscHash", p.discHash.Load(),
@@ -400,7 +420,12 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 		"aheadSkipBusy", p.skipBusy.Load(), "aheadSkipOff", p.skipOff.Load(),
 		"aheadLate", p.late.Load(), "aheadTakeLaunch", p.takeLaunch.Load(),
 		"launchAtHook", p.launchAtHook.Load(), "launchAtEnqueue", p.launchAtEnqueue.Load(),
+		"aheadDiscEarly", p.discEarly.Load(),
 	}
+	if lagEarlySnapOn {
+		f = append(f, bc.lagEarlyLogFields()...)
+	}
+	return f
 }
 
 // aheadTakeAfterHook is the time from the parent's snapshot publication to
@@ -449,7 +474,7 @@ func (bc *BlockChain) lagPipeHook(blk block.IBlock, ibs *state.IntraBlockState) 
 			rc.LabelNextRoot(post, hdr.Number.Uint64(), h, hdr.ParentHash)
 		}
 		t0 := time.Now()
-		bc.lagPipePublish(hdr, post)
+		bc.lagPipePublish(hdr, post, ibs.StopWriteRecord())
 		lagPublishNanos.Store(int64(time.Since(t0)))
 	})
 }
@@ -461,8 +486,9 @@ var lagPublishNanos atomic.Int64
 
 // lagPipePublish records the post-state of the block being rooted now and
 // starts its queued child ahead. Runs on the importing goroutine, inside
-// the root computation.
-func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
+// the root computation. written: what the block wrote after its fold, when
+// its early snapshot was published (else nil).
+func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState, written map[types.Address]struct{}) {
 	p := &bc.lagPipe
 	h := hdr.Hash()
 	if fn := lagPipeBeforePublishForTest; fn != nil {
@@ -471,6 +497,11 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState) {
 	p.mu.Lock()
 	p.dropParentLocked()
 	p.parent = &lagPipeParent{hash: h, number: hdr.Number.Uint64(), header: hdr, post: post, hookAt: time.Now()}
+	p.earlyPublishLocked(h, post, written)
+	if s := p.spec; s != nil && s.parent == h {
+		// The child already runs ahead, started on the early snapshot.
+		p.parent.launched = true
+	}
 	if s := p.spec; s != nil && s.parent != h {
 		// An ahead execution on another parent cannot be used any more.
 		p.spec = nil
@@ -607,6 +638,10 @@ func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent, by 
 
 // runAhead executes a.blk on par's post-state.
 func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
+	if a.es != nil {
+		// After done: the run's readers are gone with it.
+		defer a.es.unref()
+	}
 	defer close(a.done)
 	defer func() { a.took = time.Since(a.started) }()
 	if since, avail := bc.lagQueuedTimes(a.blk.Hash()); !since.IsZero() {
@@ -627,7 +662,21 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	// ExecuteParallelAhead (ErrParallelNotApplicable): the check walks
 	// every transaction.
 	layers := []*state.PostState{par.post}
-	if j := bc.lagWritePending(par.header.ParentHash); j != nil {
+	if es := a.es; es != nil {
+		// A next run: the early snapshot over the block-start writes over
+		// the post-state of the block's parent, over its grandparent's
+		// write while pending -- the same bounded stack a run on a complete
+		// snapshot reads, one block higher.
+		if es.start != nil {
+			layers = append(layers, es.start)
+		}
+		layers = append(layers, es.below)
+	}
+	pendOf := par.header.ParentHash
+	if a.es != nil {
+		pendOf = a.es.belowParent
+	}
+	if j := bc.lagWritePending(pendOf); j != nil {
 		// The grandparent's write is in flight (lag_writer.go): the store
 		// does not hold it yet, its post-state does. Checked before the
 		// transaction opens: a write that is not pending now is durable in it.
@@ -644,8 +693,19 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	claim := &aheadClaim{}
 	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
 	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
-		layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
-		a.pf = ab.pf
+		if a.es != nil {
+			// Read below a block that is not even folded yet.
+			ab.pf, ab.skip = nil, "parent published early"
+		} else {
+			layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
+			a.pf = ab.pf
+		}
+	}
+	a.parPost, a.parHeader = par.post, par.header
+	if lagEarlySnapOn {
+		claim.early = func(mvs *parallel.MVS, numTxs int, start *state.PostState, free func()) bool {
+			return bc.lagPipeEarly(a, mvs, numTxs, start, free)
+		}
 	}
 	if fn := lagPipeAheadClaimedForTest; fn != nil {
 		fn(bc, a.blk)
@@ -740,6 +800,9 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		}
 	}
 	if a == nil || a.blk.Hash() != blk.Hash() {
+		// An early snapshot of blk (its run is not the spec) or a next run
+		// of blk that never became the spec is stale.
+		p.dropEarlyOfLocked(blk.Hash())
 		if par := p.parent; par != nil && par.hash == blk.ParentHash() {
 			// blk runs the serial path: nothing may launch it on this
 			// snapshot from now on.
@@ -756,9 +819,15 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 	if p.spec == a {
 		p.spec = nil
 	}
+	p.taken = a
 	parentOK := a.parentOK
 	p.mu.Unlock()
 	<-a.done
+	p.mu.Lock()
+	if p.taken == a {
+		p.taken = nil
+	}
+	p.mu.Unlock()
 	reason := ""
 	var cnt *atomic.Uint64
 	switch {
@@ -777,8 +846,15 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 	case !bc.lagAppliedIs(a.parent, number-1):
 		reason = "applied head is not the parent"
 		cnt = &p.discHead
+	case a.es != nil && !a.es.ok.Load():
+		reason = "parent wrote after its fold outside the early hold set"
+		cnt = &p.discEarly
 	}
 	if reason != "" {
+		p.mu.Lock()
+		// Its early snapshot's child cannot run on it either.
+		p.dropEarlyOfLocked(blk.Hash())
+		p.mu.Unlock()
 		log.Debug("lag pipeline: ahead execution discarded", "number", number, "hash", blk.Hash().Hex()[:12], "reason", reason)
 		p.discarded.Add(1)
 		cnt.Add(1)
@@ -789,12 +865,18 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 		return nil
 	}
 	p.used.Add(1)
+	if a.es != nil {
+		p.earlyStats.used.Add(1)
+	}
 	return a
 }
 
 // discardLocked drops an ahead execution (p.mu held): its transaction is
 // closed once its goroutine finishes.
 func (p *lagPipeline) discardLocked(a *aheadExec, reason *atomic.Uint64) {
+	if es := p.early; es != nil && es.hash == a.blk.Hash() {
+		p.dropEarlyLocked()
+	}
 	p.discarded.Add(1)
 	reason.Add(1)
 	p.draining = append(p.draining, a)
@@ -865,6 +947,11 @@ func (bc *BlockChain) lagPipeSettle(h types.Hash, written bool) {
 	p := &bc.lagPipe
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// An early snapshot of h still unpublished: h's import did not reach
+	// the hook that switches it.
+	if es := p.early; es != nil && es.hash == h {
+		p.dropEarlyLocked()
+	}
 	if par := p.parent; par != nil && par.hash == h {
 		if written {
 			par.written = true
@@ -892,6 +979,7 @@ func (bc *BlockChain) lagPipeForget(hash types.Hash) {
 		p.dropParentLocked()
 	}
 	p.forgetOlderLocked(hash)
+	p.dropEarlyOfLocked(hash)
 	if a := p.spec; a != nil && (a.parent == hash || a.blk.Hash() == hash) {
 		p.spec = nil
 		p.discardLocked(a, &p.discForget)
@@ -911,6 +999,7 @@ func (bc *BlockChain) lagPipeReset() {
 	defer p.mu.Unlock()
 	p.dropParentLocked()
 	p.older = nil
+	p.dropEarlyLocked()
 	if a := p.spec; a != nil {
 		p.spec = nil
 		p.discardLocked(a, &p.discReset)

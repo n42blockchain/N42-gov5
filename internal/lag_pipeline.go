@@ -492,6 +492,8 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 	}
 	// A child queued while its parent is being rooted starts ahead.
 	bc.lagPipeLaunch(lagLaunchEnqueue)
+	// Or while its parent's early snapshot is published.
+	bc.lagPipeLaunchEarly(lagLaunchEnqueue)
 }
 
 func (bc *BlockChain) lagLoop() {
