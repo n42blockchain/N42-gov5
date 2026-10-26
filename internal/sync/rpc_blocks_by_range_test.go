@@ -130,7 +130,7 @@ func TestWriteBodiesRangeToStreamMissingBlockErrors(t *testing.T) {
 
 	start := uint256.NewInt(5)
 	end := uint256.NewInt(5)
-	if err := svc.writeBodiesRangeToStream(context.Background(), start, end, 1, server); err == nil {
+	if err := svc.writeBodiesRangeToStream(context.Background(), start, end, 1, false, server); err == nil {
 		t.Fatal("expected an error for a missing block in range")
 	}
 }
@@ -158,7 +158,7 @@ func TestWriteBodiesRangeToStreamTruncatesOnCanonicalBreak(t *testing.T) {
 
 	start := uint256.NewInt(1)
 	end := uint256.NewInt(1)
-	if err := svc.writeBodiesRangeToStream(context.Background(), start, end, 1, server); err != nil {
+	if err := svc.writeBodiesRangeToStream(context.Background(), start, end, 1, false, server); err != nil {
 		t.Fatalf("writeBodiesRangeToStream: %v", err)
 	}
 }
