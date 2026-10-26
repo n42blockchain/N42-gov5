@@ -181,8 +181,8 @@ func (s *IntraBlockState) FinalizeSharedCaller(chainRules *params.Rules, addr ty
 
 // FinalizeDigestForTest describes what a FinalizeTx leaves behind, for
 // differential tests: every live object in address order with its
-// lifecycle flags, balance, nonce and stateObjectsDirty membership, then
-// the addresses still dirty in the journal.
+// lifecycle flags, balance, nonce and stateObjectsDirty membership, the
+// balance increases, then the addresses still dirty in the journal.
 func (s *IntraBlockState) FinalizeDigestForTest() string {
 	var b strings.Builder
 	for _, addr := range sortedAddresses(s.stateObjects) {
@@ -195,6 +195,11 @@ func (s *IntraBlockState) FinalizeDigestForTest() string {
 		if _, ok := s.stateObjects[addr]; !ok {
 			fmt.Fprintf(&b, "dirty-only %s\n", addr.Hex())
 		}
+	}
+	// Every balance increase still recorded, folded or pending.
+	for _, addr := range sortedAddresses(s.balanceInc) {
+		bi := s.balanceInc[addr]
+		fmt.Fprintf(&b, "credit %s inc=%s count=%d transferred=%v\n", addr.Hex(), bi.increase.String(), bi.count, bi.transferred)
 	}
 	for _, addr := range sortedAddresses(s.journal.dirties) {
 		fmt.Fprintf(&b, "journal %s\n", addr.Hex())
