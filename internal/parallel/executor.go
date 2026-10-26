@@ -60,6 +60,8 @@ type Executor struct {
 	mvs     *MVS
 	numTxs  int
 	workers int
+	// check is the store checks' state (mvs_check.go), nil when they are off.
+	check *mvsCheckState
 
 	// Per-transaction state (indexed by txIndex).
 	status      []TxStatus
@@ -592,8 +594,13 @@ func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
 	if presizeMVS {
 		mvs.SizeFor(numTxs)
 	}
+	var check *mvsCheckState
+	if mvsCheck {
+		check = new(mvsCheckState)
+	}
 	return &Executor{
 		mvs:         mvs,
+		check:       check,
 		numTxs:      numTxs,
 		workers:     workers,
 		status:      a.status,
@@ -1128,7 +1135,11 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 		wd := &rw.Writes[i]
 		switch {
 		case wd.Delta != nil:
-			e.mvs.writeDelta(e.writeEntry(rw, &wd.Key), txIndex, inc, wd.Delta)
+			ent := e.writeEntry(rw, &wd.Key)
+			e.mvs.writeDelta(ent, txIndex, inc, wd.Delta)
+			if e.check != nil {
+				e.checkWriteEntry(&wd.Key, ent, txIndex, true)
+			}
 		case wd.Key.Field == FieldCode:
 			// Code can alias EVM memory: copied.
 			e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
@@ -1144,6 +1155,9 @@ func (e *Executor) executeSingle(ctx any, txIndex int, ws *workerStat) {
 				hint = e.versionHint(ws, txIndex, &wd.Key)
 			}
 			e.mvs.writeOwnedHint(ent, txIndex, inc, wd.Value, hint)
+			if e.check != nil {
+				e.checkWriteEntry(&wd.Key, ent, txIndex, false)
+			}
 		}
 	}
 	if ws != nil {
