@@ -1938,6 +1938,12 @@ func (n *Node) Start() error {
 			svc.SetAvailabilityProbe(realBC.HasAvailableBlock)
 			realBC.SetLagImportedHook(svc.NotifyBlockImported)
 			realBC.SetLagResultHook(svc.NotifyLagResultReady)
+			if err := realBC.StartE1Server(n.ctx); err != nil {
+				log.Error("E=1 result server not started", "err", err)
+			}
+			if realBC.E1Light() {
+				log.Warn("E=1 light node: execution results come from the executor (bench rule)")
+			}
 			if block.LagMode() && internal.FrameBlocksEnabled() {
 				// Deferred depth k > 1 with frame blocks: the leader builds
 				// without executing and may propose height N once it has
