@@ -297,48 +297,72 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	// failure (bounded well inside the 256-block undo window) until the range
 	// reaches back to the common ancestor. Only meaningful on the authorized
 	// path; a plain height lag never unwinds.
+	//
+	// Range shrink: when every peer rejects the request outright (no block
+	// returned), the tail of the range is usually past what peers have
+	// stored — the target comes from a CommitQC, while a peer writes the
+	// canonical row only after its deferred import. Peers that predate the
+	// server-side prefix serving fail the whole range on the first missing
+	// block, so halve the count and retry the same start instead of
+	// re-sending the identical failing range on every tick. Bounded by
+	// log2(maxRequestBlocks) extra rounds, and not counted as a backtrack.
 	const maxForkBacktrack = 32
-	for attempt := 0; attempt <= maxForkBacktrack; attempt++ {
+	countCap := uint64(maxRequestBlocks)
+	for attempt := 0; attempt <= maxForkBacktrack; {
 		if start > target {
 			return
 		}
 		count := target - start + 1
-		if count > maxRequestBlocks {
-			count = maxRequestBlocks
+		if count > countCap {
+			count = countCap
 		}
+		end := start + count - 1
 		req := &sync_pb.BodiesByRangeRequest{
 			StartBlockNumber: utils.ConvertUint256IntToH256(uint256.NewInt(start)),
 			Count:            count,
 			Step:             1,
 		}
 		log.Info("hotstuff catch-up: requesting range",
-			"from", start, "to", target, "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
-		if s.catchUpRange(req, peers, authorized, start, target) {
+			"from", start, "to", end, "target", target, "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
+		done, allRejected := s.catchUpRange(req, peers, authorized, start, end)
+		if allRejected && count > 1 {
+			countCap = count / 2
+			log.Info("hotstuff catch-up: every peer rejected the range, shrinking",
+				"from", start, "count", count, "next", countCap)
+			continue
+		}
+		if done {
 			return
 		}
 		if !authorized || start <= 1 {
 			return
 		}
 		start-- // unknown-ancestor on every peer: reach one block deeper
+		attempt++
 	}
 }
 
 // catchUpRange fetches [start, highest] from the given peers and inserts it.
-// Returns true when the round is DONE (imported, or failed for a reason that
+// done is true when the round is DONE (imported, or failed for a reason that
 // deeper backtracking cannot fix); false when every peer failed with
-// unknown-ancestor and the caller should retry one block lower.
-func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest uint64) bool {
+// unknown-ancestor and the caller should retry one block lower. allRejected
+// reports that no peer returned a single block (every request errored or came
+// back empty), which a smaller range may fix.
+func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest uint64) (done, allRejected bool) {
 	sawUnknownAncestor := false
+	rejected := 0
 	for _, pid := range peers {
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		fetched, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
 		cancel()
 		if err != nil {
+			rejected++
 			log.Warn("hotstuff catch-up: range request failed",
 				"peer", pid.String()[:12], "from", start, "to", highest, "err", err)
 			continue
 		}
 		if len(fetched) == 0 {
+			rejected++
 			log.Warn("hotstuff catch-up: range returned 0 blocks", "peer", pid.String()[:12])
 			continue
 		}
@@ -400,12 +424,12 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 		}
 		log.Info("hotstuff catch-up: imported range",
 			"fetched", len(blocks), "newHead", newHeadNum, "authorized", authorized)
-		return true
+		return true, false
 	}
 	// Every peer failed. Only a consistent unknown-ancestor is fixable by
 	// reaching one block deeper; anything else ends the round (the next tick
 	// retries from scratch).
-	return !sawUnknownAncestor
+	return !sawUnknownAncestor, len(peers) > 0 && rejected == len(peers)
 }
 
 // HeightBehind reports how many blocks the local head trails the best peer,
