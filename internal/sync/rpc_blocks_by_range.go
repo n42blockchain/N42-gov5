@@ -90,6 +90,10 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 		trace.Int64Attribute("remaining_capacity", remainingBucketCapacity),
 	)
 
+	// served records that an earlier sub-batch already streamed blocks, so a
+	// later sub-batch that finds nothing stored ends the response cleanly
+	// instead of appending an error to a valid prefix.
+	served := false
 	for startBlockNumber.Cmp(endReqBlockNumber) <= 0 {
 		if err := s.rateLimiter.validateRequest(stream, allowedBlocksPerSecond); err != nil {
 			return err
@@ -100,10 +104,11 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 			return p2ptypes.ErrInvalidRequest
 		}
 
-		err := s.writeBodiesRangeToStream(ctx, startBlockNumber, endBlockNumber, m.Step, stream)
-		if err != nil && !errors.Is(err, p2ptypes.ErrInvalidParent) {
+		err := s.writeBodiesRangeToStream(ctx, startBlockNumber, endBlockNumber, m.Step, served, stream)
+		if err != nil && !errors.Is(err, p2ptypes.ErrInvalidParent) && !errors.Is(err, errRangeTruncated) {
 			return err
 		}
+		served = true
 
 		// Decrease allowed blocks capacity by the number of streamed blocks.
 		if startBlockNumber.Cmp(endBlockNumber) <= 0 {
@@ -114,8 +119,9 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 			s.rateLimiter.add(stream, int64(1+blocksStreamed.Uint64()))
 		}
 
-		// Exit if we have a disjoint chain to return.
-		if errors.Is(err, p2ptypes.ErrInvalidParent) {
+		// Exit if we have a disjoint chain to return, or the stored canonical
+		// chain ended inside the requested range.
+		if errors.Is(err, p2ptypes.ErrInvalidParent) || errors.Is(err, errRangeTruncated) {
 			break
 		}
 
@@ -148,17 +154,38 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 	return nil
 }
 
-func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSlot *uint256.Int, step uint64, stream libp2pcore.Stream) error {
+// errRangeTruncated reports that writeBodiesRangeToStream streamed a valid
+// prefix of the requested sub-range and stopped early (the stored canonical
+// chain ends, or breaks, inside it). The response is complete as sent; the
+// caller must not stream further sub-batches.
+var errRangeTruncated = errors.New("bodies-by-range: response truncated")
+
+// writeBodiesRangeToStream streams the canonical blocks in [startSlot, endSlot].
+// A missing block ends the response at the stored prefix: under deferred
+// execution a peer writes canonical rows only after it imports a committed
+// block, so a CommitQC-derived catch-up target routinely runs a few blocks
+// past every peer's stored chain. Failing the whole range there (the old
+// behaviour) left a lagging node with nothing to import from any peer. Only a
+// response that would carry no block at all (the first block missing and
+// nothing streamed earlier, see servedBefore) is still an error.
+func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSlot *uint256.Int, step uint64, servedBefore bool, stream libp2pcore.Stream) error {
 	_, span := trace.StartSpan(ctx, "sync.WriteBodiesRangeToStream")
 	defer span.End()
 
 	blks := make([]types.IBlock, 0)
+	truncated := false
 	for ; startSlot.Cmp(endSlot) <= 0; startSlot = new(uint256.Int).AddUint64(startSlot, step) {
 		b, err := s.cfg.chain.GetBlockByNumber(startSlot)
 		if err != nil {
 			log.Warn("Could not retrieve blocks", "err", err)
 			s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
 			return err
+		}
+		if b == nil && (len(blks) > 0 || servedBefore) {
+			log.Debug("bodies-by-range: stored chain ends inside the range, serving the prefix",
+				"at", startSlot.Uint64(), "end", endSlot.Uint64(), "served", len(blks))
+			truncated = true
+			break
 		}
 		if b == nil {
 			err := fmt.Errorf("block #%d not found", startSlot.Uint64())
@@ -176,6 +203,7 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 		if step == 1 && len(blks) > 0 && b.ParentHash() != blks[len(blks)-1].Hash() {
 			log.Warn("bodies-by-range: canonical break, truncating response",
 				"at", startSlot.Uint64(), "parent", b.ParentHash(), "prev", blks[len(blks)-1].Hash())
+			truncated = true
 			break
 		}
 		blks = append(blks, b)
@@ -191,6 +219,9 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 	}
 	rpcBlocksByRangeResponseLatency.Observe(float64(time.Since(start).Milliseconds()))
 
+	if truncated {
+		return errRangeTruncated
+	}
 	return nil
 }
 
