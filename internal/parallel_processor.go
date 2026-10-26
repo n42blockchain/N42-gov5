@@ -318,6 +318,11 @@ func (p *StateProcessor) executeParallelAhead(b *block.Block, ibs *state.IntraBl
 type aheadClaim struct {
 	prep *aheadPrep
 	wait time.Duration
+	// early, when set, is offered the run's final writes the moment its
+	// Block-STM run ends (lag_early_snapshot.go): the store, the
+	// transaction count, the block-start writes and the executor's
+	// release. True: the snapshot took the store and releases it.
+	early func(mvs *parallel.MVS, numTxs int, start *state.PostState, free func()) bool
 }
 
 // FinishParallel is the second half: the gas check, block end and Finalize
@@ -795,6 +800,13 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		executor.Release()
 		return nil, err
 	}
+	// An early snapshot answers the block-start writes from this capture
+	// (the state holds nothing else yet).
+	var earlyStart *state.PostState
+	earlyOffer := ahead && !lenient && claim != nil && claim.early != nil
+	if earlyOffer {
+		earlyStart = state.CapturePostState(ibs)
+	}
 	// Run parallel execution with wave-based validation. The tree's reader
 	// lock is held once for the whole run (the workers' lookups skip it);
 	// nothing in the run takes the writer side -- the owner is this
@@ -947,6 +959,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		}
 	}
 
+	// The final writes are known: the early snapshot may publish them now.
+	earlyOwned := earlyOffer && failed == 0 && claim.early(executor.MVS(), numTxs, earlyStart, executor.Release)
+
 	// Collect receipts and logs, fixing cumulative gas.
 	usedGas := uint64(0)
 	var receipts block.Receipts
@@ -1044,7 +1059,17 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
 	joinRcpt()
-	executor.Release()
+	if earlyOwned {
+		// The early snapshot releases the store once nothing reads it.
+		// From here on, what the block writes is checked against what it
+		// held back (fee credits, block end, rewards).
+		ibs.StartWriteRecord()
+		if fn := lagEarlyAfterFoldForTest; fn != nil {
+			fn(ibs, txs)
+		}
+	} else {
+		executor.Release()
+	}
 	tApplied := time.Now()
 
 	// Read the delta-credited recipients ahead of the block-end fold, across

@@ -81,6 +81,10 @@ const (
 	arrivalAfterParent
 )
 
+// lagPipeEngineDoneForTest, when set, inspects the pipelined chain once the
+// harness's blocks are all imported and compared.
+var lagPipeEngineDoneForTest func(lc *lagChain)
+
 func testLagPipelineAhead(t *testing.T, await bool, arrival lagArrival) {
 	testLagPipelineAheadEngine(t, await, arrival, false)
 }
@@ -399,6 +403,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		overlaps := piped.bc.LagWriteOverlaps()
 		t.Logf("imports overlapping their parent's write: %d", overlaps)
 		require.GreaterOrEqual(t, overlaps, uint64(blocks/2), "children did not import while their parent's write was in flight")
+	}
+	if fn := lagPipeEngineDoneForTest; fn != nil {
+		fn(piped)
 	}
 	launched, used, discarded, _ := piped.bc.LagPipelineStats()
 	skips := piped.bc.LagPipelineSkipStats()

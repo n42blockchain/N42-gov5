@@ -150,7 +150,9 @@ var versionArenaFree struct {
 	list []*versionArena
 }
 
-const versionArenaFreeMax = 2
+// Three: with N42_LAG_EARLY_SNAPSHOT a block's executor stays alive until
+// its child's run ends, while the grandchild's run takes another.
+const versionArenaFreeMax = 3
 
 func takeVersionArena() *versionArena {
 	if !scratchPool {

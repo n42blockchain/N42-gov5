@@ -29,6 +29,9 @@ type PostState struct {
 	storage  map[types.Address]map[types.Hash]*uint256.Int // nil or zero value: slot is zero
 	wiped    map[types.Address]struct{}                    // slots not listed read zero
 	code     map[types.Hash][]byte
+	// early, when set, answers every read instead of the maps (an early
+	// snapshot, NewEarlyPostState).
+	early EarlySource
 }
 
 // CapturePostState snapshots the dirty set of sdb. It reads only the
@@ -146,6 +149,9 @@ func NewPostStateReader(post *PostState, base StateReader) *PostStateReader {
 }
 
 func (r *PostStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
+	if src := r.post.early; src != nil {
+		return r.earlyAccountData(src, address)
+	}
 	if a, ok := r.post.accounts[address]; ok {
 		// An empty account is absent, as the store readers answer
 		// (emptyByPlainPolicy) and the root walk deletes its key.
@@ -160,6 +166,9 @@ func (r *PostStateReader) ReadAccountData(address types.Address) (*account.State
 }
 
 func (r *PostStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	if src := r.post.early; src != nil {
+		return r.earlyAccountStorage(src, address, key)
+	}
 	if r.post.removed(address) {
 		return nil, nil
 	}
@@ -175,6 +184,9 @@ func (r *PostStateReader) ReadAccountStorage(address types.Address, key *types.H
 }
 
 func (r *PostStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
+	if src := r.post.early; src != nil {
+		return r.earlyAccountCode(src, address, codeHash)
+	}
 	if c, ok := r.post.code[codeHash]; ok {
 		return c, nil
 	}
@@ -182,6 +194,10 @@ func (r *PostStateReader) ReadAccountCode(address types.Address, codeHash types.
 }
 
 func (r *PostStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	if src := r.post.early; src != nil {
+		c, err := r.earlyAccountCode(src, address, codeHash)
+		return len(c), err
+	}
 	if c, ok := r.post.code[codeHash]; ok {
 		return len(c), nil
 	}
@@ -191,6 +207,9 @@ func (r *PostStateReader) ReadAccountCodeSize(address types.Address, codeHash ty
 // ForEachStorage merges the snapshot over the base enumeration: overlay slots
 // win, a wiped account contributes only its overlay slots.
 func (r *PostStateReader) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
+	if src := r.post.early; src != nil {
+		return r.earlyForEachStorage(src, addr, f)
+	}
 	if r.post.removed(addr) {
 		return nil
 	}
