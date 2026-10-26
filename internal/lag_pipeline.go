@@ -475,7 +475,7 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 	}
 	kick := le.kick
 	le.mu.Unlock()
-	if fresh {
+	if fresh && !bc.E1Light() {
 		// Its senders are recovered from now on, not when it executes (P7).
 		if prep {
 			bc.startAheadPrep(b)
@@ -551,6 +551,10 @@ func (bc *BlockChain) lagStep() bool {
 	var committedNum uint64
 	if committed := bc.currentBlock.Load(); committed != nil && committed.Number64() != nil {
 		committedNum = committed.Number64().Uint64()
+	}
+	if bc.E1Light() {
+		// E=1: stored with the executor's result, never executed here.
+		return bc.e1LightStep(list, committedNum)
 	}
 	for _, q := range list {
 		b := q.blk

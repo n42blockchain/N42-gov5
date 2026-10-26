@@ -1469,7 +1469,9 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		// skipped tx-bearing block. Returning an error keeps the commit
 		// retryable (pendingCommit / the next import notification) until the
 		// executor catches up.
-		if bc.qmdbEnabled {
+		// An E=1 light node applies nothing; the executor's result stands
+		// for the execution (e1.go).
+		if bc.qmdbEnabled && !bc.E1Light() {
 			if an, _, ok, aerr := rawdb.ReadQMDBApplied(tx); aerr == nil && ok && blk.Number64().Uint64() > an {
 				return fmt.Errorf("commit-to-canonical %d ahead of applied head %d (block stored but not executed)",
 					blk.Number64().Uint64(), an)
