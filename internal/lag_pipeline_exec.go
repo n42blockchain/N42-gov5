@@ -127,6 +127,10 @@ var lagPipeAheadClaimedForTest func(bc *BlockChain, child *block.Block)
 // live tree).
 var lagPipeAwaitAheadForTest bool
 
+// lagPipeAheadReleasedForTest, when set, receives a token each time an
+// ahead run with a late prefill released its readers (tests).
+var lagPipeAheadReleasedForTest atomic.Pointer[chan struct{}]
+
 // lagPipeFailWriteForTest, when set, fails the next write of that block once
 // with a transient error, after its post-state was published.
 var lagPipeFailWriteForTest atomic.Pointer[types.Hash]
@@ -336,7 +340,10 @@ type aheadExec struct {
 	// pf is the base prefill the run's tree reads answered from; released
 	// with the run (release): its lookup sources die with the run's
 	// transactions.
-	pf   *commitment.BasePrefill
+	pf *commitment.BasePrefill
+	// late is the prefill the run's claim did not wait for
+	// (N42_AHEAD_PREFILL_NOWAIT); closed with the run (release).
+	late *aheadLate
 	run  *parallelRun
 	tx   kv.Tx
 	err  error
@@ -359,6 +366,15 @@ func (a *aheadExec) release() {
 		// its workers' and prefetch readers ended with it, and the state's
 		// own source with the transaction just closed.
 		a.pf.Release()
+		if a.late != nil {
+			a.late.close()
+			if ch := lagPipeAheadReleasedForTest.Load(); ch != nil {
+				select {
+				case *ch <- struct{}{}:
+				default:
+				}
+			}
+		}
 	})
 }
 
@@ -400,6 +416,8 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 		"aheadSkipBusy", p.skipBusy.Load(), "aheadSkipOff", p.skipOff.Load(),
 		"aheadLate", p.late.Load(), "aheadTakeLaunch", p.takeLaunch.Load(),
 		"launchAtHook", p.launchAtHook.Load(), "launchAtEnqueue", p.launchAtEnqueue.Load(),
+		"prefillNowait", aheadNoWaitClaims.Load(), "prefillNowaitLanded", aheadNoWaitLanded.Load(),
+		"prefillNowaitFallback", aheadNoWaitFallbacks.Load(),
 	}
 }
 
@@ -642,7 +660,19 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	// are built -- before the run's transaction opens: the prefill's own
 	// transactions may wait for read permits -- and the run adopts the rest.
 	claim := &aheadClaim{}
-	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
+	if aheadPrefillNoWait {
+		// A prefill still waiting for the tree or reading is not waited
+		// for: it lands on the run's slot when it is done
+		// (ahead_prefill_nowait.go).
+		var lab *aheadBase
+		claim.prep, lab, claim.wait = bc.claimAheadPrepNoWait(a.blk.Hash())
+		if lab != nil {
+			claim.late, layers = bc.lagPipe.newAheadLate(lab, claim.prep, par, layers)
+			a.late = claim.late
+		}
+	} else {
+		claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
+	}
 	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 		layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
 		a.pf = ab.pf
@@ -665,6 +695,8 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		src := commitment.NewLookupSourceRefreshing(bc.qmdbRootComputer, tx, bc.ChainDB)
 		if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 			src.SetPrefill(ab.pf)
+		} else if claim.late != nil {
+			src.SetPrefillSlot(&claim.late.slot)
 		}
 		base = commitment.NewQMDBStateReader(src, base, mode)
 	}
