@@ -206,6 +206,17 @@ func be8(v uint64) []byte {
 // twig metadata (sequential by id), and the recovery meta. Returns bytes written.
 // flushedThrough is the slot cursor already persisted (0 on first flush).
 func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
+	return t.FlushToSealed(p, flushedThrough, 0)
+}
+
+// FlushToSealed is FlushTo for a flush chained behind an earlier one whose
+// rows are not committed yet: twigs that lie fully below sealedBelow (the
+// earlier flush's cursor) are persisted as evicted twigs are -- meta only
+// when it changed or the twig is pruned, never the leaf blob -- since their
+// leaves are final and already in the earlier flush's rows. sealedBelow 0
+// is FlushTo.
+func (t *Tree) FlushToSealed(p Putter, flushedThrough, sealedBelow uint64) (uint64, int, error) {
+	sealedTwigs := int(sealedBelow / TwigSize) // twigs with id < sealedTwigs are fully below it
 	bytesW := 0
 	// Per-table accounting. The MDBX commit that follows costs in proportion to
 	// the PAGES this flush dirties, and the three tables dirty pages very
@@ -279,7 +290,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		if tw == nil {
 			continue
 		}
-		if tw.nodes == nil && !tw.pruned && !tw.metaDirty {
+		sealed := id < sealedTwigs
+		if (tw.nodes == nil || sealed) && !tw.pruned && !tw.metaDirty {
 			continue // evicted-clean: on-disk meta is current
 		}
 		meta := make([]byte, 32+32+TwigSize/8)
@@ -298,7 +310,7 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		// entry hash — dead slots included, since the frozen leaf tree commits
 		// them forever (sparse encoding still elides never-appended tail slots).
 		// Skipped for evicted twigs (nodes==nil): their frozen blob is current.
-		if t.leafStore != nil && tw.nodes != nil {
+		if t.leafStore != nil && tw.nodes != nil && !sealed {
 			blob := encodeSparseLeaves(tw.nodes)
 			if err := p.Put(LeavesTable, be8(uint64(id)), blob); err != nil {
 				return flushedThrough, bytesW, err
@@ -332,6 +344,21 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 // CommitFlush finalizes the last FlushTo after its surrounding transaction
 // committed: the staged dead-row deletes are durable and can be forgotten.
 func (t *Tree) CommitFlush() { t.stagedDead = t.stagedDead[:0] }
+
+// CommitFlushN finalizes the oldest of several chained flushes: the first n
+// staged dead-row deletes (the ones it issued) are durable; the rest stay
+// staged for the later flushes.
+func (t *Tree) CommitFlushN(n int) {
+	if n >= len(t.stagedDead) {
+		t.stagedDead = t.stagedDead[:0]
+		return
+	}
+	rest := copy(t.stagedDead, t.stagedDead[n:])
+	t.stagedDead = t.stagedDead[:rest]
+}
+
+// StagedDeadCount reports how many dead-row deletes are staged.
+func (t *Tree) StagedDeadCount() int { return len(t.stagedDead) }
 
 // AbortFlush undoes the last FlushTo's in-memory bookkeeping after its
 // surrounding transaction rolled back: the dead-row deletes never reached disk,

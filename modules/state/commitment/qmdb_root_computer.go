@@ -44,6 +44,14 @@ type QMDBRootComputer struct {
 	indexTrusted   uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
 	indexDelta     int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
 
+	// stagedChain: flushes staged by FlushToChained after stagedFlushed, oldest
+	// first, each committed in turn by CommitFlushed (the ordered writer's
+	// queue, N42_LAG_WRITE_QUEUE); stagedDeadN is how many of the tree's
+	// staged dead-row deletes belong to the stagedFlushed flush while the
+	// chain is non-empty.
+	stagedChain []stagedFlush
+	stagedDeadN int
+
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
 
@@ -356,6 +364,7 @@ func (r *QMDBRootComputer) RewindForUndo(cold kv.Getter, u *qmdb.BlockUndo) erro
 		r.flushedThrough = u.PrevNextSlot
 	}
 	r.stagedValid = false
+	r.stagedChain = nil
 	return nil
 }
 
@@ -430,6 +439,7 @@ func (r *QMDBRootComputer) loadFromLocked(g qmdb.Getter) error {
 	}
 	r.flushedThrough = r.t.NextSlot()
 	r.stagedValid = false // any staged flush described the abandoned layout
+	r.stagedChain = nil
 	r.indexTrusted = r.t.NextSlot()
 	// Baseline for trusted-reload reconciliation: fossil live bits (rows lost
 	// to the fixed deadFlushed carryover bug) make this nonzero fleet-wide;
@@ -519,6 +529,7 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 func (r *QMDBRootComputer) afterReload(g qmdb.Getter, path string, since time.Time) {
 	r.flushedThrough = r.t.NextSlot()
 	r.stagedValid = false
+	r.stagedChain = nil
 	r.indexTrusted = r.t.NextSlot()
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
 	if reloadVerify {
@@ -664,11 +675,79 @@ func (r *QMDBRootComputer) FlushPersistsAll() bool {
 func (r *QMDBRootComputer) CommitFlushed() {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	if len(r.stagedChain) > 0 {
+		// The oldest of several staged flushes committed: adopt its cursor
+		// and forget only its dead-row deletes; the next one becomes the
+		// oldest.
+		r.flushedThrough = r.stagedFlushed
+		r.t.CommitFlushN(r.stagedDeadN)
+		next := r.stagedChain[0]
+		r.stagedChain = r.stagedChain[1:]
+		if len(r.stagedChain) == 0 {
+			r.stagedChain = nil
+		}
+		r.stagedFlushed, r.stagedDeadN = next.through, next.dead
+		return
+	}
 	if r.stagedValid {
 		r.flushedThrough = r.stagedFlushed
 		r.stagedValid = false
+		r.stagedChain = nil
 	}
 	r.t.CommitFlush()
+}
+
+// stagedFlush is one flush staged behind the oldest (FlushToChained).
+type stagedFlush struct {
+	through uint64 // its advanced cursor
+	dead    int    // the tree's staged dead-row deletes it issued
+}
+
+// FlushToChained is FlushTo while an earlier flush is still staged (its
+// transaction not committed yet): it persists the entries appended since
+// the LAST staged cursor, so the rows of consecutive blocks never overlap,
+// and its transaction must commit after the earlier ones. CommitFlushed then
+// adopts the staged cursors oldest first. Twigs that lie fully below the
+// last staged cursor are written as an evicted twig would be (meta only
+// when it changed, no leaf blob): their leaves are final and in the earlier
+// flush's rows, exactly what a FlushTo after that flush's commit and
+// eviction writes. Without a staged flush it is FlushTo.
+func (r *QMDBRootComputer) FlushToChained(p qmdb.Putter) (int, error) {
+	r.readers.Lock()
+	if !r.stagedValid {
+		r.readers.Unlock()
+		return r.FlushTo(p)
+	}
+	defer r.readers.Unlock()
+	if err := r.t.FlushHistory(); err != nil {
+		return 0, err
+	}
+	from := r.stagedFlushed
+	if k := len(r.stagedChain); k > 0 {
+		from = r.stagedChain[k-1].through
+	} else {
+		r.stagedDeadN = r.t.StagedDeadCount()
+	}
+	before := r.t.StagedDeadCount()
+	next, n, err := r.t.FlushToSealed(p, from, from)
+	if err != nil {
+		return n, err
+	}
+	r.stagedChain = append(r.stagedChain, stagedFlush{through: next, dead: r.t.StagedDeadCount() - before})
+	if r.mdbxIdx != nil {
+		r.mdbxIdx.persistCount()
+	}
+	return n, nil
+}
+
+// StagedFlushes reports how many flushes are staged and not yet committed.
+func (r *QMDBRootComputer) StagedFlushes() int {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	if !r.stagedValid {
+		return 0
+	}
+	return 1 + len(r.stagedChain)
 }
 
 // AbortFlushed discards the staged cursor after the surrounding transaction
@@ -685,6 +764,7 @@ func (r *QMDBRootComputer) AbortFlushed() {
 
 func (r *QMDBRootComputer) abortFlushedLocked() {
 	r.stagedValid = false
+	r.stagedChain = nil
 	r.t.AbortFlush()
 }
 
@@ -805,6 +885,7 @@ func (r *QMDBRootComputer) AdoptOwnAppends(liveNext, liveFlushed uint64) bool {
 		r.flushedThrough = liveFlushed
 	}
 	r.stagedValid = false
+	r.stagedChain = nil
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
 	if r.evictLag.K > 0 {
 		r.t.AdoptFlushedKeep()
