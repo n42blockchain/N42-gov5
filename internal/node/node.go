@@ -1938,6 +1938,7 @@ func (n *Node) Start() error {
 			svc.SetAvailabilityProbe(realBC.HasAvailableBlock)
 			realBC.SetLagImportedHook(svc.NotifyBlockImported)
 			realBC.SetLagResultHook(svc.NotifyLagResultReady)
+			realBC.SetLagDrainedHook(svc.FlushPendingCommits)
 			if block.LagMode() && internal.FrameBlocksEnabled() {
 				// Deferred depth k > 1 with frame blocks: the leader builds
 				// without executing and may propose height N once it has

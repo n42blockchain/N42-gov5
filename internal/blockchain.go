@@ -1160,6 +1160,11 @@ func (bc *BlockChain) Close() error {
 	if locked {
 		bc.lock.Unlock()
 	}
+	// Outside bc.lock: the hook commits to canonical, which needs the MDBX
+	// writer and the live chain context, not the import lock.
+	if fn := bc.lagExec.drainedHook.Load(); fn != nil {
+		(*fn)()
+	}
 	bc.cancel()
 	bc.wg.Wait()
 	if bc.freezer != nil {

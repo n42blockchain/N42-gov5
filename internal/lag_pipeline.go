@@ -93,6 +93,9 @@ type lagExecutor struct {
 	// resultHook: told when a handed-off block's executed result is known
 	// in memory, before its write is durable (lag_gate_applied.go).
 	resultHook atomic.Pointer[func(hash types.Hash)]
+	// drainedHook: run once at Close after the last write is durable
+	// (SetLagDrainedHook).
+	drainedHook atomic.Pointer[func()]
 
 	imported atomic.Uint64
 	lastNum  atomic.Uint64
@@ -406,6 +409,18 @@ func (bc *BlockChain) SetLagImportedHook(fn func(hash, txHash types.Hash)) {
 		return
 	}
 	bc.lagExec.hook.Store(&fn)
+}
+
+// SetLagDrainedHook attaches the callback Close runs once the ordered
+// writer's last write is durable, before the chain's context is cancelled.
+// Consensus stops before the chain and may have deferred a canonical commit
+// on exactly that write; the hook lets it finish the commit.
+func (bc *BlockChain) SetLagDrainedHook(fn func()) {
+	if fn == nil {
+		bc.lagExec.drainedHook.Store(nil)
+		return
+	}
+	bc.lagExec.drainedHook.Store(&fn)
 }
 
 // LagExecutorOwns reports whether blk is imported by the lag executor once

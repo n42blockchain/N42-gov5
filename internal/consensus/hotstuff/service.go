@@ -565,6 +565,10 @@ type Service struct {
 	// deferred-execution rule, where the vote no longer waits for the body).
 	// Protected by pendingMu.
 	pendingCommits map[types.Hash]struct{}
+	// recoveredCommit is the persisted committed QC's block when it was
+	// above the canonical head at restart (recovered_commit.go): retried on
+	// its import notification until it is canonical. Protected by pendingMu.
+	recoveredCommit types.Hash
 	// deferredProduce remembers a leader view whose gate found the consensus
 	// parent not yet applied locally, so the import that lands it can re-run
 	// the gate instead of the view waiting out its 6 s timeout. Round 31: at
@@ -680,6 +684,10 @@ func (s *Service) Start() error {
 		}
 	}
 
+	// A committed QC recovered above the canonical head: its block may be
+	// applied already (nothing will notify it again).
+	s.retryRecoveredCommit(types.Hash{})
+
 	// A separate vote journal extends the chain database's record: anchor it
 	// with one before the first vote (see mergeVoteJournal).
 	if err := s.anchorVoteJournal(); err != nil {
@@ -790,6 +798,9 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 		} else {
 			s.pendingMu.Lock()
 			delete(s.pendingCommits, output.Hash)
+			// A committed block extends the recovered one, and the walk
+			// just canonicalized its lineage.
+			s.recoveredCommit = types.Hash{}
 			s.pendingMu.Unlock()
 		}
 		dCanon = time.Since(tCanon)
@@ -1657,7 +1668,15 @@ func (s *Service) recoverState() error {
 	ce.RestoreVoteCommitments(state.LastVotedView, state.LastVotedHash,
 		state.LastCommitVotedView, state.LastCommitVotedHash)
 
-	s.reportPersistedStateDivergence(state)
+	switch s.reportPersistedStateDivergence(state) {
+	case persistedStateAhead, persistedStateBlockUnknown:
+		// A genuine committed QC this node's canonical chain has not reached
+		// (the commit deferred at shutdown or crash): commit it once the
+		// block is applied here, the same as the in-run retry.
+		s.pendingMu.Lock()
+		s.recoveredCommit = state.LastCommittedQC.BlockHash
+		s.pendingMu.Unlock()
+	}
 
 	return nil
 }
@@ -1671,6 +1690,7 @@ const (
 	persistedStateConsistent                               // committed QC block is canonical locally
 	persistedStateBlockUnknown                             // committed QC names a block we do not have yet
 	persistedStateDiverged                                 // committed QC names a block that is NOT canonical here
+	persistedStateAhead                                    // committed QC block descends from, and is above, the canonical head
 )
 
 // reportPersistedStateDivergence checks the recovered consensus state against
@@ -1695,6 +1715,7 @@ func (s *Service) reportPersistedStateDivergence(state *ConsensusState) persiste
 
 	var (
 		known       bool
+		ahead       bool
 		number      uint64
 		canonical   types.Hash
 		canonHeight uint64
@@ -1712,6 +1733,13 @@ func (s *Service) reportPersistedStateDivergence(state *ConsensusState) persiste
 				return err
 			}
 			canonical = c
+			if c != hash {
+				a, _, err := CommittedQCAheadOfCanonical(tx, hash)
+				if err != nil {
+					return err
+				}
+				ahead = a
+			}
 		}
 		return nil
 	}); err != nil {
@@ -1725,6 +1753,12 @@ func (s *Service) reportPersistedStateDivergence(state *ConsensusState) persiste
 		log.Warn("hotstuff: persisted committed QC names a block this node does not have",
 			"blockHash", hash, "qcView", state.LastCommittedQC.View, "localHead", canonHeight)
 		return persistedStateBlockUnknown
+	case canonical != hash && ahead:
+		log.Warn("hotstuff: persisted committed QC is ahead of the canonical chain (commit deferred at shutdown); "+
+			"it is canonicalized once its block is applied here",
+			"committedQCBlock", hash, "committedQCView", state.LastCommittedQC.View,
+			"height", number, "localHead", canonHeight)
+		return persistedStateAhead
 	case canonical != hash:
 		log.Error("hotstuff: PERSISTED CONSENSUS STATE HAS DIVERGED FROM THE APPLIED CHAIN — "+
 			"the last committed QC names a block that is not canonical locally. Consensus will "+
@@ -2017,6 +2051,8 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 			log.Info("hotstuff: deferred commit-to-canonical completed", "hash", hash)
 		}
 	}
+	// The restart's pending commit (recovered_commit.go).
+	s.retryRecoveredCommit(hash)
 
 	// Best-effort parent lookup for the engine's extends-check (vote must only
 	// certify a block that extends its proposal's JustifyQC block). Zero when
