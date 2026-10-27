@@ -89,6 +89,10 @@ type fastTransferScratch struct {
 	appliedDirect                           uint64 // not yet added to directTransfers
 	appliedPlan                             uint64 // not yet added to planTransfers
 	direct                                  directTransferAccounts
+	// planBlk is tryDirectTransferPlan's block facts; under N42_EXEC_LEAN
+	// they are planEVM's, kept across its transactions.
+	planBlk planBlock
+	planEVM *vm2.EVM
 }
 
 // directTransferAccounts are tryDirectTransfer's two accounts, as read
@@ -415,33 +419,35 @@ func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *p
 	if sink == nil {
 		return nil, false
 	}
-	cfg := evm.Config()
-	if cfg.Debug || cfg.RestoreState || dbgNonceBlock > 0 || dbgRefundBlock > 0 {
-		return nil, false
+	// The block's facts: built per transaction, or under N42_EXEC_LEAN once
+	// per worker EVM -- a worker's EVM keeps its block context, chain
+	// configuration, rules and VM configuration for its block (nothing
+	// resets it), so the facts do not change.
+	bp := &sc.planBlk
+	if !parallel.ExecLean() || sc.planEVM != evm {
+		*bp = newPlanBlock(evm)
+		sc.planEVM = nil
+		if parallel.ExecLean() {
+			sc.planEVM = evm
+		}
 	}
-	rules := evm.ChainRules()
-	if !rules.IsLondon || rules.IsGlamsterdam {
-		return nil, false
-	}
-	policy := newTransitionChainPolicy(evm.ChainConfig())
-	if policy.shouldForceGasBailout() {
+	if !bp.ok {
 		return nil, false
 	}
 	const gas = params.TxGas
-	if (rules.IsPrague && vm2.FloorDataGas(nil) > gas) || gas > gasLimit {
+	if gas > gasLimit {
 		return nil, false
 	}
 	if evm.IsPrecompile(pl.to) {
 		return nil, false
 	}
-	blockCtx := evm.Context()
 	feeCap, tip, value := &sc.planFeeCap, &sc.planTip, &sc.planValue
 	feeCap.SetUint64(pl.feeCap)
 	tip.SetUint64(pl.tip)
 	value.SetUint64(pl.value)
-	if !cfg.NoBaseFee || pl.feeCap != 0 || pl.tip != 0 {
+	if !bp.noBaseFee || pl.feeCap != 0 || pl.tip != 0 {
 		// CheckEip1559TxGasFeeCap for a message that is not free.
-		if pl.feeCap < pl.tip || (blockCtx.BaseFee != nil && feeCap.Lt(blockCtx.BaseFee)) {
+		if pl.feeCap < pl.tip || (bp.baseFee != nil && feeCap.Lt(bp.baseFee)) {
 			return nil, false
 		}
 	}
@@ -460,12 +466,20 @@ func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *p
 	}
 
 	// The sender (preCheck reads its nonce first).
-	acc, err := rd.ReadAccountData(pl.from)
+	s := &sc.direct
+	var acc *account.StateAccount
+	var err error
+	if parallel.ExecLean() {
+		acc, err = rd.ReadAccountDataInto(pl.from, &s.fromOrig)
+	} else {
+		acc, err = rd.ReadAccountData(pl.from)
+	}
 	if err != nil || acc == nil {
 		return fail()
 	}
-	s := &sc.direct
-	s.fromOrig = *acc // the reader's buffer is overwritten by the next read
+	if acc != &s.fromOrig {
+		s.fromOrig = *acc // the reader's buffer is overwritten by the next read
+	}
 	s.from = s.fromOrig
 	normaliseLoaded(&s.from)
 	nonce := s.from.Nonce
@@ -479,11 +493,17 @@ func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *p
 		return fail()
 	}
 	// The recipient (evm.Call's Exist), read ignoring its balance.
-	acc, err = rd.ReadAccountIgnoringBalance(pl.to)
+	if parallel.ExecLean() {
+		acc, err = rd.ReadAccountIgnoringBalanceInto(pl.to, &s.toOrig)
+	} else {
+		acc, err = rd.ReadAccountIgnoringBalance(pl.to)
+	}
 	if err != nil || acc == nil {
 		return fail()
 	}
-	s.toOrig = *acc
+	if acc != &s.toOrig {
+		s.toOrig = *acc
+	}
 	s.to = s.toOrig
 	normaliseLoaded(&s.to)
 	if ch := s.to.CodeHash; ch != emptyCodeHash && ch != (types.Hash{}) {
@@ -509,22 +529,64 @@ func tryDirectTransferPlan(evm *vm2.EVM, rd *parallel.ParallelStateReader, wr *p
 
 	// creditTransferFees under London.
 	effectiveTip := u256.Num0
-	if feeCap.Gt(blockCtx.BaseFee) {
-		effectiveTip = cmath.Min256(tip, sc.tip.Sub(feeCap, blockCtx.BaseFee))
+	if feeCap.Gt(bp.baseFee) {
+		effectiveTip = cmath.Min256(tip, sc.tip.Sub(feeCap, bp.baseFee))
 	}
 	amount := sc.amount.SetUint64(gas)
 	amount.Mul(amount, effectiveTip)
-	sink(policy.priorityFeeRecipient(blockCtx.Coinbase), amount)
-	if rules.IsEip1559FeeCollector {
+	sink(bp.tipTo, amount)
+	if bp.burn {
 		burnAmount := sc.burn.SetUint64(gas)
-		burnAmount.Mul(burnAmount, blockCtx.BaseFee)
-		sink(*evm.ChainConfig().Eip1559FeeCollector, burnAmount)
+		burnAmount.Mul(burnAmount, bp.baseFee)
+		sink(*bp.burnTo, burnAmount)
 	}
 	sc.applied++
 	sc.appliedDirect++
 	sc.appliedPlan++
 	sc.result = ExecutionResult{UsedGas: gas, BlockGasUsed: gas}
 	return &sc.result, true
+}
+
+// planBlock is what tryDirectTransferPlan reads of its block: the checks
+// that depend only on the EVM's configuration, rules and chain policy, and
+// the block's fee facts.
+type planBlock struct {
+	// ok: the block admits the plan path -- no debugging or state restore,
+	// London rules but not Glamsterdam's, no forced gas bailout, and a
+	// transfer's floor data gas within TxGas.
+	ok        bool
+	noBaseFee bool
+	baseFee   *uint256.Int
+	// tipTo receives the priority fee; burnTo, when burn, the base fee.
+	tipTo  types.Address
+	burn   bool
+	burnTo *types.Address
+}
+
+// newPlanBlock reads evm's planBlock.
+func newPlanBlock(evm *vm2.EVM) planBlock {
+	cfg := evm.Config()
+	if cfg.Debug || cfg.RestoreState || dbgNonceBlock > 0 || dbgRefundBlock > 0 {
+		return planBlock{}
+	}
+	rules := evm.ChainRules()
+	if !rules.IsLondon || rules.IsGlamsterdam {
+		return planBlock{}
+	}
+	policy := newTransitionChainPolicy(evm.ChainConfig())
+	if policy.shouldForceGasBailout() {
+		return planBlock{}
+	}
+	if rules.IsPrague && vm2.FloorDataGas(nil) > params.TxGas {
+		return planBlock{}
+	}
+	blockCtx := evm.Context()
+	b := planBlock{ok: true, noBaseFee: cfg.NoBaseFee, baseFee: blockCtx.BaseFee,
+		tipTo: policy.priorityFeeRecipient(blockCtx.Coinbase)}
+	if rules.IsEip1559FeeCollector {
+		b.burn, b.burnTo = true, evm.ChainConfig().Eip1559FeeCollector
+	}
+	return b
 }
 
 // creditFeeTo is StateTransition.creditFee without a StateTransition.
