@@ -18,6 +18,11 @@ package state
 
 import (
 	"bytes"
+	"os"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -164,7 +169,26 @@ func (l *StateWriteLog) NeedsStore() bool { return len(l.creates) > 0 }
 
 // Replay makes the recorded calls on w, in order.
 func (l *StateWriteLog) Replay(w StateWriter) error {
-	for _, op := range l.ops {
+	return l.replayOps(w, l.ops)
+}
+
+// opAddr is the address op is a call for.
+func (l *StateWriteLog) opAddr(op stateWriteOp) types.Address {
+	switch op.kind {
+	case opUpdateAccount, opDeleteAccount:
+		return l.accts[op.idx].addr
+	case opUpdateCode:
+		return l.codes[op.idx].addr
+	case opWriteStorage:
+		return l.slots[op.idx].addr
+	default:
+		return l.creates[op.idx]
+	}
+}
+
+// replayOps makes the recorded calls ops (a part of l.ops) on w, in order.
+func (l *StateWriteLog) replayOps(w StateWriter, ops []stateWriteOp) error {
+	for _, op := range ops {
 		var err error
 		switch op.kind {
 		case opUpdateAccount, opDeleteAccount:
@@ -242,20 +266,75 @@ type PreparedStateWrite struct {
 	acct, stor []ChangeSetRow
 	nAccts     int
 	nSlots     int
+	// Commit and Encode split the preparation (observability): CommitBlock
+	// into the log, then the rows and changesets built from it; Shards is
+	// how many parts built them (1: serial).
+	Commit, Encode time.Duration
+	Shards         int
 }
+
+// prepShards is N42_LAG_WRITE_PREP_SHARDS: with k > 1, PrepareStateWrite
+// builds the plain rows and changesets from the CommitBlock log in up to k
+// parts at once, each a run of whole addresses in the log's (sorted) order,
+// and joins them in that order: the same rows in the same order, the same
+// changeset rows. Default 0 (off): one serial pass, as before.
+var prepShards = parsePrepShards(os.Getenv("N42_LAG_WRITE_PREP_SHARDS"))
+
+func parsePrepShards(v string) int {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 2 {
+		return 0
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
+}
+
+// SetPrepShardsForTest sets N42_LAG_WRITE_PREP_SHARDS and the fewest calls
+// a part takes (minOps <= 0 keeps it), and returns the restore.
+func SetPrepShardsForTest(n, minOps int) func() {
+	prev, prevMin := prepShards, prepShardMinOps
+	prepShards = n
+	if minOps > 0 {
+		prepShardMinOps = minOps
+	}
+	return func() { prepShards, prepShardMinOps = prev, prevMin }
+}
+
+// PrepShards returns N42_LAG_WRITE_PREP_SHARDS (0: off).
+func PrepShards() int { return prepShards }
+
+// preparedSharded counts the preparations built in parts.
+var preparedSharded atomic.Uint64
+
+// PreparedShardedWrites returns how many state writes were prepared in
+// parts (since start).
+func PreparedShardedWrites() uint64 { return preparedSharded.Load() }
+
+// prepShardMinOps is the fewest calls a part takes: below it the serial
+// pass is cheaper than the goroutines.
+var prepShardMinOps = 4096
 
 // PrepareStateWrite runs ibs.CommitBlock against a StateWriteLog and, when
 // no call needs the store and the history index is not written per block,
 // produces the plain rows and the encoded changesets of block number. It
 // owns ibs while it runs, as the write would.
 func PrepareStateWrite(ibs *IntraBlockState, rules *params.Rules, number uint64) (*PreparedStateWrite, error) {
+	t0 := time.Now()
 	log := &StateWriteLog{}
 	if err := ibs.CommitBlock(rules, log); err != nil {
 		return nil, err
 	}
-	p := &PreparedStateWrite{log: log}
+	p := &PreparedStateWrite{log: log, Shards: 1}
+	p.Commit = time.Since(t0)
 	if number == 0 || !(HistoryIndexDisabled() || HistoryIndexDeferred()) {
 		return p, nil
+	}
+	t1 := time.Now()
+	defer func() { p.Encode = time.Since(t1) }()
+	if parts := log.shardOps(prepShards, prepShardMinOps); len(parts) > 1 {
+		return p, p.encodeShards(log, parts, number)
 	}
 	pw := &PlainStateWriter{db: &p.rows, csw: NewChangeSetWriterPlain(nil, number)}
 	cw := &createCheckWriter{PlainStateWriter: pw, rows: &p.rows}
@@ -276,6 +355,120 @@ func PrepareStateWrite(ibs *IntraBlockState, rules *params.Rules, number uint64)
 		p.log = nil
 	}
 	return p, nil
+}
+
+// shardOps splits l.ops into at most k runs of at least minOps calls,
+// each ending at an address boundary, or returns nil (one serial pass):
+// k < 2, too few calls, or calls of one address not contiguous (the log's
+// addresses must not decrease, which CommitBlock's sorted walk gives).
+func (l *StateWriteLog) shardOps(k, minOps int) [][]stateWriteOp {
+	n := len(l.ops)
+	if k < 2 || n < 2*minOps {
+		return nil
+	}
+	if k > n/minOps {
+		k = n / minOps
+	}
+	var prev types.Address
+	for i, op := range l.ops {
+		a := l.opAddr(op)
+		if i > 0 && bytes.Compare(a[:], prev[:]) < 0 {
+			return nil
+		}
+		prev = a
+	}
+	parts := make([][]stateWriteOp, 0, k)
+	start := 0
+	for s := 1; s < k && start < n; s++ {
+		cut := start + (n-start)/(k-s+1)
+		if cut <= start {
+			cut = start + 1
+		}
+		// Move the cut past the calls of the address before it.
+		for cut < n && l.opAddr(l.ops[cut]) == l.opAddr(l.ops[cut-1]) {
+			cut++
+		}
+		if cut >= n {
+			break
+		}
+		parts = append(parts, l.ops[start:cut])
+		start = cut
+	}
+	parts = append(parts, l.ops[start:])
+	if len(parts) < 2 {
+		return nil
+	}
+	return parts
+}
+
+// prepPart is one part's rows and changesets.
+type prepPart struct {
+	rows        stateRows
+	acct, stor  []ChangeSetRow
+	nAccts      int
+	nSlots      int
+	wroteBefore bool
+	err         error
+}
+
+// encodeShards builds p's rows and changesets from log's calls in parts,
+// one goroutine each, and joins them in order. Every address's calls are in
+// one part, so a part's CreateContract check sees every earlier Storage row
+// of its address, and the parts' changesets are disjoint runs of the sorted
+// whole.
+func (p *PreparedStateWrite) encodeShards(log *StateWriteLog, parts [][]stateWriteOp, number uint64) error {
+	p.Shards = len(parts)
+	out := make([]prepPart, len(parts))
+	var wg sync.WaitGroup
+	for i := range parts {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := &out[i]
+			pw := &PlainStateWriter{db: &r.rows, csw: NewChangeSetWriterPlain(nil, number)}
+			cw := &createCheckWriter{PlainStateWriter: pw, rows: &r.rows}
+			if r.err = log.replayOps(cw, parts[i]); r.err != nil {
+				return
+			}
+			if r.wroteBefore = cw.wroteBefore; r.wroteBefore {
+				return
+			}
+			r.acct, r.stor, r.err = pw.csw.EncodeChangeSets()
+			r.nAccts, r.nSlots = pw.csw.ChangedCounts()
+		}(i)
+	}
+	wg.Wait()
+	nRows, nAcct, nStor := 0, 0, 0
+	for i := range out {
+		if out[i].err != nil {
+			return out[i].err
+		}
+		if out[i].wroteBefore {
+			// Replayed in the transaction, as the serial pass would.
+			return nil
+		}
+		nRows += len(out[i].rows.rows)
+		nAcct += len(out[i].acct)
+		nStor += len(out[i].stor)
+	}
+	p.rows.rows = make([]stateRow, 0, nRows)
+	p.acct = make([]ChangeSetRow, 0, nAcct)
+	if nStor > 0 {
+		p.stor = make([]ChangeSetRow, 0, nStor)
+	}
+	for i := range out {
+		p.rows.rows = append(p.rows.rows, out[i].rows.rows...)
+		p.acct = append(p.acct, out[i].acct...)
+		p.stor = append(p.stor, out[i].stor...)
+		p.nAccts += out[i].nAccts
+		p.nSlots += out[i].nSlots
+	}
+	p.fast = true
+	if !log.NeedsStore() {
+		p.log = nil
+	}
+	preparedSharded.Add(1)
+	return nil
 }
 
 // createCheckWriter is the prepared PlainStateWriter: it notes a
