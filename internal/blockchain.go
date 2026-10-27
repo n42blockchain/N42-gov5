@@ -2595,7 +2595,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				if parentHdr == nil {
 					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], hdr.Number.Uint64())
 				}
-				if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parentHdr); err != nil {
+				if err := bc.checkDeferredHeaderLag(tx, hdr, parentHdr); err != nil {
 					if errors.Is(err, ErrDeferredResultUnknown) {
 						// The parent is stored but not applied here yet: queue
 						// and retry after it lands, like a missing ancestor.
@@ -2824,7 +2824,10 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			if lag != nil && lag.handed {
 				// write above is the hand-off to the ordered writer;
 				// handWait is its wait for the previous block's write.
-				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()))
+				// handQ: the writes pending when the hand-off began
+				// (N42_LAG_WRITE_QUEUE lets up to K-1 stay pending).
+				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()),
+					"handQ", bc.lagWrite.lastDepth.Load())
 			}
 			fields = append(fields, bc.lagPipeLogFields()...)
 			fields = append(fields, senderSrcLogFields()...)

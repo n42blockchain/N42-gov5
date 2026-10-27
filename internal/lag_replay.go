@@ -46,7 +46,13 @@ func (bc *BlockChain) lagStoredApplied(hash types.Hash, number uint64) bool {
 	if !bc.qmdbEnabled {
 		return true
 	}
-	return bc.lagAppliedIs(hash, number) || bc.HasAppliedBlock(hash, number)
+	if bc.lagAppliedIs(hash, number) {
+		return true
+	}
+	if j := bc.lagWritePending(hash); j != nil && j.number == number {
+		return true // applied, its write queued behind the head's (N42_LAG_WRITE_QUEUE)
+	}
+	return bc.HasAppliedBlock(hash, number)
 }
 
 // lagStoredUnappliedAncestors returns, lowest first, the stored blocks
