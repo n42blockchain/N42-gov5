@@ -859,6 +859,9 @@ func (r *QMDBRootComputer) ComputeRoot(
 		label = l
 	}
 	r.noteMutationLocked(label)
+	if fn := computeRootHeldForTest.Load(); fn != nil {
+		(*fn)()
+	}
 	tOps := time.Now()
 	// An op with a nil Value is a delete (ApplyOps' convention); every
 	// live value here is non-empty (an encoded account or a 32-byte word).
@@ -930,6 +933,22 @@ func (r *QMDBRootComputer) ComputeRoot(
 			"coldReads", dCold, "residentHits", dHits, "evictLag", r.evictLag.K)
 	}
 	return root, nil
+}
+
+// computeRootHeldForTest, when set, runs inside ComputeRoot with the
+// readers held exclusively, after the root's label is noted (tests: a slow
+// tree apply that every reader waits behind).
+var computeRootHeldForTest atomic.Pointer[func()]
+
+// SetComputeRootHeldForTest sets the hook and returns the restore.
+func SetComputeRootHeldForTest(fn func()) func() {
+	prev := computeRootHeldForTest.Load()
+	if fn == nil {
+		computeRootHeldForTest.Store(nil)
+	} else {
+		computeRootHeldForTest.Store(&fn)
+	}
+	return func() { computeRootHeldForTest.Store(prev) }
 }
 
 // qmdbSingleFoldMatches/qmdbSingleFoldMismatches (S58, docs/QS_BLOCK_TIME_BUDGET.md

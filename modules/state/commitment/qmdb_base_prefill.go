@@ -328,3 +328,33 @@ func (s *LookupSource) SetPrefill(pf *BasePrefill) *LookupSource {
 	s.prefill = pf
 	return s
 }
+
+// PrefillSlot is a base prefill published after its readers were built
+// (the ahead run's N42_AHEAD_PREFILL_NOWAIT claim): sources on the slot read
+// through the tree until a prefill is set, and through it from then on. A
+// set prefill satisfies SetPrefill's contract for every reader on the slot.
+type PrefillSlot struct {
+	pf atomic.Pointer[BasePrefill]
+}
+
+// Set publishes pf to the slot's sources.
+func (s *PrefillSlot) Set(pf *BasePrefill) {
+	if s != nil {
+		s.pf.Store(pf)
+	}
+}
+
+// Load returns the published prefill, or nil.
+func (s *PrefillSlot) Load() *BasePrefill {
+	if s == nil {
+		return nil
+	}
+	return s.pf.Load()
+}
+
+// SetPrefillSlot makes s answer from slot's prefill once one is published
+// (a prefill set with SetPrefill is consulted first). Returns s.
+func (s *LookupSource) SetPrefillSlot(slot *PrefillSlot) *LookupSource {
+	s.slot = slot
+	return s
+}
