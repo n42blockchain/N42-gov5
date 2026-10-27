@@ -793,6 +793,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		if dPrep > 0 {
 			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
+			if prepared != nil {
+				// prep's split: CommitBlock into the log, then the rows and
+				// changesets (in prepShards parts, N42_LAG_WRITE_PREP_SHARDS).
+				fields = append(fields, "prepCommit", prepared.Commit, "prepEncode", prepared.Encode, "prepShards", prepared.Shards)
+			}
 		}
 		if dFrames > 0 {
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
