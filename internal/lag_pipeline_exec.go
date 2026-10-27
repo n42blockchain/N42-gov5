@@ -418,6 +418,8 @@ func (bc *BlockChain) lagPipeLogFields() []interface{} {
 		"launchAtHook", p.launchAtHook.Load(), "launchAtEnqueue", p.launchAtEnqueue.Load(),
 		"prefillNowait", aheadNoWaitClaims.Load(), "prefillNowaitLanded", aheadNoWaitLanded.Load(),
 		"prefillNowaitFallback", aheadNoWaitFallbacks.Load(),
+		"checkOverlap", overlapQueued.Load(), "checkOverlapPassed", overlapPassed.Load(),
+		"checkOverlapFailed", overlapDropped.Load(), "checkOverlapHeldMs", overlapHeldMs.Load(),
 	}
 }
 
