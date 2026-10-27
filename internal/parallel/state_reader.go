@@ -43,6 +43,8 @@ type ParallelStateReader struct {
 	// next call (see ReuseAccountBuffer).
 	reuseAccount bool
 	accBuf       account.StateAccount
+	// dst, while set, is the account a read decodes into (ReadAccountDataInto).
+	dst *account.StateAccount
 	// slab, when set, holds the encodings the reader records (SetSlab).
 	slab *ValueSlab
 	// ents, when set, remembers the store entries ReadAccountData found
@@ -107,6 +109,10 @@ func (r *ParallelStateReader) ReuseAccountBuffer() { r.reuseAccount = true }
 
 // newAccount returns the account a read decodes into.
 func (r *ParallelStateReader) newAccount() *account.StateAccount {
+	if r.dst != nil {
+		*r.dst = account.StateAccount{}
+		return r.dst
+	}
 	if r.reuseAccount {
 		r.accBuf = account.StateAccount{}
 		return &r.accBuf
@@ -252,6 +258,27 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	acc.Balance.Add(&acc.Balance, delta)
 	r.recordAccountRead(e, key, -1, 0, true, r.slab.encodeAccount(acc), enc, true, hint)
 	return acc, nil
+}
+
+// ReadAccountDataInto is ReadAccountData decoding into dst instead of a new
+// account or the reader's buffer, for a caller that keeps the account in
+// dst anyway: it skips that copy. The account returned is dst, nil when the
+// account is absent, or another account on a rare composing path; dst's
+// contents are unspecified unless it is returned.
+func (r *ParallelStateReader) ReadAccountDataInto(address types.Address, dst *account.StateAccount) (*account.StateAccount, error) {
+	r.dst = dst
+	acc, err := r.ReadAccountData(address)
+	r.dst = nil
+	return acc, err
+}
+
+// ReadAccountIgnoringBalanceInto is ReadAccountIgnoringBalance decoding
+// into dst, as ReadAccountDataInto.
+func (r *ParallelStateReader) ReadAccountIgnoringBalanceInto(address types.Address, dst *account.StateAccount) (*account.StateAccount, error) {
+	r.dst = dst
+	acc, err := r.ReadAccountIgnoringBalance(address)
+	r.dst = nil
+	return acc, err
 }
 
 // ReadAccountIgnoringBalance is ReadAccountData for a caller whose outputs
