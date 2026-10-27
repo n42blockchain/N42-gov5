@@ -137,7 +137,7 @@ func TestApplyResetForceWipeDeletes(t *testing.T) {
 	if err := applyReset(ctx, db, st, true); err != nil {
 		t.Fatalf("applyReset(wipe): %v", err)
 	}
-	raw, got, _, _, _, err := readDatadir(ctx, db)
+	raw, got, _, _, _, _, err := readDatadir(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +169,17 @@ func TestPrintLineAndCommittedQCCanonical(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, got, c, h, qcCanonical, err := readDatadir(ctx, db)
+	_, got, c, h, qcCanonical, qcAhead, err := readDatadir(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if qcCanonical {
-		t.Fatal("a committed QC whose block is not canonical was accepted as a floor")
+		t.Fatal("a committed QC whose block is not canonical was reported canonical")
+	}
+	// R52: the committed QC is the canonical head's child -- committed, but
+	// its lagged write was not durable at shutdown. Its floor is kept.
+	if !qcAhead {
+		t.Fatal("a committed QC one block above the canonical head on its lineage was not kept as a floor")
 	}
 	line := printLine("/d/node0", c, h, got)
 	want := "datadir=/d/node0 committed_height=14131246 committed_hash=" + parent.Hash().Hex() +
@@ -188,13 +193,45 @@ func TestPrintLineAndCommittedQCCanonical(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, qcCanonical, err = readDatadir(ctx, db); err != nil || !qcCanonical {
+	if _, _, _, _, qcCanonical, _, err = readDatadir(ctx, db); err != nil || !qcCanonical {
 		t.Fatalf("canonical committed QC rejected: %v %v", qcCanonical, err)
 	}
 	empty := printLine("/d/x", chainPoint{}, chainPoint{}, nil)
 	if empty != "datadir=/d/x committed_height=- committed_hash="+(types.Hash{}).Hex()+
 		" canonical_height=- canonical_hash="+(types.Hash{}).Hex()+" hs_committed_qc_view=0 hs_committed_qc_hash="+(types.Hash{}).Hex() {
 		t.Fatalf("empty print line: %s", empty)
+	}
+}
+
+// TestCommittedQCOnAnotherBranchIsRefused: a committed QC above the
+// canonical head whose lineage does not reach it (a sibling of the head's
+// child chain) is neither canonical nor ahead, so no floor is kept.
+func TestCommittedQCOnAnotherBranchIsRefused(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	ctx := context.Background()
+	head := &block.Header{Number: uint256.NewInt(100), Difficulty: uint256.NewInt(0), Extra: []byte{1}}
+	sibling := &block.Header{Number: uint256.NewInt(100), Difficulty: uint256.NewInt(0), Extra: []byte{2}}
+	child := &block.Header{ParentHash: sibling.Hash(), Number: uint256.NewInt(101), Difficulty: uint256.NewInt(0)}
+	st := s131State()
+	st.LastCommittedQC.BlockHash = child.Hash()
+	if err := db.Update(ctx, func(tx kv.RwTx) error {
+		rawdb.WriteHeader(tx, head)
+		rawdb.WriteHeader(tx, sibling)
+		rawdb.WriteHeader(tx, child)
+		if err := rawdb.WriteCanonicalHash(tx, head.Hash(), 100); err != nil {
+			return err
+		}
+		rawdb.WriteHeadBlockHash(tx, head.Hash())
+		return hotstuff.SaveConsensusState(tx, st)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _, qcCanonical, qcAhead, err := readDatadir(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qcCanonical || qcAhead {
+		t.Fatalf("committed QC on another branch kept as a floor: canonical=%v ahead=%v", qcCanonical, qcAhead)
 	}
 }
 
