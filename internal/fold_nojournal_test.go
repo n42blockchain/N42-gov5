@@ -147,7 +147,7 @@ func runNJImport(t *testing.T, db kv.RwDB, fx *transferBlockFixture, on bool) nj
 // on and requires the same state after every step, the same requests,
 // receipts, root, root dirty set, post-state and committed rows, for the
 // serial and the sharded fold, the fast finalize on and off, the system
-// calls finalized per call or once.
+// calls finalized per call or once, N42_FINALIZE_FOLD_KEYS off and on.
 func TestFoldNoJournalImportMatches(t *testing.T) {
 	nTxs, nSenders, nRecips := 12000, 3000, 2500
 	if testing.Short() {
@@ -170,18 +170,29 @@ func TestFoldNoJournalImportMatches(t *testing.T) {
 					defer state.SetFinalizeFastForTest(fast)()
 					defer state.SetSyscallFinalizeOnceForTest(once)()
 					want := runNJImport(t, db, fx, false)
-					got := runNJImport(t, db, fx, true)
-					// Before the block end only stateObjectsDirty differs: the
-					// no-journal fold put its written accounts there already.
-					require.Equal(t, njNoDirty(want.afterRun), njNoDirty(got.afterRun), "after the ahead run")
-					require.Equal(t, want.receipts, got.receipts, "receipts")
-					require.Equal(t, want.requests, got.requests, "requests")
-					require.Equal(t, want.afterEnd, got.afterEnd, "after the block end")
-					require.Equal(t, want.afterRewards, got.afterRewards, "after the rewards")
-					require.Equal(t, want.rootRows, got.rootRows, "root dirty set")
-					require.Equal(t, want.root, got.root, "root")
-					require.Equal(t, want.post, got.post, "post-state")
-					require.Equal(t, want.rows, got.rows, "committed rows")
+					// N42_FINALIZE_FOLD_KEYS off and on (each use checked
+					// against the maps): the same outcome.
+					for _, keys := range []bool{false, true} {
+						restore := state.SetFinalizeFoldKeysForTest(keys)
+						defer state.SetFoldKeysVerifyForTest(keys)()
+						used, _ := state.FoldKeysCounts()
+						got := runNJImport(t, db, fx, true)
+						restore()
+						if now, _ := state.FoldKeysCounts(); keys && now == used {
+							t.Fatal("the root walk did not take the fold keys")
+						}
+						// Before the block end only stateObjectsDirty differs: the
+						// no-journal fold put its written accounts there already.
+						require.Equal(t, njNoDirty(want.afterRun), njNoDirty(got.afterRun), "after the ahead run")
+						require.Equal(t, want.receipts, got.receipts, "receipts")
+						require.Equal(t, want.requests, got.requests, "requests")
+						require.Equal(t, want.afterEnd, got.afterEnd, "after the block end")
+						require.Equal(t, want.afterRewards, got.afterRewards, "after the rewards")
+						require.Equal(t, want.rootRows, got.rootRows, "root dirty set")
+						require.Equal(t, want.root, got.root, "root")
+						require.Equal(t, want.post, got.post, "post-state")
+						require.Equal(t, want.rows, got.rows, "committed rows")
+					}
 				})
 			}
 		}
