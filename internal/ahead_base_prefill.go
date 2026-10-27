@@ -346,6 +346,9 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 			return false
 		}
 	}
+	if fn := aheadBaseBeforeFillForTest.Load(); fn != nil {
+		(*fn)(n)
+	}
 	tFill := time.Now()
 	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)
 	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
@@ -362,7 +365,9 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	// [at, parent], which the child's layers account for.
 	states, ok := rc.AppliedSince(st0.Gen)
 	if !ok || !aheadBaseMovedOK(chain, st0.Number, states) {
-		if st1 := rc.AppliedState(); st1.Labelled && st1.Number > chain.top {
+		// An aborted fill (a late one whose run already ended) may see its
+		// own block's root: not worth a warning.
+		if st1 := rc.AppliedState(); st1.Labelled && st1.Number > chain.top && !abort() {
 			log.Warn("ahead base prefill: the tree passed the child's parent while it read",
 				"number", n, "treeAt", st1.Number)
 		}
@@ -371,6 +376,10 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	}
 	ab.pf = pf
 }
+
+// aheadBaseBeforeFillForTest runs on block n's prefill once the tree
+// reached the child's chain, before the fill reads (tests: a slow fill).
+var aheadBaseBeforeFillForTest atomic.Pointer[func(n uint64)]
 
 // aheadKeysFree keeps the prefills' per-goroutine key lists (pointer-free,
 // written before they are read): two blocks' worth.
