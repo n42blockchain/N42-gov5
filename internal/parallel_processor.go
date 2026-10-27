@@ -617,7 +617,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// transactions (ahead_prep.go).
 	//
 	// The run owns its preparation: a claimed one (adopted or not) is no
-	// longer read by its base prefill (the claim waited for it), and the
+	// longer read by its base prefill (the claim waited for it, or for its
+	// keys with N42_AHEAD_PREFILL_NOWAIT), and the
 	// transaction array goes back for reuse once the run returns
 	// (preparedSet.release).
 	var prepared *preparedSet

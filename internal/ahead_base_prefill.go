@@ -140,6 +140,18 @@ type aheadBase struct {
 	// claimWait: the claim's wait for the prefill to finish (set by the
 	// claimer).
 	claimWait time.Duration
+
+	// early: the transactions' keys are taken before the tree wait
+	// (N42_AHEAD_PREFILL_NOWAIT, ahead_prefill_nowait.go); keysDone closes
+	// once the prefill no longer reads the preparation.
+	early    bool
+	keysDone chan struct{}
+	keysOnce sync.Once
+}
+
+// releasePrep records that the prefill no longer reads the preparation.
+func (ab *aheadBase) releasePrep() {
+	ab.keysOnce.Do(func() { close(ab.keysDone) })
 }
 
 // halt ends a prefill's wait for the tree, stops a fill still reading at
@@ -204,7 +216,7 @@ func (bc *BlockChain) aheadBaseUsable() bool {
 // abort reports that the block will not use it: the fill stops at the next
 // key.
 func (bc *BlockChain) startAheadBase(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) *aheadBase {
-	ab := &aheadBase{stop: make(chan struct{}), done: make(chan struct{})}
+	ab := &aheadBase{stop: make(chan struct{}), done: make(chan struct{}), keysDone: make(chan struct{}), early: aheadPrefillNoWait}
 	go bc.runAheadBase(ab, hdr, txs, prepared, sp, abort)
 	return ab
 }
@@ -281,6 +293,7 @@ func aheadBaseMovedOK(c aheadBaseChain, at uint64, states []commitment.QMDBAppli
 
 func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) {
 	defer close(ab.done)
+	defer ab.releasePrep()
 	defer func() {
 		if r := recover(); r != nil {
 			ab.pf, ab.skip = nil, "panic"
@@ -298,6 +311,22 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 		return
 	}
 	chain := bc.aheadBaseChainOf(hdr, aheadBaseDepth)
+
+	// A claim that does not wait for the fill (ab.early) waits only until
+	// the prefill stopped reading the preparation, which the run then
+	// owns: the transactions' keys are taken first.
+	var keys [][]qmdb.Hash
+	if ab.early {
+		var wait func()
+		keys, wait = bc.aheadBaseTxKeys(txs, prepared)
+		wait()
+		ab.releasePrep()
+		defer func() {
+			if keys != nil {
+				releaseAheadBaseKeys(keys)
+			}
+		}()
+	}
 
 	// Wait for the tree to hold a block of the chain within the depth.
 	t0 := time.Now()
@@ -350,11 +379,16 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 		(*fn)(n)
 	}
 	tFill := time.Now()
-	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)
+	if keys != nil {
+		keys[len(keys)-1] = bc.aheadBaseExtraKeys(hdr, sp)
+	} else {
+		keys = bc.aheadBaseKeys(hdr, txs, prepared, sp)
+	}
 	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
 	// The fill copied what it read and its workers are done: nothing reads
 	// the key lists any more.
 	releaseAheadBaseKeys(keys)
+	keys = nil
 	ab.took = time.Since(tFill)
 	if err != nil {
 		ab.skip = "fill: " + err.Error()
@@ -400,6 +434,17 @@ func releaseAheadBaseKeys(keys [][]qmdb.Hash) {
 // transaction's sender and recipient come from its prepared message (the
 // preparation's, read-only here), else from the transaction.
 func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor) [][]qmdb.Hash {
+	keys, wait := bc.aheadBaseTxKeys(txs, prepared)
+	extra := bc.aheadBaseExtraKeys(hdr, sp)
+	wait()
+	keys[len(keys)-1] = extra
+	return keys
+}
+
+// aheadBaseTxKeys starts taking the transactions' keys of aheadBaseKeys,
+// one slice per goroutine, and returns them with the wait for the
+// goroutines; the last slice is left for the extra keys.
+func (bc *BlockChain) aheadBaseTxKeys(txs []*transaction.Transaction, prepared *preparedSet) ([][]qmdb.Hash, func()) {
 	workers := aheadPrepWorkers()
 	keys := make([][]qmdb.Hash, workers+1)
 	per := (len(txs) + workers - 1) / workers
@@ -444,14 +489,17 @@ func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transa
 			keys[w] = ks
 		}(w, lo, hi)
 	}
+	return keys, wg.Wait
+}
+
+// aheadBaseExtraKeys returns the fee recipients' keys and those the
+// block-start system calls read.
+func (bc *BlockChain) aheadBaseExtraKeys(hdr *block.Header, sp *StateProcessor) []qmdb.Hash {
 	extra := []qmdb.Hash{qmdb.Hash(commitment.AccountKeyHash(hdr.Coinbase))}
 	for _, a := range deferredFeeRecipients(sp.config, hdr) {
 		extra = append(extra, qmdb.Hash(commitment.AccountKeyHash(a)))
 	}
-	extra = append(extra, bc.blockStartKeys(hdr, sp)...)
-	wg.Wait()
-	keys[workers] = extra
-	return keys
+	return append(extra, bc.blockStartKeys(hdr, sp)...)
 }
 
 // blockStartKeys runs the block-start system calls on a throwaway state over
