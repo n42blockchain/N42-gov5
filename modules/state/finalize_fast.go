@@ -219,7 +219,7 @@ func (s *IntraBlockState) dirtyEntryOf(addr types.Address, obj *stateObject, acc
 // and keeps its chunk's detached and remaining addresses in pending's
 // order; the chunks are then concatenated. Same result as the serial
 // split, without its second balanceInc lookup and appends per credit.
-func (s *IntraBlockState) detachPendingCreditsFast(pending []types.Address, seeded *AccountPrefetch, workers int) (pendingCredits, []types.Address) {
+func (s *IntraBlockState) detachPendingCreditsFast(pending []types.Address, bis []*BalanceIncrease, seeded *AccountPrefetch, workers int) (pendingCredits, []types.Address) {
 	per := (len(pending) + workers - 1) / workers
 	type chunk struct {
 		d    pendingCredits
@@ -240,7 +240,11 @@ func (s *IntraBlockState) detachPendingCreditsFast(pending []types.Address, seed
 			ch.d.bis = make([]*BalanceIncrease, 0, hi-lo)
 			for i := lo; i < hi; i++ {
 				a := &slab[i-lo]
-				bi := s.detachedCreditInto(pending[i], seeded, a)
+				var known *BalanceIncrease
+				if bis != nil {
+					known = bis[i]
+				}
+				bi := s.detachedCreditInto(pending[i], known, seeded, a)
 				if bi == nil {
 					ch.rest = append(ch.rest, pending[i])
 					continue
@@ -277,8 +281,8 @@ func (s *IntraBlockState) detachPendingCreditsFast(pending []types.Address, seed
 
 // detachedCreditInto is detachedCredit building the account in a and
 // returning the credit's balance increase (nil: addr must be materialised;
-// a is then unused).
-func (s *IntraBlockState) detachedCreditInto(addr types.Address, seeded *AccountPrefetch, a *account.StateAccount) *BalanceIncrease {
+// a is then unused). known, when set, is addr's balanceInc entry, pending.
+func (s *IntraBlockState) detachedCreditInto(addr types.Address, known *BalanceIncrease, seeded *AccountPrefetch, a *account.StateAccount) *BalanceIncrease {
 	if s.lastObj != nil && s.lastAddr == addr {
 		return nil
 	}
@@ -291,9 +295,12 @@ func (s *IntraBlockState) detachedCreditInto(addr types.Address, seeded *Account
 	if _, ok := s.stateObjectsDirty[addr]; ok {
 		return nil
 	}
-	bi, ok := s.balanceInc[addr]
-	if !ok || bi == nil || bi.transferred {
-		return nil
+	bi := known
+	if bi == nil {
+		var ok bool
+		if bi, ok = s.balanceInc[addr]; !ok || bi == nil || bi.transferred {
+			return nil
+		}
 	}
 	base, ok := seeded.lookupSeeded(addr)
 	if !ok {

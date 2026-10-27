@@ -83,8 +83,10 @@ func (d pendingCredits) release() {
 // can take without materialising -- not loaded, not known absent, not in
 // the finalized dirty set, prefetched -- with their accounts (marked
 // detached until the walk has merged the journal's dirties), and the rest, which
-// the caller materialises as before. Both keep pending's order.
-func (s *IntraBlockState) detachPendingCredits(pending []types.Address) (pendingCredits, []types.Address) {
+// the caller materialises as before. Both keep pending's order. bis, when
+// set, holds each pending credit's balance increase (the fold keys'), so
+// the fast split skips its lookup.
+func (s *IntraBlockState) detachPendingCredits(pending []types.Address, bis []*BalanceIncrease) (pendingCredits, []types.Address) {
 	if !s.detachPending || len(pending) < detachMinPending || s.accountPrefetch == nil ||
 		(s.accountPrefetch.accts == nil && s.accountPrefetch.known == nil) || s.stateReader != StateReader(s.accountPrefetch) ||
 		(s.snap != nil && s.snap.CanWrite()) {
@@ -103,7 +105,7 @@ func (s *IntraBlockState) detachPendingCredits(pending []types.Address) (pending
 		workers = 1
 	}
 	if finalizeFastOn {
-		return s.detachPendingCreditsFast(pending, seeded, workers)
+		return s.detachPendingCreditsFast(pending, bis, seeded, workers)
 	}
 	// Read-only over the state's maps: nothing else touches this state
 	// while its root is computed.

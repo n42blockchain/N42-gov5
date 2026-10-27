@@ -45,15 +45,15 @@ func CapturePostState(sdb *IntraBlockState) *PostState {
 	for addr := range sdb.balanceInc {
 		if bi := sdb.balanceInc[addr]; bi != nil && !bi.transferred {
 			if _, loaded := sdb.stateObjects[addr]; loaded {
-				sdb.stateObjectsDirty[addr] = struct{}{}
+				sdb.markDirty(addr)
 			}
 		}
 	}
 	for addr := range sdb.journal.dirties {
-		sdb.stateObjectsDirty[addr] = struct{}{}
+		sdb.markDirty(addr)
 	}
 	sdb.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
-		sdb.stateObjectsDirty[addr] = struct{}{}
+		sdb.markDirty(addr)
 	})
 	for addr := range sdb.stateObjectsDirty {
 		obj := sdb.stateObjects[addr]

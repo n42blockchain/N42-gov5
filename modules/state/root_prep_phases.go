@@ -10,7 +10,8 @@ import "time"
 // span from IntermediateRoot's entry to the post-state hook (the lag
 // pipeline launches the child there) and the root computer after it.
 //
-//	Pending  pendingIncreaseAddrs (the unfolded credits, sorted)
+//	Pending  pendingIncreaseAddrs (the unfolded credits, sorted), or the
+//	         fold keys' merge
 //	Detach   detachPendingCredits (P4b, parallel prefetch reads)
 //	Mat      materialising the credits that were not detached
 //	Merge    the journal dirty merge into stateObjectsDirty
@@ -24,6 +25,10 @@ type RootPrepPhases struct {
 	Pending, Detach, Mat, Merge, Sort, Loop time.Duration
 	Tail, Hook, Compute                     time.Duration
 	Dirty                                   int // dirty objects walked
+	// FoldKeys: 1 when both sorted sets came from the fold's keys, -1 when
+	// the keys were tracked but a set fell back to its map, 0 untracked
+	// (N42_FINALIZE_FOLD_KEYS, finalize_fold_keys.go).
+	FoldKeys int
 }
 
 // LastRootPrepPhases returns the split of this state's most recent root
