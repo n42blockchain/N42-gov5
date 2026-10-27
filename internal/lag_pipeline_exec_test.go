@@ -324,7 +324,11 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 			piped.bc.RememberAvailable(sealed)
 			piped.bc.EnqueueLagImport(sealed)
 		} else {
-			checked, retry, err := piped.bc.CheckDeferredBlock(w)
+			check := piped.bc.CheckDeferredBlock
+			if fn := lagPipeCheckForTest; fn != nil {
+				check = func(b block.IBlock) (bool, bool, error) { return fn(piped.bc, b.(*block.Block)) }
+			}
+			checked, retry, err := check(w)
 			require.True(t, checked)
 			require.False(t, retry)
 			require.NoError(t, err, "availability check of block %d", n)
