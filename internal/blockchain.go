@@ -2828,8 +2828,13 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			fields = append(fields, "publish", time.Duration(lagPublishNanos.Load()))
 			if lag != nil && lag.handed {
 				// write above is the hand-off to the ordered writer;
-				// handWait is its wait for the previous block's write.
-				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()))
+				// handWait is its wait for the previous block's write; hs*
+				// split the hand-off's serial part (lag_writer.go), wTail the
+				// previous writer's tail after its write.
+				w := &bc.lagWrite
+				fields = append(fields, "handed", true, "handWait", time.Duration(w.lastWait.Load()),
+					"hsWake", time.Duration(w.lastWake.Load()), "hsSettle", time.Duration(w.lastSettle.Load()),
+					"hsCapture", time.Duration(w.lastCapture.Load()), "wTail", time.Duration(w.lastTail.Load()))
 			}
 			fields = append(fields, bc.lagPipeLogFields()...)
 			fields = append(fields, senderSrcLogFields()...)
