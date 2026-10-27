@@ -119,6 +119,12 @@ type lagWriter struct {
 	failed   atomic.Uint64
 	overlap  atomic.Uint64 // imports that ran while their parent's write was in flight
 	lastWait atomic.Int64  // the last hand-off's wait for the previous write
+	// The hand-off's split (observability only), all of the last hand-off:
+	// wake, from the previous write's done to its join seeing it; settle,
+	// the join's adopt and eviction of the flushed window; capture, the
+	// block's QMDB rows, undo and roots taken after the wait; tail, the
+	// previous writer goroutine's time from its write's end to done.
+	lastWake, lastSettle, lastCapture, lastTail atomic.Int64
 }
 
 // lagWriteJob is one block's durable write.
@@ -157,6 +163,8 @@ type lagWriteJob struct {
 
 	done chan struct{}
 	err  error
+	// doneAt: when done closed (unix nanos, observability only).
+	doneAt atomic.Int64
 }
 
 // lagWritePrepare is N42_LAG_WRITE_PREPARE (default on): the ordered
@@ -413,7 +421,8 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	if err := bc.joinLagWrite(); err != nil {
 		return failed(err)
 	}
-	bc.lagWrite.lastWait.Store(int64(time.Since(tWait)))
+	tCapture := time.Now()
+	bc.lagWrite.lastWait.Store(int64(tCapture.Sub(tWait)))
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
@@ -438,6 +447,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	bc.lagWrite.inflight = j
 	bc.lagWrite.visible.Store(j)
 	bc.lagWrite.handed.Add(1)
+	bc.lagWrite.lastCapture.Store(int64(time.Since(tCapture)))
 	go bc.runLagWrite(j)
 	bc.lagResultReadySoon(j)
 	return nil
@@ -451,6 +461,7 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 	if j.err == nil {
 		_, j.err = bc.writeBlockWithStateJob(j)
 	}
+	tTail := time.Now()
 	if j.ahead != nil {
 		j.ahead.release()
 	}
@@ -463,6 +474,9 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 			"number", j.number, "hash", j.hash, "err", j.err)
 	}
 	bc.lagWriteNotify(j)
+	now := time.Now()
+	bc.lagWrite.lastTail.Store(int64(now.Sub(tTail)))
+	j.doneAt.Store(now.UnixNano())
 	close(j.done)
 }
 
@@ -478,6 +492,10 @@ func (bc *BlockChain) joinLagWrite() error {
 		fn(j.number)
 	}
 	<-j.done
+	tSettle := time.Now()
+	if at := j.doneAt.Load(); at != 0 {
+		bc.lagWrite.lastWake.Store(tSettle.UnixNano() - at)
+	}
 	bc.lagWrite.inflight = nil
 	rc := bc.qmdbRootComputer
 	if j.err != nil {
@@ -486,6 +504,7 @@ func (bc *BlockChain) joinLagWrite() error {
 	}
 	rc.CommitFlushed()
 	rc.EvictFlushed()
+	bc.lagWrite.lastSettle.Store(int64(time.Since(tSettle)))
 	return nil
 }
 
