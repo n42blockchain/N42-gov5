@@ -158,7 +158,7 @@ func (sdb *IntraBlockState) finalizeFoldTouched(policy accountWritePolicy) {
 			continue
 		}
 		finalizeFlags(policy, addr, so)
-		sdb.stateObjectsDirty[addr] = struct{}{}
+		sdb.markDirty(addr)
 		if !so.deleted {
 			so.created = false
 			so.selfdestructed = false

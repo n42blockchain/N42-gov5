@@ -200,6 +200,9 @@ type IntraBlockState struct {
 	foldBIs       []*BalanceIncrease
 	foldTouched   []types.Address
 	foldTouchedBI []*BalanceIncrease
+	// fk is the fold's handover of its keys to the root walk
+	// (finalize_fold_keys.go); nil when not tracked.
+	fk *foldKeys
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
@@ -610,6 +613,7 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.balanceInc = reuseMap(sdb.balanceInc)
 	sdb.biSlab = nil
 	sdb.foldNoJournal = false
+	sdb.fk = nil
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -1018,6 +1022,7 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 				bi = &BalanceIncrease{}
 			}
 			sdb.balanceInc[addr] = bi
+			sdb.noteBalanceIncInsert(addr)
 		}
 		bi.increase.Add(&bi.increase, amount)
 		bi.count++
@@ -1158,6 +1163,7 @@ func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stat
 	}
 	object.data.Balance.Add(&object.data.Balance, &bi.increase)
 	bi.transferred = true
+	sdb.noteTransferFlip()
 	if bi.fold {
 		sdb.noteFoldTouched(addr, bi)
 	}
@@ -1444,7 +1450,7 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 				drop = append(drop, addr)
 			}
 			finalizeFlags(policy, addr, so)
-			sdb.stateObjectsDirty[addr] = struct{}{}
+			sdb.markDirty(addr)
 		}
 	} else {
 		sdb.addrScratch = sortedAddressesInto(sdb.addrScratch, sdb.journal.dirties)
@@ -1463,7 +1469,7 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 				return err
 			}
 
-			sdb.stateObjectsDirty[addr] = struct{}{}
+			sdb.markDirty(addr)
 		}
 	}
 	if keepPending {
@@ -1502,7 +1508,7 @@ func (sdb *IntraBlockState) SoftFinalise() {
 		if _, exist := sdb.stateObjects[addr]; !exist {
 			continue
 		}
-		sdb.stateObjectsDirty[addr] = struct{}{}
+		sdb.markDirty(addr)
 	}
 	sdb.promoteWipes()
 	sdb.clearCurrentTxFlags()
@@ -1549,10 +1555,10 @@ func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter S
 	// which can trigger storage reads through the block-witness recorder,
 	// so its order MUST be deterministic.
 	for addr := range sdb.journal.dirties {
-		sdb.stateObjectsDirty[addr] = struct{}{}
+		sdb.markDirty(addr)
 	}
 	sdb.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
-		sdb.stateObjectsDirty[addr] = struct{}{}
+		sdb.markDirty(addr)
 	})
 	if r, ok := stateWriter.(accountWriteReserver); ok {
 		// At most one account write per dirty or wiped object below.
@@ -1762,18 +1768,28 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 
 	rp := &s.rootPrep
 	*rp = RootPrepPhases{Enter: time.Now()}
-	pending := s.pendingIncreaseAddrs()
+	// N42_FINALIZE_FOLD_KEYS: both sorted sets from the fold's keys
+	// (finalize_fold_keys.go), each falling back to its map.
+	var pending []types.Address
+	var pendingBIs []*BalanceIncrease
+	keysPending, keysDirty := false, false
+	if s.fk != nil {
+		pending, pendingBIs, keysPending = s.foldKeysPending()
+	}
+	if !keysPending {
+		pending = s.pendingIncreaseAddrs()
+	}
 	tStep := time.Now()
 	rp.Pending = tStep.Sub(rp.Enter)
 	var detached pendingCredits
 	if !ltEnabled {
-		detached, pending = s.detachPendingCredits(pending)
+		detached, pending = s.detachPendingCredits(pending, pendingBIs)
 	}
 	lastRootCredits.Store(int64(len(detached.addrs))<<32 | int64(len(pending)))
 	rp.Detach, tStep = stepSince(tStep)
 	for _, addr := range pending {
 		s.getStateObject(addr)
-		s.stateObjectsDirty[addr] = struct{}{}
+		s.markDirty(addr)
 	}
 	rp.Mat, tStep = stepSince(tStep)
 	// Merge journal.dirties — Finalize (block rewards) and post-block system
@@ -1784,10 +1800,10 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// dirty set here (fold_nojournal.go), under the same rule.
 	if len(detached.addrs) == 0 {
 		for addr := range s.journal.dirties {
-			s.stateObjectsDirty[addr] = struct{}{}
+			s.markDirty(addr)
 		}
 		s.forEachFoldPending(func(addr types.Address, _ *BalanceIncrease) {
-			s.stateObjectsDirty[addr] = struct{}{}
+			s.markDirty(addr)
 		})
 	} else if finalizeFastOn {
 		// A detached credit is never loaded here (the detach skipped every
@@ -1797,11 +1813,11 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			if bi := s.balanceInc[addr]; bi != nil && bi.detached {
 				continue
 			}
-			s.stateObjectsDirty[addr] = struct{}{}
+			s.markDirty(addr)
 		}
 		s.forEachFoldPending(func(addr types.Address, bi *BalanceIncrease) {
 			if !bi.detached {
-				s.stateObjectsDirty[addr] = struct{}{}
+				s.markDirty(addr)
 			}
 		})
 		detached.release()
@@ -1812,13 +1828,13 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 					continue
 				}
 			}
-			s.stateObjectsDirty[addr] = struct{}{}
+			s.markDirty(addr)
 		}
 		s.forEachFoldPending(func(addr types.Address, bi *BalanceIncrease) {
 			if _, loaded := s.stateObjects[addr]; !loaded && bi.detached {
 				return
 			}
-			s.stateObjectsDirty[addr] = struct{}{}
+			s.markDirty(addr)
 		})
 		detached.release()
 	}
@@ -1838,7 +1854,21 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		originalStorage = make(map[types.Address]map[types.Hash]*uint256.Int)
 	}
 
-	dirtyAddrs := sortedAddresses(s.stateObjectsDirty)
+	var dirtyAddrs []types.Address
+	if s.fk != nil {
+		dirtyAddrs, keysDirty = s.foldKeysDirty()
+		if keysPending && keysDirty {
+			rp.FoldKeys = 1
+			foldKeysUsed.Add(1)
+		} else {
+			rp.FoldKeys = -1
+			foldKeysFallback.Add(1)
+		}
+		s.fk = nil // used once: the walk below changes both maps
+	}
+	if !keysDirty {
+		dirtyAddrs = sortedAddresses(s.stateObjectsDirty)
+	}
 	rp.Dirty = len(dirtyAddrs)
 	rp.Sort, tStep = stepSince(tStep)
 	if finalizeFastOn && !ltEnabled && len(dirtyAddrs) >= finalizeFastMin {

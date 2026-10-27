@@ -229,6 +229,7 @@ type (
 func (ch createObjectChange) revert(s *IntraBlockState) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
+	s.noteFoldKeyDelete()
 	s.lastObj = nil
 	// storageWipes is no longer implicitly managed here — see
 	// storageWipeAddChange. If this createObjectChange also added a fresh
@@ -296,6 +297,7 @@ func (ch balanceIncrease) revert(s *IntraBlockState) {
 		bi.count--
 		if bi.count == 0 {
 			delete(s.balanceInc, *ch.account)
+			s.noteFoldKeyDelete()
 		}
 	}
 }
@@ -310,6 +312,7 @@ func (ch balanceIncreaseTransfer) dirtied() *types.Address {
 
 func (ch balanceIncreaseTransfer) revert(s *IntraBlockState) {
 	ch.bi.transferred = false
+	s.noteTransferFlip()
 	// Undo the fold itself, not just the flag. setStateObject adds the
 	// pending increase into the object's balance; for the createObject
 	// path the object is removed by its own journal entry, but an object

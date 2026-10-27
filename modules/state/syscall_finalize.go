@@ -137,7 +137,7 @@ func (sdb *IntraBlockState) finalizeNoopParallel(policy accountWritePolicy, keep
 	for i, addr := range addrs {
 		switch out[i] {
 		case noopDirty:
-			sdb.stateObjectsDirty[addr] = struct{}{}
+			sdb.markDirty(addr)
 			if keepPending {
 				drop = append(drop, addr)
 			}
@@ -175,7 +175,7 @@ func (s *IntraBlockState) FinalizeSharedCaller(chainRules *params.Rules, addr ty
 		return
 	}
 	finalizeFlags(policy, addr, so)
-	s.stateObjectsDirty[addr] = struct{}{}
+	s.markDirty(addr)
 	delete(s.journal.dirties, addr)
 	if bi := s.balanceInc[addr]; bi != nil {
 		bi.fold = false
