@@ -1043,8 +1043,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// (state/fold_nojournal.go).
 	foldNJ := state.FoldNoJournalOn() && !lenient && ibs.DetachedPendingCredits()
 	ibs.SetFoldNoJournal(foldNJ)
+	// N42_FINALIZE_FOLD_KEYS: the fold hands its sorted keys to the root
+	// walk (state/finalize_fold_keys.go).
+	if foldNJ {
+		ibs.BeginFoldKeys()
+	}
 	applySplit, err := applyMVSToIBSTimed(executor.MVS(), numTxs, ibs)
 	ibs.SetFoldNoJournal(false)
+	if foldNJ && err == nil {
+		ibs.CaptureFoldKeys()
+	}
 	if err != nil {
 		joinRcpt()
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)

@@ -2819,7 +2819,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				fields = append(fields, "fPreHook", procPhases.FinPreHook, "fBlockEnd", procPhases.FinBlockEnd,
 					"fSysCall", procPhases.FinSysCall, "fSysFin", procPhases.FinSysFinalize,
 					"fEngine", procPhases.FinEngine, "fPending", rp.Pending, "fDetach", rp.Detach, "fMat", rp.Mat,
-					"fMerge", rp.Merge, "fSort", rp.Sort, "fLoop", rp.Loop, "fTail", rp.Tail, "fDirty", rp.Dirty,
+					"fMerge", rp.Merge, "fSort", rp.Sort, "fLoop", rp.Loop, "fTail", rp.Tail, "fDirty", rp.Dirty, "fKeys", rp.FoldKeys,
 					"fHook", rp.Hook, "fCompute", rp.Compute, "fAfter", procPhases.FinAfter)
 			}
 			if det, mat := state.LastRootCredits(); det+mat > 0 {
