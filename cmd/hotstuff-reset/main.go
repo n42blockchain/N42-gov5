@@ -8,9 +8,12 @@
 // CONSENSUS STATE HAS DIVERGED") and a vote or lock on a speculative block
 // the node's startup revert unwinds (round S132: votes at view 46713 for the
 // uncommitted 14152208 made the fleet extend it after the restart). The
-// committed QC is kept only when its block is canonical locally; otherwise
-// the tool refuses unless -force-wipe is given, which deletes the whole
-// record as older versions did (views then restart at 1).
+// committed QC is kept only when its block is canonical locally, or when it
+// sits above the canonical head on the canonical head's own lineage (the
+// node committed it but stopped before the block's lagged write was durable;
+// the node canonicalizes it after the restart once the block is applied).
+// Otherwise the tool refuses unless -force-wipe is given, which deletes the
+// whole record as older versions did (views then restart at 1).
 //
 // Lowering the votes gives up the crash-time no-equivocation guard for the
 // views between the committed QC and the old vote: run it on every
@@ -207,7 +210,12 @@ func openJournal(ctx context.Context, path string) (kv.RwDB, error) {
 }
 
 // readDatadir reads everything both modes need in one read transaction.
-func readDatadir(ctx context.Context, db kv.RoDB) (raw []byte, state *hotstuff.ConsensusState, committed, canonical chainPoint, qcCanonical bool, err error) {
+//
+// qcAhead reports a committed QC whose block descends from, and is above, the
+// canonical head (hotstuff.CommittedQCAheadOfCanonical). Its floor is kept as
+// it is: the QC is genuine, and lowering the floor to the canonical head would
+// need a QC for that block, which the record does not hold.
+func readDatadir(ctx context.Context, db kv.RoDB) (raw []byte, state *hotstuff.ConsensusState, committed, canonical chainPoint, qcCanonical, qcAhead bool, err error) {
 	err = db.View(ctx, func(tx kv.Tx) error {
 		committed = readPoint(tx, rawdb.ReadHotStuffCommittedHead(tx))
 		canonical = readPoint(tx, rawdb.ReadHeadBlockHash(tx))
@@ -222,10 +230,13 @@ func readDatadir(ctx context.Context, db kv.RoDB) (raw []byte, state *hotstuff.C
 		if state, err = hotstuff.LoadConsensusState(tx); err != nil || state == nil {
 			return err
 		}
-		qcCanonical, err = committedQCCanonical(tx, state)
+		if qcCanonical, err = committedQCCanonical(tx, state); err != nil || qcCanonical {
+			return err
+		}
+		qcAhead, _, err = hotstuff.CommittedQCAheadOfCanonical(tx, state.LastCommittedQC.BlockHash)
 		return err
 	})
-	return raw, state, committed, canonical, qcCanonical, err
+	return raw, state, committed, canonical, qcCanonical, qcAhead, err
 }
 
 func main() {
@@ -259,7 +270,7 @@ func main() {
 	}
 	defer db.Close()
 
-	raw, state, committed, canonical, qcCanonical, err := readDatadir(ctx, db)
+	raw, state, committed, canonical, qcCanonical, qcAhead, err := readDatadir(ctx, db)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read/decode: %v\n", err)
 		os.Exit(1)
@@ -274,12 +285,12 @@ func main() {
 	}
 	fmt.Printf("%s: hotstuff state present (%d bytes)\n", *dataDir, len(raw))
 	if state != nil {
-		fmt.Printf("view=%d lockedQC=%d committedQC=%d prepareVote=%d commitVote=%d committedQCCanonical=%v\n",
+		fmt.Printf("view=%d lockedQC=%d committedQC=%d prepareVote=%d commitVote=%d committedQCCanonical=%v committedQCAheadOfCanonical=%v\n",
 			state.View, state.LockedQC.View, state.LastCommittedQC.View,
-			state.LastVotedView, state.LastCommitVotedView, qcCanonical)
+			state.LastVotedView, state.LastCommitVotedView, qcCanonical, qcAhead)
 	}
 	wipe := *forceWipe
-	if !wipe && (state == nil || !qcCanonical) {
+	if !wipe && (state == nil || !(qcCanonical || qcAhead)) {
 		fmt.Fprintln(os.Stderr, "the persisted committed QC is not on this node's canonical chain (or the record does not decode); "+
 			"no floor can be kept. Re-run with -force-wipe to delete the whole record.")
 		os.Exit(1)
