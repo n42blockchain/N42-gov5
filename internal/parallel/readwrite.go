@@ -23,22 +23,30 @@ import (
 )
 
 // ReadDescriptor records one read a transaction made during execution.
-// Its flags sit together after the version so the descriptor is 128 bytes.
+// Three flags sit in Key's padding and the hint in IgnoreBalance's, so the
+// descriptor is 128 bytes, two cache lines.
 type ReadDescriptor struct {
-	Key               LocationKey
-	WriterTx          int    // index of the transaction that provided the value (-1 if from base state)
-	WriterIncarnation uint32 // incarnation of the writer tx at read time
-	FromBase          bool   // true if the value was read from the base DB (no MVS entry)
+	Key      LocationKey
+	FromBase bool // true if the value was read from the base DB (no MVS entry)
 	// HasValue says Value holds the bytes read (see Value).
 	HasValue bool
 	// HadDelta says balance deltas took part in Value (see Base).
 	HadDelta bool
+
+	WriterTx          int    // index of the transaction that provided the value (-1 if from base state)
+	WriterIncarnation uint32 // incarnation of the writer tx at read time
 	// IgnoreBalance marks an account read the transaction's outputs cannot
 	// depend on the balance of: it never observed the balance (no
 	// GetBalance/Empty on the address) and wrote at most a delta to the
 	// account. Validation then compares every field but the balance, so a
 	// recipient credited by preceding transactions does not invalidate it.
 	IgnoreBalance bool
+	// hintLo and hintHi are a 24-bit hint: one plus the place of the read
+	// in its entry's version list (the versions preceding the reader) when
+	// an execLean account read recorded it, else 0. Its validation looks
+	// there first (beforeHint).
+	hintLo uint8
+	hintHi uint16
 	// Value is the bytes the transaction read (nil for a missing account or
 	// slot) when HasValue is set. Validation accepts a read whose version
 	// moved but whose bytes did not: a re-executed writer that produced the
@@ -53,6 +61,19 @@ type ReadDescriptor struct {
 	// up. Entries are never removed from a store, so the pointer is the
 	// location's for the whole block.
 	entry *mvEntry
+}
+
+// maxReadHint is the largest hint the descriptor holds.
+const maxReadHint = 1<<24 - 1
+
+// setHint stores h (0: none; at most maxReadHint).
+func (rd *ReadDescriptor) setHint(h uint32) {
+	rd.hintLo, rd.hintHi = uint8(h), uint16(h>>8)
+}
+
+// hintPos is the place the hint names, -1 when there is none.
+func (rd *ReadDescriptor) hintPos() int {
+	return int(rd.hintHi)<<8 | int(rd.hintLo) - 1
 }
 
 // WriteDescriptor records one write a transaction made during execution.

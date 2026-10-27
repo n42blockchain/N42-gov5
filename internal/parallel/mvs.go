@@ -24,6 +24,7 @@ package parallel
 
 import (
 	"encoding/binary"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,24 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 )
+
+// execLean is N42_EXEC_LEAN=1 (default off): the exec wave's lean lookups.
+// An account read checks the version list's tail before searching it, a
+// read's validation starts from the place the read found (beforeHint), a
+// credited account's list starts larger (deltaListCapLean), and the direct
+// transfer path keeps its per-block context (internal/transfer_fast_path.go).
+// Every shortcut gives the answer of the path it skips.
+var execLean = os.Getenv("N42_EXEC_LEAN") == "1"
+
+// ExecLean reports N42_EXEC_LEAN.
+func ExecLean() bool { return execLean }
+
+// SetExecLeanForTest sets N42_EXEC_LEAN's switch and returns the restore.
+func SetExecLeanForTest(on bool) func() {
+	prev := execLean
+	execLean = on
+	return func() { execLean = prev }
+}
 
 // LocationKey uniquely identifies a state location that can be read or written.
 // It represents either an account-level property or a storage slot.
@@ -275,6 +294,27 @@ func (e *mvEntry) before(txIndex int) int {
 	return e.search(txIndex)
 }
 
+// beforeHint is before with execLean's shortcuts: the tail first (a
+// transaction executing over writers that all precede it), then hint, the
+// count a reader saw when it executed (a validation of that read, the list
+// grown since only by later writers), then before. Each shortcut checks
+// its answer against the neighbouring versions, so the result is before's
+// for any hint (e.mu held).
+func (e *mvEntry) beforeHint(txIndex, hint int) int {
+	if !execLean {
+		return e.before(txIndex)
+	}
+	n := len(e.versions)
+	if n == 0 || e.versions[n-1].txIndex < txIndex {
+		return n
+	}
+	if hint >= 0 && hint < n && e.versions[hint].txIndex >= txIndex &&
+		(hint == 0 || e.versions[hint-1].txIndex < txIndex) {
+		return hint
+	}
+	return e.before(txIndex)
+}
+
 // search is sort.Search for the first version at or after txIndex, without
 // the closure call per probe (e.mu held).
 func (e *mvEntry) search(txIndex int) int {
@@ -375,10 +415,13 @@ func (m *MVS) writeDelta(e *mvEntry, txIndex int, incarnation uint32, delta *uin
 		if fast2 && cap(e.versions) == 0 {
 			// A credited account is usually credited again in the block:
 			// start its list at deltaListCap instead of growing it from one.
-			if m.va == nil {
-				e.versions = make([]versionedValue, 0, deltaListCap)
-			}
 			want = deltaListCap
+			if execLean {
+				want = deltaListCapLean
+			}
+			if m.va == nil {
+				e.versions = make([]versionedValue, 0, want)
+			}
 		}
 		m.growVersions(e, want)
 		copy(e.versions[idx+1:], e.versions[idx:])
@@ -390,6 +433,13 @@ func (m *MVS) writeDelta(e *mvEntry, txIndex int, incarnation uint32, delta *uin
 // delta (fast2): the bench's recipients take ~7 credits a block, and the
 // list grew 1, 2, 4, 8 -- four allocations and three copies.
 const deltaListCap = 4
+
+// deltaListCapLean is deltaListCap under execLean: at ~7 credits per
+// recipient (Poisson), a list of four regrew for ~83% of the recipients and
+// one of eight regrows for ~27% -- each growth an arena carve under its
+// shard's lock, a give back, and a copy with write barriers (S149:
+// growVersions 5.4 s of 20 s).
+const deltaListCapLean = 8
 
 // ReadAccount returns the latest full write before txIndex (value, writer,
 // incarnation, found) and the sum of the balance deltas written between
@@ -413,14 +463,23 @@ func (m *MVS) readAccountInto(key *LocationKey, txIndex int, delta *uint256.Int)
 // readAccount is readAccountInto on a looked-up entry; a nil entry has no
 // versions.
 func (e *mvEntry) readAccount(txIndex int, delta *uint256.Int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool) {
+	full, fullTx, fullInc, found, hasDelta, _ = e.readAccountAt(txIndex, delta, -1)
+	return full, fullTx, fullInc, found, hasDelta
+}
+
+// readAccountAt is readAccount locating txIndex's place with beforeHint
+// (hint < 0: none); pos is that place, the versions preceding txIndex,
+// which a reader records as the hint of its read's validation.
+func (e *mvEntry) readAccountAt(txIndex int, delta *uint256.Int, hint int) (full []byte, fullTx int, fullInc uint32, found, hasDelta bool, pos int) {
 	if e == nil {
-		return nil, 0, 0, false, false
+		return nil, 0, 0, false, false, 0
 	}
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	for i := e.before(txIndex) - 1; i >= 0; i-- {
+	pos = e.beforeHint(txIndex, hint)
+	for i := pos - 1; i >= 0; i-- {
 		v := &e.versions[i]
 		if v.isDelta {
 			if !hasDelta {
@@ -431,9 +490,9 @@ func (e *mvEntry) readAccount(txIndex int, delta *uint256.Int) (full []byte, ful
 			}
 			continue
 		}
-		return v.value, v.txIndex, v.incarnation, true, hasDelta
+		return v.value, v.txIndex, v.incarnation, true, hasDelta, pos
 	}
-	return nil, 0, 0, false, hasDelta
+	return nil, 0, 0, false, hasDelta, pos
 }
 
 // Read returns the value written by the latest transaction before txIndex.
