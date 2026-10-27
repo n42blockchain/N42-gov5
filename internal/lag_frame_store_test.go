@@ -77,6 +77,19 @@ func withoutFrames(d map[string]string) map[string]string {
 // frame store holds exactly the reference's Frames rows, and frames and
 // frame-body transactions read back the same through rawdb.
 func TestLagWriterFrameStoreSameRows(t *testing.T) {
+	testLagWriterFrameStoreSameRows(t, false)
+}
+
+// TestLagWriterFrameStoreSameRowsEarly is TestLagWriterFrameStoreSameRows
+// with N42_FRAMES_WRITE_EARLY: the frames are queued for the frame store
+// when the availability check queues the block, the hand-off takes that
+// write, and the chaindata and the frame store end up with the same rows.
+func TestLagWriterFrameStoreSameRowsEarly(t *testing.T) {
+	testLagWriterFrameStoreSameRows(t, true)
+}
+
+func testLagWriterFrameStoreSameRows(t *testing.T, early bool) {
+	defer SetFramesWriteEarlyForTest(early)()
 	defer SetFrameBlocksForTest(true)()
 	defer block.SetVoteOnAvailabilityForTest(true)()
 	defer block.SetDeferredDepthForTest(2, 0)()
@@ -124,6 +137,14 @@ func TestLagWriterFrameStoreSameRows(t *testing.T) {
 		require.Equal(t, ref.result(b.Hash()), got.result(b.Hash()))
 	}
 	require.Equal(t, n, frameWrites, "writes that sent their frames to the frame store")
+	got.bc.framesQ.mu.Lock()
+	require.Empty(t, got.bc.framesQ.byHash, "early frames writes not taken by a hand-off")
+	if early {
+		require.Equal(t, uint64(n), got.bc.framesQ.taken, "hand-offs that took the early frames write")
+	} else {
+		require.Zero(t, got.bc.framesQ.taken)
+	}
+	got.bc.framesQ.mu.Unlock()
 
 	// Reads: every frame and every frame body's transactions.
 	require.NoError(t, got.db.View(context.Background(), func(tx kv.Tx) error {
@@ -204,4 +225,89 @@ func TestFrameStoreSyncWriteAndFallback(t *testing.T) {
 		require.Equal(t, 2, n, "frames with data in the frame store")
 		return nil
 	}))
+}
+
+// TestFramesWriteSerialBatch (N42_FRAMES_WRITE_EARLY): frames writes queued
+// while the serial writer is busy go to the frame store in one transaction,
+// each completing only once it committed; a dropped early write is
+// forgotten but still lands.
+func TestFramesWriteSerialBatch(t *testing.T) {
+	defer SetFramesWriteEarlyForTest(true)()
+	fdb := memdb.New(t.TempDir())
+	defer fdb.Close()
+	defer rawdb.SetFrameStore(fdb)()
+
+	bc := &BlockChain{}
+	var writes []*framesWrite
+	want := map[types.Hash][]byte{}
+	for i := 0; i < 3; i++ {
+		var hashes []types.Hash
+		var raws [][]byte
+		for j := 0; j < 2; j++ {
+			h := types.Hash{byte(i + 1), byte(j + 1)}
+			raw := []byte{byte(i), byte(j), 42}
+			hashes, raws = append(hashes, h), append(raws, raw)
+			want[h] = raw
+		}
+		writes = append(writes, &framesWrite{done: make(chan struct{}), hashes: hashes, raws: raws})
+	}
+	// Queued while the writer runs: picked up as one batch.
+	bc.framesQ.pending = append(bc.framesQ.pending, writes...)
+	bc.framesQ.running = true
+	bc.framesWriteLoop()
+	for i, fw := range writes {
+		require.NoError(t, fw.wait(), "write %d", i)
+		require.Equal(t, writes[0].took, fw.took, "write %d not in the first batch", i)
+	}
+	require.False(t, bc.framesQ.running)
+	require.NoError(t, fdb.View(context.Background(), func(tx kv.Tx) error {
+		n := 0
+		require.NoError(t, tx.ForEach(modules.Frames, nil, func(k, v []byte) error {
+			n++
+			require.Equal(t, want[types.BytesToHash(k)], v)
+			return nil
+		}))
+		require.Equal(t, len(want), n)
+		return nil
+	}))
+
+	// A block queued early and dropped before any hand-off: its frames
+	// still land, and nothing names its write any more.
+	keys := frametest.Keys(t, 2, 97)
+	cfgID := newLagChainEngine(t, keys[1:], importBenchEngine{}).cfg.ChainID
+	fb := frametest.NewBuilder(keys[0], cfgID, keys[1:])
+	raws, hashes, _ := fb.Frames(t, 2, 2)
+	hdr := &block.Header{Number: uint256.NewInt(1), GasLimit: 1, Difficulty: uint256.NewInt(1), BaseFee: uint256.NewInt(1)}
+	hdr.SetFrameTxRoot(block.FrameTxRoot(hashes))
+	b := block.NewLaggedBlock(hdr, hashes, raws)
+	bc.startFramesWriteEarly(b)
+	bc.framesQ.mu.Lock()
+	fw := bc.framesQ.byHash[b.Hash()]
+	bc.framesQ.mu.Unlock()
+	require.NotNil(t, fw)
+	bc.dropFramesWriteEarly(b.Hash())
+	require.NoError(t, fw.wait())
+	bc.framesQ.mu.Lock()
+	require.Empty(t, bc.framesQ.byHash)
+	bc.framesQ.mu.Unlock()
+	require.NoError(t, fdb.View(context.Background(), func(tx kv.Tx) error {
+		for i, h := range hashes {
+			v, err := tx.GetOne(modules.Frames, h[:])
+			require.NoError(t, err)
+			require.Equal(t, raws[i], v)
+		}
+		return nil
+	}))
+	// A frame body missing a frame is not queued early (its hand-off writes
+	// what it carries, as without the flag).
+	hdr2 := &block.Header{Number: uint256.NewInt(2), GasLimit: 1, Difficulty: uint256.NewInt(1), BaseFee: uint256.NewInt(1)}
+	hdr2.SetFrameTxRoot(block.FrameTxRoot(hashes))
+	b2 := block.NewLaggedBlock(hdr2, hashes, [][]byte{nil, raws[1]})
+	bc.startFramesWriteEarly(b2)
+	bc.framesQ.mu.Lock()
+	require.Empty(t, bc.framesQ.byHash)
+	bc.framesQ.mu.Unlock()
+	fw2 := bc.takeFramesWrite(b2)
+	require.NotNil(t, fw2)
+	require.NoError(t, fw2.wait())
 }
