@@ -31,6 +31,10 @@ var lagPipeRotateToForTest bool
 // the tree two blocks below its own parent.
 var lagPipeAwaitGrandBaseForTest bool
 
+// lagPipeAwaitGrandFillForTest, when set, replaces the wait of
+// lagPipeAwaitGrandBaseForTest for the grandchild's prefill to finish.
+var lagPipeAwaitGrandFillForTest func(grand *block.Block)
+
 // lagPipeDeferDepthForTest, when positive, is the harness's deferred depth
 // (default 2): at 3 a grandchild is available before its grandparent's
 // root.

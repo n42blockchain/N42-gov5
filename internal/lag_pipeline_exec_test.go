@@ -239,7 +239,11 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 								break
 							}
 						}
-						awaitAheadBase(t, piped.bc, grand.Hash())
+						if fn := lagPipeAwaitGrandFillForTest; fn != nil {
+							fn(grand)
+						} else {
+							awaitAheadBase(t, piped.bc, grand.Hash())
+						}
 					}
 				}
 			}
@@ -376,6 +380,10 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		if fn := lagPipeResultSinkForTest; fn != nil {
 			fn(n, got)
 		}
+	}
+
+	if fn := lagPipeChainSinkForTest; fn != nil {
+		fn(piped)
 	}
 
 	orderMu.Lock()
