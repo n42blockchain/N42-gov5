@@ -82,6 +82,12 @@ type lagQueued struct {
 	avail    time.Duration // the passing availability check that queued it
 	lastAuth time.Time     // last import attempt with switch authority
 	stuckLog bool
+	// unchecked: queued before its availability check passed
+	// (N42_PUSH_CHECK_OVERLAP, lag_check_overlap.go): it may run ahead but
+	// is not imported. heldSince: when the executor first found it
+	// importable while unchecked (UnixNano; 0 never).
+	unchecked atomic.Bool
+	heldSince atomic.Int64
 }
 
 type lagExecutor struct {
@@ -327,6 +333,9 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	if err := checkStaticHeader(bc, hdr, parent); err != nil {
 		return false, err
 	}
+	if h := lagCheckFailForTest.Load(); h != nil && *h == blk.Hash() && lagCheckFailForTest.CompareAndSwap(h, nil) {
+		return false, errLagCheckInjected
+	}
 	if got, want := hdr.TxHash, block.BodyTxRoot(body, hdr.Time); got != want {
 		return false, fmt.Errorf("availability: block %d transactions root %x is not its body's %x", number, got[:8], want[:8])
 	}
@@ -357,6 +366,12 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	}
 	return false, nil
 }
+
+// lagCheckFailForTest, when set, fails the next availability check of that
+// block once, after its parent was found (tests).
+var lagCheckFailForTest atomic.Pointer[types.Hash]
+
+var errLagCheckInjected = errors.New("availability: injected check failure (test)")
 
 // checkStaticHeader checks what a header must satisfy against its parent
 // without executing anything: height, time, gas limit, gas used against
@@ -445,8 +460,8 @@ func (bc *BlockChain) LagImportQueued(hash types.Hash) bool {
 	le := &bc.lagExec
 	le.mu.Lock()
 	defer le.mu.Unlock()
-	_, ok := le.queued[hash]
-	return ok
+	q, ok := le.queued[hash]
+	return ok && !q.unchecked.Load()
 }
 
 // LagStats returns the blocks imported by the lag executor, the height of
@@ -484,9 +499,13 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 		le.kick = make(chan struct{}, 1)
 	}
 	fresh := false
-	if _, ok := le.queued[b.Hash()]; !ok {
+	if q, ok := le.queued[b.Hash()]; !ok {
 		le.queued[b.Hash()] = &lagQueued{blk: b, since: time.Now(), avail: avail}
 		fresh = true
+	} else if prep {
+		// Queued unchecked at its arrival: the check that queues it now
+		// passed (lag_check_overlap.go).
+		q.markCheckedLocked(avail)
 	}
 	kick := le.kick
 	le.mu.Unlock()
@@ -584,6 +603,14 @@ func (bc *BlockChain) lagStep() bool {
 			// A height already decided without this block: a losing fork.
 			bc.lagForget(b.Hash())
 			return true
+		}
+		if q.unchecked.Load() {
+			// Its availability check has not passed yet: it may run ahead,
+			// nothing imports it (lag_check_overlap.go).
+			if q.heldSince.Load() == 0 && bc.lagParentReady(b.ParentHash(), n-1) {
+				q.heldSince.CompareAndSwap(0, time.Now().UnixNano())
+			}
+			continue
 		}
 		ready := bc.lagParentReady(b.ParentHash(), n-1)
 		authorized := stored
