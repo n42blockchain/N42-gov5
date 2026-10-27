@@ -627,15 +627,26 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	// ExecuteParallelAhead (ErrParallelNotApplicable): the check walks
 	// every transaction.
 	layers := []*state.PostState{par.post}
-	if j := bc.lagWritePending(par.header.ParentHash); j != nil {
+	for h := par.header.ParentHash; ; {
+		j := bc.lagWritePending(h)
+		if j == nil {
+			break
+		}
 		// The grandparent's write is in flight (lag_writer.go): the store
 		// does not hold it yet, its post-state does. Checked before the
 		// transaction opens: a write that is not pending now is durable in it.
+		// Under N42_LAG_WRITE_QUEUE the ancestors below it may be pending
+		// too; each is layered under the one above (block order). A write
+		// that lands while this walks is durable in the transaction too.
 		if j.post != nil {
 			layers = append(layers, j.post)
 		} else {
 			<-j.done
 		}
+		if lagWriteQueue <= 1 || j.hdr == nil {
+			break
+		}
+		h = j.hdr.ParentHash
 	}
 	// The block's preparation, and with it the base prefill its tree reads
 	// answer first (ahead_base_prefill.go), is claimed before the readers

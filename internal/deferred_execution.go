@@ -118,11 +118,20 @@ var ErrDeferredResultUnknown = fmt.Errorf("deferred execution: parent result unk
 // header; the ancestors above it are read from tx. A mismatch at depth k is
 // the lagged equivocation P2a detects when header N+k arrives.
 func checkDeferredHeader(config *params.ChainConfig, tx kv.Getter, header, parent *block.Header) error {
-	target, err := deferredTarget(header, parent, func(h types.Hash, n uint64) *block.Header { return rawdb.ReadHeader(tx, h, n) })
+	return checkDeferredHeaderVia(header, parent,
+		func(h types.Hash, n uint64) *block.Header { return rawdb.ReadHeader(tx, h, n) },
+		func(h *block.Header) (rawdb.ExecutedResult, error) { return executedOrSeededResult(config, tx, h) })
+}
+
+// checkDeferredHeaderVia is checkDeferredHeader with the ancestor headers
+// and the target's executed result taken from lookup and result.
+func checkDeferredHeaderVia(header, parent *block.Header, lookup func(types.Hash, uint64) *block.Header,
+	result func(*block.Header) (rawdb.ExecutedResult, error)) error {
+	target, err := deferredTarget(header, parent, lookup)
 	if err != nil {
 		return err
 	}
-	want, err := executedOrSeededResult(config, tx, target)
+	want, err := result(target)
 	if err != nil {
 		return err
 	}

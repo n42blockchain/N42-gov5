@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +37,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 // The lag executor's ordered writer (docs/QS_MULTI_MILLION_DESIGN.md P4b).
@@ -81,6 +84,22 @@ import (
 //     queued again.
 //
 // N42_LAG_WRITE_ASYNC=0 writes synchronously, as before.
+//
+// Queue (N42_LAG_WRITE_QUEUE=K, K >= 2; default 1 is the rule above): the
+// hand-off waits only while K writes are pending, so one slow write (an
+// MDBX commit stall) no longer stalls the next block's hand-off and, behind
+// it, the lag gate. The writes still run one at a time in block order: each
+// waits for the previous one to finish and fails, without writing, when it
+// failed. Each block's QMDB rows are captured from the last staged flush
+// cursor (FlushToChained), so consecutive blocks' rows never overlap, and
+// the cursors are adopted oldest first as the writes are joined. Every
+// pending block is visible to the readers that see the pending one above
+// (HasBlock, GetBlock, GetHeader, the ahead run's post-state layers), and
+// the child's deferred check reads a pending target's executed result from
+// memory, the result its write stores. Everything that joins the write
+// above joins every pending write. Restart: the store holds the last
+// durable block; the pending ones are executed again. Failure: the first
+// failed write and every later one are queued again after the reload.
 
 // lagWriteAsync is N42_LAG_WRITE_ASYNC (default on; "0", "false" or "off"
 // disables).
@@ -105,12 +124,41 @@ var lagWriteBeforeCommitForTest func(number uint64) error
 // back-to-back).
 var lagWriteJoinForTest func(number uint64)
 
+// lagWriteQueue is N42_LAG_WRITE_QUEUE: how many handed-off writes may be
+// pending at a hand-off's end (default 1: one write in flight; at most 8).
+var lagWriteQueue = parseLagWriteQueue(os.Getenv("N42_LAG_WRITE_QUEUE"))
+
+func parseLagWriteQueue(v string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 {
+		return 1
+	}
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
+// SetLagWriteQueueForTest sets N42_LAG_WRITE_QUEUE and returns the restore.
+func SetLagWriteQueueForTest(k int) func() {
+	prev := lagWriteQueue
+	lagWriteQueue = parseLagWriteQueue(strconv.Itoa(k))
+	return func() { lagWriteQueue = prev }
+}
+
 // lagWriter is the ordered writer's state on the chain.
 type lagWriter struct {
 	// inflight: the write handed off and not yet joined (under bc.lock).
 	inflight *lagWriteJob
 	// visible: the block readers see as stored until its write is durable.
 	visible atomic.Pointer[lagWriteJob]
+	// older: under N42_LAG_WRITE_QUEUE >= 2, the handed-off writes before
+	// inflight not joined yet, oldest first (under bc.lock); olderPend the
+	// ones of them not durable yet, for readers on any goroutine. pmu
+	// orders the updates of visible and olderPend.
+	older     []*lagWriteJob
+	olderPend atomic.Pointer[[]*lagWriteJob]
+	pmu       sync.Mutex
 
 	notifyOnce sync.Once
 	notify     chan *lagWriteJob
@@ -119,6 +167,8 @@ type lagWriter struct {
 	failed   atomic.Uint64
 	overlap  atomic.Uint64 // imports that ran while their parent's write was in flight
 	lastWait atomic.Int64  // the last hand-off's wait for the previous write
+	// lastDepth: the writes pending when the last hand-off began.
+	lastDepth atomic.Int64
 }
 
 // lagWriteJob is one block's durable write.
@@ -154,6 +204,10 @@ type lagWriteJob struct {
 	// logs: the block's Log rows and log-index input, prepared from the
 	// hand-off on (nil: the write walks the receipts itself).
 	logs *logsPrep
+
+	// prev: the write handed off before this one and not joined at its
+	// hand-off (N42_LAG_WRITE_QUEUE >= 2); this write starts once it is done.
+	prev *lagWriteJob
 
 	done chan struct{}
 	err  error
@@ -364,8 +418,43 @@ func (bc *BlockChain) lagWritePending(hash types.Hash) *lagWriteJob {
 	if j := bc.lagWrite.visible.Load(); j != nil && j.hash == hash {
 		return j
 	}
+	if op := bc.lagWrite.olderPend.Load(); op != nil {
+		for _, j := range *op {
+			if j.hash == hash {
+				return j
+			}
+		}
+	}
 	return nil
 }
+
+// lagWritesQueued returns how many handed-off writes are not joined yet
+// (bc.lock held).
+func (bc *BlockChain) lagWritesQueued() int {
+	n := len(bc.lagWrite.older)
+	if bc.lagWrite.inflight != nil {
+		n++
+	}
+	return n
+}
+
+// lagWriteIsQueued reports whether j is handed off and not joined yet
+// (bc.lock held).
+func (bc *BlockChain) lagWriteIsQueued(j *lagWriteJob) bool {
+	if bc.lagWrite.inflight == j {
+		return true
+	}
+	for _, o := range bc.lagWrite.older {
+		if o == j {
+			return true
+		}
+	}
+	return false
+}
+
+// LagWriteQueueDepth returns how many writes were pending when the last
+// hand-off began.
+func (bc *BlockChain) LagWriteQueueDepth() int { return int(bc.lagWrite.lastDepth.Load()) }
 
 // lagAppliedIs reports whether the applied state is exactly hash at number:
 // the in-flight write's block (applied in memory), or the durable marker.
@@ -410,7 +499,13 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		return err
 	}
 	tWait := time.Now()
-	if err := bc.joinLagWrite(); err != nil {
+	bc.lagWrite.lastDepth.Store(int64(bc.lagWritesQueued()))
+	if lagWriteQueue > 1 {
+		// Room for this write: at most K-1 earlier ones stay pending.
+		if err := bc.settleLagWrites(lagWriteQueue - 1); err != nil {
+			return failed(err)
+		}
+	} else if err := bc.joinLagWrite(); err != nil {
 		return failed(err)
 	}
 	bc.lagWrite.lastWait.Store(int64(time.Since(tWait)))
@@ -419,7 +514,16 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
 		prep: prep, frames: frames, logs: logs, done: make(chan struct{})}
 	rc := bc.qmdbRootComputer
-	if _, err := rc.FlushTo(&j.flush); err != nil {
+	prev := bc.lagWrite.inflight
+	if prev == nil {
+		if _, err := rc.FlushTo(&j.flush); err != nil {
+			rc.AbortFlushed()
+			return failed(fmt.Errorf("capturing QMDB rows of block %d: %w", j.number, err))
+		}
+	} else if _, err := rc.FlushToChained(&j.flush); err != nil {
+		// The earlier flushes are staged for writes still pending: let them
+		// land (and adopt their cursors) before discarding this one.
+		_ = bc.joinLagWrite()
 		rc.AbortFlushed()
 		return failed(fmt.Errorf("capturing QMDB rows of block %d: %w", j.number, err))
 	}
@@ -435,8 +539,24 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		j.post = par.post
 	}
 	p.mu.Unlock()
+	if prev != nil {
+		j.prev = prev
+		bc.lagWrite.older = append(bc.lagWrite.older, prev)
+	}
 	bc.lagWrite.inflight = j
-	bc.lagWrite.visible.Store(j)
+	w := &bc.lagWrite
+	w.pmu.Lock()
+	if v := w.visible.Load(); v != nil {
+		// Still pending: readers find it among the older writes now.
+		var op []*lagWriteJob
+		if cur := w.olderPend.Load(); cur != nil {
+			op = append(op, *cur...)
+		}
+		op = append(op, v)
+		w.olderPend.Store(&op)
+	}
+	w.visible.Store(j)
+	w.pmu.Unlock()
 	bc.lagWrite.handed.Add(1)
 	go bc.runLagWrite(j)
 	bc.lagResultReadySoon(j)
@@ -445,7 +565,15 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 
 // runLagWrite is the writer goroutine of one block.
 func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
-	if fn := lagWriteBeforeCommitForTest; fn != nil {
+	if p := j.prev; p != nil {
+		// Block order: the previous write lands first; a block whose
+		// parent's write failed is not written on top of the older store.
+		<-p.done
+		if p.err != nil {
+			j.err = fmt.Errorf("previous write (block %d) failed: %w", p.number, p.err)
+		}
+	}
+	if fn := lagWriteBeforeCommitForTest; fn != nil && j.err == nil {
 		j.err = fn(j.number)
 	}
 	if j.err == nil {
@@ -456,7 +584,24 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 	}
 	// Durable (the block cache and the store hold it now) or failed: either
 	// way readers stop seeing it as pending.
-	bc.lagWrite.visible.CompareAndSwap(j, nil)
+	w := &bc.lagWrite
+	w.pmu.Lock()
+	if !w.visible.CompareAndSwap(j, nil) {
+		if cur := w.olderPend.Load(); cur != nil {
+			var op []*lagWriteJob
+			for _, o := range *cur {
+				if o != j {
+					op = append(op, o)
+				}
+			}
+			if len(op) == 0 {
+				w.olderPend.Store(nil)
+			} else {
+				w.olderPend.Store(&op)
+			}
+		}
+	}
+	w.pmu.Unlock()
 	if j.err != nil {
 		bc.lagWrite.failed.Add(1)
 		log.Error("lag writer: block write failed; memory is ahead of the store until the next import reloads it",
@@ -470,6 +615,11 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 // live tree: the flushed window is adopted and evicted once durable; after a
 // failure the tree is reloaded from the store and the block queued again.
 func (bc *BlockChain) joinLagWrite() error {
+	for len(bc.lagWrite.older) > 0 {
+		if err := bc.joinLagWriteOldest(); err != nil {
+			return err
+		}
+	}
 	j := bc.lagWrite.inflight
 	if j == nil {
 		return nil
@@ -487,6 +637,74 @@ func (bc *BlockChain) joinLagWrite() error {
 	rc.CommitFlushed()
 	rc.EvictFlushed()
 	return nil
+}
+
+// joinLagWriteOldest joins the oldest of several pending writes (bc.lock
+// held, bc.lagWrite.older non-empty) as joinLagWrite joins the last one.
+// After a failure every later write has failed behind it: the tree is
+// reloaded once and all their blocks are queued again, in order.
+func (bc *BlockChain) joinLagWriteOldest() error {
+	w := &bc.lagWrite
+	j := w.older[0]
+	if fn := lagWriteJoinForTest; fn != nil {
+		fn(j.number)
+	}
+	<-j.done
+	w.older = w.older[1:]
+	if len(w.older) == 0 {
+		w.older = nil
+	}
+	if j.err != nil {
+		rest := append(append([]*lagWriteJob(nil), w.older...), w.inflight)
+		for _, r := range rest {
+			if fn := lagWriteJoinForTest; fn != nil {
+				fn(r.number)
+			}
+			<-r.done
+		}
+		w.older, w.inflight = nil, nil
+		bc.recoverLagWrite(j)
+		for _, r := range rest {
+			bc.EnqueueLagImport(r.blk)
+		}
+		return fmt.Errorf("lag writer: block %d not written: %w", j.number, j.err)
+	}
+	rc := bc.qmdbRootComputer
+	rc.CommitFlushed()
+	rc.EvictFlushed()
+	return nil
+}
+
+// settleLagWrites joins the pending writes that are done, oldest first,
+// then waits for the oldest until at most max stay pending (bc.lock held).
+func (bc *BlockChain) settleLagWrites(max int) error {
+	w := &bc.lagWrite
+	for {
+		n := bc.lagWritesQueued()
+		if n == 0 {
+			return nil
+		}
+		oldest := w.inflight
+		if len(w.older) > 0 {
+			oldest = w.older[0]
+		}
+		if n <= max {
+			select {
+			case <-oldest.done:
+			default:
+				return nil
+			}
+		}
+		var err error
+		if len(w.older) > 0 {
+			err = bc.joinLagWriteOldest()
+		} else {
+			err = bc.joinLagWrite()
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 // recoverLagWrite restores the memory-equals-store invariant after a failed
@@ -544,7 +762,7 @@ func (bc *BlockChain) lagNotifyLoop(ch chan *lagWriteJob) {
 				// Recover now: the import that would join it may never come
 				// (the child waits for its parent to be applied).
 				bc.lock.Lock()
-				if bc.lagWrite.inflight == j {
+				if bc.lagWriteIsQueued(j) {
 					_ = bc.joinLagWrite()
 				}
 				bc.lock.Unlock()
@@ -605,6 +823,62 @@ func (bc *BlockChain) readHeaderOrPending(tx kv.Getter, hash types.Hash, number 
 		}
 	}
 	return nil
+}
+
+// checkDeferredHeaderLag is the import's checkDeferredHeader. Under
+// N42_LAG_WRITE_QUEUE >= 2 the block it reports may still be pending (its
+// write queued behind another): its header and executed result come from
+// memory then -- the result its write stores.
+func (bc *BlockChain) checkDeferredHeaderLag(tx kv.Getter, header, parent *block.Header) error {
+	if lagWriteQueue <= 1 {
+		return checkDeferredHeader(bc.chainConfig, tx, header, parent)
+	}
+	return checkDeferredHeaderVia(header, parent,
+		func(h types.Hash, n uint64) *block.Header { return bc.readHeaderOrPending(tx, h, n) },
+		func(h *block.Header) (rawdb.ExecutedResult, error) { return bc.lagExecutedResult(tx, h) })
+}
+
+// lagExecutedResult returns h's executed result: a pending write's from
+// memory, else the store's (tx, or a fresh transaction when the write
+// landed after tx began).
+func (bc *BlockChain) lagExecutedResult(tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, error) {
+	n := h.Number.Uint64()
+	if j := bc.lagWritePending(h.Hash()); j != nil && j.number == n {
+		if r, ok := j.executedResult(bc.chainConfig); ok {
+			return r, nil
+		}
+	}
+	r, err := executedOrSeededResult(bc.chainConfig, tx, h)
+	if err == nil || !errors.Is(err, ErrDeferredResultUnknown) || bc.ChainDB == nil {
+		return r, err
+	}
+	if j := bc.lagWritePending(h.Hash()); j != nil && j.number == n {
+		if r2, ok := j.executedResult(bc.chainConfig); ok {
+			return r2, nil
+		}
+	}
+	var r2 rawdb.ExecutedResult
+	var err2 error
+	if verr := bc.ChainDB.View(bc.ctx, func(tx2 kv.Tx) error {
+		r2, err2 = executedOrSeededResult(bc.chainConfig, tx2, h)
+		return nil
+	}); verr == nil && err2 == nil {
+		return r2, nil
+	}
+	return r, err
+}
+
+// executedResult is the executed result j's write stores: its computed
+// root over its receipts' part (waited for when hashed on its own
+// goroutine, derived here otherwise).
+func (j *lagWriteJob) executedResult(config *params.ChainConfig) (rawdb.ExecutedResult, bool) {
+	if !j.execRootOK || config == nil {
+		return rawdb.ExecutedResult{}, false
+	}
+	if r, ok := j.future.resultFor(j.hash, j.execRoot, j.receipts); ok {
+		return r, true
+	}
+	return ExecutedResultFor(config, j.number, j.execRoot, j.receipts), true
 }
 
 var errLagWriteInjected = errors.New("lag writer: injected failure (test)")
