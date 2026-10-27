@@ -209,6 +209,80 @@ func TestRecoveredCommitClearedByLaterCommit(t *testing.T) {
 	assertHead(t, s.db, hashes[102])
 }
 
+// TestRecoveredUnknownBlockConflictingWithCanonical: the committed QC's
+// block was unknown at restart; canonical then reaches its height on
+// another hash (sync), and the block is imported. The recovered commit is
+// dropped without rewriting canonical.
+func TestRecoveredUnknownBlockConflictingWithCanonical(t *testing.T) {
+	s, _, _, _ := hsTNewNotifyService(t)
+	hashes := recoveredChain(t, s.db)
+	producer := &laggedChainProducer{db: s.db, applied: 102}
+	s.blockProducer = producer
+
+	other := &block.Header{ParentHash: hashes[100], Number: uint256.NewInt(101), Difficulty: uint256.NewInt(0), Extra: []byte{0xAB}}
+	unknown := &block.Header{ParentHash: hashes[100], Number: uint256.NewInt(101), Difficulty: uint256.NewInt(0), Extra: []byte{0xCD}}
+	qc := QuorumCertificate{View: 18, BlockHash: unknown.Hash()}
+	persisted := &ConsensusState{View: 20, LockedQC: qc, LastCommittedQC: qc}
+	if err := s.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return SaveConsensusState(tx, persisted)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recoverState(); err != nil {
+		t.Fatal(err)
+	}
+	if s.recoveredCommit != unknown.Hash() {
+		t.Fatal("unknown committed QC block not recovered as a pending commit")
+	}
+	s.retryRecoveredCommit(types.Hash{})
+	if s.recoveredCommit != unknown.Hash() {
+		t.Fatal("a missing block dropped the recovered commit")
+	}
+
+	// Sync canonicalizes another block at 101.
+	hsTWriteHeader(t, s, other)
+	if err := producer.CommitToCanonical(other.Hash()); err != nil {
+		t.Fatal(err)
+	}
+	// The recovered block arrives.
+	hsTWriteHeader(t, s, unknown)
+	calls := producer.calls
+	s.NotifyBlockImported(unknown.Hash(), types.Hash{})
+	if producer.calls != calls {
+		t.Fatal("a recovered block conflicting with canonical was committed")
+	}
+	if s.recoveredCommit != (types.Hash{}) {
+		t.Fatal("conflicting recovered commit not cleared")
+	}
+	assertHead(t, s.db, other.Hash())
+	if err := s.db.View(context.Background(), func(tx kv.Tx) error {
+		if c, _ := rawdb.ReadCanonicalHash(tx, 101); c != other.Hash() {
+			t.Errorf("canonical[101] rewritten to %s", c)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRecoveredCommitClearedWhenAlreadyCanonical: canonical reached the
+// recovered block by another path; the retry clears it without committing.
+func TestRecoveredCommitClearedWhenAlreadyCanonical(t *testing.T) {
+	s, _, _, _ := hsTNewNotifyService(t)
+	hashes := recoveredChain(t, s.db)
+	producer := &laggedChainProducer{db: s.db, applied: 102}
+	s.blockProducer = producer
+	if err := producer.CommitToCanonical(hashes[102]); err != nil {
+		t.Fatal(err)
+	}
+	s.recoveredCommit = hashes[101]
+	calls := producer.calls
+	s.FlushPendingCommits()
+	if s.recoveredCommit != (types.Hash{}) || producer.calls != calls {
+		t.Fatalf("recovered=%s calls=%d->%d", s.recoveredCommit, calls, producer.calls)
+	}
+}
+
 // TestFlushPendingCommitsAtShutdown: a commit deferred in-run whose write
 // became durable after the service stopped is finished by the chain's
 // drained hook.

@@ -69,12 +69,58 @@ func (s *Service) retryRecoveredCommit(hash types.Hash) {
 	if rc == (types.Hash{}) || (hash != (types.Hash{}) && hash != rc) || s.blockProducer == nil {
 		return
 	}
+	// The recovered block may have been unknown at restart. If canonical
+	// has since reached its height on another hash, committing it would
+	// rewrite canonical down to it (the commit's monotonicity guard only
+	// short-circuits when canonical already names it): drop it instead.
+	switch s.recoveredCommitCanonical(rc) {
+	case recoveredCanonicalSame:
+		s.clearRecoveredCommit()
+		log.Info("hotstuff: recovered committed QC block is canonical", "hash", rc)
+		return
+	case recoveredCanonicalOther:
+		s.clearRecoveredCommit()
+		log.Warn("hotstuff: recovered committed QC block conflicts with the canonical chain at its height; dropped, not committed",
+			"hash", rc)
+		return
+	}
 	if err := s.blockProducer.CommitToCanonical(rc); err != nil {
 		log.Debug("hotstuff: recovered committed QC block not canonical yet", "hash", rc, "err", err)
 		return
 	}
 	s.clearRecoveredCommit()
 	log.Info("hotstuff: recovered committed QC block is canonical", "hash", rc)
+}
+
+const (
+	recoveredCanonicalOpen  = iota // height unknown here, or no canonical row there yet
+	recoveredCanonicalSame         // canonical names the recovered block
+	recoveredCanonicalOther        // canonical names another block at that height
+)
+
+// recoveredCommitCanonical compares the canonical row at rc's height with rc.
+func (s *Service) recoveredCommitCanonical(rc types.Hash) int {
+	if s.db == nil {
+		return recoveredCanonicalOpen
+	}
+	status := recoveredCanonicalOpen
+	_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+		n := rawdb.ReadHeaderNumber(tx, rc)
+		if n == nil {
+			return nil
+		}
+		c, err := rawdb.ReadCanonicalHash(tx, *n)
+		if err != nil || c == (types.Hash{}) {
+			return err
+		}
+		if c == rc {
+			status = recoveredCanonicalSame
+		} else {
+			status = recoveredCanonicalOther
+		}
+		return nil
+	})
+	return status
 }
 
 func (s *Service) clearRecoveredCommit() {
