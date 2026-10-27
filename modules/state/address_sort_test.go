@@ -66,3 +66,37 @@ func BenchmarkSortAddresses31k(b *testing.B) {
 		}
 	})
 }
+
+// TestSortAddressesWithKeepsPairs: sortAddressesWith orders the addresses
+// as sortAddresses does and carries every value with its address, for
+// random sets and sets crowded into one 16-bit prefix, around the radix
+// threshold.
+func TestSortAddressesWithKeepsPairs(t *testing.T) {
+	r := rand.New(rand.NewSource(11))
+	for _, n := range []int{0, 1, 17, radixSortMin - 1, radixSortMin, radixSortMin + 1, 9000} {
+		for _, prefix := range []bool{false, true} {
+			addrs := make([]types.Address, n)
+			vals := make([]int, n)
+			want := map[types.Address]int{}
+			for i := range addrs {
+				r.Read(addrs[i][:])
+				if prefix && i%3 != 0 {
+					addrs[i][0], addrs[i][1] = 0xAB, 0xCD
+				}
+				vals[i] = i
+				want[addrs[i]] = i
+			}
+			ref := slices.Clone(addrs)
+			sortAddresses(ref)
+			sortAddressesWith(addrs, vals)
+			if !slices.Equal(ref, addrs) {
+				t.Fatalf("n=%d prefix=%v: order differs from sortAddresses", n, prefix)
+			}
+			for i, a := range addrs {
+				if want[a] != vals[i] {
+					t.Fatalf("n=%d prefix=%v: value of %x moved off its address", n, prefix, a)
+				}
+			}
+		}
+	}
+}

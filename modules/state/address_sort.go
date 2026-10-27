@@ -90,3 +90,68 @@ func sortAddresses(addrs []types.Address) {
 	}
 	copy(addrs, out)
 }
+
+// sortAddressesWith sorts addrs as sortAddresses does and permutes vals
+// (the same length) along with them. The addresses must be distinct.
+func sortAddressesWith[V any](addrs []types.Address, vals []V) {
+	n := len(addrs)
+	if n < radixSortMin {
+		sortAddressesWithCmp(addrs, vals)
+		return
+	}
+	s := addrRadixPool.Get().(*addrRadixScratch)
+	defer addrRadixPool.Put(s)
+	clear(s.cnt[:])
+	for i := range addrs {
+		s.cnt[int(binary.BigEndian.Uint16(addrs[i][:2]))+1]++
+	}
+	for i := 1; i < len(s.cnt); i++ {
+		s.cnt[i] += s.cnt[i-1]
+	}
+	copy(s.pos[:], s.cnt[:1<<16])
+	if cap(s.out) < n {
+		s.out = make([]types.Address, n)
+	}
+	out := s.out[:n]
+	ov := make([]V, n)
+	for i := range addrs {
+		b := binary.BigEndian.Uint16(addrs[i][:2])
+		out[s.pos[b]] = addrs[i]
+		ov[s.pos[b]] = vals[i]
+		s.pos[b]++
+	}
+	for b := 0; b < 1<<16; b++ {
+		lo, hi := int(s.cnt[b]), int(s.cnt[b+1])
+		switch {
+		case hi-lo < 2:
+		case hi-lo > radixBucketMax:
+			sortAddressesWithCmp(out[lo:hi], ov[lo:hi])
+		default:
+			bucket, bv := out[lo:hi], ov[lo:hi]
+			for i := 1; i < len(bucket); i++ {
+				for j := i; j > 0 && compareAddresses(bucket[j-1], bucket[j]) > 0; j-- {
+					bucket[j-1], bucket[j] = bucket[j], bucket[j-1]
+					bv[j-1], bv[j] = bv[j], bv[j-1]
+				}
+			}
+		}
+	}
+	copy(addrs, out)
+	copy(vals, ov)
+}
+
+// sortAddressesWithCmp is sortAddressesWith by a comparison sort.
+func sortAddressesWithCmp[V any](addrs []types.Address, vals []V) {
+	n := len(addrs)
+	idx := make([]int32, n)
+	for i := range idx {
+		idx[i] = int32(i)
+	}
+	slices.SortFunc(idx, func(a, b int32) int { return compareAddresses(addrs[a], addrs[b]) })
+	oa, ov := make([]types.Address, n), make([]V, n)
+	for i, k := range idx {
+		oa[i], ov[i] = addrs[k], vals[k]
+	}
+	copy(addrs, oa)
+	copy(vals, ov)
+}
