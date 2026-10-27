@@ -118,7 +118,15 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 	if concurrent {
 		go s.deferredCheck(blk)
 	} else {
+		// N42_PUSH_CHECK_OVERLAP: the executor holds the block unchecked
+		// from now on -- its preparation and ahead run start -- and imports
+		// it only once the check below passes; a check that does not pass
+		// removes it again and this path continues as without the switch.
+		overlap := s.lagEnqueueUnchecked(blk)
 		s.deferredCheck(blk)
+		if overlap {
+			s.lagDropUnchecked(blk)
+		}
 		// P2a: an availability-checked block was handed to the chain's lag
 		// executor, which imports it in parent order off this path and
 		// notifies consensus itself.
@@ -195,6 +203,21 @@ func (s *Service) parentHeaderHere(h *block.Header) bool {
 func (s *Service) lagExecutorOwns(blk block.IBlock) bool {
 	lo, ok := s.cfg.chain.(interface{ LagExecutorOwns(block.IBlock) bool })
 	return ok && lo.LagExecutorOwns(blk)
+}
+
+// lagEnqueueUnchecked queues blk for the chain's lag executor ahead of its
+// availability check (N42_PUSH_CHECK_OVERLAP) and reports whether it did.
+func (s *Service) lagEnqueueUnchecked(blk *block.Block) bool {
+	lq, ok := s.cfg.chain.(interface{ LagEnqueueUnchecked(*block.Block) bool })
+	return ok && lq.LagEnqueueUnchecked(blk)
+}
+
+// lagDropUnchecked removes blk from the lag executor if its check did not
+// pass (it is still unchecked).
+func (s *Service) lagDropUnchecked(blk *block.Block) {
+	if ld, ok := s.cfg.chain.(interface{ LagDropUnchecked(types.Hash) bool }); ok {
+		ld.LagDropUnchecked(blk.Hash())
+	}
 }
 
 // lagImportQueued reports whether the chain's lag executor holds blk.
