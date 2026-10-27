@@ -243,8 +243,9 @@ func (l *aheadLate) stats() (landed bool, landMs int64, depth uint64, skip strin
 // claimAheadPrepNoWait is claimAheadPrep for an ahead run with the no-wait
 // claim on: it waits for a running preparation as before, but a base
 // prefill still waiting for the tree or still reading is left running and
-// returned as late (the preparation no longer carries it); one already
-// finished is claimed as before.
+// returned as late (the preparation no longer carries it) once it took the
+// transactions' keys from the preparation; one already finished is claimed
+// as before.
 func (bc *BlockChain) claimAheadPrepNoWait(h types.Hash) (pr *aheadPrep, late *aheadBase, wait time.Duration) {
 	if bc == nil {
 		return nil, nil, 0
@@ -270,6 +271,16 @@ func (bc *BlockChain) claimAheadPrepNoWait(h types.Hash) (pr *aheadPrep, late *a
 		case <-ab.done:
 			ab.halt()
 		default:
+			if !ab.early {
+				// Started before the flag was on: it reads the
+				// preparation the run is about to own.
+				ab.halt()
+				break
+			}
+			// The run owns the preparation: wait until the prefill took
+			// the transactions' keys from it (pure CPU, started when the
+			// preparation finished).
+			<-ab.keysDone
 			late, pr.base = ab, nil
 		}
 	}
