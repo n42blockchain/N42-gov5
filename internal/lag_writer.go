@@ -207,6 +207,10 @@ type framesWrite struct {
 	done chan struct{}
 	err  error
 	took time.Duration
+	// hashes, raws: the frames, for the serial writer
+	// (N42_FRAMES_WRITE_EARLY, lag_frames_early.go).
+	hashes []types.Hash
+	raws   [][]byte
 }
 
 // startFramesWrite writes blk's frames to the frame store on its own
@@ -390,7 +394,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	// So do its frames, which go to the frame store in their own durable
 	// transaction (a block that ends up not written leaves them there, as
 	// content-addressed rows nothing names).
-	frames := startFramesWrite(blk)
+	frames := bc.takeFramesWrite(blk)
 	var logs *logsPrep
 	if lagWritePrepare && len(receipts) > 0 {
 		logs = startLogsPrep(receipts)

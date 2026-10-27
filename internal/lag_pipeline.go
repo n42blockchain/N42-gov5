@@ -482,6 +482,7 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 		} else {
 			bc.startSenderJob(b, nil)
 		}
+		bc.startFramesWriteEarly(b)
 	}
 	if le.started.CompareAndSwap(false, true) {
 		go bc.lagLoop()
@@ -659,6 +660,7 @@ func (bc *BlockChain) lagExecUnqueue(hash types.Hash) {
 	delete(le.queued, hash)
 	le.mu.Unlock()
 	bc.dropAheadPrep(hash)
+	bc.dropFramesWriteEarly(hash)
 }
 
 // lagQueuedTimes returns when hash was queued for the lag executor and the

@@ -186,6 +186,8 @@ type BlockChain struct {
 	lagPipe lagPipeline
 	// lagWrite: the lag executor's ordered writer (lag_writer.go).
 	lagWrite lagWriter
+	// framesQ: early frame-store writes (lag_frames_early.go).
+	framesQ framesQueue
 	// senderJobs: per-block sender recovery started when a block is queued
 	// for the lag executor (sender_prewarm.go).
 	senderJobs senderJobs
