@@ -330,7 +330,7 @@ func (r *ParallelStateReader) recordAccountRead(e *mvEntry, key LocationKey, wri
 // version list: pos+1 under execLean, 0 (none) otherwise or past the
 // hint's range.
 func readHint(pos int) uint32 {
-	if !execLean || pos >= maxReadHint {
+	if !execLean.Load() || pos >= maxReadHint {
 		return 0
 	}
 	return uint32(pos + 1)

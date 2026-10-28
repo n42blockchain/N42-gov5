@@ -39,17 +39,19 @@ import (
 // read's validation starts from the place the read found (beforeHint), a
 // credited account's list starts larger (deltaListCapLean), and the direct
 // transfer path keeps its per-block context (internal/transfer_fast_path.go).
-// Every shortcut gives the answer of the path it skips.
-var execLean = os.Getenv("N42_EXEC_LEAN") == "1"
+// Every shortcut gives the answer of the path it skips. Atomic so a test's
+// SetExecLeanForTest does not race workers left running by another test.
+var execLean atomic.Bool
+
+func init() { execLean.Store(os.Getenv("N42_EXEC_LEAN") == "1") }
 
 // ExecLean reports N42_EXEC_LEAN.
-func ExecLean() bool { return execLean }
+func ExecLean() bool { return execLean.Load() }
 
 // SetExecLeanForTest sets N42_EXEC_LEAN's switch and returns the restore.
 func SetExecLeanForTest(on bool) func() {
-	prev := execLean
-	execLean = on
-	return func() { execLean = prev }
+	prev := execLean.Swap(on)
+	return func() { execLean.Store(prev) }
 }
 
 // LocationKey uniquely identifies a state location that can be read or written.
@@ -301,7 +303,7 @@ func (e *mvEntry) before(txIndex int) int {
 // its answer against the neighbouring versions, so the result is before's
 // for any hint (e.mu held).
 func (e *mvEntry) beforeHint(txIndex, hint int) int {
-	if !execLean {
+	if !execLean.Load() {
 		return e.before(txIndex)
 	}
 	n := len(e.versions)
@@ -416,7 +418,7 @@ func (m *MVS) writeDelta(e *mvEntry, txIndex int, incarnation uint32, delta *uin
 			// A credited account is usually credited again in the block:
 			// start its list at deltaListCap instead of growing it from one.
 			want = deltaListCap
-			if execLean {
+			if execLean.Load() {
 				want = deltaListCapLean
 			}
 			if m.va == nil {
