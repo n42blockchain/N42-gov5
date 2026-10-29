@@ -59,6 +59,7 @@ type eestStateEnv struct {
 	Random        *eest.Big     `json:"currentRandom"`
 	BaseFee       *eest.Big     `json:"currentBaseFee"`
 	ExcessBlobGas *eest.Uint64  `json:"currentExcessBlobGas"`
+	SlotNumber    *eest.Uint64  `json:"slotNumber"`
 }
 
 type eestAccount struct {
@@ -254,6 +255,10 @@ func eestStateHeader(cfg *params.ChainConfig, env *eestStateEnv) *block.Header {
 			excess = uint64(*env.ExcessBlobGas)
 		}
 		h.ExcessBlobGas = &excess
+	}
+	if env.SlotNumber != nil {
+		slot := uint64(*env.SlotNumber)
+		h.SlotNumber = &slot
 	}
 	return h
 }
