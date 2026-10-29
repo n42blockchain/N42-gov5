@@ -163,7 +163,7 @@ func runEESTBlockchainSuite(t *testing.T, suite, label string) {
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				err := runEESTBlockchainFixture(dbDir, &j.fx, label == "engine")
+				err := eest.Guard(func() error { return runEESTBlockchainFixture(dbDir, &j.fx, label == "engine") })
 				var skipErr eestHarnessSkip
 				mu.Lock()
 				switch {

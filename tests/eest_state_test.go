@@ -119,7 +119,7 @@ func TestEESTStateTests(t *testing.T) {
 				for i := range posts {
 					post := &posts[i]
 					id := fmt.Sprintf("%s/%d", name, i)
-					err := runEESTStatePost(&fx, network, post)
+					err := eest.Guard(func() error { return runEESTStatePost(&fx, network, post) })
 					var skipErr eestSkip
 					switch {
 					case errors.As(err, &skipErr):
