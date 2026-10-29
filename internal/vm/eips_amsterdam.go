@@ -58,10 +58,15 @@ func opSlotNum(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 
 // opSlotNumFusaka is SLOTNUM as the N42 Fusaka fork has executed it since
 // activation: it writes the slot into the current stack top instead of
-// pushing it (and so needs a non-empty stack). It is kept, frozen, so blocks
-// of N42 chains past FusakaTime replay unchanged; the Ethereum Amsterdam
-// table uses opSlotNum. Changing it is a consensus change for those chains.
+// pushing it. It is kept, frozen, so blocks of N42 chains past FusakaTime
+// replay unchanged; the Ethereum Amsterdam table uses opSlotNum.
+//
+// On an empty stack it used to dereference nil and panic the node, so no
+// committed block can have executed that case; it is a stack underflow now.
 func opSlotNumFusaka(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if scope.Stack.Len() == 0 {
+		return nil, &ErrStackUnderflow{stackLen: 0, required: 1}
+	}
 	v := scope.Stack.Peek()
 	v.SetUint64(interpreter.evm.Context().Slot)
 	return nil, nil
