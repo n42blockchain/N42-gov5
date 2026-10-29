@@ -187,8 +187,8 @@ func EngineAPIs(api *API) []jsonrpc.API {
 // which takes Prague attributes and must not be mistaken for the Amsterdam
 // method of the same name. getClientCapabilitiesV1 lists it.
 //
-// Osaka reuses newPayloadV4 and forkchoiceUpdatedV3; getPayloadV5 and
-// getBlobsV2 are not served yet and so are not listed.
+// Osaka reuses newPayloadV4 and forkchoiceUpdatedV3 and adds getPayloadV5
+// and getBlobsV2 (EIP-7594 cell proofs).
 func supportedEngineMethods() []string {
 	return []string{
 		"engine_newPayloadV1",
@@ -199,6 +199,7 @@ func supportedEngineMethods() []string {
 		"engine_getPayloadV2",
 		"engine_getPayloadV3",
 		"engine_getPayloadV4",
+		"engine_getPayloadV5",
 		"engine_forkchoiceUpdatedV1",
 		"engine_forkchoiceUpdatedV2",
 		"engine_forkchoiceUpdatedV3",
@@ -206,6 +207,7 @@ func supportedEngineMethods() []string {
 		"engine_getPayloadBodiesByRangeV1",
 		"engine_getBlobsBundleV1",
 		"engine_getBlobsV1",
+		"engine_getBlobsV2",
 		"engine_getBlobScheduleV1",
 		"engine_getClientCapabilitiesV1",
 		"engine_getForkCandidatesV1",
