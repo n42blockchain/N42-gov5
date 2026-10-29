@@ -149,6 +149,19 @@ func (e *EngineAPIV1) ImportSyncedBlock(ctx context.Context, blk *block.Block, w
 	if err := validateExecutionPayloadHeader(header, parent, e.chainConfig()); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
 	}
+	if err := validateWireBlockForkFields(blk, withdrawals, e.chainConfig()); err != nil {
+		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
+	}
+	// EIP-7934: a synced block is held to the same RLP size cap as a payload.
+	if err := validateExecutionPayloadBlockRLPSize(blk, body.Transactions, e.chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: header.WithdrawalsHash != nil,
+		withdrawals:        withdrawals,
+		includeBlobFields:  header.BlobGasUsed != nil,
+		parentBeaconRoot:   header.ParentBeaconRoot,
+		requestsHash:       header.RequestsHash,
+	}); err != nil {
+		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
+	}
 	return e.executeOrValidateWithBody(
 		blk,
 		blockHash,

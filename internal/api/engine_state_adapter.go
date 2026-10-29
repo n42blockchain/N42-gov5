@@ -493,6 +493,17 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 			validationError: err,
 		}, nil
 	}
+	// Body checks newPayload runs before execution. Blocks read back from the
+	// local columnar freezer (allowMissingExpectedBloom) were validated when
+	// first imported and skip them.
+	if !allowMissingExpectedBloom {
+		if err := validateWireBlockBody(blk, a.chainCfg); err != nil {
+			return &enginePayloadExecutionResult{
+				stateRoot:       header.Root,
+				validationError: err,
+			}, nil
+		}
+	}
 	// Keep the staged parent's cumulative lineage for the next overlay even
 	// when execution can read this parent directly from canonical storage.
 	// Dropping it here would reduce every newly staged overlay to a one-block
