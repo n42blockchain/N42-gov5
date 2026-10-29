@@ -899,6 +899,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 				"speedup", fmt.Sprintf("%.2fx", speedup), "txFails", fails, "perr", perr)
 		}
 	}
+	usedGas = internalcore.HeaderGasUsed(a.chainCfg, header, gasPool, usedGas)
 	if usedGas != header.GasUsed {
 		if gasDiag {
 			log.Warn("GAS161 mismatch", "block", blockNum, "got", usedGas, "want", header.GasUsed, "diff", int64(header.GasUsed)-int64(usedGas))

@@ -386,7 +386,7 @@ func ProcessBlock(
 		}
 	}
 
-	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders, BALRaw: balRaw, Requests: requests}, nil
+	return &BlockResult{GasUsed: iinternal.HeaderGasUsed(chainCfg, header, gp, *usedGas), Receipts: receipts, Senders: senders, BALRaw: balRaw, Requests: requests}, nil
 }
 
 // ValidateBlockOutputs checks a replayed block's outputs against the header
