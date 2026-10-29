@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
-	"sort"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -17,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/params"
 )
@@ -762,27 +762,7 @@ func withdrawalsRoot(withdrawals []*Withdrawal) types.Hash {
 }
 
 func executionRequestsHash(requests []hexutil.Bytes) types.Hash {
-	sorted := cloneHexutilBytesList(requests)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if len(sorted[i]) == 0 {
-			return false
-		}
-		if len(sorted[j]) == 0 {
-			return true
-		}
-		return sorted[i][0] < sorted[j][0]
-	})
-	aggregate := sha256.New()
-	for _, request := range sorted {
-		if len(request) <= 1 {
-			continue
-		}
-		sum := sha256.Sum256(request)
-		_, _ = aggregate.Write(sum[:])
-	}
-	var out types.Hash
-	_ = out.SetBytes(aggregate.Sum(nil))
-	return out
+	return internalcore.ExecutionRequestsHash(requests)
 }
 
 func cloneHexutilBytesList(values []hexutil.Bytes) []hexutil.Bytes {

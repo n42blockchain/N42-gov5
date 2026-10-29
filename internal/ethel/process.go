@@ -23,6 +23,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -45,6 +46,9 @@ type BlockResult struct {
 	// BAL fork is active. The executor stores it (keyed by block hash) so the
 	// out-of-band BAL service can serve it. nil when the fork is off.
 	BALRaw []byte
+	// Requests are the EIP-7685 execution requests the block emitted (Prague
+	// on), checked against header.RequestsHash by ValidateBlockOutputs.
+	Requests []hexutil.Bytes
 }
 
 // Trace-mode env vars resolved once at process startup. Reading
@@ -344,7 +348,8 @@ func ProcessBlock(
 	applyEthelWithdrawals(chainCfg, header, ibs, withdrawals)
 
 	// Post-block system calls depend on the receipts emitted by executed transactions.
-	if _, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine); err != nil {
+	requests, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine)
+	if err != nil {
 		return nil, err
 	}
 
@@ -376,5 +381,42 @@ func ProcessBlock(
 		}
 	}
 
-	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders, BALRaw: balRaw}, nil
+	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders, BALRaw: balRaw, Requests: requests}, nil
+}
+
+// ValidateBlockOutputs checks a replayed block's outputs against the header
+// commitments geth's ValidateState checks besides gas used: the logs bloom,
+// the receipts root and, from Prague, the requests hash.
+//
+// The receipts root is checked from Byzantium only: earlier receipts carried
+// an intermediate state root instead of a status, which replay does not
+// compute. A zero header bloom is not compared because the columnar header
+// store (headerc) strips the bloom; the receipts root still commits to every
+// receipt bloom and log.
+func ValidateBlockOutputs(chainCfg *params.ChainConfig, header *block.Header, result *BlockResult) error {
+	if header.Bloom != (block.Bloom{}) {
+		// The block bloom is the union of the receipt blooms execution already
+		// computed, so no log is hashed again.
+		var bloom block.Bloom
+		for _, r := range result.Receipts {
+			for i := range bloom {
+				bloom[i] |= r.Bloom[i]
+			}
+		}
+		if bloom != header.Bloom {
+			return errors.New("logs bloom mismatch")
+		}
+	}
+	if chainCfg.IsByzantium(header.Number.Uint64()) {
+		if got := EthReceiptHash(result.Receipts); got != header.ReceiptHash {
+			return fmt.Errorf("receipts root mismatch: got %s, want %s", got.Hex(), header.ReceiptHash.Hex())
+		}
+	}
+	if chainCfg.IsPrague(header.Time) {
+		got := iinternal.ExecutionRequestsHash(result.Requests)
+		if header.RequestsHash == nil || *header.RequestsHash != got {
+			return fmt.Errorf("requests hash mismatch: got %s, want %v", got.Hex(), header.RequestsHash)
+		}
+	}
+	return nil
 }

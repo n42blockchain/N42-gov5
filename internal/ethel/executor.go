@@ -856,6 +856,17 @@ func (e *Executor) executeBlock(ctx context.Context, tx kv.Tx, blockNum uint64) 
 			return fmt.Errorf("gas mismatch: got %d, want %d", result.GasUsed, header.GasUsed)
 		}
 	}
+	// 5. Verify the remaining header commitments geth's ValidateState checks:
+	//    logs bloom, receipts root and (Prague) requests hash. Skipped under
+	//    N42_TRACE_TX, whose bypass path builds receipts without logs.
+	if traceTxHashEnv == "" {
+		if err := ValidateBlockOutputs(e.chainCfg, header, result); err != nil {
+			if !e.cfg.SkipErrors {
+				return err
+			}
+			log.Warn("Block output mismatch (skipped)", "block", blockNum, "err", err)
+		}
+	}
 
 	t2 := time.Now()
 	// 6. Commit state changes to in-memory buffer.
