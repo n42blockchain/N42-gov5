@@ -72,6 +72,7 @@ const (
 	// solo production the moment the MobileAnchor fork stamped it.
 	hcfBlockAccessListHash = 1 << 19 // BlockAccessListHash != nil (32 B)
 	hcfMobileRegistryRoot  = 1 << 20 // MobileRegistryRoot != nil (32 B)
+	hcfSlotNumber          = 1 << 21 // SlotNumber != nil (uvarint, EIP-7843; payload after MobileRegistryRoot)
 )
 
 // emptyListRoot is DeriveSha of an empty list — the value of TxHash/ReceiptHash/
@@ -191,6 +192,10 @@ func (h *Header) MarshalCompact() []byte {
 	if h.MobileRegistryRoot != nil {
 		flags |= hcfMobileRegistryRoot
 		out = append(out, h.MobileRegistryRoot[:]...)
+	}
+	if h.SlotNumber != nil {
+		flags |= hcfSlotNumber
+		out = putUvarint(out, *h.SlotNumber)
 	}
 
 	out[2] = byte(flags)
@@ -397,6 +402,13 @@ func (h *Header) unmarshalCompact(data []byte) error {
 		var mrr types.Hash
 		copy(mrr[:], b)
 		h.MobileRegistryRoot = &mrr
+	}
+	if flags&hcfSlotNumber != 0 {
+		v, e := uvarint()
+		if e != nil {
+			return e
+		}
+		h.SlotNumber = &v
 	}
 	return nil
 }

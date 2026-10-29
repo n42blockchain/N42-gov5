@@ -98,13 +98,25 @@ type Header struct {
 	// it entirely so pre-fork header hashes are byte-identical.
 	BlockAccessListHash *types.Hash `json:"blockAccessListHash,omitempty" rlp:"optional,nil"` // 22 NEW
 
+	// --- EIP-7843 (Amsterdam / Glamsterdam) ---
+	// The beacon slot of the block, Ethereum's 23rd header field (geth
+	// Header.SlotNumber). It owns this RLP position so Amsterdam headers
+	// decode and hash exactly as on Ethereum.
+	SlotNumber *uint64 `json:"slotNumber,omitempty" rlp:"optional,nil"` // 23 NEW
+
 	// --- N42 native chain: mobile-attestation accumulator anchor (phase 6c) ---
 	// The committed mobile-registry BMT root, stamped by the leader when the
 	// MobileAnchor fork is active. Present only on the n42 native chain; nil on
 	// eth-el (its chainspec never activates the fork), in which case the
 	// rlp:"optional,nil" tag omits it so pre-fork / eth-el header hashes are
 	// byte-identical.
-	MobileRegistryRoot *types.Hash `json:"mobileRegistryRoot,omitempty" rlp:"optional,nil"` // 23 NEW
+	//
+	// It sat at position 23 until 2026-10-29 and moved behind SlotNumber
+	// (EIP-7843 took 23). A header that carries it but no SlotNumber now
+	// encodes an empty placeholder at 23, so blocks stamped before the move
+	// hash differently under this layout; bases are rebuilt by replay-v2,
+	// which does not stamp the root.
+	MobileRegistryRoot *types.Hash `json:"mobileRegistryRoot,omitempty" rlp:"optional,nil"` // 24 MOVED
 
 	hash atomic.Value
 }
@@ -167,7 +179,7 @@ func (h *Header) rlpHash() types.Hash {
 func IsLegacyHeader(h *Header) bool {
 	if h.WithdrawalsHash != nil || h.BlobGasUsed != nil || h.ExcessBlobGas != nil ||
 		h.ParentBeaconRoot != nil || h.RequestsHash != nil || h.BlockAccessListHash != nil ||
-		h.MobileRegistryRoot != nil {
+		h.SlotNumber != nil || h.MobileRegistryRoot != nil {
 		return false
 	}
 	return true
@@ -288,7 +300,8 @@ func (h *Header) Marshal() ([]byte, error) {
 	// Format: [proto bytes][magic:4B][flags:1B][UncleHash:32B][field data...]
 	// flags: bit0=WithdrawalsHash, bit1=ParentBeaconRoot, bit2=RequestsHash,
 	//        bit3=BlobGasUsed present, bit4=ExcessBlobGas present,
-	//        bit5=BlockAccessListHash present, bit6=MobileRegistryRoot present
+	//        bit5=BlockAccessListHash present, bit6=MobileRegistryRoot present,
+	//        bit7=SlotNumber present (8 B LE, written last)
 	var flags byte
 	trailer := make([]byte, 0, 4+1+32+32*4+8*2)
 	trailer = append(trailer, headerTrailerMagic[:]...)
@@ -326,6 +339,13 @@ func (h *Header) Marshal() ([]byte, error) {
 	if h.MobileRegistryRoot != nil {
 		flags |= 0x40
 		trailer = append(trailer, h.MobileRegistryRoot[:]...)
+	}
+	// SlotNumber goes last so trailers written before it existed parse unchanged.
+	if h.SlotNumber != nil {
+		flags |= 0x80
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], *h.SlotNumber)
+		trailer = append(trailer, buf[:]...)
 	}
 	trailer[flagPos] = flags
 
@@ -418,6 +438,11 @@ func (h *Header) parseTrailer(t []byte) {
 		pos += 32
 		h.MobileRegistryRoot = &mrr
 	}
+	if flags&0x80 != 0 && pos+8 <= len(t) {
+		v := binary.LittleEndian.Uint64(t[pos:])
+		pos += 8
+		h.SlotNumber = &v
+	}
 	_ = pos
 }
 
@@ -449,6 +474,7 @@ func CopyHeader(h *Header) *Header {
 	cpy.ParentBeaconRoot = cloneHashPtr(h.ParentBeaconRoot)
 	cpy.RequestsHash = cloneHashPtr(h.RequestsHash)
 	cpy.BlockAccessListHash = cloneHashPtr(h.BlockAccessListHash)
+	cpy.SlotNumber = cloneUint64Ptr(h.SlotNumber)
 	cpy.MobileRegistryRoot = cloneHashPtr(h.MobileRegistryRoot)
 	return &cpy
 }
