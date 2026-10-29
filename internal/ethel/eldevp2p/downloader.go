@@ -727,8 +727,17 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			if d.probeForNewTip(ctx, probeFloor) {
 				continue // tip advanced; loop to import the now-confirmed block
 			}
-			log.Info("eldevp2p: caught up", "head", local, "tip", tip, "probeFloor", probeFloor,
-				"lag", reorgLag, "peers", len(peers))
+			if tip < local {
+				// Every known peer is behind us (or, eth/68-only, advertised no
+				// head) and none served local+1. That is not "caught up": the
+				// network head is unknown. Saying so keeps an operator from
+				// taking a node held by lagging peers for one at the tip.
+				log.Info("eldevp2p: waiting for a peer ahead of the local head", "head", local,
+					"bestPeerHead", tip, "peers", len(peers))
+			} else {
+				log.Info("eldevp2p: caught up", "head", local, "tip", tip, "probeFloor", probeFloor,
+					"lag", reorgLag, "peers", len(peers))
+			}
 			time.Sleep(12 * time.Second)
 			continue
 		}
