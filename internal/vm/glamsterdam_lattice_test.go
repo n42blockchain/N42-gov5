@@ -78,8 +78,8 @@ func TestGlamsterdamTablesPinned(t *testing.T) {
 		jt   JumpTable
 		want string
 	}{
-		{"glamsterdam", newGlamsterdamInstructionSet(), "2fb1e9b936251bcad2c65759db337dd55379aeb1aaf5451216d1dad6033c283e"},
-		{"glamsterdam-eof", newGlamsterdamEOFInstructionSet(), "af264a0cbc70e50891899d20df57c7473a0ec7f1392522ea9fcaffec3d472d26"},
+		{"glamsterdam", newGlamsterdamInstructionSet(), "d692e569baf712d9223db90799de61448dc18211810fb62d6ded9a025fb529ee"},
+		{"glamsterdam-eof", newGlamsterdamEOFInstructionSet(), "cf5be0c09c71dd80867e0db940f7a7846b34e9671ac23991d31e14f3b77c5aa2"},
 	} {
 		if got := jumpTableFingerprint(tc.jt); got != tc.want {
 			t.Errorf("%s fingerprint %s, want %s", tc.name, got, tc.want)
