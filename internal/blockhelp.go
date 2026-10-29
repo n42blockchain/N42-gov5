@@ -99,6 +99,11 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		}
 	}
 
+	if evm.ChainRules().IsGlamsterdam {
+		// EIP-8037: besides its execution gas a system call gets a state-gas
+		// reservoir sized for SYSTEM_MAX_SSTORES_PER_CALL new slots.
+		evm.SetStateGasReservoir(params.SystemMaxSStoresPerCallEIP8037 * params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037)
+	}
 	ret, _, err := evm.Call(
 		vm.AccountRef(msg.From()),
 		*msg.To(),
