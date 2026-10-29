@@ -73,7 +73,8 @@ func TestIsGlamsterdam(t *testing.T) {
 }
 
 func TestGlamsterdamForkInheritance(t *testing.T) {
-	// When Glamsterdam is active, Fusaka (and all earlier forks) should also be active.
+	// When Glamsterdam is active, Osaka (and all earlier forks) should also
+	// be active, but not the N42-private Fusaka gate.
 	cfg := &ChainConfig{
 		ChainID:         big.NewInt(1),
 		GlamsterdamTime: big.NewInt(100),
@@ -82,8 +83,8 @@ func TestGlamsterdamForkInheritance(t *testing.T) {
 	if !rules.IsGlamsterdam {
 		t.Fatal("expected IsGlamsterdam to be true at activation time")
 	}
-	if !rules.IsFusaka {
-		t.Fatal("expected IsFusaka to be true when IsGlamsterdam is true (fork inheritance)")
+	if rules.IsFusaka {
+		t.Fatal("expected IsFusaka to stay false: Glamsterdam must not imply the N42-private Fusaka gate")
 	}
 	if !rules.IsOsaka {
 		t.Fatal("expected IsOsaka to be true when IsGlamsterdam is true (transitive fork inheritance)")
