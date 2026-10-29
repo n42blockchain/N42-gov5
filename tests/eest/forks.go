@@ -37,6 +37,9 @@ const (
 	// EnvFilter optionally restricts runs to fixture files whose path
 	// (relative to the suite directory, slash-separated) contains it.
 	EnvFilter = "N42_EEST_FILTER"
+	// EnvWorkers sets how many fixtures the blockchain runners execute in
+	// parallel (each on its own chaindata). Default 1.
+	EnvWorkers = "N42_EEST_WORKERS"
 	// EnvReport optionally names a TSV file that receives one line per
 	// executed case (suite, fork, file, test, status, error).
 	EnvReport = "N42_EEST_REPORT"
@@ -363,6 +366,15 @@ func (b FixtureBlobConfig) toParams() (*params.BlobConfig, error) {
 
 // Dir returns the fixture root from EnvDir, or "" when the runners are off.
 func Dir() string { return os.Getenv(EnvDir) }
+
+// Workers returns the EnvWorkers parallelism (at least 1).
+func Workers() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(EnvWorkers)))
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
 
 // SelectedForks returns the networks to run.
 func SelectedForks() map[string]bool {
