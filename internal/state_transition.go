@@ -756,6 +756,9 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 		}
 
 		wasEmpty := st.state.Empty(signer)
+		// The refund keys on existence in the trie, not emptiness: an empty
+		// account that predates EIP-158 still exists (geth: state.Exist).
+		existed := st.state.Exist(signer)
 
 		// Account must not have non-delegation code
 		existingCode := st.state.GetCode(signer)
@@ -764,7 +767,7 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 		}
 
 		rules := st.evm.ChainRules()
-		if !wasEmpty && params.PerEmptyAccountCost > params.PerAuthBaseCost && !rules.IsGlamsterdam {
+		if existed && params.PerEmptyAccountCost > params.PerAuthBaseCost && !rules.IsGlamsterdam {
 			// Pre-Amsterdam 7702 refund for pre-existing authorities.
 			// EIP-2780 removes it: the (lower) intrinsic auth charge
 			// applies unconditionally, with no refund.
