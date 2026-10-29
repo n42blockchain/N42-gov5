@@ -197,15 +197,15 @@ func (v *InstrumentedVM) EOFCreate2(caller ContractRef, code []byte, gas uint64,
 // VMInterpreter Passthrough Methods
 // =============================================================================
 
-func (v *InstrumentedVM) ChainRules() *params.Rules          { return v.inner.ChainRules() }
-func (v *InstrumentedVM) ChainConfig() *params.ChainConfig   { return v.inner.ChainConfig() }
+func (v *InstrumentedVM) ChainRules() *params.Rules                 { return v.inner.ChainRules() }
+func (v *InstrumentedVM) ChainConfig() *params.ChainConfig          { return v.inner.ChainConfig() }
 func (v *InstrumentedVM) IntraBlockState() evmtypes.IntraBlockState { return v.inner.IntraBlockState() }
-func (v *InstrumentedVM) Context() evmtypes.BlockContext     { return v.inner.Context() }
-func (v *InstrumentedVM) TxContext() evmtypes.TxContext      { return v.inner.TxContext() }
-func (v *InstrumentedVM) Config() Config                     { return v.inner.Config() }
-func (v *InstrumentedVM) SetCallGasTemp(gas uint64)          { v.inner.SetCallGasTemp(gas) }
-func (v *InstrumentedVM) CallGasTemp() uint64                { return v.inner.CallGasTemp() }
-func (v *InstrumentedVM) Cancelled() bool                    { return v.inner.Cancelled() }
+func (v *InstrumentedVM) Context() evmtypes.BlockContext            { return v.inner.Context() }
+func (v *InstrumentedVM) TxContext() evmtypes.TxContext             { return v.inner.TxContext() }
+func (v *InstrumentedVM) Config() Config                            { return v.inner.Config() }
+func (v *InstrumentedVM) SetCallGasTemp(gas uint64)                 { v.inner.SetCallGasTemp(gas) }
+func (v *InstrumentedVM) CallGasTemp() uint64                       { return v.inner.CallGasTemp() }
+func (v *InstrumentedVM) Cancelled() bool                           { return v.inner.Cancelled() }
 func (v *InstrumentedVM) Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState) {
 	v.inner.Reset(txCtx, ibs)
 }
@@ -216,13 +216,13 @@ func (v *InstrumentedVM) Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlock
 
 // VMStats holds accumulated VM statistics.
 type VMStats struct {
-	CallCount        uint64
-	CallTime         time.Duration
-	CallMaxDepth     uint64
-	CreateCount      uint64
-	CreateTime       time.Duration
-	StaticCallCount  uint64
-	StaticCallTime   time.Duration
+	CallCount         uint64
+	CallTime          time.Duration
+	CallMaxDepth      uint64
+	CreateCount       uint64
+	CreateTime        time.Duration
+	StaticCallCount   uint64
+	StaticCallTime    time.Duration
 	DelegateCallCount uint64
 	DelegateCallTime  time.Duration
 }
@@ -230,13 +230,13 @@ type VMStats struct {
 // Stats returns the accumulated statistics.
 func (v *InstrumentedVM) Stats() VMStats {
 	return VMStats{
-		CallCount:        atomic.LoadUint64(&v.callCount),
-		CallTime:         time.Duration(atomic.LoadUint64(&v.callTimeNs)),
-		CallMaxDepth:     atomic.LoadUint64(&v.callMaxDepth),
-		CreateCount:      atomic.LoadUint64(&v.createCount),
-		CreateTime:       time.Duration(atomic.LoadUint64(&v.createTimeNs)),
-		StaticCallCount:  atomic.LoadUint64(&v.staticCallCount),
-		StaticCallTime:   time.Duration(atomic.LoadUint64(&v.staticCallTimeNs)),
+		CallCount:         atomic.LoadUint64(&v.callCount),
+		CallTime:          time.Duration(atomic.LoadUint64(&v.callTimeNs)),
+		CallMaxDepth:      atomic.LoadUint64(&v.callMaxDepth),
+		CreateCount:       atomic.LoadUint64(&v.createCount),
+		CreateTime:        time.Duration(atomic.LoadUint64(&v.createTimeNs)),
+		StaticCallCount:   atomic.LoadUint64(&v.staticCallCount),
+		StaticCallTime:    time.Duration(atomic.LoadUint64(&v.staticCallTimeNs)),
 		DelegateCallCount: atomic.LoadUint64(&v.delegateCallCount),
 		DelegateCallTime:  time.Duration(atomic.LoadUint64(&v.delegateCallTimeNs)),
 	}
@@ -289,4 +289,3 @@ func (v *InstrumentedVM) Inner() *EVM {
 // =============================================================================
 
 var _ VMInterpreter = (*InstrumentedVM)(nil)
-
