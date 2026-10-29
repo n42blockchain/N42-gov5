@@ -42,6 +42,9 @@ type Message struct {
 	tip        uint256.Int
 	blobFeeCap *uint256.Int
 	blobHashes []types.Hash
+	// isBlobTx marks a message derived from a blob (type-3) transaction, so
+	// one without blob hashes stays distinguishable from a non-blob message.
+	isBlobTx   bool
 	data       []byte
 	accessList AccessList
 	authList   AuthorizationList
@@ -57,6 +60,7 @@ func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uin
 		amount:     *amount,
 		gasLimit:   gasLimit,
 		blobHashes: append([]types.Hash(nil), blobHashes...),
+		isBlobTx:   blobHashes != nil,
 		data:       data,
 		accessList: accessList,
 		checkNonce: checkNonce,
@@ -86,6 +90,7 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 		feeCap:     copyUint256OrZero(tx.GasFeeCap()),
 		tip:        copyUint256OrZero(tx.GasTipCap()),
 		blobHashes: append([]types.Hash(nil), tx.BlobHashes()...),
+		isBlobTx:   tx.Type() == BlobTxType,
 		to:         tx.To(),
 		amount:     copyUint256OrZero(tx.Value()),
 		data:       tx.Data(),
@@ -134,6 +139,7 @@ func (m Message) FeeCap() *uint256.Int        { return &m.feeCap }
 func (m Message) Tip() *uint256.Int           { return &m.tip }
 func (m Message) BlobFeeCap() *uint256.Int    { return m.blobFeeCap }
 func (m Message) BlobHashes() []types.Hash    { return m.blobHashes }
+func (m Message) IsBlobTx() bool              { return m.isBlobTx }
 func (m Message) Value() *uint256.Int         { return &m.amount }
 func (m Message) Gas() uint64                 { return m.gasLimit }
 func (m Message) Nonce() uint64               { return m.nonce }
