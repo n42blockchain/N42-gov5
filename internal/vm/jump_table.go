@@ -104,20 +104,22 @@ func validateAndFillMaxStack(jt *JumpTable) {
 }
 
 // newGlamsterdamInstructionSet returns the Glamsterdam (Amsterdam EL)
-// instruction set: Fusaka + the scheduled Amsterdam EIPs.
+// instruction set: Osaka + the scheduled Amsterdam EIPs. It is built on
+// Osaka, not on the N42-private Fusaka table, following Ethereum's fork
+// lattice (Amsterdam implies Osaka, never Fusaka).
 //
 //   - EIP-8024: DUPN/SWAPN/EXCHANGE for legacy code (backward-compatible
 //     immediates; the EOF variants under the same bytes remain EOF-only)
 //   - EIP-8037/8038: state-creation and state-access gas — SSTORE moves to
 //     the Amsterdam schedule (STORAGE_WRITE 10000, fresh slot +97920, clear
 //     refund 11616); account-creation charges live in gasCall/evm.create
-//   - EIP-7843 SLOTNUM activates here for chains without a Fusaka preset
+//   - EIP-7843: SLOTNUM (N42 chains already have it from their Fusaka preset)
 //
 // The former EIP-7904 repricing (demoted to Informational upstream) is gone;
 // its constants remain in params for chains that shipped the old preset.
 func newGlamsterdamInstructionSet() JumpTable {
-	instructionSet := newFusakaInstructionSet()
-	// 7843 (SLOTNUM) is already active via the inherited Fusaka set.
+	instructionSet := newOsakaInstructionSet()
+	enable7843(&instructionSet)
 	enable8024(&instructionSet)
 	instructionSet[SSTORE].dynamicGas = gasSStoreAmsterdam
 	// EIP-8038: the flat 32000 CREATE charge is replaced by CREATE_ACCESS
@@ -125,7 +127,7 @@ func newGlamsterdamInstructionSet() JumpTable {
 	// evm.create. Same split for CREATE2.
 	instructionSet[CREATE].constantGas = params.CreateAccessEIP8038
 	instructionSet[CREATE2].constantGas = params.CreateAccessEIP8038
-	// SELFDESTRUCT: enable6780 (inherited via Fusaka) wired the Cancun gas
+	// SELFDESTRUCT: enable6780 (inherited via Cancun) wired the Cancun gas
 	// fn with HARDCODED 2929 constants; re-wire the ACL-based fn whose
 	// cold-access and empty-beneficiary-sweep branches carry the 8038/8037
 	// repricing (cold 3000; sweep 9000+183600). Refunds stay off (3529).

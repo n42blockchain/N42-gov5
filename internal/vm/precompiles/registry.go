@@ -143,8 +143,9 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 	}
 
 	// Osaka additions (EIP-7823/7883: MODEXP updates + EIP-7951: P-256 precompile)
-	// Fusaka inherits the same precompile behavior today.
-	if rules.IsOsaka || rules.IsFusaka {
+	// Ethereum Osaka semantics; the N42-private Fusaka gate and Glamsterdam
+	// both imply IsOsaka in params.Rules, so they inherit these.
+	if rules.IsOsaka {
 		// Update MODEXP with EIP-7823 (input size limits) and EIP-7883 (gas cost increase)
 		r.register(5, NewBigModExp(true, true, true))
 
