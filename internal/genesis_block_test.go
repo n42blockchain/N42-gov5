@@ -88,6 +88,31 @@ func TestGenesisBlockToBlockUsesEthereumEmptyRoots(t *testing.T) {
 	}
 }
 
+// An Amsterdam genesis header carries the empty block access list hash and
+// the slot number of the genesis spec.
+func TestGenesisBlockToBlockAmsterdamSlotNumber(t *testing.T) {
+	t.Parallel()
+
+	genesis := &GenesisBlock{
+		GenesisConfig: &conf.Genesis{
+			Config:     &params.ChainConfig{CancunBlock: big.NewInt(0), PragueTime: big.NewInt(0), OsakaTime: big.NewInt(0), GlamsterdamTime: big.NewInt(0)},
+			Alloc:      conf.GenesisAlloc{},
+			SlotNumber: 999,
+		},
+	}
+	blk, _, err := genesis.ToBlock()
+	if err != nil {
+		t.Fatalf("ToBlock() error = %v", err)
+	}
+	header := blk.Header().(*block.Header)
+	if header.SlotNumber == nil || *header.SlotNumber != 999 {
+		t.Fatalf("SlotNumber = %v, want 999", header.SlotNumber)
+	}
+	if header.BlockAccessListHash == nil || *header.BlockAccessListHash != hash.EmptyUncleHash {
+		t.Fatalf("BlockAccessListHash = %v, want the empty list hash", header.BlockAccessListHash)
+	}
+}
+
 func TestGenesisBlockToBlockUsesExplicitHeaderFields(t *testing.T) {
 	t.Parallel()
 

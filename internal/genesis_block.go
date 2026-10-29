@@ -295,10 +295,10 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		}
 		if cfg.IsGlamsterdam(uint64(g.GenesisConfig.Timestamp)) {
 			// EIP-7928: the genesis block's access list is empty; EIP-7843:
-			// it is at slot 0.
+			// its slot number comes from the genesis spec (0 by default).
 			balHash := hash.EmptyUncleHash // keccak256(rlp([]))
 			head.BlockAccessListHash = &balHash
-			head.SlotNumber = new(uint64)
+			head.SlotNumber = uint64Ptr(g.GenesisConfig.SlotNumber)
 		}
 	}
 
