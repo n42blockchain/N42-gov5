@@ -214,9 +214,8 @@ func TestCL_ExchangeCapabilities(t *testing.T) {
 	// the critical ones.
 	required := []string{
 		"engine_newPayloadV4",
-		"engine_forkchoiceUpdatedV4",
+		"engine_forkchoiceUpdatedV3",
 		"engine_getPayloadV4",
-		"engine_exchangeCapabilities",
 	}
 	have := make(map[string]bool, len(methods))
 	for _, m := range methods {
@@ -225,6 +224,13 @@ func TestCL_ExchangeCapabilities(t *testing.T) {
 	for _, m := range required {
 		if !have[m] {
 			t.Errorf("exchangeCapabilities: missing %q", m)
+		}
+	}
+	// The spec forbids listing exchangeCapabilities itself, and N42's own
+	// forkchoiceUpdatedV4 is not the Amsterdam method of that name.
+	for _, m := range []string{"engine_exchangeCapabilities", "engine_forkchoiceUpdatedV4"} {
+		if have[m] {
+			t.Errorf("exchangeCapabilities: must not list %q", m)
 		}
 	}
 }
