@@ -161,7 +161,8 @@ func validateExecutionPayloadBlockRLPSize(blk block.IBlock, rawTxs []hexutil.Byt
 		return nil
 	}
 	rules := cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
-	if rules == nil || (!rules.IsOsaka && !rules.IsFusaka) {
+	// EIP-7934 is an Ethereum Osaka rule; Fusaka and Glamsterdam imply IsOsaka.
+	if rules == nil || !rules.IsOsaka {
 		return nil
 	}
 	size, err := executionPayloadBlockRLPSize(blk, rawTxs, cfg, opts)
