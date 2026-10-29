@@ -21,6 +21,8 @@ type BlobSchedule struct {
 	BPO3   *BlobConfig `json:"BPO3,omitempty"`
 	BPO4   *BlobConfig `json:"BPO4,omitempty"`
 	BPO5   *BlobConfig `json:"BPO5,omitempty"`
+	// Amsterdam is the blob config from the Glamsterdam fork on.
+	Amsterdam *BlobConfig `json:"Amsterdam,omitempty"`
 }
 
 var defaultBlobSchedule = map[string]BlobConfig{
@@ -72,6 +74,8 @@ func (c *ChainConfig) blobConfigForTimestamp(time uint64) *BlobConfig {
 		return nil
 	}
 	switch {
+	case c.IsGlamsterdam(time) && c.BlobSchedule.Amsterdam != nil:
+		return c.BlobSchedule.Amsterdam
 	case c.IsBPO5(time) && c.BlobSchedule.BPO5 != nil:
 		return c.BlobSchedule.BPO5
 	case c.IsBPO4(time) && c.BlobSchedule.BPO4 != nil:
