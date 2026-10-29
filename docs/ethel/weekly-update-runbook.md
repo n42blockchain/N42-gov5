@@ -414,7 +414,11 @@ including `wk-eth-el` with `-tags n42el`); logs in `D:\weekly-20261022\`.
      below the local head) and logged `caught up ... lag=0` every 12 s while the network
      head was 8.6k blocks ahead; `eth_blockNumber` answers 0 until the first block is
      imported. Judge catch-up by the RPC height against the highest recent peer
-     `handshake complete head=`, not by that line.
+     `handshake complete head=`, not by that line. Fixed after this cycle (not yet
+     seen live): `f6499111` logs `waiting for a peer ahead of the local head` instead
+     when every peer is behind, and `ea9dcc95` makes `eth_blockNumber` report the seed
+     head before the first import. A node held by lagging peers still sits at the seed
+     head, so the RPC-vs-peer-head check above stays the acceptance test.
   2. **Good peers disconnect within about 1 s** (`too many peers` sent by the remote); of
      1,255 peers only three stayed, all lagging. archive started importing after ~17
      min; minimal and full connected at once. The code under `internal/devp2p`,
