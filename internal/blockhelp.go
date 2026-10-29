@@ -120,15 +120,16 @@ func appendExecutionRequest(requests []hexutil.Bytes, requestType byte, payload 
 	return append(requests, hexutil.Bytes(grouped))
 }
 
-// CollectDepositExecutionRequests extracts EIP-6110 deposit requests from block receipts.
-func CollectDepositExecutionRequests(receipts block.Receipts) ([]hexutil.Bytes, error) {
+// CollectDepositExecutionRequests extracts EIP-6110 deposit requests from block
+// receipts, taking DepositEvent logs from the given deposit contract only.
+func CollectDepositExecutionRequests(receipts block.Receipts, depositContract types.Address) ([]hexutil.Bytes, error) {
 	var serialized []byte
 	for _, receipt := range receipts {
 		if receipt == nil {
 			continue
 		}
 		for _, lg := range receipt.Logs {
-			if lg == nil || lg.Address != vm.DepositContractAddress {
+			if lg == nil || lg.Address != depositContract {
 				continue
 			}
 			if len(lg.Topics) == 0 || lg.Topics[0] != vm.DepositEventSignature {
@@ -278,7 +279,7 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 		return nil, nil
 	}
 
-	requests, err := CollectDepositExecutionRequests(receipts)
+	requests, err := CollectDepositExecutionRequests(receipts, chainConfig.DepositContract())
 	if err != nil {
 		return nil, err
 	}
