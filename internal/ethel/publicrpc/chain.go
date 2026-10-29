@@ -62,6 +62,22 @@ func (c *ethelChain) withTx(fn func(tx kv.Tx)) {
 
 func (c *ethelChain) Config() *params.ChainConfig { return c.cfg }
 
+// HeadNumber reports the eth-el head even when its block is not in MDBX (a
+// snapshot seed before the first import), so eth_blockNumber does not answer 0
+// for a node sitting at the seed head. CurrentBlock stays nil in that case: the
+// "latest" tag must not resolve to a block this DB cannot serve.
+func (c *ethelChain) HeadNumber() (uint64, bool) {
+	var (
+		n  uint64
+		ok bool
+	)
+	c.withTx(func(tx kv.Tx) {
+		n = headBlockNumber(tx)
+		ok = n > 0
+	})
+	return n, ok
+}
+
 func (c *ethelChain) CurrentBlock() block.IBlock {
 	var out block.IBlock
 	c.withTx(func(tx kv.Tx) {
