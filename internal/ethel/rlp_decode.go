@@ -59,8 +59,8 @@ func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 	if n < 15 {
 		return nil, fmt.Errorf("ethel: header has %d fields, need >= 15", n)
 	}
-	if n > 22 {
-		return nil, fmt.Errorf("ethel: header has %d fields, maximum supported is 22", n)
+	if n > 23 {
+		return nil, fmt.Errorf("ethel: header has %d fields, maximum supported is 23", n)
 	}
 
 	h := &block.Header{}
@@ -180,6 +180,13 @@ func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 			return nil, fmt.Errorf("ethel: decode blockAccessListHash: %w", err)
 		}
 		h.BlockAccessListHash = &balHash
+	}
+	if n > 22 { // EIP-7843 (Amsterdam): slotNumber
+		var slot uint64
+		if err := rlp.DecodeBytes(elems[22], &slot); err != nil {
+			return nil, fmt.Errorf("ethel: decode slotNumber: %w", err)
+		}
+		h.SlotNumber = &slot
 	}
 
 	return h, nil
