@@ -173,12 +173,37 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
 
-	// Engine API spec: newPayloadV4 must only be used for Pectra+ payloads.
-	// Only enforce when PectraTime is explicitly configured (nil = not activated yet).
-	if cfg := e.v1.chainConfig(); cfg != nil && cfg.PectraTime != nil && !cfg.IsPectra(uint64(payload.Timestamp)) {
-		return nil, &engineUnsupportedForkError{msg: "newPayloadV4 called for pre-Pectra timestamp, use newPayloadV3"}
+	// Engine API spec: newPayloadV4 is for Prague and Osaka payloads.
+	if !engineForkIn(e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), engineForkPrague, engineForkOsaka) {
+		return nil, &engineUnsupportedForkError{msg: "newPayloadV4 called for a timestamp outside Prague/Osaka"}
 	}
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests)
+}
 
+// NewPayloadV4AnyFork runs the newPayloadV4 validation and import without
+// the fork-range check. It is for in-process callers (the embedded consensus
+// client in cmd/eth-el) that import historical blocks of every fork through
+// the V4 shape. A package function, not a method, so the RPC server does not
+// expose it.
+func NewPayloadV4AnyFork(
+	e *EngineAPIv4,
+	payload *ExecutionPayloadV4,
+	expectedBlobVersionedHashes []types.Hash,
+	parentBeaconBlockRoot *types.Hash,
+	executionRequests []hexutil.Bytes,
+) (*PayloadStatusV1, error) {
+	if payload == nil {
+		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests)
+}
+
+func (e *EngineAPIv4) newPayloadV4(
+	payload *ExecutionPayloadV4,
+	expectedBlobVersionedHashes []types.Hash,
+	parentBeaconBlockRoot *types.Hash,
+	executionRequests []hexutil.Bytes,
+) (*PayloadStatusV1, error) {
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
 	}
@@ -299,6 +324,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 // engine_getPayloadV4
 func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV4, error) {
 	if built := e.v1.builtPayload(payloadID); built != nil && built.v4 != nil {
+		if !builtPayloadForkIn(e.v1.chainConfig(), built, engineForkPrague) {
+			return nil, &engineUnsupportedForkError{msg: "getPayloadV4 called for a payload outside Prague"}
+		}
 		return &GetPayloadResponseV4{
 			ExecutionPayload:      built.v4,
 			BlockValue:            enginePayloadBlockValue(built.blockValue),
@@ -346,6 +374,23 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
+	nextNumber := uint64(0)
+	if head != nil && head.Number64() != nil {
+		nextNumber = head.Number64().Uint64() + 1
+	}
+	// This N42 variant builds Prague-shaped payloads (execution requests)
+	// that only getPayloadV4 returns. It is not the Amsterdam
+	// forkchoiceUpdatedV4 and is not advertised in exchangeCapabilities;
+	// consensus clients build with forkchoiceUpdatedV3.
+	if !engineForkIn(e.v1.chainConfig(), nextNumber, uint64(attrs.Timestamp), engineForkPrague, engineForkOsaka) {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV4 called for pre-Prague timestamp, use forkchoiceUpdatedV3"}
+	}
+	return e.buildAndStorePayloadV4(head, headHash, attrs), nil
+}
+
+// buildAndStorePayloadV4 builds a Prague+ payload on head, stores every
+// payload representation under its id and returns the forkchoice response.
+func (e *EngineAPIv4) buildAndStorePayloadV4(head block.IBlock, headHash types.Hash, attrs *PayloadAttributesV4) *ForkchoiceUpdatedResponseV3 {
 	payload, executionRequests, blockValue, blobsBundle := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
 	if payload == nil {
 		payload = buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
@@ -354,7 +399,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 		blobsBundle = emptyBlobsBundle()
 	}
 	if payload == nil {
-		return invalidForkchoiceResponse("failed to build payload"), nil
+		return invalidForkchoiceResponse("failed to build payload")
 	}
 	withdrawalsRoot := withdrawalsRoot(attrs.Withdrawals)
 	var targetBlobBytes [8]byte
@@ -381,7 +426,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 			executionRequests: cloneHexutilBytesList(executionRequests),
 		})
 	}
-	return validForkchoiceResponse(headHash, &payloadID), nil
+	return validForkchoiceResponse(headHash, &payloadID)
 }
 
 // GetBlobsV1 retrieves blob sidecars by versioned hashes.
@@ -393,6 +438,12 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Hash) ([]*BlobAndProofV1, error) {
 	if len(versionedHashes) > 128 {
 		return nil, &engineTooLargeRequestError{msg: fmt.Sprintf("requested blob count too large: %d", len(versionedHashes))}
+	}
+	// Osaka replaces the V1 proofs with cell proofs (getBlobsV2), so V1 is
+	// served for Cancun and Prague heads only, as in geth.
+	if head := blockHeader(e.v1.currentHead()); head != nil && head.Number64() != nil &&
+		!engineForkIn(e.v1.chainConfig(), head.Number64().Uint64(), head.Time, engineForkCancun, engineForkPrague) {
+		return nil, &engineUnsupportedForkError{msg: "getBlobsV1 is only available at Cancun/Prague"}
 	}
 	if len(versionedHashes) == 0 {
 		return []*BlobAndProofV1{}, nil
@@ -767,7 +818,7 @@ type ClientCapabilities struct {
 func (e *EngineAPIv4) GetClientCapabilitiesV1(ctx context.Context) (*ClientCapabilities, error) {
 	return &ClientCapabilities{
 		SupportedForks:   supportedEngineForks(),
-		SupportedMethods: supportedEngineMethods(),
+		SupportedMethods: clientCapabilityMethods(),
 		ProtocolVersion:  "4.0.0",
 		CanCancelFork:    true,
 	}, nil

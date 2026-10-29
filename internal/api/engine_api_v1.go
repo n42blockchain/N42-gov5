@@ -181,6 +181,14 @@ func EngineAPIs(api *API) []jsonrpc.API {
 	}
 }
 
+// supportedEngineMethods is the engine_exchangeCapabilities answer: every
+// method this node serves, except engine_exchangeCapabilities itself (the
+// spec forbids listing it) and the N42-specific engine_forkchoiceUpdatedV4,
+// which takes Prague attributes and must not be mistaken for the Amsterdam
+// method of the same name. getClientCapabilitiesV1 lists it.
+//
+// Osaka reuses newPayloadV4 and forkchoiceUpdatedV3; getPayloadV5 and
+// getBlobsV2 are not served yet and so are not listed.
 func supportedEngineMethods() []string {
 	return []string{
 		"engine_newPayloadV1",
@@ -194,15 +202,21 @@ func supportedEngineMethods() []string {
 		"engine_forkchoiceUpdatedV1",
 		"engine_forkchoiceUpdatedV2",
 		"engine_forkchoiceUpdatedV3",
-		"engine_forkchoiceUpdatedV4",
+		"engine_getPayloadBodiesByHashV1",
+		"engine_getPayloadBodiesByRangeV1",
 		"engine_getBlobsBundleV1",
 		"engine_getBlobsV1",
 		"engine_getBlobScheduleV1",
 		"engine_getClientCapabilitiesV1",
 		"engine_getForkCandidatesV1",
-		"engine_exchangeCapabilities",
 		"engine_exchangeTransitionConfigurationV1",
 	}
+}
+
+// clientCapabilityMethods is the engine_getClientCapabilitiesV1 method list:
+// the exchangeCapabilities set plus the N42-specific methods.
+func clientCapabilityMethods() []string {
+	return append(supportedEngineMethods(), "engine_forkchoiceUpdatedV4", "engine_exchangeCapabilities")
 }
 
 func supportedEngineForks() []string {
@@ -253,6 +267,9 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloadV2) (*PayloadStatusV1, error) {
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	if !engineForkIn(e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), engineForkParis, engineForkShanghai) {
+		return nil, &engineUnsupportedForkError{msg: "newPayloadV2 called for Cancun+ timestamp, use newPayloadV3"}
 	}
 	shanghai := isShanghaiActive(e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp))
 	if shanghai && payload.Withdrawals == nil {
@@ -309,7 +326,7 @@ func (e *EngineAPIV1) GetPayloadV1(ctx context.Context, payloadID PayloadID) (*E
 // GetPayloadV2 retrieves a Shanghai payload.
 func (e *EngineAPIV1) GetPayloadV2(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV2, error) {
 	if built := e.builtPayload(payloadID); built != nil && built.v2 != nil {
-		if built.v3 != nil {
+		if built.v3 != nil || !builtPayloadForkIn(e.chainConfig(), built, engineForkParis, engineForkShanghai) {
 			return nil, &engineUnsupportedForkError{msg: "getPayloadV2 called for Cancun+ payload, use getPayloadV3"}
 		}
 		return &GetPayloadResponseV2{

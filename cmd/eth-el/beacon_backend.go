@@ -269,7 +269,7 @@ func (b *ethELBackend) ExecutePayload(
 		reqs[i] = hexutil.Bytes(append([]byte(nil), r...))
 	}
 
-	status, err := b.engineV4.NewPayloadV4(ctx, payload, vh, parentRoot, reqs)
+	status, err := api.NewPayloadV4AnyFork(b.engineV4, payload, vh, parentRoot, reqs)
 	if err != nil {
 		return execution_client.PayloadStatusNotValidated, err
 	}
@@ -572,7 +572,7 @@ func (b *ethELBackend) GetAssembledBlock(
 	var pid api.PayloadID
 	copy(pid[:], idBytes)
 
-	resp, err := b.engineBlob.GetPayloadV3(ctx, pid)
+	resp, err := api.GetPayloadV3AnyFork(b.engineBlob, pid)
 	if err != nil {
 		// Builder cache miss surfaces as a non-typed error in
 		// internal/api; surface it as a stable sentinel so Caplin can
@@ -649,7 +649,7 @@ func (b *ethELBackend) insertBlockViaNewPayload(ctx context.Context, blk *deptyp
 		v := types.Hash(*h.ParentBeaconBlockRoot)
 		parentRoot = &v
 	}
-	status, err := b.engineV4.NewPayloadV4(ctx, payload, nil, parentRoot, nil)
+	status, err := api.NewPayloadV4AnyFork(b.engineV4, payload, nil, parentRoot, nil)
 	if err != nil {
 		return fmt.Errorf("NewPayloadV4: %w", err)
 	}

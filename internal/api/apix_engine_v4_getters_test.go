@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"math/big"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -55,6 +56,11 @@ func TestEngineAPIv4GetForkCandidatesV1(t *testing.T) {
 func TestEngineAPIv4GetBlobsV1(t *testing.T) {
 	fx := apiXGetChainFixture(t)
 	api := apiXNewAPIForFixture(fx)
+	// getBlobsV1 serves Cancun and Prague heads only; the fixture chain
+	// stops at London, so schedule Cancun from genesis for this call.
+	cfg := *fx.Config
+	cfg.CancunBlock = big.NewInt(0)
+	api.chainConfig = &cfg
 	bcAPI := NewBlockChainAPI(api)
 	eng := NewEngineAPIv4(bcAPI)
 

@@ -48,13 +48,13 @@ func TestSupportedEngineMethodsContainLegacyAndExchangeEndpoints(t *testing.T) {
 		"engine_forkchoiceUpdatedV1",
 		"engine_forkchoiceUpdatedV2",
 		"engine_forkchoiceUpdatedV3",
-		"engine_forkchoiceUpdatedV4",
+		"engine_getPayloadBodiesByHashV1",
+		"engine_getPayloadBodiesByRangeV1",
 		"engine_getBlobsBundleV1",
 		"engine_getBlobsV1",
 		"engine_getBlobScheduleV1",
 		"engine_getClientCapabilitiesV1",
 		"engine_getForkCandidatesV1",
-		"engine_exchangeCapabilities",
 		"engine_exchangeTransitionConfigurationV1",
 	}
 	if !reflect.DeepEqual(got, want) {
