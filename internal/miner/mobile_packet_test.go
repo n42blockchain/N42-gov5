@@ -4,6 +4,7 @@
 package miner
 
 import (
+	"bytes"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/streamverify"
@@ -219,6 +221,10 @@ func TestFillTransactionsReadLogMatchesReplay(t *testing.T) {
 	if len(env.txs) != 2 {
 		t.Fatalf("included %d txs, want 2", len(env.txs))
 	}
+	// Nothing was reverted: the packet ships this log as recorded, no rebuild.
+	if rec.Diverged() {
+		t.Fatal("a fill with no failed candidate marked the read log diverged")
+	}
 
 	replay := streamverify.NewReadLogRecorder(base, nil)
 	ribs := state.New(replay)
@@ -239,5 +245,284 @@ func TestFillTransactionsReadLogMatchesReplay(t *testing.T) {
 		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Fatalf("read %d: leader logged %+v, replay read %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// mpTransfer signs a DynamicFeeTx with an explicit nonce and tip, so a test can
+// hand the pool candidates that fail (nonce gap, unaffordable value) and price
+// them ahead of the ones that are included.
+func (f *mnTChainFixture) mpTransfer(t *testing.T, senderIdx int, nonce, tip uint64, to types.Address, value *uint256.Int) *transaction.Transaction {
+	t.Helper()
+	inner := &transaction.DynamicFeeTx{
+		ChainID:   uint256.MustFromBig(f.Config.ChainID),
+		Nonce:     nonce,
+		GasTipCap: uint256.NewInt(tip),
+		GasFeeCap: uint256.NewInt(1_000_000_000_000),
+		Gas:       500_000,
+		To:        &to,
+		Value:     value,
+	}
+	signed, err := transaction.SignTx(transaction.NewTx(inner), f.Signer, f.SenderKeys[senderIdx])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+// mpReplayReadLog executes txs the way a verifier does -- block-start system
+// calls, then each transaction, on a fresh IntraBlockState -- and returns the
+// reads it made against the parent state.
+func mpReplayReadLog(t *testing.T, w *worker, env *environment, base state.StateReader, txs []*transaction.Transaction) []evmsdk.ReadLogEntry {
+	t.Helper()
+	replay := streamverify.NewReadLogRecorder(base, nil)
+	ribs := state.New(replay)
+	if err := internal.ProcessExecutionBlockStart(env.header.ParentBeaconRoot, w.chainConfig, ribs, env.header, w.engine); err != nil {
+		t.Fatalf("replay block start: %v", err)
+	}
+	gp := new(common.GasPool).AddGas(env.header.GasLimit)
+	var used uint64
+	for i, tx := range txs {
+		ribs.Prepare(tx.Hash(), types.Hash{}, i)
+		if _, _, err := internal.ApplyTransaction(w.chainConfig, func(uint64) types.Hash { return types.Hash{} }, w.engine,
+			&env.coinbase, gp, ribs, state.NewNoopWriter(), env.header, tx, &used, vm.Config{}); err != nil {
+			t.Fatalf("replay tx %d: %v", i, err)
+		}
+	}
+	return replay.Log()
+}
+
+// mpAssertSameReadLog fails at the first read where the packet's log and the
+// replay's disagree.
+func mpAssertSameReadLog(t *testing.T, gotData []byte, want []evmsdk.ReadLogEntry) {
+	t.Helper()
+	wantData := evmsdk.EncodeReadLog(want)
+	if bytes.Equal(gotData, wantData) {
+		return
+	}
+	got, err := evmsdk.DecodeReadLog(gotData)
+	if err != nil {
+		t.Fatalf("decode packet read log: %v", err)
+	}
+	wantRT, err := evmsdk.DecodeReadLog(wantData)
+	if err != nil {
+		t.Fatalf("decode replay read log: %v", err)
+	}
+	for i := 0; i < len(got) && i < len(wantRT); i++ {
+		if !reflect.DeepEqual(got[i], wantRT[i]) {
+			t.Fatalf("read %d of %d: packet logs %+v, a replay of the block reads %+v", i, len(wantRT), got[i], wantRT[i])
+		}
+	}
+	t.Fatalf("packet logs %d reads, a replay of the block makes %d", len(got), len(wantRT))
+}
+
+// mpFillWithRecorder runs block start and the fill the way commitWork does,
+// with the read-log recorder over the parent state, and returns the recorder
+// and the parent reader.
+func mpFillWithRecorder(t *testing.T, w *worker, f *mnTChainFixture, env *environment) (*streamverify.ReadLogRecorder, state.StateReader) {
+	t.Helper()
+	roTx, err := f.DB.BeginRo(w.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(roTx.Rollback)
+	base := state.NewPlainStateReader(roTx)
+	rec := streamverify.NewReadLogRecorder(base, nil)
+	env.untracedReader = base
+	ibs := state.New(rec)
+	if err := internal.ProcessExecutionBlockStart(env.header.ParentBeaconRoot, w.chainConfig, ibs, env.header, w.engine); err != nil {
+		t.Fatal(err)
+	}
+	getHeader := func(types.Hash, uint64) *block.Header { return nil }
+	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil); err != nil {
+		t.Fatalf("fillTransactions: %v", err)
+	}
+	return rec, base
+}
+
+// mpFailingCandidatesPool hands the fill two candidates priced first that fail
+// after reading their sender (a nonce gap, a value the sender cannot afford)
+// and two included transactions crediting exactly those senders.
+func mpFailingCandidatesPool(t *testing.T, f *mnTChainFixture) map[types.Address][]*transaction.Transaction {
+	t.Helper()
+	s := f.Senders
+	const high, low = 5_000_000_000, 2_000_000_000
+	gap := f.mpTransfer(t, 2, 5, high, s[0], uint256.NewInt(1))
+	poor := f.mpTransfer(t, 3, 0, high, s[0], new(uint256.Int).Mul(uint256.NewInt(200), uint256.NewInt(1e18)))
+	inc0 := f.mpTransfer(t, 0, 0, low, s[2], uint256.NewInt(1_000))
+	inc1 := f.mpTransfer(t, 1, 0, low-1, s[3], uint256.NewInt(2_000)) // distinct tip: a fixed order
+	return map[types.Address][]*transaction.Transaction{s[0]: {inc0}, s[1]: {inc1}, s[2]: {gap}, s[3]: {poor}}
+}
+
+// A candidate that reads state and then fails is reverted and left out of the
+// block, but its reads stayed in the log and the accounts it loaded stayed
+// cached, so a later included transaction touching them read nothing. The
+// verifier never runs the failed candidate: every read after it landed on the
+// wrong entry and the block failed verification on every device.
+func TestMobilePacketReadLogExcludesFailedCandidates(t *testing.T) {
+	f := mnTNewChainFixture(t)
+	w := mnTNewIdleWorker(t, f, &mnTStubTxsPool{})
+	w.setCoinbase(f.Coinbase)
+	_, env := mnTPrepareEnvAndState(t, w, f)
+	w.txsPool = &mnTStubTxsPool{pending: mpFailingCandidatesPool(t, f)}
+
+	rec, base := mpFillWithRecorder(t, w, f, env)
+	if len(env.txs) != 2 {
+		t.Fatalf("included %d txs, want 2 (the gap and the unaffordable candidate fail)", len(env.txs))
+	}
+
+	pkt := mpBuildPacket(t, w, env, rec)
+	mpAssertSameReadLog(t, pkt.ReadLogData, mpReplayReadLog(t, w, env, base, env.txs))
+
+	// And a device accepts it: the verifier's own re-execution over the
+	// packet reproduces the header's receipts root.
+	res, err := evmsdk.ExecuteAndVerifyV2(pkt, evmsdk.NewCodeCache(16), w.chainConfig)
+	if err != nil {
+		t.Fatalf("verifier rejected the packet: %v", err)
+	}
+	if res.TxCount != 2 {
+		t.Fatalf("verifier executed %d txs, want 2", res.TxCount)
+	}
+}
+
+// The read-log fix is an observer: the same fill with and without the
+// recorder includes the same transactions with the same receipts and leaves
+// the same state root.
+func TestMobilePacketRecorderDoesNotChangeBlock(t *testing.T) {
+	type out struct {
+		txs      []types.Hash
+		receipts types.Hash
+		root     types.Hash
+	}
+	f := mnTNewChainFixture(t)
+	pending := mpFailingCandidatesPool(t, f)
+	build := func(record bool) out {
+		w := mnTNewIdleWorker(t, f, &mnTStubTxsPool{})
+		w.setCoinbase(f.Coinbase)
+		_, env := mnTPrepareEnvAndState(t, w, f)
+		// The fill consumes the map it is handed; give each build its own.
+		own := make(map[types.Address][]*transaction.Transaction, len(pending))
+		for a, l := range pending {
+			own[a] = append([]*transaction.Transaction(nil), l...)
+		}
+		w.txsPool = &mnTStubTxsPool{pending: own}
+		roTx, err := f.DB.BeginRo(w.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(roTx.Rollback)
+		var reader state.StateReader = state.NewPlainStateReader(roTx)
+		env.untracedReader = reader
+		if record {
+			reader = streamverify.NewReadLogRecorder(reader, nil)
+		}
+		ibs := state.New(reader)
+		getHeader := func(types.Hash, uint64) *block.Header { return nil }
+		if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil); err != nil {
+			t.Fatalf("fillTransactions: %v", err)
+		}
+		o := out{receipts: internal.ReceiptsRootFor(w.chainConfig, env.header.Number.Uint64(), env.receipts), root: ibs.IntermediateRoot()}
+		for _, tx := range env.txs {
+			o.txs = append(o.txs, tx.Hash())
+		}
+		return o
+	}
+	plain, recorded := build(false), build(true)
+	if len(plain.txs) != 2 {
+		t.Fatalf("included %d txs, want 2", len(plain.txs))
+	}
+	if plain.root == (types.Hash{}) {
+		t.Fatal("the fill computed no state root to compare")
+	}
+	if !reflect.DeepEqual(plain, recorded) {
+		t.Fatalf("the recorder changed the block:\nwithout %+v\nwith    %+v", plain, recorded)
+	}
+}
+
+// mpBuildPacket binds the build's receipts root into the header (as
+// FinalizeAndAssemble does) and builds the packet through the job commit
+// attaches to the task.
+func mpBuildPacket(t *testing.T, w *worker, env *environment, rec *streamverify.ReadLogRecorder) *evmsdk.StreamPacket {
+	t.Helper()
+	env.header.ReceiptHash = internal.ReceiptsRootFor(w.chainConfig, env.header.Number.Uint64(), env.receipts)
+	pkt, _, err := w.mobilePacketJobFor(env, rec).buildSealed(block.NewBlock(env.header, env.txs))
+	if err != nil {
+		t.Fatalf("buildSealed: %v", err)
+	}
+	return pkt
+}
+
+// A candidate the gas pool cannot hold fails (ErrGasLimitReached) after its
+// sender was read; the account it loaded is credited by an included tx.
+func TestMobilePacketReadLogExcludesGasLimitCandidate(t *testing.T) {
+	f := mnTNewChainFixture(t)
+	s := f.Senders
+	// The log carries no keys: give the included sender a state the hog's
+	// sender does not share, or a swapped order would compare equal.
+	f.mnTBuildAndInsert(t, []*transaction.Transaction{f.mpTransfer(t, 0, 0, 2_000_000_000, s[1], uint256.NewInt(7))})
+	hog := f.mpTransfer(t, 2, 0, 5_000_000_000, s[0], uint256.NewInt(1))
+	hog = mpWithGas(t, f, 2, hog, 40_000_000) // above the block gas limit
+	inc := f.mpTransfer(t, 0, 1, 2_000_000_000, s[2], uint256.NewInt(1_000))
+
+	w := mnTNewIdleWorker(t, f, &mnTStubTxsPool{})
+	w.setCoinbase(f.Coinbase)
+	_, env := mnTPrepareEnvAndState(t, w, f)
+	w.txsPool = &mnTStubTxsPool{pending: map[types.Address][]*transaction.Transaction{s[0]: {inc}, s[2]: {hog}}}
+
+	rec, base := mpFillWithRecorder(t, w, f, env)
+	if len(env.txs) != 1 || env.txs[0].Hash() != inc.Hash() {
+		t.Fatalf("included %d txs, want only the transfer", len(env.txs))
+	}
+	mpAssertSameReadLog(t, mpBuildPacket(t, w, env, rec).ReadLogData, mpReplayReadLog(t, w, env, base, env.txs))
+	if !rec.Diverged() {
+		t.Fatal("a reverted candidate did not mark the read log diverged")
+	}
+}
+
+// mpWithGas re-signs tx with a different gas limit.
+func mpWithGas(t *testing.T, f *mnTChainFixture, senderIdx int, tx *transaction.Transaction, gas uint64) *transaction.Transaction {
+	t.Helper()
+	to := *tx.To()
+	inner := &transaction.DynamicFeeTx{
+		ChainID:   uint256.MustFromBig(f.Config.ChainID),
+		Nonce:     tx.Nonce(),
+		GasTipCap: tx.GasTipCap(),
+		GasFeeCap: tx.GasFeeCap(),
+		Gas:       gas,
+		To:        &to,
+		Value:     tx.Value(),
+	}
+	signed, err := transaction.SignTx(transaction.NewTx(inner), f.Signer, f.SenderKeys[senderIdx])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+// The parallel fill (N42_MINER_PARALLEL_FILL=1) reads through its workers'
+// own readers, around the recorder. Its log is always rebuilt, and the
+// rebuild either reproduces the replay exactly or fails the packet; it never
+// ships a log a device would consume shifted.
+func TestMobilePacketParallelFillNeverShipsShiftedLog(t *testing.T) {
+	t.Setenv("N42_MINER_PARALLEL_FILL", "1")
+	f := mnTNewChainFixture(t)
+	w := mnTNewIdleWorker(t, f, &mnTStubTxsPool{})
+	w.setCoinbase(f.Coinbase)
+	_, env := mnTPrepareEnvAndState(t, w, f)
+	w.txsPool = &mnTStubTxsPool{pending: mpFailingCandidatesPool(t, f)}
+
+	rec, base := mpFillWithRecorder(t, w, f, env)
+	if len(env.txs) == 0 {
+		t.Fatal("the parallel fill included nothing")
+	}
+	env.header.ReceiptHash = internal.ReceiptsRootFor(w.chainConfig, env.header.Number.Uint64(), env.receipts)
+	pkt, _, err := w.mobilePacketJobFor(env, rec).buildSealed(block.NewBlock(env.header, env.txs))
+	if err != nil {
+		t.Logf("parallel fill: packet dropped: %v", err)
+	} else {
+		t.Logf("parallel fill: log rebuilt (%d txs)", len(env.txs))
+		mpAssertSameReadLog(t, pkt.ReadLogData, mpReplayReadLog(t, w, env, base, env.txs))
+	}
+	if !rec.Diverged() {
+		t.Fatal("the parallel fill did not mark the read log diverged")
 	}
 }
