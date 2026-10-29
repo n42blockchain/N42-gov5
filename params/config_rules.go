@@ -113,7 +113,7 @@ type Rules struct {
 	IsHomestead, IsTangerineWhistle, IsSpuriousDragon           bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul     bool
 	IsBerlin, IsLondon, IsParis, IsShanghai, IsCancun, IsPrague bool
-	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam                  bool // Pectra: EIP-7702; Osaka: Fusaka-EL set; Fusaka: N42 Native-AA extension; Glamsterdam: Amsterdam set
+	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam                  bool // Pectra: EIP-7702; Osaka: Fusaka-EL set; Fusaka: N42 Native-AA extension (N42 chains only); Glamsterdam: Amsterdam set (implies Osaka, not Fusaka)
 	IsEOF                                                       bool // EVM Object Format — N42 experimental gate, not on any scheduled ETH fork
 	IsNano, IsMoran                                             bool
 	IsEip1559FeeCollector                                       bool
@@ -196,8 +196,12 @@ func (r *Rules) applyForkInheritance() {
 		return
 	}
 	// Walk the fork chain top-down: each fork implies all earlier forks.
+	// Glamsterdam (Ethereum Amsterdam) follows Osaka directly; it must NOT
+	// imply Fusaka, which is an N42-private gate (native AA extension) that
+	// only N42 chainspecs schedule. Fusaka sits beside Glamsterdam on top of
+	// Osaka, so both inherit the Ethereum lattice through IsOsaka.
 	if r.IsGlamsterdam {
-		r.IsFusaka = true
+		r.IsOsaka = true
 	}
 	if r.IsFusaka {
 		r.IsOsaka = true
