@@ -4,19 +4,14 @@
 // Compatibility helpers that map N42 chain configuration to the Ethereum
 // devp2p handshake. networkID resolves the numeric network id from a
 // ChainConfig, and newForkID computes the eth/69 forkID checksum chain
-// from block- and time-based hardfork schedules.
+// from block- and time-based hardfork schedules (internal/forkid, shared
+// with eth_config).
 
 package devp2p
 
 import (
-	"encoding/binary"
-	"hash/crc32"
-	"math/big"
-	"reflect"
-	"slices"
-	"strings"
-
 	n42types "github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/forkid"
 	n42params "github.com/n42blockchain/N42/params"
 )
 
@@ -34,88 +29,10 @@ func networkID(cfg *n42params.ChainConfig) uint64 {
 }
 
 func newForkID(cfg *n42params.ChainConfig, genesisHash n42types.Hash, genesisTime, head, time uint64) forkID {
-	hash := crc32.ChecksumIEEE(genesisHash.Bytes())
-	forksByBlock, forksByTime := gatherForks(cfg, genesisTime)
-	for _, fork := range forksByBlock {
-		if fork <= head {
-			hash = checksumUpdate(hash, fork)
-			continue
-		}
-		return forkID{Hash: checksumToBytes(hash), Next: fork}
-	}
-	for _, fork := range forksByTime {
-		if fork <= time {
-			hash = checksumUpdate(hash, fork)
-			continue
-		}
-		return forkID{Hash: checksumToBytes(hash), Next: fork}
-	}
-	return forkID{Hash: checksumToBytes(hash)}
-}
-
-func gatherForks(cfg *n42params.ChainConfig, genesisTime uint64) ([]uint64, []uint64) {
-	if cfg == nil {
-		return nil, nil
-	}
-	kind := reflect.TypeOf(*cfg)
-	conf := reflect.ValueOf(cfg).Elem()
-	var (
-		forksByBlock []uint64
-		forksByTime  []uint64
-	)
-	for i := 0; i < kind.NumField(); i++ {
-		field := kind.Field(i)
-		if field.Type != reflect.TypeOf((*big.Int)(nil)) {
-			continue
-		}
-		value := conf.Field(i).Interface().(*big.Int)
-		if value == nil {
-			continue
-		}
-		switch {
-		case strings.HasSuffix(field.Name, "Block"):
-			forksByBlock = append(forksByBlock, value.Uint64())
-		case strings.HasSuffix(field.Name, "Time"):
-			forksByTime = append(forksByTime, value.Uint64())
-		}
-	}
-	slices.Sort(forksByBlock)
-	slices.Sort(forksByTime)
-
-	forksByBlock = dedupeUint64s(forksByBlock)
-	forksByTime = dedupeUint64s(forksByTime)
-
-	for len(forksByBlock) > 0 && forksByBlock[0] == 0 {
-		forksByBlock = forksByBlock[1:]
-	}
-	for len(forksByTime) > 0 && forksByTime[0] <= genesisTime {
-		forksByTime = forksByTime[1:]
-	}
-	return forksByBlock, forksByTime
-}
-
-func dedupeUint64s(values []uint64) []uint64 {
-	if len(values) < 2 {
-		return values
-	}
-	out := values[:1]
-	for i := 1; i < len(values); i++ {
-		if values[i] == out[len(out)-1] {
-			continue
-		}
-		out = append(out, values[i])
-	}
-	return out
-}
-
-func checksumUpdate(hash uint32, fork uint64) uint32 {
-	var blob [8]byte
-	binary.BigEndian.PutUint64(blob[:], fork)
-	return crc32.Update(hash, crc32.IEEETable, blob[:])
+	id := forkid.NewID(cfg, genesisHash, genesisTime, head, time)
+	return forkID{Hash: id.Hash, Next: id.Next}
 }
 
 func checksumToBytes(hash uint32) [4]byte {
-	var blob [4]byte
-	binary.BigEndian.PutUint32(blob[:], hash)
-	return blob
+	return forkid.ChecksumToBytes(hash)
 }
