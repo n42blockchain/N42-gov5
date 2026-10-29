@@ -676,23 +676,33 @@ func (s *BlockChainAPI) GetBalance(ctx context.Context, address avmcommon.Addres
 	return (*hexutil.Big)(balance.ToBig()), nil
 }
 
+// headNumberReader is implemented by chain backends whose head can be ahead of
+// the newest block they hold: an eth-el datadir seeded from a snapshot has the
+// head's state and head marker, but the head block itself only in headerc/bodyc
+// until the first peer block is imported, so CurrentBlock is nil until then.
+type headNumberReader interface {
+	HeadNumber() (uint64, bool)
+}
+
 func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 	currentBlock := s.api.BlockChain().CurrentBlock()
 	if s.api != nil && s.api.engineOverlay != nil {
 		currentBlock = s.api.engineOverlay.headBlock(currentBlock)
 	}
-	if currentBlock == nil {
-		return hexutil.Uint64(0)
+	var number uint64
+	if currentBlock != nil {
+		if header := currentBlock.Header(); header != nil {
+			if num := header.Number64(); num != nil {
+				number = num.Uint64()
+			}
+		}
 	}
-	header := currentBlock.Header()
-	if header == nil {
-		return hexutil.Uint64(0)
+	if hr, ok := s.api.BlockChain().(headNumberReader); ok {
+		if head, ok := hr.HeadNumber(); ok && head > number {
+			number = head
+		}
 	}
-	num := header.Number64()
-	if num == nil {
-		return hexutil.Uint64(0)
-	}
-	return hexutil.Uint64(num.Uint64())
+	return hexutil.Uint64(number)
 }
 
 // EarliestBlock returns the earliest block number that still has full data
