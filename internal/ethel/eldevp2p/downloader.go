@@ -936,6 +936,11 @@ func (d *Downloader) syncMissingAncestor(ctx context.Context, target types.Hash)
 		if err != nil {
 			return fmt.Errorf("assemble missing ancestor %d: %w", hdr.Number64().Uint64(), err)
 		}
+		if d.exec != nil {
+			if _, err := checkWireBlockSize(d.exec.ChainConfig(), hdr, bodies[i]); err != nil {
+				return fmt.Errorf("missing ancestor %d: %w", hdr.Number64().Uint64(), err)
+			}
+		}
 		status, latestValid, err := importer(blk, withdrawals)
 		if err != nil {
 			return fmt.Errorf("import missing ancestor %d: %w", hdr.Number64().Uint64(), err)
@@ -1568,6 +1573,21 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 				"block", n, "got", got.Hex(), "want", hdr.TxHash.Hex())
 			d.buffer.drop(n)
 			break
+		}
+		// EIP-7934: from Osaka the block's RLP encoding is capped (geth
+		// ValidateBody). A padded body is refetched; a block that is itself
+		// oversized is invalid.
+		if refetch, serr := checkWireBlockSize(d.exec.ChainConfig(), hdr, body); serr != nil {
+			if refetch {
+				log.Warn("eldevp2p: oversized body — refetch", "block", n, "err", serr)
+				d.buffer.drop(n)
+				break
+			}
+			log.Warn("eldevp2p: block invalid", "block", n, "err", serr)
+			d.reportInvalidAncestor(rejectedBranchTip(headers, headerIndex), hdr.ParentHash)
+			tx.Rollback()
+			d.adapter.DiscardReorgJournal()
+			return committed - local, committed
 		}
 		// Per-block root verification (ExecutePayloadFromWire computes the
 		// incremental root and checks it against the wire header.Root). State

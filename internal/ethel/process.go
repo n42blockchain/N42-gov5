@@ -115,6 +115,12 @@ func ProcessBlock(
 	precomputedSenders []types.Address,
 	stateWriter ...state.StateWriter,
 ) (*BlockResult, error) {
+	// EIP-7934: from Osaka the block's RLP encoding is capped, checked before
+	// execution as geth's ValidateBody does.
+	if err := validateBlockRLPSize(chainCfg, header, txs, uncles, withdrawals); err != nil {
+		return nil, err
+	}
+
 	usedGas := new(uint64)
 	gp := new(common.GasPool)
 	gp.AddGas(header.GasLimit)
