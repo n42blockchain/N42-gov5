@@ -52,6 +52,9 @@ func transferReadTable(t *testing.T, tx kv.Tx, name string) []transferDiskRow {
 func TestTransferProcessorQMDBPersistence(t *testing.T) {
 	cfg, header, txs, reader, _ := transferFixtureN(t, 9, 2048)
 	cfg.PragueTime, cfg.OsakaTime = nil, nil
+	// A QMDB chain is an N42 native chain: EIP-4788 writes the beacon-roots
+	// slots directly, so the code-less beacon account below still gets them.
+	cfg.Consensus = params.HotStuffConsensus
 	beaconRoot := types.Hash{31: 0x42}
 	header.ParentBeaconRoot = &beaconRoot
 	beaconAccount := account.NewAccount()

@@ -447,6 +447,20 @@ func (c *ChainConfig) UsesBorSystemCallContext() bool {
 	return c != nil && c.Bor != nil
 }
 
+// UsesDirectBeaconRootWrites reports whether EIP-4788 is applied by writing the
+// beacon-roots ring buffer slots directly instead of making the system call
+// into the beacon-roots contract. N42 native chains (HotStuff, APoS consensus)
+// were produced with the direct write: their state roots, the replay engine and
+// the mobile verifier's positional read log all depend on it, so they keep it.
+// Every other chain follows Ethereum (geth ProcessBeaconBlockRoot) and calls
+// the contract, so a chain without contract code gets no writes.
+func (c *ChainConfig) UsesDirectBeaconRootWrites() bool {
+	if c == nil {
+		return false
+	}
+	return c.Consensus == HotStuffConsensus || c.Consensus == AposConsensu || c.HotStuff != nil || c.Apos != nil
+}
+
 func (c *ChainConfig) UsesParliaRules() bool {
 	return c != nil && c.Parlia != nil
 }

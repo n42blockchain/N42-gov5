@@ -1430,6 +1430,18 @@ func (sdb *IntraBlockState) Prepare(thash, bhash types.Hash, ti int) {
 	}
 }
 
+// ResetAccessList empties the EIP-2929 access list without touching the
+// transaction hash/index that Prepare also sets. System calls made outside a
+// transaction use it so their warm addresses and slots never leak into the
+// next transaction.
+func (sdb *IntraBlockState) ResetAccessList() {
+	if sdb.accessList == nil {
+		sdb.accessList = newAccessList()
+	} else {
+		sdb.accessList.Reset()
+	}
+}
+
 // clearJournalAndRefund resets per-transaction ephemeral state.
 // Reuses existing journal and transientStorage backing maps to
 // avoid ~2000 map allocations per block (1000 tx × 2 maps).
