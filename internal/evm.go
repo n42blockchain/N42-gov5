@@ -79,6 +79,12 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 		headerNumber = number.Uint64()
 	}
 
+	// EIP-7843: SLOTNUM reads the header's slot number on Amsterdam blocks.
+	var slot uint64
+	if header.SlotNumber != nil && chainCfg != nil && chainCfg.IsGlamsterdam(header.Time) {
+		slot = *header.SlotNumber
+	}
+
 	return evmtypes.BlockContext{
 		CanTransfer:   CanTransfer,
 		Transfer:      policy.transferFunc(),
@@ -92,6 +98,7 @@ func NewEVMBlockContext(header *block.Header, blockHashFunc func(n uint64) types
 		ExcessBlobGas: excessBlobGas,
 		GasLimit:      header.GasLimit,
 		PrevRanDao:    prevRandDao,
+		Slot:          slot,
 	}
 }
 
