@@ -24,6 +24,7 @@ package kzg
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 
@@ -279,8 +280,19 @@ func ValidateBlobSidecar(sidecar *transaction.BlobTxSidecar, expectedHashes []ty
 	if nBlobs != len(sidecar.Commitments) {
 		return ErrCommitmentCountMismatch
 	}
-	if nBlobs != len(sidecar.Proofs) {
-		return ErrProofCountMismatch
+	// Version 0 carries one blob proof per blob, version 1 (EIP-7594)
+	// CellsPerExtBlob cell proofs per blob.
+	switch sidecar.Version {
+	case transaction.BlobSidecarVersion0:
+		if nBlobs != len(sidecar.Proofs) {
+			return ErrProofCountMismatch
+		}
+	case transaction.BlobSidecarVersion1:
+		if nBlobs*CellsPerExtBlob != len(sidecar.Proofs) {
+			return ErrProofCountMismatch
+		}
+	default:
+		return fmt.Errorf("%w: %d", ErrSidecarVersion, sidecar.Version)
 	}
 	if nBlobs != len(expectedHashes) {
 		return ErrHashCountMismatch
@@ -294,8 +306,54 @@ func ValidateBlobSidecar(sidecar *transaction.BlobTxSidecar, expectedHashes []ty
 		}
 	}
 
-	// Verify blob proofs
+	if sidecar.Version == transaction.BlobSidecarVersion1 {
+		return VerifyCellProofs(sidecar.Blobs, sidecar.Commitments, sidecar.Proofs)
+	}
 	return VerifyBlobProofBatch(sidecar.Blobs, sidecar.Commitments, sidecar.Proofs)
+}
+
+// ValidateBlobSidecarForFork validates a pooled blob transaction's sidecar
+// under the fork rule of EIP-7594: from Osaka only version-1 sidecars (cell
+// proofs) are accepted, before Osaka only version-0 sidecars (blob proofs),
+// as geth's pool does.
+func ValidateBlobSidecarForFork(sidecar *transaction.BlobTxSidecar, expectedHashes []types.Hash, osaka bool) error {
+	if sidecar == nil {
+		return ErrSidecarMissing
+	}
+	want := transaction.BlobSidecarVersion0
+	if osaka {
+		want = transaction.BlobSidecarVersion1
+	}
+	if sidecar.Version != want {
+		return fmt.Errorf("%w: got %d, want %d", ErrSidecarVersion, sidecar.Version, want)
+	}
+	return ValidateBlobSidecar(sidecar, expectedHashes)
+}
+
+// SidecarToV1 converts a version-0 sidecar in place to version 1 by
+// computing the cell proofs of every blob. A version-1 sidecar is left as is.
+func SidecarToV1(sidecar *transaction.BlobTxSidecar) error {
+	if sidecar == nil {
+		return ErrSidecarMissing
+	}
+	switch sidecar.Version {
+	case transaction.BlobSidecarVersion1:
+		return nil
+	case transaction.BlobSidecarVersion0:
+	default:
+		return fmt.Errorf("%w: %d", ErrSidecarVersion, sidecar.Version)
+	}
+	proofs := make([]Proof, 0, len(sidecar.Blobs)*CellsPerExtBlob)
+	for i := range sidecar.Blobs {
+		cellProofs, err := ComputeCellProofs(&sidecar.Blobs[i])
+		if err != nil {
+			return err
+		}
+		proofs = append(proofs, cellProofs...)
+	}
+	sidecar.Version = transaction.BlobSidecarVersion1
+	sidecar.Proofs = proofs
+	return nil
 }
 
 // =============================================================================
@@ -315,4 +373,5 @@ var (
 	ErrVersionedHashMismatch   = errors.New("kzg: versioned hash mismatch")
 	ErrInvalidProof            = errors.New("kzg: invalid proof")
 	ErrFieldElementOverflow    = errors.New("kzg: field element overflow")
+	ErrSidecarVersion          = errors.New("kzg: unexpected blob sidecar version")
 )
