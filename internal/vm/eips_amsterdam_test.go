@@ -185,6 +185,28 @@ func TestAmsterdamConstants(t *testing.T) {
 
 // --- EIP-7843: SLOTNUM ---
 
+// The N42 Fusaka table keeps the SLOTNUM it has executed since FusakaTime:
+// the slot overwrites the stack top and the stack does not grow. Only the
+// Amsterdam table pushes.
+func TestFusakaSlotNumKeepsN42Semantics(t *testing.T) {
+	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
+	evm.context.Slot = 0x1234
+	interp := &EVMInterpreter{VM: &VM{evm: evm}}
+	scope := createTestScope([]byte{byte(SLOTNUM)})
+	scope.Stack.Push(uint256.NewInt(7))
+	pc := uint64(0)
+	jt := newFusakaInstructionSet()
+	if _, err := jt[SLOTNUM].execute(&pc, interp, scope); err != nil {
+		t.Fatalf("SLOTNUM: %v", err)
+	}
+	if scope.Stack.Len() != 1 || scope.Stack.Peek().Uint64() != 0x1234 {
+		t.Fatalf("Fusaka SLOTNUM: stack len %d top %d, want 1 and %d", scope.Stack.Len(), scope.Stack.Peek().Uint64(), 0x1234)
+	}
+	if got := newGlamsterdamInstructionSet()[SLOTNUM].execute; got == nil {
+		t.Fatal("Amsterdam table has no SLOTNUM")
+	}
+}
+
 // SLOTNUM pops nothing and pushes the slot: on an empty stack it must leave
 // exactly one item holding BlockContext.Slot.
 func TestEIP7843SlotNumPushes(t *testing.T) {
