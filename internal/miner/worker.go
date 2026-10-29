@@ -2009,6 +2009,22 @@ func (w *worker) workLoop(recommit time.Duration) error {
 // parallelFillEnabled gates the builder's Block-STM fill (N42_MINER_PARALLEL_FILL=1).
 func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") == "1" }
 
+// markReadLogDiverged flags the build's mobile read log (the recorder is the
+// IntraBlockState's own reader when a packet sink is wired) as no longer a
+// replay of the included transactions. A candidate that read state and was
+// then reverted and left out keeps its reads in the log, and the objects it
+// loaded stay cached in the IntraBlockState, so a later included transaction
+// touching them reads nothing; verifiers, which consume the log by position
+// and never run the candidate, would read every later entry shifted. The
+// packet job rebuilds a flagged log from the recorded values (mobilePacketJob
+// .readLog), off the critical path. Execution is not touched: forgetting the
+// cached objects instead would put consensus state behind a read-log fix.
+func markReadLogDiverged(ibs *state.IntraBlockState) {
+	if rec, ok := ibs.GetStateReader().(*streamverify.ReadLogRecorder); ok {
+		rec.MarkDiverged()
+	}
+}
+
 // staleTrimReader is the reader the stale-nonce trim reads accounts through:
 // the build's untraced reader when it has one, else the state's own reader.
 func staleTrimReader(env *environment, ibs *state.IntraBlockState) state.StateReader {
@@ -2158,6 +2174,10 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			if balCap != nil {
 				balCap.DiscardTx()
 			}
+			// Whatever the failure, the candidate may have read state that
+			// stays logged and cached after the revert (see
+			// markReadLogDiverged).
+			markReadLogDiverged(ibs)
 			ibs.RevertToSnapshot(snap)
 			env.gasPool = new(common.GasPool).AddGas(gasSnap)
 			header.GasUsed = gasUsedSnap
@@ -2226,6 +2246,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				sizeLimiter.add(bundleSize)
 			} else {
 				// Revert entire bundle.
+				markReadLogDiverged(ibs)
 				ibs.RevertToSnapshot(snap)
 				env.gasPool = new(common.GasPool).AddGas(gasSnap)
 				header.GasUsed = gasUsedSnap
@@ -2347,6 +2368,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				txSet.Shift()
 			}
 			dPickP := time.Since(tPickP)
+			// The workers read through their own readers, around the
+			// recorder, and drop candidates that fail their pre-check.
+			markReadLogDiverged(ibs)
 			tRun := time.Now()
 			included, receipts, usedGas, failed, perr := bc.BuildParallel(header, candidates, ibs, internal.GetHashFn(header, getHeader))
 			if perr == nil {
@@ -2665,7 +2689,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	tPacket := time.Now()
 	var pktJob *mobilePacketJob
 	if w.mobilePacketSink != nil {
-		pktJob = newMobilePacketJob(envCopy.txs, readLogRecorder)
+		pktJob = w.mobilePacketJobFor(envCopy, readLogRecorder)
 	}
 	dPacket := time.Since(tPacket)
 
