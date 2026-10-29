@@ -1574,6 +1574,14 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 			d.buffer.drop(n)
 			break
 		}
+		// Withdrawals feed execution but are only committed to by the header,
+		// so a body whose withdrawals do not match is the peer's fault:
+		// refetch it rather than executing it and rejecting a valid block.
+		if !wireWithdrawalsMatchHeader(hdr, body.Withdrawals) {
+			log.Warn("eldevp2p: body withdrawalsRoot mismatch — refetch", "block", n)
+			d.buffer.drop(n)
+			break
+		}
 		// EIP-7934: from Osaka the block's RLP encoding is capped (geth
 		// ValidateBody). A padded body is refetched; a block that is itself
 		// oversized is invalid.

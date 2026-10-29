@@ -65,11 +65,17 @@ func wireBodyMatchesHeader(hdr *block.Header, body devp2p.BlockBody) bool {
 	if err != nil || crypto.Keccak256Hash(uncles) != hdr.UncleHash {
 		return false
 	}
+	return wireWithdrawalsMatchHeader(hdr, body.Withdrawals)
+}
+
+// wireWithdrawalsMatchHeader reports whether the body's withdrawals hash to
+// the header's withdrawalsRoot (none when the header has no root).
+func wireWithdrawalsMatchHeader(hdr *block.Header, withdrawals []rlp.RawValue) bool {
 	if hdr.WithdrawalsHash == nil {
-		return len(body.Withdrawals) == 0
+		return len(withdrawals) == 0
 	}
-	items := make([][]byte, len(body.Withdrawals))
-	for i, raw := range body.Withdrawals {
+	items := make([][]byte, len(withdrawals))
+	for i, raw := range withdrawals {
 		items[i] = raw
 	}
 	return hash.DeriveShaErigon(rawTxList(items)) == *hdr.WithdrawalsHash
