@@ -169,6 +169,9 @@ const (
 	// EIP-8037: TX_MAX_TOTAL_GAS_LIMIT, the cap on a transaction's whole gas
 	// limit (execution budget plus state-gas reservoir).
 	MaxTxTotalGasEIP8037 uint64 = 1<<32 - 1
+	// EIP-8037: SYSTEM_MAX_SSTORES_PER_CALL, the new storage slots a system
+	// call's state-gas reservoir is sized for.
+	SystemMaxSStoresPerCallEIP8037 uint64 = 16
 	// EIP-7954: contract size limit increase.
 	MaxCodeSizeEIP7954     = 65536  // 64 KiB deployed-code cap (was 24576)
 	MaxInitCodeSizeEIP7954 = 131072 // 128 KiB initcode cap (was 49152)
