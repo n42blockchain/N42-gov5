@@ -347,6 +347,13 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		}
 	}
 
+	// Amsterdam's intrinsic cost and calldata floor (EIP-2780/7976/7981)
+	// depend on the sender, the value and the recipient; the state
+	// transition checks them exactly, so this stateless pre-check stops at
+	// Osaka.
+	if rules.IsGlamsterdam {
+		return nil
+	}
 	accessListLen, storageKeysLen := accessListStats(tx.AccessList())
 	intrinsicGas, floorGas, reason := txpoolcfg.CalcIntrinsicGas(
 		uint64(len(tx.Data())),
