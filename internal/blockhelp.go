@@ -18,7 +18,9 @@
 package internal
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"sort"
 
 	"github.com/holiman/uint256"
 
@@ -288,6 +290,34 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 		return nil, err
 	}
 	return append(requests, pragueRequests...), nil
+}
+
+// ExecutionRequestsHash computes the EIP-7685 requests hash committed in the
+// header from Prague: sha256 over the sha256 of each non-empty request, in
+// request-type order. Requests carrying only a type byte are skipped.
+func ExecutionRequestsHash(requests []hexutil.Bytes) types.Hash {
+	sorted := make([]hexutil.Bytes, len(requests))
+	copy(sorted, requests)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if len(sorted[i]) == 0 {
+			return false
+		}
+		if len(sorted[j]) == 0 {
+			return true
+		}
+		return sorted[i][0] < sorted[j][0]
+	})
+	aggregate := sha256.New()
+	for _, request := range sorted {
+		if len(request) <= 1 {
+			continue
+		}
+		sum := sha256.Sum256(request)
+		_, _ = aggregate.Write(sum[:])
+	}
+	var out types.Hash
+	_ = out.SetBytes(aggregate.Sum(nil))
+	return out
 }
 
 // CollectPragueExecutionRequests assembles Prague execution requests from both
