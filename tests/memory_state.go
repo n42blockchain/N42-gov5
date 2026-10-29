@@ -10,6 +10,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -31,8 +32,9 @@ func NewMemoryState() *MemoryState {
 
 // Compile-time interface checks
 var (
-	_ state.StateReader = (*MemoryState)(nil)
-	_ state.StateWriter = (*MemoryState)(nil)
+	_ state.StateReader       = (*MemoryState)(nil)
+	_ state.StateWriter       = (*MemoryState)(nil)
+	_ state.StorageEnumerator = (*MemoryState)(nil)
 )
 
 // StateReader interface implementation
@@ -53,18 +55,31 @@ func (m *MemoryState) ReadAccountStorage(address types.Address, key *types.Hash)
 	return nil, nil
 }
 
+// ReadAccountCode returns the code stored for address only when it matches
+// codeHash, as the database reader resolves code by hash: an account whose
+// code was just replaced (e.g. an EIP-7702 delegation cleared) must not see
+// the previous bytecode.
 func (m *MemoryState) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
-	if code, ok := m.code[address]; ok {
+	if code, ok := m.code[address]; ok && len(code) > 0 && crypto.Keccak256Hash(code) == codeHash {
 		return code, nil
 	}
 	return nil, nil
 }
 
 func (m *MemoryState) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
-	if code, ok := m.code[address]; ok {
-		return len(code), nil
+	code, err := m.ReadAccountCode(address, codeHash)
+	return len(code), err
+}
+
+// ForEachStorage enumerates the stored slots of address, so EIP-7610
+// collision checks see every slot as they do with the database reader.
+func (m *MemoryState) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
+	for slot, value := range m.storage[addr] {
+		if !f(slot, value) {
+			return nil
+		}
 	}
-	return 0, nil
+	return nil
 }
 
 // StateWriter interface implementation
