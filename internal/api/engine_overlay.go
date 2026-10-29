@@ -107,6 +107,9 @@ type ethRPCHeader struct {
 	ExcessBlobGas    *uint64          `json:"excessBlobGas" rlp:"optional"`
 	ParentBeaconRoot *types.Hash      `json:"parentBeaconBlockRoot" rlp:"optional"`
 	RequestsHash     *types.Hash      `json:"requestsHash" rlp:"optional"`
+	// Amsterdam: EIP-7928 block access list hash and EIP-7843 slot number.
+	BlockAccessListHash *types.Hash `json:"blockAccessListHash" rlp:"optional"`
+	SlotNumber          *uint64     `json:"slotNumber" rlp:"optional"`
 }
 
 func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.Hash {
@@ -161,28 +164,44 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 		}
 		requestsHash = &root
 	}
+	var (
+		balHash *types.Hash
+		slot    *uint64
+	)
+	if cfg != nil && cfg.IsGlamsterdam(header.Time) {
+		balHash = new(types.Hash)
+		if header.BlockAccessListHash != nil {
+			*balHash = *header.BlockAccessListHash
+		}
+		slot = new(uint64)
+		if header.SlotNumber != nil {
+			*slot = *header.SlotNumber
+		}
+	}
 	return hash.RlpHash(&ethRPCHeader{
-		ParentHash:       header.ParentHash,
-		UncleHash:        hash.EmptyUncleHash,
-		Coinbase:         header.Coinbase,
-		Root:             header.Root,
-		TxHash:           header.TxHash,
-		ReceiptHash:      header.ReceiptHash,
-		Bloom:            block.BytesToBloom(header.Bloom.Bytes()),
-		Difficulty:       uint256ToBigOrZero(header.Difficulty),
-		Number:           uint256ToBigOrZero(header.Number),
-		GasLimit:         header.GasLimit,
-		GasUsed:          header.GasUsed,
-		Time:             header.Time,
-		Extra:            header.Extra,
-		MixDigest:        header.MixDigest,
-		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
-		BaseFee:          baseFee,
-		WithdrawalsHash:  withdrawals,
-		BlobGasUsed:      blobGasUsed,
-		ExcessBlobGas:    excessBlobGas,
-		ParentBeaconRoot: beaconRoot,
-		RequestsHash:     requestsHash,
+		ParentHash:          header.ParentHash,
+		UncleHash:           hash.EmptyUncleHash,
+		Coinbase:            header.Coinbase,
+		Root:                header.Root,
+		TxHash:              header.TxHash,
+		ReceiptHash:         header.ReceiptHash,
+		Bloom:               block.BytesToBloom(header.Bloom.Bytes()),
+		Difficulty:          uint256ToBigOrZero(header.Difficulty),
+		Number:              uint256ToBigOrZero(header.Number),
+		GasLimit:            header.GasLimit,
+		GasUsed:             header.GasUsed,
+		Time:                header.Time,
+		Extra:               header.Extra,
+		MixDigest:           header.MixDigest,
+		Nonce:               block.EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:             baseFee,
+		WithdrawalsHash:     withdrawals,
+		BlobGasUsed:         blobGasUsed,
+		ExcessBlobGas:       excessBlobGas,
+		ParentBeaconRoot:    beaconRoot,
+		RequestsHash:        requestsHash,
+		BlockAccessListHash: balHash,
+		SlotNumber:          slot,
 	})
 }
 

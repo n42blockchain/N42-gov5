@@ -293,6 +293,13 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 			root := emptyExecutionRequestsHash()
 			head.RequestsHash = &root
 		}
+		if cfg.IsGlamsterdam(uint64(g.GenesisConfig.Timestamp)) {
+			// EIP-7928: the genesis block's access list is empty; EIP-7843:
+			// it is at slot 0.
+			balHash := hash.EmptyUncleHash // keccak256(rlp([]))
+			head.BlockAccessListHash = &balHash
+			head.SlotNumber = new(uint64)
+		}
 	}
 
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
