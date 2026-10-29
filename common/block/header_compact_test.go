@@ -53,6 +53,8 @@ func headersForCompactTest() map[string]*Header {
 	// this way before the codec learned to carry it.
 	bah, mrr := hashOf(14), hashOf(15)
 	full.BlockAccessListHash, full.MobileRegistryRoot = &bah, &mrr
+	slot := uint64(13_456_789)
+	full.SlotNumber = &slot
 
 	emptyConst := hash.EmptyRootHash
 	resealEmpty := &Header{ // the dominant shape in a resealed chain
