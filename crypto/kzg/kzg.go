@@ -330,6 +330,27 @@ func ValidateBlobSidecarForFork(sidecar *transaction.BlobTxSidecar, expectedHash
 	return ValidateBlobSidecar(sidecar, expectedHashes)
 }
 
+// ValidatePooledBlobTx is the blob part of transaction pool admission: a blob
+// transaction must carry its sidecar, the sidecar must have the version of
+// the fork at the pool head (EIP-7594: version 1 from Osaka), match the blob
+// hashes and pass KZG verification (cell proofs batch-verified for version
+// 1). From Osaka a transaction may carry at most BlobTxMaxBlobs blobs.
+// Non-blob transactions pass unchanged.
+func ValidatePooledBlobTx(tx *transaction.Transaction, osaka bool) error {
+	if tx == nil || tx.Type() != transaction.BlobTxType {
+		return nil
+	}
+	sidecar := tx.BlobTxSidecar()
+	if sidecar == nil {
+		return ErrSidecarMissing
+	}
+	hashes := tx.BlobHashes()
+	if osaka && len(hashes) > transaction.BlobTxMaxBlobs {
+		return fmt.Errorf("%w: %d blobs, limit %d", ErrTooManyBlobs, len(hashes), transaction.BlobTxMaxBlobs)
+	}
+	return ValidateBlobSidecarForFork(sidecar, hashes, osaka)
+}
+
 // SidecarToV1 converts a version-0 sidecar in place to version 1 by
 // computing the cell proofs of every blob. A version-1 sidecar is left as is.
 func SidecarToV1(sidecar *transaction.BlobTxSidecar) error {
@@ -374,4 +395,5 @@ var (
 	ErrInvalidProof            = errors.New("kzg: invalid proof")
 	ErrFieldElementOverflow    = errors.New("kzg: field element overflow")
 	ErrSidecarVersion          = errors.New("kzg: unexpected blob sidecar version")
+	ErrTooManyBlobs            = errors.New("kzg: too many blobs in transaction")
 )

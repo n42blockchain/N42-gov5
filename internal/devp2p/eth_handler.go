@@ -26,6 +26,7 @@ import (
 	n42block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
@@ -612,10 +613,17 @@ func (h *EthHandler) acceptPooledTransactions(rawTxs []rlp.RawValue) error {
 		return err
 	}
 	signer := transaction.MakeSignerWithTimestamp(h.chainConfig, head.Number64().ToBig(), head.Time)
+	// EIP-7594: from Osaka a blob transaction must carry a version-1 sidecar
+	// whose cell proofs verify; before Osaka a version-0 sidecar.
+	osaka := h.chainConfig != nil && h.chainConfig.IsOsaka(head.Time)
 	txs := make([]*transaction.Transaction, 0, len(rawTxs))
 	for _, raw := range rawTxs {
 		tx, err := decodePooledTransactionRaw(raw)
 		if err != nil {
+			continue
+		}
+		if err := kzg.ValidatePooledBlobTx(tx, osaka); err != nil {
+			log.Debug("eth: dropping pooled blob transaction", "hash", tx.Hash(), "err", err)
 			continue
 		}
 		from, err := transaction.Sender(signer, tx)

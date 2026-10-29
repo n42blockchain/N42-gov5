@@ -277,6 +277,31 @@ func TestSidecarToV1(t *testing.T) {
 	}
 }
 
+// TestValidatePooledBlobTxStructuralRules covers the checks that run before
+// any KZG work: non-blob transactions pass, a blob transaction without
+// sidecar fails, and from Osaka at most BlobTxMaxBlobs blobs are allowed.
+func TestValidatePooledBlobTxStructuralRules(t *testing.T) {
+	legacy := transaction.NewTx(&transaction.LegacyTx{})
+	if err := ValidatePooledBlobTx(legacy, true); err != nil {
+		t.Fatalf("legacy tx rejected: %v", err)
+	}
+	noSidecar := transaction.NewTx(&transaction.BlobTx{BlobHashes: []types.Hash{{0x01}}})
+	if err := ValidatePooledBlobTx(noSidecar, true); err == nil {
+		t.Fatal("blob tx without sidecar accepted")
+	}
+	n := transaction.BlobTxMaxBlobs + 1
+	sc := &transaction.BlobTxSidecar{
+		Version:     transaction.BlobSidecarVersion1,
+		Blobs:       make([]Blob, n),
+		Commitments: make([]Commitment, n),
+		Proofs:      make([]Proof, n*CellsPerExtBlob),
+	}
+	tooMany := transaction.NewTx(&transaction.BlobTx{BlobHashes: make([]types.Hash, n), Sidecar: sc})
+	if err := ValidatePooledBlobTx(tooMany, true); err == nil {
+		t.Fatalf("%d-blob tx accepted at Osaka", n)
+	}
+}
+
 func computeBlobProof(blob *Blob, commitment Commitment) (Proof, error) {
 	ctx, err := GetContext()
 	if err != nil {
