@@ -455,6 +455,14 @@ func (c *ChainConfig) UsesBorSystemCallContext() bool {
 // Every other chain follows Ethereum (geth ProcessBeaconBlockRoot) and calls
 // the contract, so a chain without contract code gets no writes.
 func (c *ChainConfig) UsesDirectBeaconRootWrites() bool {
+	return c.IsN42Native()
+}
+
+// IsN42Native reports whether this is an N42 native chain (HotStuff or APoS
+// consensus). Validity rules Ethereum added after these chains started
+// producing blocks are only enforced elsewhere, so their history replays
+// unchanged.
+func (c *ChainConfig) IsN42Native() bool {
 	if c == nil {
 		return false
 	}

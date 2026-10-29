@@ -44,12 +44,15 @@ type Message struct {
 	blobHashes []types.Hash
 	// isBlobTx marks a message derived from a blob (type-3) transaction, so
 	// one without blob hashes stays distinguishable from a non-blob message.
-	isBlobTx   bool
-	data       []byte
-	accessList AccessList
-	authList   AuthorizationList
-	checkNonce bool
-	isFree     bool
+	isBlobTx bool
+	// isSetCodeTx marks a message derived from a set-code (type-4)
+	// transaction, so an empty authorization list stays detectable.
+	isSetCodeTx bool
+	data        []byte
+	accessList  AccessList
+	authList    AuthorizationList
+	checkNonce  bool
+	isFree      bool
 }
 
 func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, feeCap, tip, blobFeeCap *uint256.Int, blobHashes []types.Hash, data []byte, accessList AccessList, checkNonce bool, isFree bool) Message {
@@ -84,19 +87,20 @@ func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uin
 // AsMessage returns the transaction as a core.Message.
 func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error) {
 	msg := Message{
-		nonce:      tx.Nonce(),
-		gasLimit:   tx.Gas(),
-		gasPrice:   copyUint256OrZero(tx.GasPrice()),
-		feeCap:     copyUint256OrZero(tx.GasFeeCap()),
-		tip:        copyUint256OrZero(tx.GasTipCap()),
-		blobHashes: append([]types.Hash(nil), tx.BlobHashes()...),
-		isBlobTx:   tx.Type() == BlobTxType,
-		to:         tx.To(),
-		amount:     copyUint256OrZero(tx.Value()),
-		data:       tx.Data(),
-		accessList: tx.AccessList(),
-		authList:   tx.AuthList(),
-		checkNonce: false,
+		nonce:       tx.Nonce(),
+		gasLimit:    tx.Gas(),
+		gasPrice:    copyUint256OrZero(tx.GasPrice()),
+		feeCap:      copyUint256OrZero(tx.GasFeeCap()),
+		tip:         copyUint256OrZero(tx.GasTipCap()),
+		blobHashes:  append([]types.Hash(nil), tx.BlobHashes()...),
+		isBlobTx:    tx.Type() == BlobTxType,
+		isSetCodeTx: tx.Type() == SetCodeTxType,
+		to:          tx.To(),
+		amount:      copyUint256OrZero(tx.Value()),
+		data:        tx.Data(),
+		accessList:  tx.AccessList(),
+		authList:    tx.AuthList(),
+		checkNonce:  false,
 	}
 	if blobFeeCap := tx.BlobFeeCap(); blobFeeCap != nil {
 		msg.blobFeeCap = new(uint256.Int).Set(blobFeeCap)
@@ -140,6 +144,7 @@ func (m Message) Tip() *uint256.Int           { return &m.tip }
 func (m Message) BlobFeeCap() *uint256.Int    { return m.blobFeeCap }
 func (m Message) BlobHashes() []types.Hash    { return m.blobHashes }
 func (m Message) IsBlobTx() bool              { return m.isBlobTx }
+func (m Message) IsSetCodeTx() bool           { return m.isSetCodeTx }
 func (m Message) Value() *uint256.Int         { return &m.amount }
 func (m Message) Gas() uint64                 { return m.gasLimit }
 func (m Message) Nonce() uint64               { return m.nonce }
