@@ -385,12 +385,8 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 		if tx.Type() == transaction.BlobTxType {
 			blobGasUsed := hexutil.Uint64(tx.BlobGas())
 			br.BlobGasUsed = &blobGasUsed
-			var excessBlobGas uint64
-			if bh, ok := blk.Header().(*block.Header); ok && bh != nil && bh.ExcessBlobGas != nil {
-				excessBlobGas = *bh.ExcessBlobGas
-			}
-			blobFee := transaction.CalcBlobFee(excessBlobGas)
-			br.BlobGasPrice = (*hexutil.Big)(blobFee.ToBig())
+			bh, _ := blk.Header().(*block.Header)
+			br.BlobGasPrice = (*hexutil.Big)(s.api.headerBlobFee(bh).ToBig())
 		}
 
 		result[i] = br
@@ -681,12 +677,22 @@ func (s *BlockChainAPI) BlobBaseFee(ctx context.Context) (*hexutil.Big, error) {
 	if !ok || header == nil {
 		return (*hexutil.Big)(new(big.Int)), nil
 	}
+	return (*hexutil.Big)(s.api.headerBlobFee(header).ToBig()), nil
+}
+
+// headerBlobFee prices blob gas at header h under the blob schedule active at
+// h.Time, the same price execution charges (state_transition, evm.go). The
+// Cancun-only transaction.CalcBlobFee keeps the 3,338,477 update fraction and
+// is wrong from Prague on.
+func (n *API) headerBlobFee(h *block.Header) *uint256.Int {
 	var excessBlobGas uint64
-	if header.ExcessBlobGas != nil {
-		excessBlobGas = *header.ExcessBlobGas
+	if h != nil && h.ExcessBlobGas != nil {
+		excessBlobGas = *h.ExcessBlobGas
 	}
-	blobFee := transaction.CalcBlobFee(excessBlobGas)
-	return (*hexutil.Big)(blobFee.ToBig()), nil
+	if n == nil || n.chainConfig == nil || h == nil {
+		return transaction.CalcBlobFee(excessBlobGas)
+	}
+	return n.chainConfig.CalcBlobFee(excessBlobGas, h.Time)
 }
 
 // SimulateV1BlockOverride contains block-level overrides for simulation.
