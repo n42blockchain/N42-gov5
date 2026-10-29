@@ -166,6 +166,9 @@ const (
 	StateBytesPerNewAccount uint64 = 120 // -> 183600 gas per fresh account
 	StateBytesPerStorageSet uint64 = 64  // -> 97920 gas per fresh slot
 	StateBytesPerAuthBase   uint64 = 23  // EIP-7702 delegation designator bytes
+	// EIP-8037: TX_MAX_TOTAL_GAS_LIMIT, the cap on a transaction's whole gas
+	// limit (execution budget plus state-gas reservoir).
+	MaxTxTotalGasEIP8037 uint64 = 1<<32 - 1
 	// EIP-7954: contract size limit increase.
 	MaxCodeSizeEIP7954     = 65536  // 64 KiB deployed-code cap (was 24576)
 	MaxInitCodeSizeEIP7954 = 131072 // 128 KiB initcode cap (was 49152)

@@ -504,6 +504,9 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 		if st.evm.ChainRules().IsOsaka && !st.evm.ChainRules().IsGlamsterdam && st.msg.Gas() > fixedgas.MaxTxnGasLimit {
 			return fmt.Errorf("%w (cap: %d, tx: %d)", ErrGasLimitTooHigh, fixedgas.MaxTxnGasLimit, st.msg.Gas())
 		}
+		if st.evm.ChainRules().IsGlamsterdam && st.msg.Gas() > params.MaxTxTotalGasEIP8037 {
+			return fmt.Errorf("%w (cap: %d, tx: %d)", ErrGasLimitTooHigh, params.MaxTxTotalGasEIP8037, st.msg.Gas())
+		}
 
 		// EIP-3607: Reject transactions from senders with deployed code.
 		// EIP-7702 exception: accounts with delegation code (0xef0100 prefix) are still valid EOA senders.
