@@ -285,7 +285,13 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		return err
 	}
 	isContractCreation := tx.To() == nil
-	if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
+	// EIP-7825 caps the gas limit from Osaka; Amsterdam (EIP-8037) moves the
+	// cap to TX_MAX_TOTAL_GAS_LIMIT, the excess feeding the state reservoir.
+	if rules.IsGlamsterdam {
+		if tx.Gas() > params.MaxTxTotalGasEIP8037 {
+			return errTxGasLimitTooHigh
+		}
+	} else if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
 		return errTxGasLimitTooHigh
 	}
 
