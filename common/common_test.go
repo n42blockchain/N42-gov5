@@ -73,7 +73,7 @@ func TestBigConstantsImmutability(t *testing.T) {
 // =============================================================================
 
 func TestGasPool_New(t *testing.T) {
-	gp := GasPool(1000)
+	gp := *NewGasPool(1000)
 	if gp.Gas() != 1000 {
 		t.Errorf("GasPool.Gas() = %d, want 1000", gp.Gas())
 	}
@@ -82,7 +82,7 @@ func TestGasPool_New(t *testing.T) {
 }
 
 func TestGasPool_AddGas(t *testing.T) {
-	gp := GasPool(100)
+	gp := *NewGasPool(100)
 	gp.AddGas(50)
 
 	if gp.Gas() != 150 {
@@ -93,7 +93,7 @@ func TestGasPool_AddGas(t *testing.T) {
 }
 
 func TestGasPool_SubGas_Success(t *testing.T) {
-	gp := GasPool(100)
+	gp := *NewGasPool(100)
 	err := gp.SubGas(50)
 
 	if err != nil {
@@ -107,7 +107,7 @@ func TestGasPool_SubGas_Success(t *testing.T) {
 }
 
 func TestGasPool_SubGas_Error(t *testing.T) {
-	gp := GasPool(100)
+	gp := *NewGasPool(100)
 	err := gp.SubGas(150)
 
 	if err != ErrGasLimitReached {
@@ -121,7 +121,7 @@ func TestGasPool_SubGas_Error(t *testing.T) {
 }
 
 func TestGasPool_SubGas_Exact(t *testing.T) {
-	gp := GasPool(100)
+	gp := *NewGasPool(100)
 	err := gp.SubGas(100)
 
 	if err != nil {
@@ -135,7 +135,7 @@ func TestGasPool_SubGas_Exact(t *testing.T) {
 }
 
 func TestGasPool_String(t *testing.T) {
-	gp := GasPool(12345)
+	gp := *NewGasPool(12345)
 	str := gp.String()
 
 	if str != "12345" {
@@ -146,7 +146,7 @@ func TestGasPool_String(t *testing.T) {
 }
 
 func TestGasPool_Chaining(t *testing.T) {
-	gp := GasPool(0)
+	gp := *NewGasPool(0)
 	result := gp.AddGas(100).AddGas(50)
 
 	if result.Gas() != 150 {
@@ -165,7 +165,7 @@ func TestGasPool_AddGas_Overflow(t *testing.T) {
 		}
 	}()
 
-	gp := GasPool(math.MaxUint64)
+	gp := *NewGasPool(math.MaxUint64)
 	gp.AddGas(1)
 }
 
@@ -290,10 +290,10 @@ func TestErrGasLimitReached(t *testing.T) {
 // =============================================================================
 
 func BenchmarkGasPoolAddGas(b *testing.B) {
-	gp := GasPool(0)
+	gp := *NewGasPool(0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		gp = GasPool(0)
+		gp = *NewGasPool(0)
 		gp.AddGas(1000)
 	}
 }
@@ -301,13 +301,13 @@ func BenchmarkGasPoolAddGas(b *testing.B) {
 func BenchmarkGasPoolSubGas(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		gp := GasPool(1000)
+		gp := *NewGasPool(1000)
 		gp.SubGas(500)
 	}
 }
 
 func BenchmarkGasPoolGas(b *testing.B) {
-	gp := GasPool(1000)
+	gp := *NewGasPool(1000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		gp.Gas()
@@ -315,7 +315,7 @@ func BenchmarkGasPoolGas(b *testing.B) {
 }
 
 func BenchmarkGasPoolString(b *testing.B) {
-	gp := GasPool(12345)
+	gp := *NewGasPool(12345)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = gp.String()

@@ -26,7 +26,7 @@ func TestCommonInternalIntegration(t *testing.T) {
 	t.Parallel()
 
 	// Test GasPool from common is compatible with internal error handling
-	gp := common.GasPool(1000)
+	gp := *common.NewGasPool(1000)
 	err := gp.SubGas(500)
 	if err != nil {
 		t.Errorf("SubGas should not error: %v", err)
@@ -297,7 +297,7 @@ func TestHexPrefixIntegration(t *testing.T) {
 func TestGasPoolOperations(t *testing.T) {
 	t.Parallel()
 
-	gp := common.GasPool(10000)
+	gp := *common.NewGasPool(10000)
 
 	// Chain of operations
 	gp.AddGas(5000)
@@ -375,7 +375,7 @@ func BenchmarkCrossModuleHashOperation(b *testing.B) {
 func BenchmarkGasPoolCycle(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		gp := common.GasPool(10000)
+		gp := *common.NewGasPool(10000)
 		gp.AddGas(5000)
 		_ = gp.SubGas(3000)
 		_ = gp.Gas()
