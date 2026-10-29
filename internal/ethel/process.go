@@ -124,6 +124,11 @@ func ProcessBlock(
 	if err := validateBlockRLPSize(chainCfg, header, txs, uncles, withdrawals); err != nil {
 		return nil, err
 	}
+	// A Cancun block without a parent beacon root is invalid (geth header
+	// verification); without this the EIP-4788 call would be skipped silently.
+	if err := misc.VerifyEIP4788Header(chainCfg, header); err != nil {
+		return nil, err
+	}
 
 	usedGas := new(uint64)
 	gp := new(common.GasPool)

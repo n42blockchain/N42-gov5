@@ -83,6 +83,9 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 		e.chainCfg.DAOForkBlock.Cmp(header.Number.ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibsPre)
 	}
+	if err := misc.VerifyEIP4788Header(e.chainCfg, header); err != nil {
+		return err
+	}
 	if err := iinternal.ProcessExecutionBlockStart(header.ParentBeaconRoot, e.chainCfg, ibsPre, header, e.engine); err != nil {
 		return fmt.Errorf("ProcessExecutionBlockStart: %w", err)
 	}
