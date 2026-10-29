@@ -37,6 +37,23 @@ type ReadLogRecorder struct {
 	log        []evmsdk.ReadLogEntry
 	captured   map[types.Hash][]byte
 	knownCodes map[types.Hash]struct{}
+
+	// keys[i] names what log[i] was read for. The wire log carries no keys;
+	// these exist so the log can be rebuilt from the recorded values alone
+	// (ReplayRecorder) once the execution that produced it stopped being a
+	// replay of the block's transactions (MarkDiverged).
+	keys []readKey
+	// knownSeen holds the known-set bytecodes this recorder served, which
+	// captured omits by design; a rebuild needs every code that was read.
+	knownSeen map[types.Hash][]byte
+	diverged  bool
+}
+
+// readKey identifies one logged read: an account, or one of its slots.
+type readKey struct {
+	addr    types.Address
+	slot    types.Hash
+	storage bool
 }
 
 // NewReadLogRecorder wraps inner with read capture.
@@ -70,10 +87,24 @@ func (r *ReadLogRecorder) UncachedBytecodes() map[types.Hash][]byte { return r.c
 // underlying slice/map allocations.
 func (r *ReadLogRecorder) Reset() {
 	r.log = r.log[:0]
+	r.keys = r.keys[:0]
 	for k := range r.captured {
 		delete(r.captured, k)
 	}
+	r.knownSeen = nil
+	r.diverged = false
 }
+
+// MarkDiverged records that the execution behind this log is no longer a
+// replay of the block's transactions alone: something read state and was
+// then thrown away (a candidate that failed and was reverted, a reverted
+// bundle), or the reads went around the recorder. Verifiers consume the log
+// by position, so such a log must be rebuilt with ReplayRecorder before it
+// is shipped. Marking is always safe; it only costs the rebuild.
+func (r *ReadLogRecorder) MarkDiverged() { r.diverged = true }
+
+// Diverged reports whether MarkDiverged was called since the last Reset.
+func (r *ReadLogRecorder) Diverged() bool { return r.diverged }
 
 // ReadAccountData captures one Account or AccountNotFound entry.
 func (r *ReadLogRecorder) ReadAccountData(addr types.Address) (*account.StateAccount, error) {
@@ -81,6 +112,7 @@ func (r *ReadLogRecorder) ReadAccountData(addr types.Address) (*account.StateAcc
 	if err != nil {
 		return nil, err
 	}
+	r.keys = append(r.keys, readKey{addr: addr})
 	if acc == nil {
 		r.log = append(r.log, evmsdk.ReadLogAccountNotFound{})
 		return nil, nil
@@ -107,6 +139,7 @@ func (r *ReadLogRecorder) ReadAccountStorage(addr types.Address, key *types.Hash
 		val = new(uint256.Int).SetBytes(v)
 	}
 	r.log = append(r.log, evmsdk.ReadLogStorage{Value: val})
+	r.keys = append(r.keys, readKey{addr: addr, slot: *key, storage: true})
 	return v, nil
 }
 
@@ -124,6 +157,12 @@ func (r *ReadLogRecorder) ReadAccountCode(addr types.Address, codeHash types.Has
 		return code, nil
 	}
 	if _, known := r.knownCodes[codeHash]; known {
+		if _, already := r.knownSeen[codeHash]; !already {
+			if r.knownSeen == nil {
+				r.knownSeen = make(map[types.Hash][]byte)
+			}
+			r.knownSeen[codeHash] = append([]byte(nil), code...)
+		}
 		return code, nil
 	}
 	if _, already := r.captured[codeHash]; !already {
