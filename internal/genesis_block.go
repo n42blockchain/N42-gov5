@@ -491,7 +491,7 @@ func mainnetV2GenesisBlock() *conf.Genesis {
 // mainnetV2StaggeredGenesisBlock is identical to mainnetV2GenesisBlock (same
 // timestamp/miners, i.e. the same real chain data) but selects
 // MainnetV2StaggeredChainConfig, which activates Shanghai/Cancun/Pectra/
-// Osaka/Fusaka/Glamsterdam at N42-block heights/times calendar-matched to
+// Osaka/Fusaka at N42-block heights/times calendar-matched to
 // their real Ethereum mainnet activation dates instead of all-at-genesis.
 //
 // Alloc uses allocs/mainnet_v2_staggered.json, a copy of allocs/mainnet.json
