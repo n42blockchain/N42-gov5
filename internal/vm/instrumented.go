@@ -205,6 +205,10 @@ func (v *InstrumentedVM) TxContext() evmtypes.TxContext             { return v.i
 func (v *InstrumentedVM) Config() Config                            { return v.inner.Config() }
 func (v *InstrumentedVM) SetCallGasTemp(gas uint64)                 { v.inner.SetCallGasTemp(gas) }
 func (v *InstrumentedVM) CallGasTemp() uint64                       { return v.inner.CallGasTemp() }
+func (v *InstrumentedVM) ForwardStateGas(c *Contract)               { v.inner.ForwardStateGas(c) }
+func (v *InstrumentedVM) AbsorbStateGas(c *Contract)                { v.inner.AbsorbStateGas(c) }
+func (v *InstrumentedVM) SetStateGasReservoir(r uint64)             { v.inner.SetStateGasReservoir(r) }
+func (v *InstrumentedVM) StateGasLeftover() StateGasBudget          { return v.inner.StateGasLeftover() }
 func (v *InstrumentedVM) Cancelled() bool                           { return v.inner.Cancelled() }
 func (v *InstrumentedVM) Reset(txCtx evmtypes.TxContext, ibs evmtypes.IntraBlockState) {
 	v.inner.Reset(txCtx, ibs)

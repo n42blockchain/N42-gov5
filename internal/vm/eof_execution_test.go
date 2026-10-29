@@ -149,6 +149,10 @@ func (m *mockVMInterpreter) TxContext() evmtypes.TxContext {
 func (m *mockVMInterpreter) Config() Config                                     { return Config{} }
 func (m *mockVMInterpreter) SetCallGasTemp(uint64)                              {}
 func (m *mockVMInterpreter) CallGasTemp() uint64                                { return 0 }
+func (m *mockVMInterpreter) ForwardStateGas(*Contract)                          {}
+func (m *mockVMInterpreter) AbsorbStateGas(*Contract)                           {}
+func (m *mockVMInterpreter) SetStateGasReservoir(uint64)                        {}
+func (m *mockVMInterpreter) StateGasLeftover() StateGasBudget                   { return StateGasBudget{} }
 func (m *mockVMInterpreter) Cancelled() bool                                    { return false }
 func (m *mockVMInterpreter) Reset(evmtypes.TxContext, evmtypes.IntraBlockState) {}
 

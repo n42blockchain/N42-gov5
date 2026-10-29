@@ -31,15 +31,11 @@
 package vm
 
 import (
-	"errors"
-
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
-	"github.com/n42blockchain/N42/internal/vm/stack"
-	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -171,80 +167,6 @@ func enable8024(jt *JumpTable) {
 		numPop:      0,
 		numPush:     0,
 	}
-}
-
-// =============================================================================
-// EIP-8037 + EIP-8038: Amsterdam state-gas SSTORE schedule
-//
-// EIP-8038 replaces the composite SSTORE write costs with an explicit
-// STORAGE_WRITE (10000) surcharge and raises the clear refund to 11616.
-// EIP-8037 charges CPSB (1530) gas per byte of newly created state: a fresh
-// storage slot is 64 bytes -> 97920 gas on top of the write cost.
-//
-// NOTE: 8037 specifies a two-pool "state-gas reservoir" drawn from the gas
-// above TX_MAX_GAS_LIMIT. Until the reservoir parameters freeze on devnet,
-// N42 charges state gas directly from execution gas (strict upper bound on
-// the reservoir semantics; same total for txs within the execution budget).
-// =============================================================================
-
-// gasSStoreAmsterdam mirrors the EIP-2929/2200 SSTORE schedule with the
-// Amsterdam constants: STORAGE_WRITE for every real write, CPSB state gas for
-// slot creation, and the raised clear refund.
-func gasSStoreAmsterdam(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
-	if contract.Gas <= params.SstoreSentryGasEIP2200 {
-		return 0, errors.New("not enough gas for reentrancy sentry")
-	}
-	var (
-		y, x    = stack.Back(1), stack.Peek()
-		slot    = types.Hash(x.Bytes32())
-		current uint256.Int
-		cost    = uint64(0)
-	)
-	const (
-		writeGas   = params.StorageWriteEIP8038                                      // 10000
-		newSlotGas = params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037 // 97920
-		clearRef   = params.StorageClearRefundEIP8038                                // 11616
-	)
-	evm.IntraBlockState().GetState(contract.Address(), &slot, &current)
-	if addrPresent, slotPresent := evm.IntraBlockState().SlotInAccessList(contract.Address(), slot); !slotPresent {
-		cost = params.ColdSloadCostEIP2929
-		evm.IntraBlockState().AddSlotToAccessList(contract.Address(), slot)
-		if !addrPresent {
-			return 0, errors.New("impossible case: address was not present in access list during sstore op")
-		}
-	}
-	var value uint256.Int
-	value.Set(y)
-
-	if current.Eq(&value) { // noop
-		return cost + params.WarmStorageReadCostEIP2929, nil
-	}
-	var original uint256.Int
-	evm.IntraBlockState().GetCommittedState(contract.Address(), &slot, &original)
-	if original.Eq(&current) {
-		if original.IsZero() { // create slot: write surcharge + state gas
-			return cost + writeGas + newSlotGas, nil
-		}
-		if value.IsZero() { // delete slot
-			evm.IntraBlockState().AddRefund(clearRef)
-		}
-		return cost + writeGas, nil // write existing slot
-	}
-	if !original.IsZero() {
-		if current.IsZero() { // recreate slot
-			evm.IntraBlockState().SubRefund(clearRef)
-		} else if value.IsZero() { // delete slot
-			evm.IntraBlockState().AddRefund(clearRef)
-		}
-	}
-	if original.Eq(&value) {
-		if original.IsZero() { // reset to original inexistent slot
-			evm.IntraBlockState().AddRefund(writeGas + newSlotGas - params.WarmStorageReadCostEIP2929)
-		} else { // reset to original existing slot
-			evm.IntraBlockState().AddRefund(writeGas - params.WarmStorageReadCostEIP2929)
-		}
-	}
-	return cost + params.WarmStorageReadCostEIP2929, nil // dirty update
 }
 
 // =============================================================================

@@ -303,7 +303,7 @@ var (
 	gasSStoreEIP3529 = makeGasSStoreFunc(params.SstoreClearsScheduleRefundEIP3529)
 	// NOTE: the former gasSStoreGlamsterdam (withdrawn EIP-7904 schedule,
 	// clear refund 3375) was deleted — the wired Amsterdam SSTORE truth is
-	// gasSStoreAmsterdam (eips_amsterdam.go), clear refund 11616.
+	// gasSStore8037 (eips_amsterdam_gas.go), clear refund 11616.
 )
 
 // makeSelfdestructGasFn creates the selfdestruct dynamic gas function for EIP-2929 and EIP-3529

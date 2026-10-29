@@ -121,17 +121,9 @@ func newGlamsterdamInstructionSet() JumpTable {
 	instructionSet := newOsakaInstructionSet()
 	enable7843(&instructionSet)
 	enable8024(&instructionSet)
-	instructionSet[SSTORE].dynamicGas = gasSStoreAmsterdam
-	// EIP-8038: the flat 32000 CREATE charge is replaced by CREATE_ACCESS
-	// (12000) regular gas; the GAS_NEW_ACCOUNT state gas is charged in
-	// evm.create. Same split for CREATE2.
-	instructionSet[CREATE].constantGas = params.CreateAccessEIP8038
-	instructionSet[CREATE2].constantGas = params.CreateAccessEIP8038
-	// SELFDESTRUCT: enable6780 (inherited via Cancun) wired the Cancun gas
-	// fn with HARDCODED 2929 constants; re-wire the ACL-based fn whose
-	// cold-access and empty-beneficiary-sweep branches carry the 8038/8037
-	// repricing (cold 3000; sweep 9000+183600). Refunds stay off (3529).
-	instructionSet[SELFDESTRUCT].dynamicGas = gasSelfdestructEIP3529
+	// EIP-8037/8038: state access and state creation pricing, and the
+	// reservoir-aware CALL/CREATE family and SELFDESTRUCT (EIP-8246).
+	enable8037And8038(&instructionSet)
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

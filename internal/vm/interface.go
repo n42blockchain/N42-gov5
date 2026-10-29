@@ -60,6 +60,15 @@ type VMInterpreter interface {
 	// CallGasTemp returns the call gas temp
 	CallGasTemp() uint64
 
+	// ForwardStateGas hands a frame's EIP-8037 reservoir to the next child
+	// frame; AbsorbStateGas takes back what that child left (Glamsterdam).
+	ForwardStateGas(c *Contract)
+	AbsorbStateGas(c *Contract)
+	// SetStateGasReservoir seeds the reservoir of the next frame entered;
+	// StateGasLeftover reports the exit budget of the last frame left.
+	SetStateGasReservoir(r uint64)
+	StateGasLeftover() StateGasBudget
+
 	// Cancelled returns true if the VM operation was cancelled
 	Cancelled() bool
 
