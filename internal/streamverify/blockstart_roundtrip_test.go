@@ -94,7 +94,7 @@ func TestProducerVerifier_BlockStartSystemCallsRoundtrip(t *testing.T) {
 		t.Fatalf("producer apply: %v", err)
 	}
 	hdr.GasUsed = used
-	hdr.ReceiptHash = evmsdk.EthReceiptHash([]*block.Receipt{receipt})
+	hdr.ReceiptHash = internal.ReceiptsRootFor(cfg, hdr.Number.Uint64(), []*block.Receipt{receipt})
 
 	pkt, err := BuildStreamPacket(hdr, transaction.Transactions{signed}, rec)
 	if err != nil {

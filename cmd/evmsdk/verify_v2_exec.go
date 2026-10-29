@@ -8,7 +8,7 @@
 //	StreamReplayStateReader   — cursor-based StateReader from packet read log
 //	state.IntraBlockState     — real concrete state machine
 //	internal.ApplyTransaction — same EVM the producer side ran
-//	EthReceiptHash            — Ethereum-standard receipts root
+//	internal.ReceiptsRootFor  — the receipts root rule the chain's headers carry
 //
 // On success returns the computed receipts root, which must equal
 // header.ReceiptHash. The caller is then expected to BLS-sign a
@@ -159,8 +159,10 @@ func ExecuteAndVerifyV2(pkt *StreamPacket, codes *CodeCache, chainCfg *params.Ch
 		}
 	}
 
-	// 6. Compute receipts root and compare against header.
-	computedRoot := EthReceiptHash(receipts)
+	// 6. Compute receipts root and compare against header, by the rule the
+	// chain's headers follow (ValidateState): the native concat root on N42
+	// chains, the Ethereum receipt trie on Ethereum-EL ones.
+	computedRoot := internal.ReceiptsRootFor(chainCfg, blockNumber, receipts)
 	if computedRoot != header.ReceiptHash {
 		return nil, fmt.Errorf("%w: header=%x computed=%x", ErrReceiptRootMismatch, header.ReceiptHash, computedRoot)
 	}

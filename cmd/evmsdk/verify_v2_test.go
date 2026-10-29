@@ -198,7 +198,7 @@ func TestVerificationReceipt_SigningMessageLayout(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestExecuteAndVerifyV2_EmptyBlock(t *testing.T) {
-	hdr := minimalHeader(t, 100, emptyEthTrieRoot)
+	hdr := minimalHeader(t, 100, emptyNativeReceiptsRoot)
 	pkt := emptyPacket(t, hdr)
 
 	codes := NewCodeCache(16)
@@ -215,8 +215,8 @@ func TestExecuteAndVerifyV2_EmptyBlock(t *testing.T) {
 	if res.WitnessReadLogLen != 0 {
 		t.Errorf("readLogLen = %d, want 0", res.WitnessReadLogLen)
 	}
-	if res.ComputedReceiptsRoot != emptyEthTrieRoot {
-		t.Errorf("computed root = %x, want %x", res.ComputedReceiptsRoot, emptyEthTrieRoot)
+	if res.ComputedReceiptsRoot != emptyNativeReceiptsRoot {
+		t.Errorf("computed root = %x, want %x", res.ComputedReceiptsRoot, emptyNativeReceiptsRoot)
 	}
 	if res.BlockHash != hdr.Hash() {
 		t.Errorf("block hash mismatch")
@@ -264,7 +264,7 @@ func TestExecuteAndVerifyV2_NilCodeCache(t *testing.T) {
 }
 
 func TestExecuteAndVerifyV2_TamperedReadLog(t *testing.T) {
-	hdr := minimalHeader(t, 100, emptyEthTrieRoot)
+	hdr := minimalHeader(t, 100, emptyNativeReceiptsRoot)
 	pkt := emptyPacket(t, hdr)
 	// Inject a stray read log entry. With no txs the EVM never calls the
 	// reader, so the cursor will not advance — the verify still passes.
