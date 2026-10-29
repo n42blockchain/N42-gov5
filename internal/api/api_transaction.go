@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -74,6 +75,9 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	}
 	header := currentBlock.Header()
 	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
+		return avmcommon.Hash{}, err
+	}
+	if err := validatePooledBlobTransaction(tx, rules); err != nil {
 		return avmcommon.Hash{}, err
 	}
 	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
@@ -159,6 +163,9 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
 			return nil, err
 		}
+		if err := validatePooledBlobTransaction(metaTx, rules); err != nil {
+			return nil, err
+		}
 		// S59 (6fa): the batch path already has its own worker pool
 		// (N42_INGEST_WORKERS, S53) it may be dispatched onto, so this uses
 		// the dedup guarantee alone (RecoverSenderDeduped), not a nested
@@ -205,6 +212,17 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 	}
 	return hs, firstErr
+}
+
+// validatePooledBlobTransaction applies blob sidecar admission (EIP-4844 /
+// EIP-7594) to a transaction entering the pool at the head described by
+// rules: the sidecar must be present, have the head fork's version (1 from
+// Osaka, 0 before) and pass KZG verification. Other types pass unchanged.
+func validatePooledBlobTransaction(tx *transaction.Transaction, rules *params.Rules) error {
+	if tx == nil || tx.Type() != transaction.BlobTxType {
+		return nil
+	}
+	return kzg.ValidatePooledBlobTx(tx, rules != nil && rules.IsOsaka)
 }
 
 func (s *TransactionAPI) transactionHeadAndRules() (block.IBlock, *params.Rules, error) {
