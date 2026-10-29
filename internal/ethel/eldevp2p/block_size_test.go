@@ -12,6 +12,7 @@ import (
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 
@@ -182,5 +183,34 @@ func TestCheckWireBlockSize(t *testing.T) {
 	padded.Uncles = []rlp.RawValue{make([]byte, 1)}
 	if refetch, err := checkWireBlockSize(cfg, header, padded); err == nil || !refetch {
 		t.Fatalf("padded body: refetch %v err %v, want refetch", refetch, err)
+	}
+}
+
+// A devp2p body's withdrawals must hash to the header's withdrawalsRoot as
+// geth computes it; any other body is refetched by executeRange.
+func TestWireWithdrawalsMatchHeader(t *testing.T) {
+	header, _, _, body, gethBlock := sizeTestBlock(t, 32)
+	gethRoot := types.Hash(gethtypes.DeriveSha(gethBlock.Withdrawals(), trie.NewStackTrie(nil)))
+	header.WithdrawalsHash = &gethRoot
+	if !wireWithdrawalsMatchHeader(header, body.Withdrawals) {
+		t.Fatal("body withdrawals rejected against geth's root")
+	}
+	if wireWithdrawalsMatchHeader(header, body.Withdrawals[:1]) {
+		t.Fatal("dropped withdrawal accepted")
+	}
+	if wireWithdrawalsMatchHeader(header, nil) {
+		t.Fatal("missing withdrawals accepted")
+	}
+	empty := types.Hash(gethtypes.EmptyWithdrawalsHash)
+	header.WithdrawalsHash = &empty
+	if !wireWithdrawalsMatchHeader(header, nil) {
+		t.Fatal("empty withdrawals rejected against the empty root")
+	}
+	header.WithdrawalsHash = nil
+	if wireWithdrawalsMatchHeader(header, body.Withdrawals) {
+		t.Fatal("withdrawals accepted for a header without withdrawalsRoot")
+	}
+	if !wireWithdrawalsMatchHeader(header, nil) {
+		t.Fatal("pre-Shanghai body rejected")
 	}
 }
