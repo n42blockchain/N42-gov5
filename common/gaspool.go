@@ -14,11 +14,10 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
-// Block-level gas accounting primitive. GasPool is a uint64 alias
-// tracking the remaining gas budget while executing transactions
-// in a block. AddGas panics on overflow, SubGas returns
-// ErrGasLimitReached when the pool is exhausted, Gas reads the
-// current level and the zero value is a valid empty pool.
+// Block-level gas accounting primitive. GasPool tracks the remaining
+// gas budget while executing transactions in a block. AddGas panics on
+// overflow, SubGas returns ErrGasLimitReached when the pool is exhausted,
+// Gas reads the current level and the zero value is a valid empty pool.
 
 package common
 
@@ -34,32 +33,39 @@ var ErrGasLimitReached = errors.New("gas limit reached")
 
 // GasPool tracks the amount of gas available during execution of the transactions
 // in a block. The zero value is a pool with zero gas available.
-type GasPool uint64
+type GasPool struct {
+	gas uint64
+}
+
+// NewGasPool returns a pool holding amount gas.
+func NewGasPool(amount uint64) *GasPool {
+	return &GasPool{gas: amount}
+}
 
 // AddGas makes gas available for execution.
 func (gp *GasPool) AddGas(amount uint64) *GasPool {
-	if uint64(*gp) > math.MaxUint64-amount {
+	if gp.gas > math.MaxUint64-amount {
 		panic("gas pool pushed above uint64")
 	}
-	*(*uint64)(gp) += amount
+	gp.gas += amount
 	return gp
 }
 
 // SubGas deducts the given amount from the pool if enough gas is
 // available and returns an error otherwise.
 func (gp *GasPool) SubGas(amount uint64) error {
-	if uint64(*gp) < amount {
+	if gp.gas < amount {
 		return ErrGasLimitReached
 	}
-	*(*uint64)(gp) -= amount
+	gp.gas -= amount
 	return nil
 }
 
 // Gas returns the amount of gas remaining in the pool.
 func (gp *GasPool) Gas() uint64 {
-	return uint64(*gp)
+	return gp.gas
 }
 
 func (gp *GasPool) String() string {
-	return fmt.Sprintf("%d", *gp)
+	return fmt.Sprintf("%d", gp.gas)
 }
