@@ -684,6 +684,18 @@ func TestApplyTransactionOsakaModExpGasCapWrapper(t *testing.T) {
 }
 
 func TestApplyTransactionAuthorizedTxRefundsExistingAuthority(t *testing.T) {
+	checkExistingAuthorityRefund(t, 1)
+}
+
+// EIP-7702 refunds PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST when the
+// authority exists in the trie, empty or not. Mainnet still holds empty
+// accounts created before EIP-158; geth tests Exist, and so must we.
+func TestApplyTransactionAuthorizedTxRefundsExistingEmptyAuthority(t *testing.T) {
+	checkExistingAuthorityRefund(t, 0)
+}
+
+func checkExistingAuthorityRefund(t *testing.T, authorityBalance uint64) {
+	t.Helper()
 	db := memdb.NewTestDB(t)
 	txdb := memdb.BeginRw(t, db)
 	ibs := state.New(state.NewPlainState(txdb, 1))
@@ -710,7 +722,12 @@ func TestApplyTransactionAuthorizedTxRefundsExistingAuthority(t *testing.T) {
 	ibs.CreateAccount(sender, false)
 	ibs.AddBalance(sender, uint256.NewInt(1_000_000_000_000_000_000))
 	ibs.CreateAccount(authSigner, false)
-	ibs.AddBalance(authSigner, uint256.NewInt(1))
+	if authorityBalance > 0 {
+		ibs.AddBalance(authSigner, uint256.NewInt(authorityBalance))
+	}
+	if !ibs.Exist(authSigner) {
+		t.Fatal("fixture: authority account does not exist")
+	}
 	ibs.CreateAccount(recipient, false)
 	ibs.AddBalance(recipient, uint256.NewInt(1))
 	ibs.CreateAccount(target, true)
