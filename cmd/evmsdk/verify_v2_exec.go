@@ -130,6 +130,17 @@ func ExecuteAndVerifyV2(pkt *StreamPacket, codes *CodeCache, chainCfg *params.Ch
 	engine := apos.NewFaker()
 	noop := state.NewNoopWriter()
 
+	// The producer runs the start-of-block system calls (EIP-4788, EIP-2935)
+	// before the first transaction and their reads open the log, which is
+	// consumed by position: run the same hooks first or every read after
+	// them lands on the wrong entry.
+	if err := internal.ProcessExecutionBlockStart(header.ParentBeaconRoot, chainCfg, ibs, &header, engine); err != nil {
+		return nil, fmt.Errorf("verify_v2: block start: %w", err)
+	}
+	if rerr := reader.Err(); rerr != nil {
+		return nil, fmt.Errorf("verify_v2: block start state reader: %w", rerr)
+	}
+
 	receipts := make([]*block.Receipt, 0, len(txs))
 	for i, tx := range txs {
 		ibs.Prepare(tx.Hash(), pkt.BlockHash, i)
