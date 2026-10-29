@@ -156,6 +156,13 @@ type directExecutionValues interface {
 	ExecutionValues() (gasPrice, feeCap, tip, value *uint256.Int)
 }
 
+// blobTxMessage is implemented by *transaction.Message. It tells a blob
+// transaction without blob hashes apart from a non-blob message, which
+// BlobHashes alone cannot (geth uses msg.BlobHashes != nil for this).
+type blobTxMessage interface {
+	IsBlobTx() bool
+}
+
 // ExecutionResult includes all output after executing given evm message
 // no matter the execution itself is successful or not.
 type ExecutionResult struct {
@@ -499,7 +506,37 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 			}
 		}
 	}
-	if len(st.msg.BlobHashes()) > 0 {
+	// Blob transaction shape (EIP-4844, EIP-7594), checked as geth does for
+	// every message including eth_call ones, so blocks imported over devp2p
+	// or replayed are held to the same rules as newPayload.
+	blobHashes := st.msg.BlobHashes()
+	isBlobTx := len(blobHashes) > 0
+	if !isBlobTx {
+		if m, ok := st.msg.(blobTxMessage); ok {
+			isBlobTx = m.IsBlobTx()
+		}
+	}
+	if isBlobTx {
+		rules := st.evm.ChainRules()
+		if !rules.IsCancun {
+			return fmt.Errorf("%w: blob tx (sender %v)", ErrTxTypeNotSupported, st.msg.From().Hex())
+		}
+		if st.msg.To() == nil {
+			return transaction.ErrBlobTxCreate
+		}
+		if len(blobHashes) == 0 {
+			return transaction.ErrNoBlobs
+		}
+		if rules.IsOsaka && len(blobHashes) > transaction.BlobTxMaxBlobs {
+			return transaction.ErrTooManyBlobs
+		}
+		for i := range blobHashes {
+			if blobHashes[i][0] != transaction.VersionedHashVersionKZG {
+				return fmt.Errorf("%w: blob %d", ErrInvalidBlobHashVersion, i)
+			}
+		}
+	}
+	if len(blobHashes) > 0 {
 		blobFeeCap := st.msg.BlobFeeCap()
 		currentBlobFee := st.currentBlobBaseFee()
 		if blobFeeCap == nil || currentBlobFee == nil || blobFeeCap.Lt(currentBlobFee) {

@@ -91,6 +91,10 @@ var (
 	// current network configuration.
 	ErrTxTypeNotSupported = errors.New("transaction type not supported")
 
+	// ErrInvalidBlobHashVersion is returned if a blob transaction carries a
+	// versioned hash whose version byte is not the KZG one (EIP-4844).
+	ErrInvalidBlobHashVersion = errors.New("blob hash has invalid version")
+
 	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
 	// transaction with a tip higher than the total fee cap.
 	ErrTipAboveFeeCap = errors.New("max priority fee per gas higher than max fee per gas")

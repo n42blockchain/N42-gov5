@@ -56,6 +56,10 @@ const (
 	// MaxBlobsPerBlock is the maximum number of blobs per block
 	MaxBlobsPerBlock = MaxBlobGasPerBlock / BlobTxBlobGasPerBlob // 6
 
+	// BlobTxMaxBlobs is the maximum number of blobs per transaction from
+	// Osaka (EIP-7594), independent of the per-block blob schedule.
+	BlobTxMaxBlobs = 6
+
 	// BlobSize is the size of a blob in bytes (128 KB)
 	BlobSize = 4096 * 32 // 131072 bytes
 
