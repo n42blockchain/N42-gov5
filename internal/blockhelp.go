@@ -99,11 +99,7 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		}
 	}
 
-	if evm.ChainRules().IsGlamsterdam {
-		// EIP-8037: besides its execution gas a system call gets a state-gas
-		// reservoir sized for SYSTEM_MAX_SSTORES_PER_CALL new slots.
-		evm.SetStateGasReservoir(params.SystemMaxSStoresPerCallEIP8037 * params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037)
-	}
+	setSystemCallStateGasReservoir(evm)
 	ret, _, err := evm.Call(
 		vm.AccountRef(msg.From()),
 		*msg.To(),
@@ -116,6 +112,15 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		return nil, nil
 	}
 	return ret, err
+}
+
+// setSystemCallStateGasReservoir gives an Amsterdam system call its EIP-8037
+// state-gas reservoir, sized for SYSTEM_MAX_SSTORES_PER_CALL new slots, on
+// top of its execution gas. Earlier forks have no reservoir.
+func setSystemCallStateGasReservoir(evm *vm.EVM) {
+	if evm.ChainRules().IsGlamsterdam {
+		evm.SetStateGasReservoir(params.SystemMaxSStoresPerCallEIP8037 * params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037)
+	}
 }
 
 func appendExecutionRequest(requests []hexutil.Bytes, requestType byte, payload []byte) []hexutil.Bytes {
@@ -243,6 +248,7 @@ func beaconRootSystemCall(beaconRoot types.Hash, chainConfig *params.ChainConfig
 		ibs.AddAddressToAccessList(types.Address{})
 		ibs.AddAddressToAccessList(contract)
 	}
+	setSystemCallStateGasReservoir(evm)
 	_, _, _ = evm.Call(vm.AccountRef(state.SystemAddress), contract, beaconRoot[:], systemCallGas, u256.Num0, false)
 	ibs.ResetAccessList()
 }
