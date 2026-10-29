@@ -69,6 +69,9 @@ type Contract struct {
 
 	Gas   uint64
 	value *uint256.Int
+	// State is the frame's EIP-8037 state-gas budget (Glamsterdam only;
+	// zero everywhere else). See state_gas.go.
+	State StateGasBudget
 
 	// EOF fields
 	EOFContainer *EOFContainer // Parsed EOF container (nil for legacy code)

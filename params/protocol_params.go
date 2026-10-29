@@ -160,8 +160,8 @@ const (
 	AccessListAddressBytes          uint64 = 20
 	AccessListStorageKeyBytes       uint64 = 32
 	// EIP-8037: state-creation gas. Every byte of newly created state costs
-	// CPSB gas, drawn from the state-gas reservoir (approximated here as a
-	// direct execution-gas charge until the reservoir model freezes).
+	// CPSB gas, drawn first from the frame's state-gas reservoir and then from
+	// its execution gas (internal/vm/state_gas.go).
 	CostPerStateByteEIP8037 uint64 = 1530
 	StateBytesPerNewAccount uint64 = 120 // -> 183600 gas per fresh account
 	StateBytesPerStorageSet uint64 = 64  // -> 97920 gas per fresh slot
