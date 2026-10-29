@@ -85,14 +85,20 @@ func enable7843(jt *JumpTable) {
 // (n,m) = (q+1, r+1) if q < r else (r+1, 29-q).
 // =============================================================================
 
+// immediateByte returns the immediate operand of the instruction at pc. A
+// missing immediate (the instruction is the last byte of the code) reads as
+// 0x00, the same convention as PUSHn data.
+func immediateByte(code []byte, pc uint64) byte {
+	if pc+1 < uint64(len(code)) {
+		return code[pc+1]
+	}
+	return 0
+}
+
 // opDupN implements DUPN (0xe6): duplicates the n'th stack item (1-based) onto
 // the top, n decoded from the immediate byte.
 func opDupN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	code := scope.Contract.Code
-	if *pc+1 >= uint64(len(code)) {
-		return nil, &ErrInvalidOpCode{opcode: DUPN}
-	}
-	x := code[*pc+1]
+	x := immediateByte(scope.Contract.Code, *pc)
 	if x > 90 && x < 128 {
 		return nil, &ErrInvalidOpCode{opcode: DUPN}
 	}
@@ -108,11 +114,7 @@ func opDupN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 // opSwapN implements SWAPN (0xe7): swaps the (n+1)'th stack item with the top,
 // n decoded from the immediate byte.
 func opSwapN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	code := scope.Contract.Code
-	if *pc+1 >= uint64(len(code)) {
-		return nil, &ErrInvalidOpCode{opcode: SWAPN}
-	}
-	x := code[*pc+1]
+	x := immediateByte(scope.Contract.Code, *pc)
 	if x > 90 && x < 128 {
 		return nil, &ErrInvalidOpCode{opcode: SWAPN}
 	}
@@ -128,11 +130,7 @@ func opSwapN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 // opExchange implements EXCHANGE (0xe8): swaps the (n+1)'th and (m+1)'th stack
 // items (both below the top), (n,m) decoded from the immediate byte.
 func opExchange(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	code := scope.Contract.Code
-	if *pc+1 >= uint64(len(code)) {
-		return nil, &ErrInvalidOpCode{opcode: EXCHANGE}
-	}
-	x := code[*pc+1]
+	x := immediateByte(scope.Contract.Code, *pc)
 	if x > 81 && x < 128 {
 		return nil, &ErrInvalidOpCode{opcode: EXCHANGE}
 	}

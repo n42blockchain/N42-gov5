@@ -203,3 +203,46 @@ func TestEIP7843SlotNumPushes(t *testing.T) {
 		t.Fatalf("SLOTNUM pushed %d, want %d", got, 0x1234)
 	}
 }
+
+// A DUPN/SWAPN/EXCHANGE that is the last byte of the code has no immediate;
+// it reads as 0x00 like missing PUSH data instead of halting.
+func TestEIP8024MissingImmediateReadsZero(t *testing.T) {
+	// DUPN imm 0 -> n = 145: duplicate the deepest of 145 items.
+	scope := createTestScope([]byte{byte(DUPN)})
+	for i := 0; i < 145; i++ {
+		scope.Stack.Push(uint256.NewInt(uint64(1000 + i)))
+	}
+	pc := uint64(0)
+	if _, err := opDupN(&pc, nil, scope); err != nil {
+		t.Fatalf("DUPN without immediate: %v", err)
+	}
+	if got := scope.Stack.Peek().Uint64(); got != 1000 {
+		t.Fatalf("DUPN without immediate pushed %d, want 1000", got)
+	}
+
+	// SWAPN imm 0 -> n = 145: swap the top with the 146th item.
+	scope = createTestScope([]byte{byte(SWAPN)})
+	for i := 0; i < 146; i++ {
+		scope.Stack.Push(uint256.NewInt(uint64(1000 + i)))
+	}
+	pc = 0
+	if _, err := opSwapN(&pc, nil, scope); err != nil {
+		t.Fatalf("SWAPN without immediate: %v", err)
+	}
+	if got := scope.Stack.Peek().Uint64(); got != 1000 {
+		t.Fatalf("SWAPN without immediate: top %d, want 1000", got)
+	}
+
+	// EXCHANGE imm 0 -> k = 143, q = 8, r = 15 -> (n, m) = (9, 16).
+	scope = createTestScope([]byte{byte(EXCHANGE)})
+	for i := 0; i < 17; i++ {
+		scope.Stack.Push(uint256.NewInt(uint64(i)))
+	}
+	pc = 0
+	if _, err := opExchange(&pc, nil, scope); err != nil {
+		t.Fatalf("EXCHANGE without immediate: %v", err)
+	}
+	if a, b := scope.Stack.Back(9).Uint64(), scope.Stack.Back(16).Uint64(); a != 0 || b != 7 {
+		t.Fatalf("EXCHANGE without immediate: items 9,16 = %d,%d, want 0,7", a, b)
+	}
+}
