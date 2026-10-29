@@ -67,11 +67,73 @@ type blobTxRLP struct {
 	S          *uint256.Int
 }
 
+// blobTxNetworkWrapperRLP is the EIP-4844 (version 0) network form:
+// [tx_payload_body, blobs, commitments, blob_proofs].
 type blobTxNetworkWrapperRLP struct {
 	Tx          blobTxRLP
 	Blobs       []Blob
 	Commitments []Commitment
 	Proofs      []Proof
+}
+
+// blobTxNetworkWrapperV1RLP is the EIP-7594 (version 1) network form:
+// [tx_payload_body, wrapper_version, blobs, commitments, cell_proofs].
+type blobTxNetworkWrapperV1RLP struct {
+	Tx          blobTxRLP
+	Version     byte
+	Blobs       []Blob
+	Commitments []Commitment
+	Proofs      []Proof
+}
+
+// decodeBlobTxPayload decodes a blob transaction payload (without the type
+// byte) in either the canonical form [chainID, nonce, ...] or one of the
+// network forms that carry the sidecar. As in geth, the forms are told apart
+// structurally: the network forms start with the tx body as a nested list,
+// and the versioned form has a version byte, not the blob list, second.
+func decodeBlobTxPayload(payload []byte) (blobTxRLP, *BlobTxSidecar, error) {
+	var dec blobTxRLP
+	content, _, err := rlp.SplitList(payload)
+	if err != nil {
+		return dec, nil, err
+	}
+	firstKind, _, rest, err := rlp.Split(content)
+	if err != nil {
+		return dec, nil, err
+	}
+	if firstKind != rlp.List {
+		err := rlp.DecodeBytes(payload, &dec)
+		return dec, nil, err
+	}
+	secondKind, _, _, err := rlp.Split(rest)
+	if err != nil {
+		return dec, nil, err
+	}
+	if secondKind == rlp.List {
+		var wrapper blobTxNetworkWrapperRLP
+		if err := rlp.DecodeBytes(payload, &wrapper); err != nil {
+			return dec, nil, err
+		}
+		return wrapper.Tx, &BlobTxSidecar{
+			Version:     BlobSidecarVersion0,
+			Blobs:       wrapper.Blobs,
+			Commitments: wrapper.Commitments,
+			Proofs:      wrapper.Proofs,
+		}, nil
+	}
+	var wrapper blobTxNetworkWrapperV1RLP
+	if err := rlp.DecodeBytes(payload, &wrapper); err != nil {
+		return dec, nil, err
+	}
+	if wrapper.Version != BlobSidecarVersion1 {
+		return dec, nil, fmt.Errorf("unsupported blob tx sidecar version %d", wrapper.Version)
+	}
+	return wrapper.Tx, &BlobTxSidecar{
+		Version:     BlobSidecarVersion1,
+		Blobs:       wrapper.Blobs,
+		Commitments: wrapper.Commitments,
+		Proofs:      wrapper.Proofs,
+	}, nil
 }
 
 type setCodeTxRLP struct {
@@ -102,7 +164,12 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	tx.cacheEncoded(append([]byte(nil), data...))
+	// A blob transaction in its network form (with sidecar) is NOT its
+	// canonical encoding: leave the cache empty so EthEncoded derives the
+	// bare transaction instead of returning the wrapper.
+	if tx.BlobTxSidecar() == nil {
+		tx.cacheEncoded(append([]byte(nil), data...))
+	}
 	return tx, nil
 }
 
@@ -168,19 +235,9 @@ func decodeEthereumTransaction(data []byte) (*Transaction, error) {
 			S:          dec.S,
 		}), nil
 	case BlobTxType:
-		var dec blobTxRLP
-		var sidecar *BlobTxSidecar
-		if err := rlp.DecodeBytes(payload, &dec); err != nil {
-			var wrapper blobTxNetworkWrapperRLP
-			if wrapperErr := rlp.DecodeBytes(payload, &wrapper); wrapperErr != nil {
-				return nil, err
-			}
-			dec = wrapper.Tx
-			sidecar = &BlobTxSidecar{
-				Blobs:       wrapper.Blobs,
-				Commitments: wrapper.Commitments,
-				Proofs:      wrapper.Proofs,
-			}
+		dec, sidecar, err := decodeBlobTxPayload(payload)
+		if err != nil {
+			return nil, err
 		}
 		return NewTxOwned(&BlobTx{
 			ChainID:    dec.ChainID,
@@ -306,28 +363,33 @@ func EncodeEthereumPooledTransaction(tx *Transaction) ([]byte, error) {
 	if !ok || blobTx.Sidecar == nil {
 		return EncodeEthereumTransaction(tx)
 	}
-	wrapper := blobTxNetworkWrapperRLP{
-		Tx: blobTxRLP{
-			ChainID:    nonNilUint256(blobTx.ChainID),
-			Nonce:      blobTx.Nonce,
-			GasTipCap:  nonNilUint256(blobTx.GasTipCap),
-			GasFeeCap:  nonNilUint256(blobTx.GasFeeCap),
-			Gas:        blobTx.Gas,
-			To:         blobTx.To,
-			Value:      nonNilUint256(blobTx.Value),
-			Data:       blobTx.Data,
-			AccessList: blobTx.AccessList,
-			BlobFeeCap: nonNilUint256(blobTx.BlobFeeCap),
-			BlobHashes: blobTx.BlobHashes,
-			V:          nonNilUint256(blobTx.V),
-			R:          nonNilUint256(blobTx.R),
-			S:          nonNilUint256(blobTx.S),
-		},
-		Blobs:       blobTx.Sidecar.Blobs,
-		Commitments: blobTx.Sidecar.Commitments,
-		Proofs:      blobTx.Sidecar.Proofs,
+	body := blobTxRLP{
+		ChainID:    nonNilUint256(blobTx.ChainID),
+		Nonce:      blobTx.Nonce,
+		GasTipCap:  nonNilUint256(blobTx.GasTipCap),
+		GasFeeCap:  nonNilUint256(blobTx.GasFeeCap),
+		Gas:        blobTx.Gas,
+		To:         blobTx.To,
+		Value:      nonNilUint256(blobTx.Value),
+		Data:       blobTx.Data,
+		AccessList: blobTx.AccessList,
+		BlobFeeCap: nonNilUint256(blobTx.BlobFeeCap),
+		BlobHashes: blobTx.BlobHashes,
+		V:          nonNilUint256(blobTx.V),
+		R:          nonNilUint256(blobTx.R),
+		S:          nonNilUint256(blobTx.S),
 	}
-	payload, err := rlp.EncodeToBytes(&wrapper)
+	sc := blobTx.Sidecar
+	var wrapper interface{}
+	switch sc.Version {
+	case BlobSidecarVersion0:
+		wrapper = &blobTxNetworkWrapperRLP{Tx: body, Blobs: sc.Blobs, Commitments: sc.Commitments, Proofs: sc.Proofs}
+	case BlobSidecarVersion1:
+		wrapper = &blobTxNetworkWrapperV1RLP{Tx: body, Version: sc.Version, Blobs: sc.Blobs, Commitments: sc.Commitments, Proofs: sc.Proofs}
+	default:
+		return nil, fmt.Errorf("unsupported blob tx sidecar version %d", sc.Version)
+	}
+	payload, err := rlp.EncodeToBytes(wrapper)
 	if err != nil {
 		return nil, err
 	}
