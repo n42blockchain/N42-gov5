@@ -173,12 +173,16 @@ type setCodeTxMessage interface {
 // no matter the execution itself is successful or not.
 type ExecutionResult struct {
 	UsedGas uint64 // Gas billed to the sender (refunds applied)
-	// BlockGasUsed is what the block consumes for this tx. Equal to UsedGas
-	// before Amsterdam; under EIP-7778 it is max(pre-refund gas, calldata
-	// floor) — refunds no longer stretch the block gas limit.
+	// BlockGasUsed is what this tx adds to the receipts' cumulative gas.
+	// Equal to UsedGas (under Amsterdam too: the block header's gas used is
+	// the EIP-8037 two-dimensional figure kept by the GasPool instead).
 	BlockGasUsed uint64
-	Err          error  // Any error encountered during execution
-	ReturnData   []byte // Returned data from evm
+	// TxExecGas and TxStateGas are the transaction's EIP-8037 block-level
+	// execution and state gas (Amsterdam only).
+	TxExecGas  uint64
+	TxStateGas uint64
+	Err        error  // Any error encountered during execution
+	ReturnData []byte // Returned data from evm
 }
 
 // Unwrap returns the internal evm error for further analysis.
@@ -440,7 +444,13 @@ func (st *StateTransition) buyGas(gasBailout bool) error {
 		subBalance = true
 	}
 
-	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
+	if st.evm.ChainRules().IsGlamsterdam {
+		// EIP-8037: the block must still have room for the worst case in
+		// both dimensions; the pool is charged when the transaction settles.
+		if err := st.gp.CheckGasAmsterdam(minGas(st.msg.Gas(), fixedgas.MaxTxnGasLimit), st.msg.Gas()); err != nil && !gasBailout {
+			return err
+		}
+	} else if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		if !gasBailout {
 			return err
 		}
@@ -489,7 +499,9 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 		// this cap alike, as geth's skipGasLimitCapCheck does), so blocks that
 		// arrive over devp2p or through replay are held to the same rule as
 		// newPayload and the pool.
-		if st.evm.ChainRules().IsOsaka && st.msg.Gas() > fixedgas.MaxTxnGasLimit {
+		// Amsterdam lifts the cap on the limit itself: the excess becomes the
+		// EIP-8037 state-gas reservoir (checked in transitionAmsterdam).
+		if st.evm.ChainRules().IsOsaka && !st.evm.ChainRules().IsGlamsterdam && st.msg.Gas() > fixedgas.MaxTxnGasLimit {
 			return fmt.Errorf("%w (cap: %d, tx: %d)", ErrGasLimitTooHigh, fixedgas.MaxTxnGasLimit, st.msg.Gas())
 		}
 
@@ -593,6 +605,10 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		defer func() {
 			st.evm.Config().Tracer.CaptureTxEnd(st.gas)
 		}()
+	}
+
+	if st.evm.ChainRules().IsGlamsterdam {
+		return st.transitionAmsterdam(refunds, gasBailout)
 	}
 
 	msg := st.msg
