@@ -126,6 +126,60 @@ func (c *PeerDASContext) VerifyCellKZGProofBatch(
 	return c.inner.VerifyCellKZGProofBatch(gCommitments, cellIndices, cells, gProofs)
 }
 
+// ComputeCellProofs computes the CellsPerExtBlob cell KZG proofs of a blob,
+// in cell-index order, as an EIP-7594 version-1 sidecar carries them.
+func ComputeCellProofs(blob *Blob) ([]Proof, error) {
+	ctx, err := GetPeerDASContext()
+	if err != nil {
+		return nil, err
+	}
+	_, kzgProofs, err := ctx.inner.ComputeCellsAndKZGProofs((*goethkzg.Blob)(blob), 0)
+	if err != nil {
+		return nil, err
+	}
+	proofs := make([]Proof, len(kzgProofs))
+	for i := range kzgProofs {
+		proofs[i] = Proof(kzgProofs[i])
+	}
+	return proofs, nil
+}
+
+// VerifyCellProofs verifies the cell proofs of whole blobs in one batch:
+// proofs holds CellsPerExtBlob proofs per blob, blob after blob, as in a
+// version-1 sidecar. The cells are recomputed from the blobs, so a valid
+// batch proves every blob matches its commitment (geth's VerifyCellProofs).
+func VerifyCellProofs(blobs []Blob, commitments []Commitment, proofs []Proof) error {
+	if len(blobs) != len(commitments) || len(proofs) != len(blobs)*CellsPerExtBlob {
+		return ErrInputLengthMismatch
+	}
+	ctx, err := GetPeerDASContext()
+	if err != nil {
+		return err
+	}
+	n := len(proofs)
+	var (
+		gCommitments = make([]goethkzg.KZGCommitment, 0, n)
+		gProofs      = make([]goethkzg.KZGProof, n)
+		cellIndices  = make([]uint64, 0, n)
+		cells        = make([]*Cell, 0, n)
+	)
+	for i := range proofs {
+		gProofs[i] = goethkzg.KZGProof(proofs[i])
+	}
+	for i := range blobs {
+		blobCells, err := ctx.inner.ComputeCells((*goethkzg.Blob)(&blobs[i]), 0)
+		if err != nil {
+			return err
+		}
+		for idx := range blobCells {
+			gCommitments = append(gCommitments, goethkzg.KZGCommitment(commitments[i]))
+			cellIndices = append(cellIndices, uint64(idx))
+			cells = append(cells, blobCells[idx])
+		}
+	}
+	return ctx.inner.VerifyCellKZGProofBatch(gCommitments, cellIndices, cells, gProofs)
+}
+
 // RecoverCellsAndProofs reconstructs all 128 cells and proofs from a subset.
 // Requires at least 64 cells (50% of 128) for successful reconstruction.
 // cellIDs must be sorted in ascending order.
