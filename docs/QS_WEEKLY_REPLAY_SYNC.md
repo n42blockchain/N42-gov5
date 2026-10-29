@@ -667,3 +667,51 @@ Binary and tools from commit `dcddd8b8` plus the marker fix below, built with
      (`--emit-hot` was stopped once at the final commit, with free RAM near zero
      while reth2k was syncing). Start long jobs with `Start-Process` and watch
      them with a Monitor.
+
+### 2026-10-29 (weekly: old-mainnet resync, incremental history replay, era seed, 7-node restart, first end-to-end mobile verification)
+
+Tools from `a0c0c1fd`, built with `go build` into `C:\N42\replay-20261029\`. The fleet
+binary was rebuilt twice during the cycle: `f26b1b2d` for the deploy (EIP-7843
+`SlotNumber` header layout, EIP-7825), then `66c5d7e5` by a rolling restart (read-log
+fix below).
+
+- **Sync**: 14,138,895 -> `Chain sync completed block=14220015`, stopped with
+  `sendbreak.exe`.
+- **Incremental replay** into `E:\qs-replay-hist-20261014` (`--qmdb-history`): 81,120
+  blocks in 1m28s, **txFailed 0**, receiptMismatch 18, 0 missing. checkpoint:
+  `sourceHead` 14,220,015, `number` **14,259,413**, `hash`
+  `0xc2cf38dfbb3a9e331ff39a09e0110e7d83279f49b1e2383452bebad220fef1e2`, qmdbRoot
+  `0x5ac57e7ebeebb1..`.
+- **Audit**: `qmdb-histcheck` TOTAL pass=96 fail=0; `qmdb-proof-fuzz` 100,014 proofs,
+  all correct.
+- **Seed** `E:\qs-era-out-20261029`: 13 eras / 39 files (7.9 GB); `--emit-hot` hot
+  MDBX 66.6 GB; `verify --deep --sample 64` `deep verify OK: 832 blocks compared`;
+  `SEAL_DONE.json` head 14,259,413, sealed_end 13,631,488; checkpoint.json copied in;
+  txindex 1 segment (5.2 MB) from 13,631,488, watermark 13631488.
+- **Header layout**: the seed is valid under the new layout (`MobileRegistryRoot`
+  moved to RLP position 24 behind EIP-7843 `SlotNumber`) because replay-v2 never
+  stamps the registry root, so every base hash is unchanged; blocks the fleet built
+  before this cycle would not be (their generation was moved aside, not reused).
+- **Fleet**: older generations `-pre20260816`, `-pre20261022`, `-bad20261022` deleted
+  (955 GB, E: was down to 538 GB free with a 490 GB seed copy ahead); the current one
+  moved to `-pre20261029`. Startup fingerprint `appliedNum=headNum=14259413`,
+  `treeRoot 5ac57e7ebeebb11a` (= the replay's qmdbRoot).
+- **10-minute window** (10 samples, 60 s apart): 14,259,468 -> 14,259,745, all 7
+  nodes at the same height (one sample one block apart), **one hash per height at
+  every sample**, 0 new `error`/`crit` lines.
+- **Mobile verification, first end-to-end run** (`mobileverify-device`, 7 simulated
+  devices, one per node, 20 blocks): registration and the 30 s epoch commit worked
+  on the first try; re-execution failed on every block until three bugs were fixed:
+  1. the SDK verifier skipped the start-of-block system calls (EIP-4788/2935) whose
+     reads open the read log, consumed by position -> `nonce too high ... state: 1`
+     (`fc3f59f6`);
+  2. the leader's stale-nonce trim read every pending sender through the read-log
+     recorder in map order -> `nonce too low/high` (`66c5d7e5`, needs the node
+     binary: rolling restart 6 -> 0, ~2.5 min, each node caught up in ~20 s);
+  3. the SDK compared the Ethereum receipt trie root while native headers carry the
+     concat root (`e798c991`, device only).
+  After them: **20/20 blocks certified, 7/7 devices verified and submitted on every
+  block, 0 failures** (blocks 14,260,853-14,260,872, 2-30 txs each).
+- **Not covered yet**: a receipt from a failed fill candidate (a tx that read state
+  and was then dropped from the block) would shift the log the same way; none
+  occurred in the run (txgen pending lists are contiguous).
