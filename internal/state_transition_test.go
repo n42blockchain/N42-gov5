@@ -3,6 +3,7 @@ package internal
 import (
 	"crypto/ecdsa"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -907,5 +908,61 @@ func TestApplyTransactionCancunModExpCallCodeOverflowingExponentLength(t *testin
 	ibs.GetState(contractAddr, &slot1, &slot1Value)
 	if got := slot1Value.Uint64(); got != 1 {
 		t.Fatalf("storage[1] = %d, want 1", got)
+	}
+}
+
+// EIP-7825: from Osaka a transaction above 2^24 gas is invalid in the core
+// execution path too, not only at newPayload and in the pool, so a block
+// imported over devp2p or replayed with one is rejected as geth rejects it.
+func TestApplyTransactionOsakaRejectsGasAboveTxCap(t *testing.T) {
+	for _, tc := range []struct {
+		gas     uint64
+		wantErr bool
+	}{
+		{fixedgas.MaxTxnGasLimit, false},
+		{fixedgas.MaxTxnGasLimit + 1, true},
+	} {
+		db := memdb.NewTestDB(t)
+		txdb := memdb.BeginRw(t, db)
+		ibs := state.New(state.NewPlainState(txdb, 1))
+
+		senderKey, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("generate sender key: %v", err)
+		}
+		sender := crypto.PubkeyToAddress(senderKey.PublicKey)
+		recipient := types.HexToAddress("0x2222222222222222222222222222222222222222")
+		coinbase := types.HexToAddress("0x1111111111111111111111111111111111111111")
+		ibs.CreateAccount(sender, false)
+		ibs.AddBalance(sender, uint256.NewInt(1_000_000_000_000_000_000))
+
+		signedTx, err := transaction.SignTx(transaction.NewTx(&transaction.LegacyTx{
+			Nonce:    0,
+			GasPrice: uint256.NewInt(7),
+			Gas:      tc.gas,
+			To:       &recipient,
+			Value:    uint256.NewInt(1),
+		}), transaction.NewEIP155Signer(big.NewInt(1)), senderKey)
+		if err != nil {
+			t.Fatalf("SignTx: %v", err)
+		}
+		header := &block.Header{
+			Number:     uint256.NewInt(1),
+			GasLimit:   60_000_000,
+			Time:       1,
+			BaseFee:    uint256.NewInt(7),
+			Difficulty: uint256.NewInt(0),
+		}
+		gp := new(common.GasPool).AddGas(header.GasLimit)
+		usedGas := uint64(0)
+		_, _, err = ApplyTransaction(testStateTransitionChainConfig(), func(uint64) types.Hash { return types.Hash{} },
+			nil, &coinbase, gp, ibs, state.NewNoopWriter(), header, signedTx, &usedGas, vm2.Config{})
+		if tc.wantErr {
+			if !errors.Is(err, ErrGasLimitTooHigh) {
+				t.Fatalf("gas %d: err = %v, want ErrGasLimitTooHigh", tc.gas, err)
+			}
+		} else if err != nil {
+			t.Fatalf("gas %d: unexpected error %v", tc.gas, err)
+		}
 	}
 }

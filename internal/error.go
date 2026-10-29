@@ -63,6 +63,10 @@ var (
 	// maximum allowed value and would become invalid if incremented.
 	ErrNonceMax = errors.New("nonce has max value")
 
+	// ErrGasLimitTooHigh is returned if a transaction's gas limit exceeds the
+	// per-transaction cap (EIP-7825, from Osaka).
+	ErrGasLimitTooHigh = errors.New("transaction gas limit too high")
+
 	// ErrGasLimitReached is returned by the gas pool if the amount of gas required
 	// by a transaction is higher than what's left in the block.
 	// Alias to common.ErrGasLimitReached to avoid import cycles.
