@@ -72,6 +72,8 @@ const (
 	bpo3
 	bpo4
 	bpo5
+	// amsterdam follows BPO2 on the fixture schedule; BPO3-5 stay off.
+	amsterdam
 )
 
 // forkByName lists the single-fork network names fixtures use.
@@ -101,6 +103,7 @@ var forkByName = map[string]fork{
 	"BPO3":              bpo3,
 	"BPO4":              bpo4,
 	"BPO5":              bpo5,
+	"Amsterdam":         amsterdam,
 }
 
 // transition is a network that runs fork `from` at genesis and switches to
@@ -130,6 +133,7 @@ var transitions = map[string]transition{
 	"BPO2ToBPO3AtTime15k":            {from: bpo2, to: bpo3, atTime: 15_000},
 	"BPO3ToBPO4AtTime15k":            {from: bpo3, to: bpo4, atTime: 15_000},
 	"BPO4ToBPO5AtTime15k":            {from: bpo4, to: bpo5, atTime: 15_000},
+	"BPO2ToAmsterdamAtTime15k":       {from: bpo2, to: amsterdam, atTime: 15_000},
 }
 
 // DefaultForks is the set the runners execute when EnvForks is unset:
@@ -296,14 +300,17 @@ func activate(cfg *params.ChainConfig, f fork, atBlock, atTime uint64) {
 	if f >= bpo2 {
 		tm(&cfg.BPO2Time)
 	}
-	if f >= bpo3 {
+	if f >= bpo3 && f != amsterdam {
 		tm(&cfg.BPO3Time)
 	}
-	if f >= bpo4 {
+	if f >= bpo4 && f != amsterdam {
 		tm(&cfg.BPO4Time)
 	}
-	if f >= bpo5 {
+	if f >= bpo5 && f != amsterdam {
 		tm(&cfg.BPO5Time)
+	}
+	if f >= amsterdam {
+		tm(&cfg.GlamsterdamTime)
 	}
 }
 
@@ -331,6 +338,8 @@ func blobSchedule(raw map[string]FixtureBlobConfig) (*params.BlobSchedule, error
 			out.BPO4 = bc
 		case "BPO5":
 			out.BPO5 = bc
+		case "Amsterdam":
+			out.Amsterdam = bc
 		default:
 			return nil, fmt.Errorf("unknown blobSchedule fork %q", name)
 		}
