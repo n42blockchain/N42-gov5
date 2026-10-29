@@ -163,6 +163,12 @@ type blobTxMessage interface {
 	IsBlobTx() bool
 }
 
+// setCodeTxMessage is implemented by *transaction.Message. It tells a set-code
+// transaction with an empty authorization list apart from other messages.
+type setCodeTxMessage interface {
+	IsSetCodeTx() bool
+}
+
 // ExecutionResult includes all output after executing given evm message
 // no matter the execution itself is successful or not.
 type ExecutionResult struct {
@@ -536,6 +542,9 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 			}
 		}
 	}
+	if err := st.checkSetCodeTxShape(); err != nil {
+		return err
+	}
 	if len(blobHashes) > 0 {
 		blobFeeCap := st.msg.BlobFeeCap()
 		currentBlobFee := st.currentBlobBaseFee()
@@ -545,6 +554,26 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 		}
 	}
 	return st.buyGas(gasBailout)
+}
+
+// checkSetCodeTxShape applies geth's EIP-7702 transaction checks: no set-code
+// transaction before Prague, none without a recipient, none with an empty
+// authorization list. N42 native chains are left to their own rules.
+func (st *StateTransition) checkSetCodeTxShape() error {
+	m, ok := st.msg.(setCodeTxMessage)
+	if !ok || !m.IsSetCodeTx() || st.evm.ChainConfig().IsN42Native() {
+		return nil
+	}
+	if !st.evm.ChainRules().IsPrague {
+		return fmt.Errorf("%w: set code tx (sender %v)", ErrTxTypeNotSupported, st.msg.From().Hex())
+	}
+	if st.msg.To() == nil {
+		return fmt.Errorf("%w (sender %v)", ErrSetCodeTxCreate, st.msg.From().Hex())
+	}
+	if len(st.msg.AuthList()) == 0 {
+		return fmt.Errorf("%w (sender %v)", ErrEmptyAuthList, st.msg.From().Hex())
+	}
+	return nil
 }
 
 // TransitionDb transitions the state by applying the current message and
@@ -589,6 +618,18 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		floorDataGas = vm2.FloorDataGas(st.data, rules.IsGlamsterdam)
 		if st.initialGas < floorDataGas {
 			return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.initialGas, floorDataGas)
+		}
+	}
+
+	// EIP-3860: cap the initcode of a creation transaction (raised by
+	// EIP-7954 in Glamsterdam). N42 native chains are left to their own rules.
+	if contractCreation && rules.IsShanghai && !st.evm.ChainConfig().IsN42Native() {
+		maxInitCode := uint64(params.MaxInitCodeSize)
+		if rules.IsGlamsterdam {
+			maxInitCode = params.MaxInitCodeSizeEIP7954
+		}
+		if uint64(len(st.data)) > maxInitCode {
+			return nil, fmt.Errorf("%w: code size %d limit %d", ErrMaxInitCodeSizeExceeded, len(st.data), maxInitCode)
 		}
 	}
 

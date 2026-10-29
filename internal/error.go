@@ -95,6 +95,18 @@ var (
 	// versioned hash whose version byte is not the KZG one (EIP-4844).
 	ErrInvalidBlobHashVersion = errors.New("blob hash has invalid version")
 
+	// ErrSetCodeTxCreate is returned if a set-code (type-4) transaction has
+	// no recipient (EIP-7702).
+	ErrSetCodeTxCreate = errors.New("set code transaction must not be a create transaction")
+
+	// ErrEmptyAuthList is returned if a set-code transaction carries an empty
+	// authorization list (EIP-7702).
+	ErrEmptyAuthList = errors.New("set code transaction with empty auth list")
+
+	// ErrMaxInitCodeSizeExceeded is returned if a creation transaction's
+	// initcode is larger than the EIP-3860 cap.
+	ErrMaxInitCodeSizeExceeded = errors.New("max initcode size exceeded")
+
 	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
 	// transaction with a tip higher than the total fee cap.
 	ErrTipAboveFeeCap = errors.New("max priority fee per gas higher than max fee per gas")
