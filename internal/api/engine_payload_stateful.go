@@ -481,6 +481,12 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 	if cfg := e.chainConfig(); cfg != nil && header.Number != nil && cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
 		maxBlobGas = cfg.BlobMaxGasPerBlock(header.Time)
 	}
+	// An Osaka payload ships cell proofs (EIP-7594), earlier ones blob
+	// proofs; only blob transactions whose sidecar has that version go in.
+	osaka := false
+	if cfg := e.chainConfig(); cfg != nil {
+		osaka = cfg.IsOsaka(header.Time)
+	}
 	var blobGasUsed uint64
 
 	commitTx := func(txn *transaction.Transaction) error {
@@ -505,6 +511,11 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 		txn := txSet.Peek()
 		if txn == nil {
 			break
+		}
+		if !blobTxIncludableInPayload(txn, osaka) {
+			// The sender's later nonces cannot go in without this one.
+			txSet.Pop()
+			continue
 		}
 		txnBlobGas := txn.BlobGas()
 		if maxBlobGas > 0 && txnBlobGas > maxBlobGas-blobGasUsed {
