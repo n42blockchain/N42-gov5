@@ -238,6 +238,12 @@ type environment struct {
 	header   *block.Header
 	txs      []*transaction.Transaction
 	receipts []*block.Receipt
+
+	// untracedReader is the build's state reader below the mobile read-log
+	// recorder and the witness tracer. Reads the block does not make (the
+	// stale-nonce trim) go through it; logged, they would sit in the read
+	// log the verifiers consume by position and shift every read after them.
+	untracedReader state.StateReader
 }
 
 func (env *environment) copy() *environment {
@@ -1690,6 +1696,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// -- become map hits.
 	prefetch := state.NewAccountPrefetch(stateReader)
 	stateReader = prefetch
+	current.untracedReader = prefetch
 
 	// Wrap state reader with TracingReader when JMT is enabled to record
 	// all state accesses for witness generation.
@@ -2002,6 +2009,15 @@ func (w *worker) workLoop(recommit time.Duration) error {
 // parallelFillEnabled gates the builder's Block-STM fill (N42_MINER_PARALLEL_FILL=1).
 func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") == "1" }
 
+// staleTrimReader is the reader the stale-nonce trim reads accounts through:
+// the build's untraced reader when it has one, else the state's own reader.
+func staleTrimReader(env *environment, ibs *state.IntraBlockState) state.StateReader {
+	if env != nil && env.untracedReader != nil {
+		return env.untracedReader
+	}
+	return ibs.GetStateReader()
+}
+
 // pf and wd are S11's diagnostic pre-fill timer/watchdog (both nil unless
 // N42_BUILD_STALL_DIAG=1; docs/QS_BLOCK_TIME_BUDGET.md 6by). This function
 // is where the pre-fill total completes (pending-pool snapshot + stale
@@ -2248,11 +2264,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// Read through the state READER, never the IntraBlockState: a read there
 	// creates a state object, and a touched-but-unchanged object is one more
 	// no-op entry in an append-only commitment -- a root the followers, who
-	// never touched it, cannot reproduce.
+	// never touched it, cannot reproduce. And read below the mobile read-log
+	// recorder (env.untracedReader): these reads are not part of the block.
 	staleTrimmed := 0
 	wd.SetStep("staleTrim")
 	tTrim := time.Now()
-	reader := ibs.GetStateReader()
+	reader := staleTrimReader(env, ibs)
 	for addr, list := range pending {
 		var nonce uint64
 		if acc, rerr := reader.ReadAccountData(addr); rerr == nil && acc != nil {

@@ -4,6 +4,7 @@
 package miner
 
 import (
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,9 +13,12 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/cmd/evmsdk"
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/streamverify"
+	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -181,5 +185,59 @@ func TestMobilePacketIsKeyedBySealedHashThroughHandleSealed(t *testing.T) {
 	}
 	if inner.Hash() != sealed.Hash() {
 		t.Fatalf("header inside the packet hashes to %x, want %x", inner.Hash(), sealed.Hash())
+	}
+}
+
+// The read log must hold exactly the reads a verifier makes re-executing the
+// block's transactions. The stale-nonce trim reads every pending sender before
+// the fill; read through the recorder, those reads opened the log (in map
+// order) and shifted every later read, so verifiers failed every block with a
+// transaction ("nonce too high/low").
+func TestFillTransactionsReadLogMatchesReplay(t *testing.T) {
+	f := mnTNewChainFixture(t)
+	tx0 := f.mnTSignedTransfer(t, 0, f.Senders[1], uint256.NewInt(1_000))
+	tx1 := f.mnTSignedTransfer(t, 0, f.Senders[1], uint256.NewInt(2_000))
+
+	w := mnTNewIdleWorker(t, f, &mnTStubTxsPool{})
+	w.setCoinbase(f.Coinbase)
+	_, env := mnTPrepareEnvAndState(t, w, f)
+	w.txsPool = &mnTStubTxsPool{pending: mnTByAddr(f.Senders[0], tx0, tx1)}
+
+	roTx, err := f.DB.BeginRo(w.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer roTx.Rollback()
+	base := state.NewPlainStateReader(roTx)
+	rec := streamverify.NewReadLogRecorder(base, nil)
+	env.untracedReader = base
+	ibs := state.New(rec)
+	getHeader := func(types.Hash, uint64) *block.Header { return nil }
+	if err := w.fillTransactions(nil, env, ibs, getHeader, nil, newBuildStallWatchdog(false, ""), nil); err != nil {
+		t.Fatalf("fillTransactions: %v", err)
+	}
+	if len(env.txs) != 2 {
+		t.Fatalf("included %d txs, want 2", len(env.txs))
+	}
+
+	replay := streamverify.NewReadLogRecorder(base, nil)
+	ribs := state.New(replay)
+	gp := new(common.GasPool).AddGas(env.header.GasLimit)
+	var used uint64
+	for i, tx := range env.txs {
+		ribs.Prepare(tx.Hash(), types.Hash{}, i)
+		if _, _, err := internal.ApplyTransaction(w.chainConfig, func(uint64) types.Hash { return types.Hash{} }, w.engine,
+			&env.coinbase, gp, ribs, state.NewNoopWriter(), env.header, tx, &used, vm.Config{}); err != nil {
+			t.Fatalf("replay tx %d: %v", i, err)
+		}
+	}
+	got, want := rec.Log(), replay.Log()
+	if len(got) != len(want) {
+		t.Fatalf("leader logged %d reads, a replay of its transactions makes %d", len(got), len(want))
+	}
+	for i := range got {
+		if !reflect.DeepEqual(got[i], want[i]) {
+			t.Fatalf("read %d: leader logged %+v, replay read %+v", i, got[i], want[i])
+		}
 	}
 }
