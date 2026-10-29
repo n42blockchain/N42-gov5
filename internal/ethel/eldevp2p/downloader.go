@@ -2349,6 +2349,8 @@ func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string,
 // hashes from any available peer at atHeight. Public entry for the BAL
 // prefetch/verify path: the caller decodes each raw BAL (bal.DecodeBAL), verifies
 // it against the header's BlockAccessListHash, and can prewarm state from it.
+// It needs an eth/71 peer; N42 does not advertise eth/71 (its BAL format is
+// not the spec's), so this finds no peer until spec eth/71 lands.
 func (d *Downloader) FetchBlockAccessLists(ctx context.Context, atHeight uint64, hashes []types.Hash) ([][]byte, error) {
 	pp := d.pickPeerWithMinVersion(atHeight, eth69.ETH71)
 	if pp == nil {

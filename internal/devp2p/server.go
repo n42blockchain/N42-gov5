@@ -82,7 +82,10 @@ func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
 
 // Start starts the devp2p server.
 func (s *Server) Start() error {
-	// Advertise eth/68 through eth/71. A large share of mainnet peers still speak
+	// Advertise eth/68 and eth/69 (eth69.ProtocolVersions). eth/70 (EIP-7975
+	// partial receipts) and eth/71 (EIP-7928 BALs) are not implemented to spec
+	// and are not offered; geth, reth and erigon all speak eth/69.
+	// A large share of mainnet peers still speak
 	// only older versions; advertising only the latest drops them at the
 	// Status handshake (their eth/68 Status mis-decodes as eth/69), starving block
 	// download. RLPx negotiates the highest COMMON eth version per peer and runs
@@ -102,23 +105,9 @@ func (s *Server) Start() error {
 	// handing it a DNS-only iterator would silently switch the DHT off — which
 	// it did, dropping dial volume from ~170 to 5 connections a minute. The
 	// table iterators are attached after Start, when the server has them.
-	dialCandidates := s.dialCandidates()
-	ethProtos := make([]gethp2p.Protocol, 0, len(eth69.ProtocolVersions))
-	for _, v := range eth69.ProtocolVersions {
-		version := v
-		length, err := eth69.GetProtocolLength(version)
-		if err != nil {
-			return err
-		}
-		ethProtos = append(ethProtos, gethp2p.Protocol{
-			Name:           "eth",
-			Version:        version,
-			Length:         length,
-			DialCandidates: dialCandidates,
-			Run: func(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
-				return s.handler.runPeer(peer, rw, version)
-			},
-		})
+	ethProtos, err := s.ethProtocols(s.dialCandidates())
+	if err != nil {
+		return err
 	}
 	// snap/1 stub — without it every modern mainnet client (Geth /
 	// Nethermind / Erigon / Besu / Pulse / Bera) classifies us as a
@@ -213,6 +202,29 @@ func (s *Server) Start() error {
 		"maxPeers", s.cfg.MaxPeers,
 		"enode", s.srv.Self().URLv4())
 	return nil
+}
+
+// ethProtocols returns one devp2p "eth" protocol per advertised version. The
+// protocol length bounds the message codes a peer may send on that version.
+func (s *Server) ethProtocols(dialCandidates enode.Iterator) ([]gethp2p.Protocol, error) {
+	protos := make([]gethp2p.Protocol, 0, len(eth69.ProtocolVersions))
+	for _, v := range eth69.ProtocolVersions {
+		version := v
+		length, err := eth69.GetProtocolLength(version)
+		if err != nil {
+			return nil, err
+		}
+		protos = append(protos, gethp2p.Protocol{
+			Name:           eth69.ProtocolName,
+			Version:        version,
+			Length:         length,
+			DialCandidates: dialCandidates,
+			Run: func(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
+				return s.handler.runPeer(peer, rw, version)
+			},
+		})
+	}
+	return protos, nil
 }
 
 // Stop stops the devp2p server.
