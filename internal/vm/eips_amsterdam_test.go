@@ -33,9 +33,9 @@ import (
 func TestEIP8024DupNSwapNDecoding(t *testing.T) {
 	// decode_single(x) = (x+145) % 256; valid 0..90 and 128..255 -> n in 17..235.
 	cases := []struct {
-		imm  byte
-		n    int
-		ok   bool
+		imm byte
+		n   int
+		ok  bool
 	}{
 		{0, 145, true},
 		{90, 235, true},
@@ -180,5 +180,26 @@ func TestAmsterdamConstants(t *testing.T) {
 	// EIP-7954.
 	if params.MaxCodeSizeEIP7954 != 65536 || params.MaxInitCodeSizeEIP7954 != 131072 {
 		t.Fatal("EIP-7954 size limits wrong")
+	}
+}
+
+// --- EIP-7843: SLOTNUM ---
+
+// SLOTNUM pops nothing and pushes the slot: on an empty stack it must leave
+// exactly one item holding BlockContext.Slot.
+func TestEIP7843SlotNumPushes(t *testing.T) {
+	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
+	evm.context.Slot = 0x1234
+	interp := &EVMInterpreter{VM: &VM{evm: evm}}
+	scope := createTestScope([]byte{byte(SLOTNUM)})
+	pc := uint64(0)
+	if _, err := opSlotNum(&pc, interp, scope); err != nil {
+		t.Fatalf("SLOTNUM: %v", err)
+	}
+	if scope.Stack.Len() != 1 {
+		t.Fatalf("stack len = %d, want 1", scope.Stack.Len())
+	}
+	if got := scope.Stack.Peek().Uint64(); got != 0x1234 {
+		t.Fatalf("SLOTNUM pushed %d, want %d", got, 0x1234)
 	}
 }
