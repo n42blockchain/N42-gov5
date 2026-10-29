@@ -56,8 +56,7 @@ import (
 // execution block. Returns 0 when the slot is not available (e.g., pre-Merge
 // or when BlockContext.Slot has not been populated by the block producer).
 func opSlotNum(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	v := scope.Stack.Peek()
-	v.SetUint64(interpreter.evm.Context().Slot)
+	scope.Stack.Push(new(uint256.Int).SetUint64(interpreter.evm.Context().Slot))
 	return nil, nil
 }
 
@@ -204,9 +203,9 @@ func gasSStoreAmsterdam(evm VMInterpreter, contract *Contract, stack *stack.Stac
 		cost    = uint64(0)
 	)
 	const (
-		writeGas   = params.StorageWriteEIP8038                                  // 10000
+		writeGas   = params.StorageWriteEIP8038                                      // 10000
 		newSlotGas = params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037 // 97920
-		clearRef   = params.StorageClearRefundEIP8038                            // 11616
+		clearRef   = params.StorageClearRefundEIP8038                                // 11616
 	)
 	evm.IntraBlockState().GetState(contract.Address(), &slot, &current)
 	if addrPresent, slotPresent := evm.IntraBlockState().SlotInAccessList(contract.Address(), slot); !slotPresent {
