@@ -157,6 +157,9 @@ const (
 	DepositRequestType       = 0x00
 	WithdrawalRequestType    = 0x01
 	ConsolidationRequestType = 0x02
+	// EIP-8282 (Amsterdam) builder execution requests.
+	BuilderDepositRequestType = 0x03
+	BuilderExitRequestType    = 0x04
 )
 
 // SystemAddress is the system address that can make requests
@@ -169,6 +172,13 @@ var WithdrawalRequestsAddress = types.HexToAddress("0x00000961EF480EB55E80D19AD8
 // ConsolidationRequestsAddress is the address of the consolidation requests contract (EIP-7251)
 // aligned with the active Prague/Osaka execution-spec-tests fixtures.
 var ConsolidationRequestsAddress = types.HexToAddress("0x0000BBDDC7CE488642FB579F8B00F3A590007251")
+
+// BuilderDepositRequestsAddress and BuilderExitRequestsAddress are the
+// EIP-8282 (Amsterdam) builder deposit and exit request contracts.
+var (
+	BuilderDepositRequestsAddress = types.HexToAddress("0x0000BFF46984E3725691FA540A8C7589300D8282")
+	BuilderExitRequestsAddress    = types.HexToAddress("0x000064D678505AD48F8CCB093BC65613800E8282")
+)
 
 // WithdrawalRequestQueueCode is the canonical deployed bytecode for the
 // Prague EIP-7002 withdrawal request queue contract used by current EEST
