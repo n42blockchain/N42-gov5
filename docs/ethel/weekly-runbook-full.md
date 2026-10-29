@@ -305,6 +305,9 @@ C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-<tip> --snapshot.mo
 
 - **caught up**: log `eldevp2p: caught up head=… tip=…` (tip = max peer head;
   post-merge EL peers → real catch-up toward mainnet live head, needs internet).
+  `waiting for a peer ahead of the local head` means every peer held is behind
+  the node — not caught up. Confirm against the highest recent peer
+  `handshake complete head=`, not against the log line alone.
 - **live**: the 12 s follow loop (`probeForNewTip` then sleep 12 s). For the
   1-minute test, watch ≥ 4-5 consecutive live rounds each importing the next
   block **with no state-root mismatch** (the golden rule).
