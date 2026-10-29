@@ -257,6 +257,7 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 				receipts = append(receipts, receipt)
 			}
 		}
+		usedGas = internalcore.HeaderGasUsed(cfg, header, gasPool, usedGas)
 		if usedGas != header.GasUsed {
 			return fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, header.GasUsed)
 		}

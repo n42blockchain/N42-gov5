@@ -363,7 +363,18 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	_ = rejectedTxs
 	_ = includedTxs
 
-	return receipts, nopay, ibs.Logs(), *usedGas, nil
+	return receipts, nopay, ibs.Logs(), HeaderGasUsed(chainConfig, concreteHeader, gp, *usedGas), nil
+}
+
+// HeaderGasUsed returns the gas used a block header must carry after its
+// transactions ran through gp: under Amsterdam the EIP-8037 figure,
+// max(cumulative execution gas, cumulative state gas); before it the
+// receipts' cumulative gas.
+func HeaderGasUsed(config *params.ChainConfig, header *block.Header, gp *common.GasPool, cumulative uint64) uint64 {
+	if config != nil && config.IsGlamsterdam(header.Time) {
+		return gp.UsedAmsterdam()
+	}
+	return cumulative
 }
 
 // applyTransaction applies a single transaction and returns its receipt.
