@@ -38,6 +38,24 @@ func TestResolvePragueSystemContractRegistryReturnsCanonicalContracts(t *testing
 	}, registry.executionRequests)
 }
 
+// EIP-8282: from Amsterdam the builder deposit and exit queues follow the
+// withdrawal and consolidation queues.
+func TestResolvePragueSystemContractRegistryAmsterdamBuilderQueues(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	cfg.OsakaTime = big.NewInt(0)
+	cfg.GlamsterdamTime = big.NewInt(0)
+	registry := resolvePragueSystemContractRegistry(cfg.RulesWithTimestamp(1, 1))
+
+	require.Equal(t, []executionRequestSystemContract{
+		{contract: vm.WithdrawalRequestsAddress, requestType: vm.WithdrawalRequestType},
+		{contract: vm.ConsolidationRequestsAddress, requestType: vm.ConsolidationRequestType},
+		{contract: vm.BuilderDepositRequestsAddress, requestType: vm.BuilderDepositRequestType},
+		{contract: vm.BuilderExitRequestsAddress, requestType: vm.BuilderExitRequestType},
+	}, registry.executionRequests)
+}
+
 func TestPragueSystemContractDeploymentsReturnCanonicalAlloc(t *testing.T) {
 	t.Parallel()
 

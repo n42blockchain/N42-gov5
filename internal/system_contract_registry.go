@@ -26,13 +26,22 @@ func resolvePragueSystemContractRegistry(rules *params.Rules) pragueSystemContra
 	if rules == nil || !rules.IsPrague {
 		return pragueSystemContractRegistry{}
 	}
-	return pragueSystemContractRegistry{
+	registry := pragueSystemContractRegistry{
 		historyStorage: vm.HistoryStorageAddress,
 		executionRequests: []executionRequestSystemContract{
 			{contract: vm.WithdrawalRequestsAddress, requestType: vm.WithdrawalRequestType},
 			{contract: vm.ConsolidationRequestsAddress, requestType: vm.ConsolidationRequestType},
 		},
 	}
+	if rules.IsGlamsterdam {
+		// EIP-8282: the builder deposit and exit queues are dequeued after
+		// the Prague ones, in request-type order.
+		registry.executionRequests = append(registry.executionRequests,
+			executionRequestSystemContract{contract: vm.BuilderDepositRequestsAddress, requestType: vm.BuilderDepositRequestType},
+			executionRequestSystemContract{contract: vm.BuilderExitRequestsAddress, requestType: vm.BuilderExitRequestType},
+		)
+	}
+	return registry
 }
 
 func PragueSystemContractDeployments() []SystemContractDeployment {
