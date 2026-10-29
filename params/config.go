@@ -244,6 +244,13 @@ type ChainConfig struct {
 	FusakaTime      *big.Int `json:"fusakaTime,omitempty"`
 	GlamsterdamTime *big.Int `json:"glamsterdamTime,omitempty"` // EIP-7904 gas repricing
 
+	// DepositContractAddress is the beacon deposit contract whose DepositEvent
+	// logs become EIP-6110 deposit requests. Nil means the Ethereum mainnet
+	// contract: chain configs written before this field existed (chainspecs,
+	// configs stored in datadirs) keep the address they always used. An
+	// explicit zero address matches no log, as an unset geth config does.
+	DepositContractAddress *types.Address `json:"depositContractAddress,omitempty"`
+
 	// N42 extension: post-quantum precompile activation (independent of standard forks).
 	// When set, PQ precompiles (Falcon 0x14, Dilithium2 0x15, Dilithium3 0x16, SQIsign 0x17)
 	// become available at the specified timestamp. These are N42-specific extensions and
@@ -392,6 +399,18 @@ func NormalizeConsensus(cfg *ChainConfig) *ChainConfig {
 		cfg.Consensus = Faker
 	}
 	return cfg
+}
+
+// MainnetDepositContractAddress is the Ethereum mainnet beacon deposit contract.
+var MainnetDepositContractAddress = types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")
+
+// DepositContract returns the address whose deposit logs are parsed into
+// EIP-6110 requests (geth: ChainConfig.DepositContractAddress).
+func (c *ChainConfig) DepositContract() types.Address {
+	if c == nil || c.DepositContractAddress == nil {
+		return MainnetDepositContractAddress
+	}
+	return *c.DepositContractAddress
 }
 
 // String implements the fmt.Stringer interface.

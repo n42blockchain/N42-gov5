@@ -291,8 +291,9 @@ const MaxPerEpochActivationExitChurnLimit = 256_000_000_000 // 256 Gwei
 // https://eips.ethereum.org/EIPS/eip-6110
 // =============================================================================
 
-// DepositContractAddress is the address of the beacon chain deposit contract
-var DepositContractAddress = types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")
+// DepositContractAddress is the Ethereum mainnet beacon chain deposit contract.
+// Deposit-request parsing uses the chain's ChainConfig.DepositContract().
+var DepositContractAddress = params.MainnetDepositContractAddress
 
 // Deposit event signature for EIP-6110
 // DepositEvent(bytes pubkey, bytes withdrawal_credentials, bytes amount, bytes signature, bytes index)
