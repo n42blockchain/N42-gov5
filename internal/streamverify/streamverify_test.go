@@ -12,6 +12,7 @@ import (
 	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -312,7 +313,8 @@ func TestBuildStreamPacket_BytecodesSorted(t *testing.T) {
 // ----------------------------------------------------------------------------
 
 func TestProducerVerifier_EmptyBlockRoundtrip(t *testing.T) {
-	emptyTrieRoot := types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+	// An empty native block carries the native concat root of no receipts.
+	emptyTrieRoot := hash.DeriveSha(block.Receipts(nil))
 	hdr := validHeader(t, 100, emptyTrieRoot)
 
 	// 1. Producer side: empty execution → empty recorder → packet.

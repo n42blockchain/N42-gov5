@@ -272,7 +272,7 @@ func TestMobileFacade_Version(t *testing.T) {
 // suitable for end-to-end MobileVerifyPacket testing.
 func encodedEmptyBlockPacket(t *testing.T, blockNumber uint64) []byte {
 	t.Helper()
-	hdr := minimalHeader(t, blockNumber, emptyEthTrieRoot)
+	hdr := minimalHeader(t, blockNumber, emptyNativeReceiptsRoot)
 	pkt := emptyPacket(t, hdr)
 	encoded, err := EncodeStreamPacket(pkt)
 	if err != nil {
