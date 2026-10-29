@@ -74,6 +74,7 @@ type eestGenesisHeader struct {
 	BaseFee       *eest.Big     `json:"baseFeePerGas"`
 	BlobGasUsed   *eest.Uint64  `json:"blobGasUsed"`
 	ExcessBlobGas *eest.Uint64  `json:"excessBlobGas"`
+	SlotNumber    *eest.Uint64  `json:"slotNumber"`
 }
 
 type eestAccountJSON struct {
@@ -317,6 +318,9 @@ func eestGenesis(cfg *params.ChainConfig, fx *eestBlockchainFixture) (*conf.Gene
 	}
 	if h.ExcessBlobGas != nil {
 		g.ExcessBlobGas = uint64(*h.ExcessBlobGas)
+	}
+	if h.SlotNumber != nil {
+		g.SlotNumber = uint64(*h.SlotNumber)
 	}
 	return g, nil
 }
