@@ -17,6 +17,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"math/big"
+	"os"
 	"sync"
 	"testing"
 
@@ -226,9 +227,15 @@ func apiXBuildChainFixture(tb testing.TB) *apiXChainFixture {
 	// Deliberately NOT memdb.NewTestDB(tb): that ties db.Close to tb.Cleanup
 	// of whichever test happens to trigger the sync.Once build, which then
 	// closes the shared fixture's database out from under every later test.
-	// The fixture is process-lifetime; memdb.New's in-memory MDBX instance
-	// (confirmed in-core, not file-backed) is simply left open.
-	db := memdb.New(tb.TempDir())
+	// The fixture is process-lifetime and its database is simply left open.
+	// For the same reason its directory is not tb.TempDir(): MDBX still keeps
+	// mdbx.dat there, and on Windows the open file makes the triggering test's
+	// TempDir cleanup fail with "being used by another process".
+	dir, err := os.MkdirTemp("", "apix-chain-fixture-")
+	if err != nil {
+		tb.Fatalf("fixture dir: %v", err)
+	}
+	db := memdb.New(dir)
 
 	cfg := &params.ChainConfig{
 		ChainID:               big.NewInt(1337),
@@ -272,7 +279,7 @@ func apiXBuildChainFixture(tb testing.TB) *apiXChainFixture {
 	}
 
 	var genesisBlock *block.Block
-	err := db.Update(ctx, func(tx kv.RwTx) error {
+	err = db.Update(ctx, func(tx kv.RwTx) error {
 		blk, _, werr := genesis.Write(tx)
 		if werr != nil {
 			return werr
