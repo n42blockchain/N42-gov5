@@ -286,8 +286,48 @@ func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBl
 	if ibs.GetCodeSize(registry.historyStorage) == 0 {
 		return nil
 	}
+	if rules.IsGlamsterdam {
+		historySystemCall(registry.historyStorage, chainConfig, ibs, header)
+		return ibs.FinalizeTx(rules, state.NewNoopWriter())
+	}
 	vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
 	return ibs.FinalizeTx(rules, state.NewNoopWriter())
+}
+
+// historySystemCall makes the EIP-2935 system call the way geth's
+// ProcessParentBlockHash does: caller SYSTEM_ADDRESS, 30M gas plus the
+// EIP-8037 state-gas reservoir, zero value, input = the parent hash. Earlier
+// forks write the ring-buffer slot directly (vm.StoreParentBlockHash), which
+// matches the canonical contract; Amsterdam executes whatever code the
+// contract holds, as its state-gas accounting applies to it. A failing call
+// leaves the state as the call left it and does not invalidate the block.
+// Like beaconRootSystemCall it does no value transfer and keeps the access
+// list of the first transaction clean. The caller finalizes the state.
+func historySystemCall(contract types.Address, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header) {
+	msg := transaction.NewMessage(
+		state.SystemAddress,
+		&contract,
+		0, u256.Num0,
+		systemCallGas, u256.Num0,
+		nil, nil, nil, nil,
+		header.ParentHash[:], nil, false,
+		true, // isFree
+	)
+	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), nil, chainConfig, &header.Coinbase)
+	transfer := blockContext.Transfer
+	blockContext.Transfer = func(db evmtypes.IntraBlockState, sender, recipient types.Address, amount *uint256.Int, bailout bool) {
+		if sender == state.SystemAddress {
+			return
+		}
+		transfer(db, sender, recipient, amount, bailout)
+	}
+	evm := vm.NewEVM(blockContext, NewEVMTxContext(msg), ibs, chainConfig, vm.Config{NoReceipts: true})
+	ibs.ResetAccessList()
+	ibs.AddAddressToAccessList(types.Address{})
+	ibs.AddAddressToAccessList(contract)
+	setSystemCallStateGasReservoir(evm)
+	_, _, _ = evm.Call(vm.AccountRef(state.SystemAddress), contract, header.ParentHash[:], systemCallGas, u256.Num0, false)
+	ibs.ResetAccessList()
 }
 
 // ProcessPragueSystemCalls applies Prague/Pectra end-of-block system contract
