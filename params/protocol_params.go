@@ -140,18 +140,18 @@ const (
 	// explicit primitives; a plain transfer still totals 12000+3000+6000=21000,
 	// but self-transfers drop the recipient components and creations swap the
 	// value/access parts for CREATE_ACCESS.
-	TxBaseCostEIP2780       uint64 = 12000 // ECDSA recovery + sender access/write + inclusion
-	TxColdAccountEIP2780    uint64 = 3000  // recipient account touch (== ColdAccountAccessEIP8038)
-	TxValueCostEIP2780      uint64 = 6000  // recipient balance write + transfer log
-	TxAuthBaseCostEIP2780   uint64 = 7816  // per EIP-7702 authorization, intrinsic part
-	CreateAccessEIP8038     uint64 = 12000 // ACCOUNT_WRITE + COLD_ACCOUNT_ACCESS, charged on creation
+	TxBaseCostEIP2780     uint64 = 12000 // ECDSA recovery + sender access/write + inclusion
+	TxColdAccountEIP2780  uint64 = 3000  // recipient account touch (== ColdAccountAccessEIP8038)
+	TxValueCostEIP2780    uint64 = 6000  // recipient balance write + transfer log
+	TxAuthBaseCostEIP2780 uint64 = 7816  // per EIP-7702 authorization, intrinsic part
+	CreateAccessEIP8038   uint64 = 12000 // ACCOUNT_WRITE + COLD_ACCOUNT_ACCESS, charged on creation
 	// EIP-8038: state-access repricing.
-	ColdAccountAccessEIP8038 uint64 = 3000  // up from 2600 (EIP-2929)
-	AccountWriteEIP8038      uint64 = 9000  // explicit account-write surcharge
-	StorageWriteEIP8038      uint64 = 10000 // explicit storage-write surcharge
-	StorageClearRefundEIP8038 uint64 = 11616 // up from 4800
-	TxAccessListAddressGasEIP8038    uint64 = 2900 // up from 2400
-	TxAccessListStorageKeyGasEIP8038 uint64 = 2000 // up from 1900
+	ColdAccountAccessEIP8038         uint64 = 3000  // up from 2600 (EIP-2929)
+	AccountWriteEIP8038              uint64 = 9000  // explicit account-write surcharge
+	StorageWriteEIP8038              uint64 = 10000 // explicit storage-write surcharge
+	StorageClearRefundEIP8038        uint64 = 11616 // up from 4800
+	TxAccessListAddressGasEIP8038    uint64 = 2900  // up from 2400
+	TxAccessListStorageKeyGasEIP8038 uint64 = 2000  // up from 1900
 	// EIP-7976: calldata floor cost increase (EIP-7623 floor 10 -> 16 per token).
 	TotalCostFloorPerTokenEIP7976 uint64 = 16
 	// EIP-7981: access-list data surcharge, 64 gas per byte of access-list data
@@ -162,10 +162,10 @@ const (
 	// EIP-8037: state-creation gas. Every byte of newly created state costs
 	// CPSB gas, drawn from the state-gas reservoir (approximated here as a
 	// direct execution-gas charge until the reservoir model freezes).
-	CostPerStateByteEIP8037       uint64 = 1530
-	StateBytesPerNewAccount       uint64 = 120 // -> 183600 gas per fresh account
-	StateBytesPerStorageSet       uint64 = 64  // -> 97920 gas per fresh slot
-	StateBytesPerAuthBase         uint64 = 23  // EIP-7702 delegation designator bytes
+	CostPerStateByteEIP8037 uint64 = 1530
+	StateBytesPerNewAccount uint64 = 120 // -> 183600 gas per fresh account
+	StateBytesPerStorageSet uint64 = 64  // -> 97920 gas per fresh slot
+	StateBytesPerAuthBase   uint64 = 23  // EIP-7702 delegation designator bytes
 	// EIP-7954: contract size limit increase.
 	MaxCodeSizeEIP7954     = 65536  // 64 KiB deployed-code cap (was 24576)
 	MaxInitCodeSizeEIP7954 = 131072 // 128 KiB initcode cap (was 49152)
