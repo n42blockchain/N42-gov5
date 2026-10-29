@@ -40,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/common/fixedgas"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -468,6 +469,15 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 		} else if stNonce+1 < stNonce {
 			return fmt.Errorf("%w: address %v, nonce: %d", ErrNonceMax,
 				st.msg.From().Hex(), stNonce)
+		}
+
+		// EIP-7825: cap the transaction gas limit from Osaka. Checked here for
+		// real transactions (eth_call/estimate messages skip nonce checks and
+		// this cap alike, as geth's skipGasLimitCapCheck does), so blocks that
+		// arrive over devp2p or through replay are held to the same rule as
+		// newPayload and the pool.
+		if st.evm.ChainRules().IsOsaka && st.msg.Gas() > fixedgas.MaxTxnGasLimit {
+			return fmt.Errorf("%w (cap: %d, tx: %d)", ErrGasLimitTooHigh, fixedgas.MaxTxnGasLimit, st.msg.Gas())
 		}
 
 		// EIP-3607: Reject transactions from senders with deployed code.
