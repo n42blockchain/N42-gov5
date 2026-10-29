@@ -252,6 +252,96 @@ func TestAuthorizationRecoverSignerRejectsHighSValues(t *testing.T) {
 	}
 }
 
+// A y_parity whose low 64 bits are a valid 0/1 must not pass as that value:
+// geth holds V in a uint8, so such an authorization never recovers there.
+func TestAuthorizationRecoverSignerRejectsTruncatedV(t *testing.T) {
+	auth := signAuthorizationForRecoverTest(t, &Authorization{
+		ChainID: *uint256.NewInt(1),
+		Address: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Nonce:   1,
+	})
+	if _, err := auth.RecoverSigner(); err != nil {
+		t.Fatalf("RecoverSigner() on the genuine signature: %v", err)
+	}
+
+	for _, shift := range []uint{8, 64, 128, 255} {
+		v := new(uint256.Int).Lsh(uint256.NewInt(1), shift)
+		v.Add(v, auth.V)
+		bad := auth.Copy()
+		bad.V = v
+		if _, err := bad.RecoverSigner(); err != ErrInvalidAuthorizationSignature {
+			t.Fatalf("V = y_parity + 2^%d: RecoverSigner() err = %v, want %v", shift, err, ErrInvalidAuthorizationSignature)
+		}
+	}
+}
+
+// setCodeTxWithAuthV returns the canonical encoding of a type-4 tx whose
+// single authorization carries the given V.
+func setCodeTxWithAuthV(t *testing.T, v *uint256.Int) []byte {
+	t.Helper()
+	to := types.HexToAddress("0x00000000000000000000000000000000000000aa")
+	tx := NewTx(&SetCodeTx{
+		ChainID:   uint256.NewInt(1),
+		Nonce:     0,
+		GasTipCap: uint256.NewInt(1),
+		GasFeeCap: uint256.NewInt(1),
+		Gas:       100_000,
+		To:        &to,
+		Value:     uint256.NewInt(0),
+		AuthList: AuthorizationList{{
+			ChainID: *uint256.NewInt(1),
+			Address: types.HexToAddress("0x1234567890123456789012345678901234567890"),
+			Nonce:   1,
+			V:       v,
+			R:       uint256.NewInt(1),
+			S:       uint256.NewInt(1),
+		}},
+		V: uint256.NewInt(0),
+		R: uint256.NewInt(1),
+		S: uint256.NewInt(1),
+	})
+	enc, err := EncodeEthereumTransaction(tx)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return enc
+}
+
+// geth decodes the authorization y_parity into a uint8 (SetCodeAuthorization.V),
+// so any V above 255 fails decoding and the transaction is invalid. Values up
+// to 255 decode; whether they recover is a signature question, not a decode one.
+func TestDecodeSetCodeTxAuthorizationVBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    *uint256.Int
+		ok   bool
+	}{
+		{"zero", uint256.NewInt(0), true},
+		{"one", uint256.NewInt(1), true},
+		{"legacy-27", uint256.NewInt(27), true},
+		{"max-uint8", uint256.NewInt(255), true},
+		{"256", uint256.NewInt(256), false},
+		{"2^64+1", new(uint256.Int).Add(new(uint256.Int).Lsh(uint256.NewInt(1), 64), uint256.NewInt(1)), false},
+		{"2^256-1", new(uint256.Int).SetAllOne(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, err := DecodeEthereumTransaction(setCodeTxWithAuthV(t, tc.v))
+			if !tc.ok {
+				if err == nil {
+					t.Fatalf("decode accepted authorization V = %s; geth rejects it", tc.v)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got := tx.AuthList()[0].V; got == nil || !got.Eq(tc.v) {
+				t.Fatalf("decoded V = %v, want %s", got, tc.v)
+			}
+		})
+	}
+}
+
 func TestEffectiveGasTipReturnsGethCompatibleFeeCapError(t *testing.T) {
 	tx := NewTx(&DynamicFeeTx{
 		ChainID:   uint256.NewInt(1),

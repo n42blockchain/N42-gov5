@@ -91,6 +91,35 @@ func (auth *Authorization) Copy() *Authorization {
 	return cpy
 }
 
+// authorizationRLP is the wire layout of an authorization tuple. V is a uint8
+// as in geth (types.SetCodeAuthorization), so a y_parity above 255 fails
+// decoding and makes the whole transaction invalid there; decoding through
+// this layout rejects exactly the same encodings.
+type authorizationRLP struct {
+	ChainID uint256.Int
+	Address types.Address
+	Nonce   uint64
+	V       uint8
+	R       uint256.Int
+	S       uint256.Int
+}
+
+// DecodeRLP implements rlp.Decoder. Encoding stays reflective over
+// Authorization: V <= 255 encodes identically as a uint8 or a uint256.
+func (auth *Authorization) DecodeRLP(s *rlp.Stream) error {
+	var dec authorizationRLP
+	if err := s.Decode(&dec); err != nil {
+		return err
+	}
+	auth.ChainID = dec.ChainID
+	auth.Address = dec.Address
+	auth.Nonce = dec.Nonce
+	auth.V = uint256.NewInt(uint64(dec.V))
+	auth.R = new(uint256.Int).Set(&dec.R)
+	auth.S = new(uint256.Int).Set(&dec.S)
+	return nil
+}
+
 // SigningHash returns the hash to be signed for this authorization
 func (auth *Authorization) SigningHash() types.Hash {
 	return hash.PrefixedRlpHash(
@@ -105,10 +134,12 @@ func (auth *Authorization) RecoverSigner() (types.Address, error) {
 		return types.Address{}, ErrInvalidAuthorizationSignature
 	}
 
-	v := auth.V.Uint64()
-	if v > 1 {
+	// Compare the full 256-bit value: truncating first would let a V whose
+	// low 64 bits are 0/1 pass as that y_parity.
+	if auth.V.GtUint64(1) {
 		return types.Address{}, ErrInvalidAuthorizationSignature
 	}
+	v := auth.V.Uint64()
 	if !crypto.ValidateSignatureValues(byte(v), auth.R, auth.S, true) {
 		return types.Address{}, ErrInvalidAuthorizationSignature
 	}
