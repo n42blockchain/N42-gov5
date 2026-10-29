@@ -4,8 +4,9 @@
 // consensus.go — minimal Ethereum-mainnet replay consensus engine.
 //
 // EthReplayEngine implements consensus.Engine for offline re-execution of
-// imported mainnet data. Header verification and seal checking are no-ops
-// (the source is trusted Geth ancient), but block rewards, uncle rewards,
+// imported mainnet data. Seal checking is a no-op and header verification only
+// enforces fork-mandated fields (the source is trusted Geth ancient), but
+// block rewards, uncle rewards,
 // DAO fork payouts, and all post-merge / post-Shanghai withdrawal and
 // finalisation rules are computed exactly so that state roots and receipt
 // roots match live chain history.
@@ -20,6 +21,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -53,17 +55,23 @@ func (e *EthReplayEngine) Type() params.ConsensusType {
 	return params.EtHashConsensus
 }
 
-// VerifyHeader is a no-op for replay (we trust imported data).
+// VerifyHeader skips seal/PoW checks (we trust imported data) but rejects
+// headers missing a fork-mandated field the execution depends on: a Cancun
+// header without parentBeaconBlockRoot is invalid, as in geth.
 func (e *EthReplayEngine) VerifyHeader(chain consensus.ChainHeaderReader, header block.IHeader, seal bool) error {
-	return nil
+	h, ok := header.(*block.Header)
+	if !ok {
+		return nil
+	}
+	return misc.VerifyEIP4788Header(e.chainCfg, h)
 }
 
-// VerifyHeaders is a no-op for replay.
+// VerifyHeaders applies VerifyHeader to each header.
 func (e *EthReplayEngine) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.IHeader, seals []bool) (chan<- struct{}, <-chan error) {
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
-	for range headers {
-		results <- nil
+	for _, h := range headers {
+		results <- e.VerifyHeader(chain, h, false)
 	}
 	return abort, results
 }
