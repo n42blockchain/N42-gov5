@@ -29,6 +29,8 @@
 package transaction
 
 import (
+	"fmt"
+
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
@@ -98,11 +100,27 @@ type BlobTx struct {
 	fromCache *types.Address `rlp:"-"`
 }
 
+const (
+	// BlobSidecarVersion0 is the EIP-4844 sidecar: one KZG proof per blob.
+	// Its network form carries no version byte.
+	BlobSidecarVersion0 = byte(0)
+
+	// BlobSidecarVersion1 is the EIP-7594 (PeerDAS) sidecar: CellProofsPerBlob
+	// cell proofs per blob, and the network form carries the version byte
+	// right after the transaction body.
+	BlobSidecarVersion1 = byte(1)
+
+	// CellProofsPerBlob is CELLS_PER_EXT_BLOB, the number of cell proofs a
+	// version-1 sidecar carries for every blob.
+	CellProofsPerBlob = 128
+)
+
 // BlobTxSidecar contains the blobs and their proofs for a blob transaction
 type BlobTxSidecar struct {
+	Version     byte         // BlobSidecarVersion0 or BlobSidecarVersion1
 	Blobs       []Blob       // Actual blob data
 	Commitments []Commitment // KZG commitments
-	Proofs      []Proof      // KZG proofs
+	Proofs      []Proof      // Version 0: one blob proof per blob; version 1: CellProofsPerBlob cell proofs per blob
 }
 
 // Blob represents a blob of data (128 KB)
@@ -246,6 +264,7 @@ func (s *BlobTxSidecar) Copy() *BlobTxSidecar {
 	}
 
 	cpy := &BlobTxSidecar{
+		Version:     s.Version,
 		Blobs:       make([]Blob, len(s.Blobs)),
 		Commitments: make([]Commitment, len(s.Commitments)),
 		Proofs:      make([]Proof, len(s.Proofs)),
@@ -256,6 +275,26 @@ func (s *BlobTxSidecar) Copy() *BlobTxSidecar {
 	copy(cpy.Proofs, s.Proofs)
 
 	return cpy
+}
+
+// CellProofsAt returns the CellProofsPerBlob cell proofs of blob idx. It is
+// only valid for version-1 sidecars.
+func (s *BlobTxSidecar) CellProofsAt(idx int) ([]Proof, error) {
+	if s == nil || s.Version != BlobSidecarVersion1 {
+		var version byte
+		if s != nil {
+			version = s.Version
+		}
+		return nil, fmt.Errorf("cell proofs unsupported, sidecar version %d", version)
+	}
+	if idx < 0 || idx >= len(s.Blobs) {
+		return nil, fmt.Errorf("cell proofs out of bounds, index %d, blobs %d", idx, len(s.Blobs))
+	}
+	start := idx * CellProofsPerBlob
+	if len(s.Proofs) < start+CellProofsPerBlob {
+		return nil, fmt.Errorf("cell proofs truncated, index %d, proofs %d", idx, len(s.Proofs))
+	}
+	return s.Proofs[start : start+CellProofsPerBlob], nil
 }
 
 func (s *BlobTxSidecar) BlobCount() int {
