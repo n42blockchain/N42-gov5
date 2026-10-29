@@ -125,8 +125,9 @@ type StateDB interface {
 	Selfdestruct6780(addr types.Address, beneficiary types.Address)
 
 	// Selfdestruct8246 implements EIP-8246 (Amsterdam) self-beneficiary
-	// SELFDESTRUCT: same-tx-created accounts lose code/storage/nonce but
-	// keep their balance; pre-existing accounts are untouched.
+	// SELFDESTRUCT: a same-tx-created account is marked for destruction
+	// with its balance kept (reduced to a balance-only account when the
+	// transaction is finalized); pre-existing accounts are untouched.
 	Selfdestruct8246(addr types.Address)
 
 	// HasSelfdestructed returns whether the account has been self-destructed.

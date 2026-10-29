@@ -1279,6 +1279,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 		return sdb.savedErr
 	}
 	policy := newAccountWritePolicy(chainRules)
+	if chainRules.IsGlamsterdam {
+		sdb.preserveDestructedBalances()
+	}
 	// Sort addresses before iteration. getStateObject falls through to
 	// sdb.stateReader.ReadAccountData when the object isn't cached, and
 	// the reader here is the block-witness recorder (ethel). Map-order
@@ -1912,31 +1915,40 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 }
 
 // Selfdestruct8246 implements EIP-8246 (Amsterdam) SELFDESTRUCT with the
-// account itself as beneficiary. For a same-transaction-created account
-// the creation is destroyed (code/storage/nonce gone, as under EIP-6780)
-// but — unlike 6780 — the balance survives: the account is immediately
-// recreated as a fresh, balance-only account via the standard
-// recreate-after-selfdestruct path (journal-safe, revert-safe). For a
-// pre-existing account this is a full no-op: 6780 already preserves
-// code/storage, and with no beneficiary transfer the balance stays put.
+// account itself as beneficiary: nothing is burned. A same-transaction-
+// created account is marked for destruction with its balance kept (it keeps
+// its code until the transaction ends, like any destructed account); the
+// balance it holds then is preserved by preserveDestructedBalances when the
+// transaction is finalized. For a pre-existing account it is a no-op.
 func (sdb *IntraBlockState) Selfdestruct8246(addr types.Address) {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted || !stateObject.created {
 		return
 	}
-	balance := *stateObject.Balance()
 	sdb.journal.push(selfdestructChange{
 		account:     &addr,
 		prev:        stateObject.selfdestructed,
-		prevbalance: balance,
+		prevbalance: *stateObject.Balance(),
 	}.record())
 	stateObject.markSelfdestructed()
-	stateObject.data.Balance.Clear()
-	if balance.IsZero() {
-		return
+}
+
+// preserveDestructedBalances applies EIP-8246 (Amsterdam) at the end of a
+// transaction: an account marked for destruction that holds a balance is
+// not deleted but replaced by a fresh account with only that balance
+// (nonce 0, no code, storage wiped). One with a zero balance is deleted as
+// before.
+func (sdb *IntraBlockState) preserveDestructedBalances() {
+	for _, addr := range sortedAddresses(sdb.journal.dirties) {
+		so, exist := sdb.stateObjects[addr]
+		if !exist || !so.selfdestructed || so.data.Balance.IsZero() {
+			continue
+		}
+		// CreateAccount carries the balance over and clears the
+		// selfdestructed flag; the destructed object's storage is already
+		// queued for wiping (it was created in this transaction).
+		sdb.CreateAccount(addr, false)
 	}
-	sdb.CreateAccount(addr, false)
-	sdb.AddBalance(addr, &balance)
 }
 
 // WasCreatedInCurrentTx returns whether the account was created in the current transaction.
