@@ -149,6 +149,14 @@ func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
 	require.True(t, listed[params.BeaconRootsAddress])
 	require.False(t, listed[keys[1].addr], "the failed transaction's sender must not be listed")
 
+	// Validation rebuilds the list and rejects a header committing to
+	// another one.
+	tampered := block.CopyHeader(header)
+	otherHash := crypto.Keccak256Hash([]byte{0xc0})
+	tampered.BlockAccessListHash = &otherHash
+	err = engine.validatePayloadExecution(result.block.WithSeal(tampered), headHash, &beaconRoot, result.executionRequests)
+	require.ErrorContains(t, err, "block access list hash mismatch")
+
 	slot := uint64(9)
 	result = engine.buildExecutionPayloadStatefulWithSlot(genesisBlock, headHash, attrs, []*Withdrawal{}, &beaconRoot, &slot)
 	require.NotNil(t, result)
