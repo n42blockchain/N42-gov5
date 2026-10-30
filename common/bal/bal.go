@@ -92,6 +92,17 @@ func (l BlockAccessList) Encode() ([]byte, error) {
 	return rlp.EncodeToBytes([]AccountChanges(l))
 }
 
+// Decode parses an RLP-encoded access list, as an Amsterdam execution
+// payload carries it. It checks the encoding only, not that the list is in
+// canonical order; comparing its hash with the executed list's does that.
+func Decode(data []byte) (BlockAccessList, error) {
+	var l []AccountChanges
+	if err := rlp.DecodeBytes(data, &l); err != nil {
+		return nil, err
+	}
+	return BlockAccessList(l), nil
+}
+
 // Hash is the header's block_access_list_hash: keccak256 of the encoding.
 func (l BlockAccessList) Hash() (types.Hash, error) {
 	enc, err := l.Encode()
