@@ -185,22 +185,59 @@ func (e *EngineAPIv4) NewPayloadV4(
 	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, nil)
 }
 
+// AmsterdamPayloadFields are the header inputs an Amsterdam payload adds, for
+// in-process callers of NewPayloadV4AnyFork. BlockAccessList is the RLP-encoded
+// EIP-7928 list; a caller that has only the header's hash of it sets
+// BlockAccessListHash instead.
+type AmsterdamPayloadFields struct {
+	BlockAccessList     []byte
+	BlockAccessListHash *types.Hash
+	SlotNumber          uint64
+}
+
 // NewPayloadV4AnyFork runs the newPayloadV4 validation and import without
 // the fork-range check. It is for in-process callers (the embedded consensus
 // client in cmd/eth-el) that import historical blocks of every fork through
 // the V4 shape. A package function, not a method, so the RPC server does not
 // expose it.
+//
+// amsterdam is required for a payload whose block carries the EIP-7928 access
+// list and slot number, and refused for any other.
 func NewPayloadV4AnyFork(
 	e *EngineAPIv4,
 	payload *ExecutionPayloadV4,
 	expectedBlobVersionedHashes []types.Hash,
 	parentBeaconBlockRoot *types.Hash,
 	executionRequests []hexutil.Bytes,
+	amsterdam *AmsterdamPayloadFields,
 ) (*PayloadStatusV1, error) {
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
-	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, nil)
+	wantAmsterdam := false
+	if cfg := e.v1.chainConfig(); cfg != nil {
+		wantAmsterdam = cfg.UsesEIP7928AccessList(uint64(payload.Timestamp))
+	}
+	switch {
+	case wantAmsterdam && amsterdam == nil:
+		return nil, &engineInvalidParamsError{msg: "missing block access list and slot number post-amsterdam"}
+	case !wantAmsterdam && amsterdam != nil:
+		return nil, &engineInvalidParamsError{msg: "block access list and slot number before amsterdam"}
+	case amsterdam != nil && amsterdam.BlockAccessList == nil && amsterdam.BlockAccessListHash == nil:
+		return nil, &engineInvalidParamsError{msg: "missing block access list post-amsterdam"}
+	}
+	var fields *amsterdamPayloadFields
+	if amsterdam != nil {
+		fields = &amsterdamPayloadFields{
+			blockAccessList:     amsterdam.BlockAccessList,
+			blockAccessListHash: amsterdam.BlockAccessListHash,
+			slotNumber:          amsterdam.SlotNumber,
+		}
+		if amsterdam.BlockAccessList != nil {
+			fields.blockAccessListHash = nil
+		}
+	}
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, fields)
 }
 
 // newPayloadV4 validates and imports a Prague+ payload. amsterdam carries the
@@ -277,7 +314,7 @@ func (e *EngineAPIv4) newPayloadV4(
 	if latestValidHash, ok := e.v1.rejectedAncestorLatestValidHash(payload.ParentHash); ok {
 		return e.v1.invalidPayloadStatus(engineRejectedAncestorReason, blk, blockHash, latestValidHash, body), nil
 	}
-	if amsterdam != nil {
+	if amsterdam != nil && amsterdam.blockAccessListHash == nil {
 		if _, err := bal.Decode(amsterdam.blockAccessList); err != nil {
 			return e.v1.invalidPayloadStatus("invalid block access list: "+err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 		}

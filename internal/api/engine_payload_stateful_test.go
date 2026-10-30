@@ -1245,7 +1245,7 @@ func TestEngineAPIv4AcceptsBeaconRootTimestampPayload(t *testing.T) {
 
 	// A Cancun block: the in-process V4 path, since engine_newPayloadV4
 	// itself is limited to Prague and Osaka.
-	resp, err := NewPayloadV4AnyFork(engine, payload, nil, &beaconRoot, nil)
+	resp, err := NewPayloadV4AnyFork(engine, payload, nil, &beaconRoot, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, resp.Status)
 	require.NotNil(t, resp.LatestValidHash)
@@ -1404,7 +1404,7 @@ func TestEngineAPIv4StateAdapterAcceptsBeaconRootTimestampPayload(t *testing.T) 
 
 	// A Cancun block: the in-process V4 path, since engine_newPayloadV4
 	// itself is limited to Prague and Osaka.
-	resp, err := NewPayloadV4AnyFork(engine, payload, nil, &beaconRoot, nil)
+	resp, err := NewPayloadV4AnyFork(engine, payload, nil, &beaconRoot, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, resp.Status)
 	require.NotNil(t, resp.LatestValidHash)
