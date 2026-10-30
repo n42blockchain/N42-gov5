@@ -183,6 +183,43 @@ func TestProcessExecutionBlockEndUsesConfiguredDepositContract(t *testing.T) {
 	}
 }
 
+// An Amsterdam system call makes no value transfer, so the system address is
+// not touched and stays out of the EIP-7928 block access list; the called
+// contract is in it.
+func TestAmsterdamSysCallContractLeavesSystemAddressUntouched(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	cfg.OsakaTime = big.NewInt(0)
+	cfg.GlamsterdamTime = big.NewInt(0)
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	contract := vm.WithdrawalRequestsAddress
+	ibs.CreateAccount(contract, true)
+	ibs.SetCode(contract, []byte{byte(vm.STOP)})
+	rules := cfg.RulesWithTimestamp(1, 1)
+	require.NoError(t, ibs.FinalizeTx(rules, state.NewNoopWriter()))
+
+	ibs.EnableBlockAccessList()
+	_, err := SysCallContract(contract, nil, *cfg, ibs, header, nil)
+	require.NoError(t, err)
+	require.NoError(t, ibs.FinalizeTx(rules, state.NewNoopWriter()))
+
+	var addrs []types.Address
+	for _, acc := range ibs.BlockAccessList() {
+		addrs = append(addrs, acc.Address)
+	}
+	require.Equal(t, []types.Address{contract}, addrs)
+}
+
 func TestProcessPragueSystemCallsRejectsUndeployedExecutionRequestContracts(t *testing.T) {
 	t.Parallel()
 
