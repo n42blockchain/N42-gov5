@@ -17,10 +17,12 @@
 package bal
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -130,5 +132,33 @@ func TestValidateSize(t *testing.T) {
 	}
 	if err := list.ValidateSize(2*ItemCost - 1); err == nil {
 		t.Fatal("over the limit: accepted")
+	}
+}
+
+// TestDecodeRoundTrip decodes the access list of an EEST v21.0.2 Amsterdam
+// engine payload (eip7928 test_bal_2930_account_listed_but_untouched) and
+// checks it re-encodes to the same bytes; the empty byte string and a
+// truncated encoding do not decode.
+func TestDecodeRoundTrip(t *testing.T) {
+	raw := hexutil.MustDecode("0xf9014bde9400000961ef480eb55e80d19ad83579a64c007002c0c480010203c0c0c0de94000064d678505ad48f8ccb093bc65613800e8282c0c480010203c0c0c0de940000bbddc7ce488642fb579f8b00f3a590007251c0c480010203c0c0c0de940000bff46984e3725691fa540a8c7589300d8282c0c480010203c0c0c0f840940000f90827f1c53a10cb7a02335b175320002935e6e580e3e280a0aaf4f4ba4cb3ca3274421bca73302531b0b9de10c833cded0af6f617bf866993c0c0c0c0e394000f3df6d732807ef1319fb7b8bb8522d0beac02c6c50cc3c2800cc382200bc0c0c0e0942adc25665018aa1fe0e6bc666dac8fc2697ff9bac0c0c6c50183011034c0c0da94ccbcccb8575994e288e5bd021cc371dd8a8ff1ebc0c0c0c0c0ec94f6c3a9edc1afa0ad5b720e4d42e1437c43d3b3ffc0c0cfce018c033b2e3c9fd0803ce7fc74a8c3c20101c0")
+	list, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 9 {
+		t.Fatalf("decoded %d accounts, want 9", len(list))
+	}
+	enc, err := list.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(enc, raw) {
+		t.Fatalf("re-encoded %x, want %x", enc, raw)
+	}
+	if _, err := Decode(nil); err == nil {
+		t.Fatal("empty byte string decoded")
+	}
+	if _, err := Decode(raw[:len(raw)-1]); err == nil {
+		t.Fatal("truncated encoding decoded")
 	}
 }
