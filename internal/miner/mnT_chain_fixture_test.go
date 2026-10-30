@@ -156,6 +156,12 @@ type mnTChainFixture struct {
 // memdb instance. Each test gets its own: the fixture is mutated by
 // inserting blocks, so it must not be shared across parallel tests.
 func mnTNewChainFixture(tb testing.TB) *mnTChainFixture {
+	return mnTNewChainFixtureWith(tb, nil)
+}
+
+// mnTNewChainFixtureWith is mnTNewChainFixture with a hook that can change
+// the chain config and add genesis accounts before the genesis is written.
+func mnTNewChainFixtureWith(tb testing.TB, customize func(*params.ChainConfig, conf.GenesisAlloc)) *mnTChainFixture {
 	tb.Helper()
 	ctx := context.Background()
 
@@ -192,6 +198,10 @@ func mnTNewChainFixture(tb testing.TB) *mnTChainFixture {
 		keys = append(keys, k)
 		addrs = append(addrs, a)
 		alloc[a] = conf.GenesisAccount{Balance: "0x56bc75e2d63100000"} // 100 ETH
+	}
+
+	if customize != nil {
+		customize(cfg, alloc)
 	}
 
 	coinbase := types.HexToAddress("0x2222222222222222222222222222222222222222")
