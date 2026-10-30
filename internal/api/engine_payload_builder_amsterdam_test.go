@@ -24,12 +24,20 @@ import (
 	"github.com/n42blockchain/N42/tests/eest"
 )
 
-// An Amsterdam payload's header gas used is the EIP-8037 block figure,
-// max(cumulative execution gas, cumulative state gas), and a transaction
-// that fails during the build must not reset those counters. The built
-// block is replayed through the import-side execution check, which
-// compares the header's gas used with the re-executed figure.
-func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
+// amsterdamBuildTest is an Amsterdam chain at genesis with three pending
+// transfers, the second of which cannot pay for itself.
+type amsterdamBuildTest struct {
+	api      *API
+	engine   *EngineAPIV1
+	cfg      *params.ChainConfig
+	genesis  *block.Block
+	headHash types.Hash
+	coinbase types.Address
+	keys     []*amsterdamBuildKey
+}
+
+func newAmsterdamBuildTest(t *testing.T) *amsterdamBuildTest {
+	t.Helper()
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
 	kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -114,9 +122,25 @@ func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
 		chainConfig:   cfg,
 		engineOverlay: newEngineOverlay(),
 	}
-	engine := NewEngineAPIV1(NewBlockChainAPI(api))
+	return &amsterdamBuildTest{
+		api:      api,
+		engine:   NewEngineAPIV1(NewBlockChainAPI(api)),
+		cfg:      cfg,
+		genesis:  genesisBlock,
+		headHash: ethCompatibleBlockHash(genesisBlock, cfg),
+		coinbase: coinbase,
+		keys:     keys,
+	}
+}
 
-	headHash := ethCompatibleBlockHash(genesisBlock, cfg)
+// An Amsterdam payload's header gas used is the EIP-8037 block figure,
+// max(cumulative execution gas, cumulative state gas), and a transaction
+// that fails during the build must not reset those counters. The built
+// block is replayed through the import-side execution check, which
+// compares the header's gas used with the re-executed figure.
+func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
+	bt := newAmsterdamBuildTest(t)
+	engine, genesisBlock, headHash, coinbase, keys := bt.engine, bt.genesis, bt.headHash, bt.coinbase, bt.keys
 	beaconRoot := types.Hash{0x42}
 	attrs := &PayloadAttributesV1{Timestamp: 2, PrevRandao: types.Hash{0x11}, SuggestedFeeRecipient: coinbase}
 	result := engine.buildExecutionPayloadStateful(genesisBlock, headHash, attrs, []*Withdrawal{}, &beaconRoot)
