@@ -20,6 +20,12 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+// availableBlockChain is a chain that holds blocks which arrived but are not
+// written yet (internal.BlockChain).
+type availableBlockChain interface {
+	AvailableBlock(hash types.Hash) *block.Block
+}
+
 // blockByHashStreamHandler serves a single block requested by its 32-byte hash.
 // It is the server side of fetch-on-miss: a follower that received a HotStuff
 // Proposal but not the referenced block (its direct push was dropped) asks a
@@ -33,6 +39,18 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 	}
 	hash := types.BytesToHash(hb[:])
 	blk, err := s.cfg.chain.GetBlockByHash(hash)
+	if err != nil || blk == nil {
+		// A block that arrived but is not written yet. A light E=1 node
+		// writes a block only once the executor's result for it is known,
+		// so an executor that missed the push must get it from here
+		// (2026-10-30 E1N26 run 4 B3: node0 missed a push while it was
+		// disconnected from the leader, and the fleet stalled).
+		if ac, ok := s.cfg.chain.(availableBlockChain); ok {
+			if ab := ac.AvailableBlock(hash); ab != nil {
+				blk, err = ab, nil
+			}
+		}
+	}
 	if err != nil || blk == nil {
 		log.Debug("block by hash: not found locally", "hash", hash.Hex()[:12])
 		// Say so explicitly instead of silently closing: a bare close makes the

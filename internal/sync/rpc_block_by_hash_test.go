@@ -119,3 +119,46 @@ func TestBlockByHashStreamHandlerServesFoundBlock(t *testing.T) {
 	}
 	<-done
 }
+
+// syncTAvailableChain also holds blocks that arrived but are not written.
+type syncTAvailableChain struct {
+	syncTBlockByHashChain
+	avail map[comtypes.Hash]*types.Block
+}
+
+func (c *syncTAvailableChain) AvailableBlock(h comtypes.Hash) *types.Block { return c.avail[h] }
+
+// TestBlockByHashStreamHandlerServesAvailableBlock: a block not in the store
+// is served from the available blocks (a light E=1 node writes a block only
+// after the executor's result for it is known).
+func TestBlockByHashStreamHandlerServesAvailableBlock(t *testing.T) {
+	blk := syncTSmallBlock(9).(*types.Block)
+	hash := blk.Hash()
+	chain := &syncTAvailableChain{avail: map[comtypes.Hash]*types.Block{hash: blk}}
+	fp := newFakeP2P(t)
+	svc := &Service{ctx: context.Background(), cfg: &config{p2p: fp, chain: chain}}
+	svc.rateLimiter = newRateLimiter(fp)
+	remote, err := test.RandPeerID()
+	if err != nil {
+		t.Fatalf("RandPeerID: %v", err)
+	}
+	client, server := newFakeStreamPair(remote, fp.self)
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.blockByHashStreamHandler(server)
+	}()
+	if _, err := client.Write(hash[:]); err != nil {
+		t.Fatalf("write request hash: %v", err)
+	}
+	got, err := ReadChunkedBlock(client, fp, true)
+	if err != nil {
+		t.Fatalf("ReadChunkedBlock: %v", err)
+	}
+	if got.Hash() != hash {
+		t.Fatalf("got hash %s, want %s", got.Hash(), hash)
+	}
+	<-done
+}
