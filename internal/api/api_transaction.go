@@ -218,11 +218,22 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 // EIP-7594) to a transaction entering the pool at the head described by
 // rules: the sidecar must be present, have the head fork's version (1 from
 // Osaka, 0 before) and pass KZG verification. Other types pass unchanged.
+//
+// From Osaka a version-0 sidecar is first converted to version 1, as geth
+// does on submission, so a wallet that still attaches blob proofs is not
+// refused: the cell proofs are computed from the blobs. Peers get no such
+// conversion.
 func validatePooledBlobTransaction(tx *transaction.Transaction, rules *params.Rules) error {
 	if tx == nil || tx.Type() != transaction.BlobTxType {
 		return nil
 	}
-	return kzg.ValidatePooledBlobTx(tx, rules != nil && rules.IsOsaka)
+	osaka := rules != nil && rules.IsOsaka
+	if sc := tx.BlobTxSidecar(); osaka && sc != nil && sc.Version == transaction.BlobSidecarVersion0 {
+		if err := kzg.SidecarToV1(sc); err != nil {
+			return fmt.Errorf("blob sidecar conversion failed: %w", err)
+		}
+	}
+	return kzg.ValidatePooledBlobTx(tx, osaka)
 }
 
 func (s *TransactionAPI) transactionHeadAndRules() (block.IBlock, *params.Rules, error) {

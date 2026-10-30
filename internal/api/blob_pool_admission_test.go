@@ -145,8 +145,24 @@ func TestSendRawTransactionBlobSidecarAdmissionOsaka(t *testing.T) {
 	_, err = txAPI.SendRawTransaction(ctx, signedBlobTxRaw(t, chainID, key, to, 201, s, tampered))
 	require.Error(t, err, "tampered cell proof must be rejected")
 
+	// A version-0 sidecar is converted to version 1, as geth does, and the
+	// pool receives the cell proofs.
+	pool := &recordingTxPool{}
+	txAPI.api.txspool = pool
 	_, err = txAPI.SendRawTransaction(ctx, signedBlobTxRaw(t, chainID, key, to, 202, s, s.v0()))
-	require.Error(t, err, "version-0 sidecar must be rejected at Osaka")
+	require.NoError(t, err, "version-0 sidecar must be converted at Osaka")
+	require.Len(t, pool.added, 1)
+	got := pool.added[0].BlobTxSidecar()
+	require.Equal(t, transaction.BlobSidecarVersion1, got.Version)
+	require.Equal(t, s.cellProofs, got.Proofs)
+	txAPI.api.txspool = &mockEngineTxPool{}
+
+	// The conversion recomputes proofs from the blobs; a commitment that
+	// does not match them is still refused.
+	wrongCommitment := s.v0()
+	wrongCommitment.Commitments[0][9] ^= 0x01
+	_, err = txAPI.SendRawTransaction(ctx, signedBlobTxRaw(t, chainID, key, to, 206, s, wrongCommitment))
+	require.Error(t, err, "converted sidecar with a wrong commitment must be rejected")
 
 	_, err = txAPI.SendRawTransaction(ctx, signedBlobTxRaw(t, chainID, key, to, 203, s, nil))
 	require.Error(t, err, "blob tx without sidecar must be rejected")
@@ -177,4 +193,15 @@ func TestSendRawTransactionBlobSidecarAdmissionPreOsaka(t *testing.T) {
 	bad.Proofs[0][3] ^= 0x01
 	_, err = txAPI.SendRawTransaction(ctx, signedBlobTxRaw(t, chainID, key, to, 302, s, bad))
 	require.Error(t, err, "invalid blob proof must be rejected")
+}
+
+// recordingTxPool records the transactions submitted to it.
+type recordingTxPool struct {
+	mockEngineTxPool
+	added []*transaction.Transaction
+}
+
+func (p *recordingTxPool) AddLocal(tx *transaction.Transaction) error {
+	p.added = append(p.added, tx)
+	return nil
 }
