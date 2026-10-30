@@ -2158,10 +2158,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			retErr = err
 		}
 	}()
+	// From Amsterdam the header carries the EIP-8037 block figure,
+	// max(cumulative execution gas, cumulative state gas), not the receipts'
+	// cumulative gas; import checks it that way.
+	defer func() {
+		header.GasUsed = internal.HeaderGasUsed(w.chainConfig, header, env.gasPool, header.GasUsed)
+	}()
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, env.tcount)
-		gasSnap := env.gasPool.Gas()
+		// A struct copy: the Amsterdam block counters must survive a revert.
+		gasSnap := *env.gasPool
 		gasUsedSnap := header.GasUsed
 		snap := ibs.Snapshot()
 		log.Debug("addTransactionsToMiningBlock", "txn hash", txn.Hash())
@@ -2179,7 +2186,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			// markReadLogDiverged).
 			markReadLogDiverged(ibs)
 			ibs.RevertToSnapshot(snap)
-			env.gasPool = new(common.GasPool).AddGas(gasSnap)
+			*env.gasPool = gasSnap
 			header.GasUsed = gasUsedSnap
 			return err
 		}
@@ -2219,7 +2226,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			}
 			// Try to commit entire bundle atomically.
 			snap := ibs.Snapshot()
-			gasSnap := env.gasPool.Gas()
+			gasSnap := *env.gasPool
 			gasUsedSnap := header.GasUsed
 			startTxCount := len(env.txs)
 			startReceiptCount := len(env.receipts)
@@ -2248,7 +2255,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				// Revert entire bundle.
 				markReadLogDiverged(ibs)
 				ibs.RevertToSnapshot(snap)
-				env.gasPool = new(common.GasPool).AddGas(gasSnap)
+				*env.gasPool = gasSnap
 				header.GasUsed = gasUsedSnap
 				env.txs = env.txs[:startTxCount]
 				env.receipts = env.receipts[:startReceiptCount]
@@ -2337,7 +2344,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// their pre-check (they wrote nothing; a dropped nonce fails its sender's
 	// later candidates the same way), and hand the survivors to assemble.
 	// Bundles, BAL capture and fee-recipient candidates keep the serial path.
-	if parallelFillEnabled() && balCap == nil && env.tcount == 0 && !w.chainConfig.IsBAL(env.header.Time) {
+	if parallelFillEnabled() && balCap == nil && env.tcount == 0 && !w.chainConfig.IsBAL(env.header.Time) && !w.chainConfig.IsGlamsterdam(env.header.Time) {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
 			tPickP := time.Now()
 			budget := env.gasPool.Gas()
