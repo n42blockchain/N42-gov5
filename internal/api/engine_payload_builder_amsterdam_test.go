@@ -11,6 +11,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/bal"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
@@ -190,4 +191,62 @@ func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
 type amsterdamBuildKey struct {
 	key  *ecdsa.PrivateKey
 	addr types.Address
+}
+
+// forkchoiceUpdatedV4 starts an Amsterdam build from attributes carrying the
+// slot number; getPayloadV6 returns the payload with its block access list
+// and slot number, and newPayloadV5 accepts it as built. The Prague and
+// Osaka getPayload methods refuse it.
+func TestAmsterdamForkchoiceUpdatedV4GetPayloadV6RoundTrip(t *testing.T) {
+	bt := newAmsterdamBuildTest(t)
+	v4 := NewEngineAPIv4(NewBlockChainAPI(bt.api))
+	ctx := context.Background()
+	beaconRoot := types.Hash{0x42}
+	attrs := &PayloadAttributesV4{
+		Timestamp:             2,
+		PrevRandao:            types.Hash{0x11},
+		SuggestedFeeRecipient: bt.coinbase,
+		Withdrawals:           []*Withdrawal{},
+		ParentBeaconBlockRoot: &beaconRoot,
+	}
+	state := &ForkchoiceStateV1{HeadBlockHash: bt.headHash}
+
+	_, err := v4.ForkchoiceUpdatedV4(ctx, state, attrs)
+	requireEngineErrorCode(t, err, -38003)
+
+	slot := hexutil.Uint64(5)
+	attrs.SlotNumber = &slot
+	resp, err := v4.ForkchoiceUpdatedV4(ctx, state, attrs)
+	require.NoError(t, err)
+	require.NotNil(t, resp.PayloadID)
+
+	got, err := v4.GetPayloadV6(ctx, *resp.PayloadID)
+	require.NoError(t, err)
+	payload := got.ExecutionPayload
+	require.NotNil(t, payload.SlotNumber)
+	require.Equal(t, slot, *payload.SlotNumber)
+	require.NotEmpty(t, payload.BlockAccessList)
+	_, err = bal.Decode(payload.BlockAccessList)
+	require.NoError(t, err)
+	require.Len(t, payload.Transactions, 2)
+	require.NotNil(t, got.BlobsBundle)
+	require.NotNil(t, got.ExecutionRequests)
+
+	_, err = v4.GetPayloadV4(ctx, *resp.PayloadID)
+	requireEngineErrorCode(t, err, -38005)
+	_, err = v4.GetPayloadV5(ctx, *resp.PayloadID)
+	requireEngineErrorCode(t, err, -38005)
+
+	// The payload hashes as newPayloadV5 rebuilds it, and imports.
+	status, err := v4.NewPayloadV5(ctx, payload, []types.Hash{}, &beaconRoot, got.ExecutionRequests)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, status.Status, statusString(status))
+
+	// A different access list breaks the block hash.
+	tampered := *payload
+	tampered.BlockAccessList = append(hexutil.Bytes(nil), payload.BlockAccessList...)
+	tampered.BlockAccessList[len(tampered.BlockAccessList)-1] ^= 0x01
+	status, err = v4.NewPayloadV5(ctx, &tampered, []types.Hash{}, &beaconRoot, got.ExecutionRequests)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, status.Status)
 }
