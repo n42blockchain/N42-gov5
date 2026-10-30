@@ -710,6 +710,12 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	gasPool.AddGas(blk.GasLimit())
 	var usedGas uint64
 	receipts := make(block.Receipts, 0, len(blk.Transactions()))
+	// EIP-7928 (Amsterdam): record the block access list from index 0, the
+	// pre-execution system calls, to check it against the header.
+	specBAL := a.chainCfg.UsesEIP7928AccessList(header.Time)
+	if specBAL {
+		ibs.EnableBlockAccessList()
+	}
 	if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, a.chainCfg, ibs, header, a.engine); err != nil {
 		return nil, err
 	}
@@ -764,6 +770,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		balCap = internalcore.NewBALCapture(state.NewNoopWriter())
 	}
 	for i, txn := range blk.Transactions() {
+		ibs.SetBlockAccessIndex(uint64(i) + 1)
 		ibs.Prepare(txn.Hash(), blk.Hash(), i)
 		prevUsed := usedGas
 		var perTxWriter state.StateWriter = state.NewNoopWriter()
@@ -911,10 +918,16 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	if err := finalizeExecutionStateChanges(a.chainCfg, header, ibs); err != nil {
 		return nil, err
 	}
+	ibs.SetBlockAccessIndex(uint64(len(blk.Transactions())) + 1)
 	applyExecutionWithdrawals(ibs, withdrawals)
 	var actualRequests []hexutil.Bytes
 	if actualRequests, err = internalcore.ProcessExecutionBlockEnd(receipts, a.chainCfg, ibs, header, a.engine); err != nil {
 		return nil, err
+	}
+	if specBAL {
+		if err := validateBlockAccessList(ibs.BlockAccessList(), header); err != nil {
+			return &enginePayloadExecutionResult{validationError: err}, nil
+		}
 	}
 	rules := a.chainCfg.RulesWithTimestamp(blockNum, header.Time)
 	if rules != nil && rules.IsPrague {
