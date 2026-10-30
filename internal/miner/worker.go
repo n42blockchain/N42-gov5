@@ -1791,10 +1791,11 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// commitment only — like the CommitteePool's ParentBeaconRoot link, it binds
 	// the root into the block hash (RLP) with NO state-trie write, so it needs no
 	// system contract, no genesis alloc and no replay to activate. The full
-	// history lives in the rawdb anchor log (phase 6b). Gated on IsMobileAnchor;
-	// a nil provider or inactive fork leaves the header field nil (byte-identical
-	// pre-fork / on eth-el).
-	if w.mobileAnchorRoot != nil && w.chainConfig.IsMobileAnchor(current.header.Time) {
+	// history lives in the rawdb anchor log (phase 6b). Gated on
+	// IsMobileRegistryRootInHeader (MobileAnchor and Glamsterdam: the root is
+	// element 24, behind the EIP-7843 slot number); a nil provider or inactive
+	// fork leaves the header field nil (byte-identical pre-fork / on eth-el).
+	if w.mobileAnchorRoot != nil && w.chainConfig.IsMobileRegistryRootInHeader(current.header.Time) {
 		current.header.MobileRegistryRoot = w.mobileAnchorRoot()
 	}
 

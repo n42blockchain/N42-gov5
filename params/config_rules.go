@@ -443,6 +443,18 @@ func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
 	return isForked(c.MobileAnchorTime, time)
 }
 
+// IsMobileRegistryRootInHeader returns whether a header at time carries
+// Header.MobileRegistryRoot: the MobileAnchor fork AND the EIP-7843 slot
+// number (Glamsterdam). The root is RLP element 24, behind the slot at 23, so
+// it exists only on headers that carry a slot; a MobileAnchor time earlier
+// than Glamsterdam takes effect at Glamsterdam. Headers chain 94 stamped
+// before this rule (root at element 23, no slot) are not readable under it;
+// that history is rebuilt with replay-v2 (docs in n42-rs
+// docs/HEADER_FIELD_PARITY.md).
+func (c *ChainConfig) IsMobileRegistryRootInHeader(time uint64) bool {
+	return c.IsMobileAnchor(time) && c.IsGlamsterdam(time)
+}
+
 // IsNativeAsset returns whether time is at or past the native asset module
 // activation. N42 extension; nil on every Ethereum chainspec.
 func (c *ChainConfig) IsNativeAsset(time uint64) bool {
