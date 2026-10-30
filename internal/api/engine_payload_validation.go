@@ -252,6 +252,22 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 		root := executionRequestsHash(nil)
 		requestsHash = &root
 	}
+	// Amsterdam headers carry the block access list hash and the slot
+	// number, as ethCompatibleHeaderHash encodes them.
+	var (
+		balHash *types.Hash
+		slot    *uint64
+	)
+	if cfg != nil && cfg.IsGlamsterdam(header.Time) {
+		balHash = new(types.Hash)
+		if header.BlockAccessListHash != nil {
+			*balHash = *header.BlockAccessListHash
+		}
+		slot = new(uint64)
+		if header.SlotNumber != nil {
+			*slot = *header.SlotNumber
+		}
+	}
 	return &ethRPCHeader{
 		ParentHash:       header.ParentHash,
 		UncleHash:        hash.EmptyUncleHash,
@@ -274,6 +290,9 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 		ExcessBlobGas:    excessBlobGas,
 		ParentBeaconRoot: opts.parentBeaconRoot,
 		RequestsHash:     requestsHash,
+
+		BlockAccessListHash: balHash,
+		SlotNumber:          slot,
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	internalcore "github.com/n42blockchain/N42/internal"
 	vmcore "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/common/fixedgas"
@@ -733,6 +734,61 @@ func TestExecutionPayloadBlockRLPSizeWrapsTypedTransactions(t *testing.T) {
 		[]*Withdrawal{},
 	})
 	require.NoError(t, err)
+	require.Equal(t, uint64(buf.Len()), size)
+}
+
+// TestExecutionPayloadBlockRLPSizeCountsAmsterdamHeaderFields checks the
+// EIP-7934 size of an Amsterdam block counts the header encoding its hash
+// commits to, block access list hash and slot number included.
+func TestExecutionPayloadBlockRLPSizeCountsAmsterdamHeaderFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := &params.ChainConfig{
+		ChainID:         big.NewInt(1),
+		LondonBlock:     big.NewInt(0),
+		ShanghaiBlock:   big.NewInt(0),
+		CancunBlock:     big.NewInt(0),
+		PragueTime:      big.NewInt(0),
+		OsakaTime:       big.NewInt(0),
+		GlamsterdamTime: big.NewInt(0),
+	}
+	withdrawals := withdrawalsRoot(nil)
+	blobGas, excess, slot := uint64(0), uint64(0), uint64(7)
+	beaconRoot := types.HexToHash("0x01")
+	requests := executionRequestsHash(nil)
+	balHash := types.HexToHash("0x02")
+	header := &block.Header{
+		Number:              uint256.NewInt(1),
+		GasLimit:            30_000_000,
+		Time:                1,
+		BaseFee:             uint256.NewInt(7),
+		Difficulty:          uint256.NewInt(0),
+		WithdrawalsHash:     &withdrawals,
+		BlobGasUsed:         &blobGas,
+		ExcessBlobGas:       &excess,
+		ParentBeaconRoot:    &beaconRoot,
+		RequestsHash:        &requests,
+		BlockAccessListHash: &balHash,
+		SlotNumber:          &slot,
+	}
+	blk := block.NewBlock(header, nil)
+	opts := enginePayloadHashOptions{
+		includeWithdrawals: true,
+		withdrawals:        []*Withdrawal{},
+		includeBlobFields:  true,
+		parentBeaconRoot:   &beaconRoot,
+		requestsHash:       &requests,
+	}
+	size, err := executionPayloadBlockRLPSize(blk, nil, cfg, opts)
+	require.NoError(t, err)
+
+	headerRLP, err := rlp.EncodeToBytes(enginePayloadRLPHeader(header, cfg, opts))
+	require.NoError(t, err)
+	require.Equal(t, ethCompatibleHeaderHash(header, cfg), crypto.Keccak256Hash(headerRLP),
+		"the measured header is not the one the block hash commits to")
+
+	var buf bytes.Buffer
+	require.NoError(t, rlp.Encode(&buf, []interface{}{rlp.RawValue(headerRLP), []interface{}{}, []interface{}{}, []*Withdrawal{}}))
 	require.Equal(t, uint64(buf.Len()), size)
 }
 
