@@ -461,7 +461,7 @@ func (n *eestNode) newPayload(call *eestEngineCallJSON) error {
 		}
 		blockHash = p.BlockHash
 		status, err = n.v1.NewPayloadV2(ctx, &p)
-	case "3", "4":
+	case "3", "4", "5":
 		var (
 			hashes     []types.Hash
 			beaconRoot types.Hash
@@ -472,14 +472,15 @@ func (n *eestNode) newPayload(call *eestEngineCallJSON) error {
 		if err := decode(2, &beaconRoot); err != nil {
 			return err
 		}
-		if call.NewPayloadVersion == "3" {
+		switch call.NewPayloadVersion {
+		case "3":
 			var p ExecutionPayloadV3
 			if err := decode(0, &p); err != nil {
 				return err
 			}
 			blockHash = p.BlockHash
 			status, err = n.blob.NewPayloadV3(ctx, &p, hashes, &beaconRoot)
-		} else {
+		case "4":
 			var (
 				p        ExecutionPayloadV4
 				requests []hexutil.Bytes
@@ -492,6 +493,19 @@ func (n *eestNode) newPayload(call *eestEngineCallJSON) error {
 			}
 			blockHash = p.BlockHash
 			status, err = n.v4.NewPayloadV4(ctx, &p, hashes, &beaconRoot, requests)
+		default:
+			var (
+				p        ExecutionPayloadAmsterdam
+				requests []hexutil.Bytes
+			)
+			if err := decode(0, &p); err != nil {
+				return err
+			}
+			if err := decode(3, &requests); err != nil {
+				return err
+			}
+			blockHash = p.BlockHash
+			status, err = n.v4.NewPayloadV5(ctx, &p, hashes, &beaconRoot, requests)
 		}
 	default:
 		return eestHarnessSkip{"unsupported newPayloadVersion " + call.NewPayloadVersion}
