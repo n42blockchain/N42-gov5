@@ -187,3 +187,32 @@ func TestBALDisabledByDefault(t *testing.T) {
 		t.Fatalf("list %+v, want nil", list)
 	}
 }
+
+// TestBALDiscardIndexDropsRevertedAccesses checks that the accesses of a
+// transaction a builder reverts and leaves out are not listed, and that the
+// transaction taking its index is recorded under it.
+func TestBALDiscardIndexDropsRevertedAccesses(t *testing.T) {
+	a, b, c := mkAddr(0x0a), mkAddr(0x0b), mkAddr(0x0c)
+	ibs := balTestState(t, map[types.Address]uint64{a: 100, b: 100})
+
+	ibs.SetBlockAccessIndex(1)
+	snap := ibs.Snapshot()
+	ibs.SubBalance(b, uint256.NewInt(1))
+	var v uint256.Int
+	key := balSlotKey(1)
+	ibs.GetState(c, &key, &v)
+	ibs.RevertToSnapshot(snap)
+	ibs.DiscardBlockAccessIndex()
+
+	ibs.SetBlockAccessIndex(1)
+	ibs.SubBalance(a, uint256.NewInt(10))
+	balFinalize(t, ibs)
+
+	list := ibs.BlockAccessList()
+	if len(list) != 1 || list[0].Address != a {
+		t.Fatalf("list %+v, want only account a", list)
+	}
+	if ch := list[0].BalanceChanges; len(ch) != 1 || ch[0].Index != 1 || ch[0].PostBalance.Uint64() != 90 {
+		t.Fatalf("balance changes %+v, want [{1 90}]", ch)
+	}
+}
