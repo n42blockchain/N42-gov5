@@ -492,14 +492,15 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, len(txs))
-		gasSnapshot := gasPool.Gas()
+		// A struct copy: the Amsterdam block counters must survive a revert.
+		gasSnapshot := *gasPool
 		usedGasSnapshot := header.GasUsed
 		snapshot := ibs.Snapshot()
 		coinbase := header.Coinbase
 		receipt, _, err := internalcore.ApplyTransaction(e.chainConfig(), blockHashFunc, e.api.api.engine, &coinbase, gasPool, ibs, stateWriter, header, txn, &header.GasUsed, vmConfig)
 		if err != nil {
 			ibs.RevertToSnapshot(snapshot)
-			gasPool = new(common.GasPool).AddGas(gasSnapshot)
+			*gasPool = gasSnapshot
 			header.GasUsed = usedGasSnapshot
 			return err
 		}
@@ -538,6 +539,9 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 			txSet.Shift()
 		}
 	}
+	// From Amsterdam the header carries the EIP-8037 block figure, not the
+	// receipts' cumulative gas.
+	header.GasUsed = internalcore.HeaderGasUsed(e.chainConfig(), header, gasPool, header.GasUsed)
 	return txs, receipts, nil
 }
 
