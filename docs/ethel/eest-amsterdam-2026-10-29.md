@@ -203,6 +203,29 @@ Results on the merged code (`86e7db1e`, same tree as the run's `94526bc7`):
 `modules/state`, `params`, `internal`, `internal/api`, `internal/vm`, `internal/txspool`,
 `internal/miner` and `lib/txpool`.
 
+### Engine API for Amsterdam (2026-10-30)
+
+| Commit | Subject |
+|---|---|
+| `b5483ec8` | feat(common): decode an RLP-encoded EIP-7928 block access list |
+| `97a9ca7b` | feat(api): add the Amsterdam Engine API fork generation |
+| `2b7cc269` | feat(api): engine_newPayloadV5 for Amsterdam payloads |
+| `9804873f` | feat(state): discard the accesses of a reverted block access index |
+| `700483a9` | feat(api): record the EIP-7928 block access list when building Amsterdam payloads |
+| `9c551182` | fix(api): check the EIP-7928 block access list on the validate-only payload path |
+| `b7800f45` | test(api): share the Amsterdam payload builder test chain |
+| `6e903c03` | feat(api): Amsterdam forkchoiceUpdatedV4 and engine_getPayloadV6 |
+| `1aae8256` | feat(api): advertise the Amsterdam Engine API methods |
+| `0d7dc32d` | test(api): run EEST engine fixtures that use newPayloadV5 |
+
+On `0d7dc32d` the Amsterdam engine fixtures run instead of skipping: 26392 pass, 0 fail. The
+other suites are unchanged (Amsterdam blockchain 26349, Osaka/BPO 21667 + 21686, v5.4.0
+stable 38702 + 38721, all with 0 fail), and the same packages plus `cmd/eth-el` pass.
+
+Still open: the eth-el embedded consensus client sends `NewPayloadV4AnyFork`, which cannot
+carry the access list or the slot number, and `forkchoiceUpdatedV4` still accepts Prague and
+Osaka payload attributes.
+
 ## Changes
 
 | Commit | Subject |
