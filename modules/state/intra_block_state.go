@@ -161,6 +161,9 @@ type IntraBlockState struct {
 	trace          bool
 	accessList     *accessList
 	balanceInc     map[types.Address]*BalanceIncrease // Map of balance increases (without first reading the account)
+	// skipUnchanged: the block is past UnchangedAccountNoOpTime, so the root
+	// leaves out touched but unchanged accounts (SetSkipUnchangedAccounts).
+	skipUnchanged bool
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
@@ -337,6 +340,13 @@ func (sdb *IntraBlockState) mayHaveCachedStorage(addr types.Address) bool {
 // also updated incrementally and available via LtHashRoot().
 func (sdb *IntraBlockState) SetRootComputer(rc RootComputer) {
 	sdb.rootComputer = rc
+}
+
+// SetSkipUnchangedAccounts sets whether the state root leaves out an account
+// the block touched but did not change (ChainConfig.IsUnchangedAccountNoOp at
+// the block's time); see computeRootViaComputer.
+func (sdb *IntraBlockState) SetSkipUnchangedAccounts(on bool) {
+	sdb.skipUnchanged = on
 }
 
 func (sdb *IntraBlockState) HasRootComputer() bool {
@@ -1709,6 +1719,18 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			}
 			continue
 		}
+		// UnchangedAccountNoOpTime: an account touched but left as it was read
+		// writes no leaf. Without the rule it is written whenever its first
+		// access in the block was an AddBalance (a zero tip to the coinbase,
+		// a zero-value transfer to an account not yet loaded: the balanceInc
+		// path dirties it for any amount), which re-appends an unchanged QMDB
+		// leaf and moves the positional root; the parallel commit already
+		// skips a zero CoinbaseDelta and writes only what changed. The system
+		// address is not subject to it: the Prague system calls write it as a
+		// live empty account on every block, and n42-rs does the same.
+		if s.skipUnchanged && s.unchangedThisBlock(addr, obj) {
+			continue
+		}
 		acct := new(account.StateAccount)
 		acct.Copy(&obj.data)
 		accounts[addr] = acct
@@ -1787,6 +1809,29 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// still consumes an append slot and shifts the root.
 	s.lastRootAccounts, s.lastRootStorage = accounts, storage
 	return root
+}
+
+// unchangedThisBlock reports whether a live object ends the block as it was
+// read at its start: not created or recreated, no code or storage written,
+// no wiped storage, and the same nonce, balance and code hash as its
+// original (a zero code hash read as the empty-code hash, as newObject
+// normalises the live copy).
+func (s *IntraBlockState) unchangedThisBlock(addr types.Address, obj *stateObject) bool {
+	if addr == SystemAddress || obj.created || obj.dirtyCode || len(obj.dirtyKeys) != 0 || len(s.activeWipedSlots(addr)) != 0 {
+		return false
+	}
+	if !obj.original.Initialised {
+		return false // did not exist before the block
+	}
+	codeHash := func(h types.Hash) types.Hash {
+		if h == (types.Hash{}) {
+			return emptyCodeHashH
+		}
+		return h
+	}
+	return obj.data.Nonce == obj.original.Nonce &&
+		obj.data.Balance.Eq(&obj.original.Balance) &&
+		codeHash(obj.data.CodeHash) == codeHash(obj.original.CodeHash)
 }
 
 // LastRootDirtySet returns the account/storage dirty set the most recent
