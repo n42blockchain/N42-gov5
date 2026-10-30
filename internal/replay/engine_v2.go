@@ -86,6 +86,11 @@ type EngineV2 struct {
 	leafJournal   *LeafJournal                 // per-block leaf changes for tree building
 	resealer      *BLSResealer                 // BLS mobile-voter re-seal (nil = disabled)
 
+	// lastRegistryRoot is the most recent source MobileRegistryRoot seen, the
+	// value a target header carries when the target config puts the root in
+	// the header and the source block (or a synthetic gap block) has none.
+	lastRegistryRoot *types.Hash
+
 	// topups accumulates the exact deficit credited per sender under AutoTopup
 	// (diagnostic minimum-genesis-balance computation).
 	topups map[types.Address]*uint256.Int
@@ -828,6 +833,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							ParentBeaconRoot: copyHash(gapParentCEHash),
 							RequestsHash:     copyHash(emptyRequestsHash),
 						}
+						if err := e.stampForkHeaderFields(gapHeader, nil); err != nil {
+							return err
+						}
 						gapBlk := block.NewBlock(gapHeader, nil)
 						gapCE.BlockHash = gapBlk.Hash()
 						if e.resealer != nil {
@@ -1081,6 +1089,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					ExcessBlobGas:    ptrU64(0),
 					ParentBeaconRoot: copyHash(parentCEHash),
 					RequestsHash:     copyHash(emptyRequestsHash),
+				}
+
+				if err := e.stampForkHeaderFields(newHeader, srcHeader); err != nil {
+					return err
 				}
 
 				var newBlk *block.Block
@@ -1694,6 +1706,40 @@ func (e *EngineV2) writeNewBlock(dstTx kv.RwTx, blk *block.Block, num uint64) er
 	// TD = 0 for post-merge (PoS). N42 is PoS from genesis.
 	if err := rawdb.WriteTd(dstTx, hash, num, uint256.NewInt(0)); err != nil {
 		return fmt.Errorf("write td %d: %w", num, err)
+	}
+	return nil
+}
+
+// stampForkHeaderFields writes the header fields the TARGET chain config
+// schedules after Prague, the way live production does
+// (hotstuff.FinalizeAndAssemble and the miner), so a replayed chain verifies
+// under the same rules a live node applies:
+//
+//   - SlotNumber (EIP-7843, element 23) = the target block number, from
+//     Glamsterdam;
+//   - MobileRegistryRoot (element 24) from MobileAnchor and Glamsterdam, copied
+//     from the source block (the root is a leader-provided commitment that
+//     followers store verbatim), or the last source root seen when the
+//     source block or a synthetic gap block has none.
+//
+// A target that schedules the root before any source root exists is refused:
+// there is no value to stamp.
+func (e *EngineV2) stampForkHeaderFields(h *block.Header, src *block.Header) error {
+	if src != nil && src.MobileRegistryRoot != nil {
+		root := *src.MobileRegistryRoot
+		e.lastRegistryRoot = &root
+	}
+	cc := e.cfg.ChainConfig
+	if cc.IsGlamsterdam(h.Time) {
+		slot := h.Number.Uint64()
+		h.SlotNumber = &slot
+	}
+	if cc.IsMobileRegistryRootInHeader(h.Time) {
+		if e.lastRegistryRoot == nil {
+			return fmt.Errorf("replay-v2: target block %s (time %d) needs a MobileRegistryRoot and the source has none yet; move mobileAnchorTime in the target config", h.Number, h.Time)
+		}
+		root := *e.lastRegistryRoot
+		h.MobileRegistryRoot = &root
 	}
 	return nil
 }
