@@ -215,6 +215,7 @@ type ChainConfig struct {
 	MuirGlacierBlock    *big.Int `json:"muirGlacierBlock,omitempty"`
 	BerlinBlock         *big.Int `json:"berlinBlock,omitempty"`
 	LondonBlock         *big.Int `json:"londonBlock,omitempty"`
+	PQTxBlock           *big.Int `json:"pqTxBlock,omitempty"` // N42 0x05 v1 activation; nil disables it
 	ArrowGlacierBlock   *big.Int `json:"arrowGlacierBlock,omitempty"`
 	GrayGlacierBlock    *big.Int `json:"grayGlacierBlock,omitempty"`
 
@@ -860,6 +861,10 @@ func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *Confi
 // CheckConfigForkOrder checks that we don't "skip" any forks, geth isn't pluggable enough
 // to guarantee that forks can be implemented in a different order than on official networks
 func (c *ChainConfig) CheckConfigForkOrder() error {
+	if c.PQTxBlock != nil && (c.PQTxBlock.Sign() < 0 || c.LondonBlock == nil || c.PQTxBlock.Cmp(c.LondonBlock) < 0) {
+		return fmt.Errorf("pqTxBlock must be nonnegative and no earlier than London")
+	}
+
 	if c != nil && c.ChainID != nil && c.ChainID.Uint64() == 77 {
 		return nil
 	}
@@ -948,6 +953,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	}
 	if isForkIncompatible(c.BerlinBlock, newcfg.BerlinBlock, head) {
 		return newCompatError("Berlin fork block", c.BerlinBlock, newcfg.BerlinBlock)
+	}
+	if isForkIncompatible(c.PQTxBlock, newcfg.PQTxBlock, head) {
+		return newCompatError("PQ transaction fork block", c.PQTxBlock, newcfg.PQTxBlock)
 	}
 	if isForkIncompatible(c.LondonBlock, newcfg.LondonBlock, head) {
 		return newCompatError("London fork block", c.LondonBlock, newcfg.LondonBlock)
@@ -1087,4 +1095,9 @@ func (c *ChainConfig) EthereumReceiptEncoding() bool {
 		return true
 	}
 	return c.HotStuff != nil && c.HotStuff.EthELCompat
+}
+
+// IsPQTx reports whether full-key Falcon-512 transactions are enabled at block n.
+func (c *ChainConfig) IsPQTx(n *big.Int) bool {
+	return c != nil && c.PQTxBlock != nil && n != nil && c.PQTxBlock.Sign() >= 0 && n.Cmp(c.PQTxBlock) >= 0
 }

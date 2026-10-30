@@ -50,6 +50,33 @@ type dynamicFeeTxRLP struct {
 	S          *uint256.Int
 }
 
+// N42 0x05 v1: full-key, padded Falcon-512; standard EIP-2718 framing.
+type pqTxRLP struct {
+	ChainID     *uint256.Int
+	Nonce       uint64
+	GasTipCap   *uint256.Int
+	GasFeeCap   *uint256.Int
+	Gas         uint64
+	To          *types.Address `rlp:"nil"`
+	Value       *uint256.Int
+	Data        []byte
+	AccessList  AccessList
+	SigAlgo     uint8
+	PubKeyMode  uint8
+	PubKeyData  []byte
+	PQSignature []byte
+}
+
+func validatePQWire(p *PostQuantumTx) error {
+	if p == nil || p.ChainID == nil || p.ChainID.IsZero() || p.ChainID.BitLen() > 64 ||
+		p.GasTipCap == nil || p.GasFeeCap == nil || p.GasTipCap.BitLen() > 128 || p.GasFeeCap.BitLen() > 128 ||
+		p.GasTipCap.Cmp(p.GasFeeCap) > 0 || p.To == nil || p.Value == nil ||
+		p.SigAlgo != PQAlgoFalcon512 || p.PubKeyMode != 0 || len(p.PubKeyData) != 897 || len(p.PQSignature) != 666 {
+		return fmt.Errorf("invalid N42 0x05 full-key Falcon-512 transaction")
+	}
+	return nil
+}
+
 type blobTxRLP struct {
 	ChainID    *uint256.Int
 	Nonce      uint64
@@ -197,6 +224,19 @@ func decodeEthereumTransaction(data []byte) (*Transaction, error) {
 
 	payload := data[1:]
 	switch data[0] {
+	case PostQuantumTxType:
+		var dec pqTxRLP
+		if err := rlp.DecodeBytes(payload, &dec); err != nil {
+			return nil, err
+		}
+		tx := &PostQuantumTx{ChainID: dec.ChainID, Nonce: dec.Nonce, GasTipCap: dec.GasTipCap, GasFeeCap: dec.GasFeeCap,
+			Gas: dec.Gas, To: dec.To, Value: dec.Value, Data: dec.Data, AccessList: dec.AccessList,
+			SigAlgo: dec.SigAlgo, PubKeyMode: dec.PubKeyMode, PubKeyData: dec.PubKeyData, PQSignature: dec.PQSignature}
+		if err := validatePQWire(tx); err != nil {
+			return nil, err
+		}
+		return NewTxOwned(tx), nil
+
 	case AccessListTxType:
 		var dec accessListTxRLP
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
@@ -288,6 +328,16 @@ func EncodeEthereumTransaction(tx *Transaction) ([]byte, error) {
 		return nil, fmt.Errorf("nil transaction")
 	}
 	switch inner := tx.inner.(type) {
+	case *PostQuantumTx:
+		if err := validatePQWire(inner); err != nil {
+			return nil, err
+		}
+		return encodeTypedEthereumTransaction(PostQuantumTxType, &pqTxRLP{
+			ChainID: inner.ChainID, Nonce: inner.Nonce, GasTipCap: inner.GasTipCap, GasFeeCap: inner.GasFeeCap,
+			Gas: inner.Gas, To: inner.To, Value: inner.Value, Data: inner.Data, AccessList: inner.AccessList,
+			SigAlgo: inner.SigAlgo, PubKeyMode: inner.PubKeyMode, PubKeyData: inner.PubKeyData, PQSignature: inner.PQSignature,
+		})
+
 	case *LegacyTx:
 		return rlp.EncodeToBytes(&legacyTxRLP{
 			Nonce:    inner.Nonce,

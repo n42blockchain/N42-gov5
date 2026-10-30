@@ -32,12 +32,12 @@ import (
 	"math/big"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/dilithium/mode2"
 	"github.com/n42blockchain/N42/crypto/dilithium/mode3"
 	"github.com/n42blockchain/N42/crypto/falcon"
-	"github.com/n42blockchain/N42/common/hash"
-	"github.com/n42blockchain/N42/common/types"
 )
 
 // Compile-time assertions: ensure transaction size constants match the Dilithium library.
@@ -67,7 +67,8 @@ var (
 // It wraps the londonSigner to provide backward compatibility with legacy transaction types
 // while adding support for post-quantum signature verification.
 type PostQuantumSigner struct {
-	londonSigner // Embedded London signer for backward compatibility
+	strictWire   bool // activated 0x05 v1; generic research signer stays separate
+	londonSigner      // Embedded London signer for backward compatibility
 	chainId      *big.Int
 }
 
@@ -95,7 +96,7 @@ func (s PostQuantumSigner) Equal(s2 Signer) bool {
 	if !ok {
 		return false
 	}
-	return s.chainId.Cmp(pqSigner.chainId) == 0
+	return s.chainId.Cmp(pqSigner.chainId) == 0 && s.strictWire == pqSigner.strictWire
 }
 
 // Sender returns the sender address derived from the transaction signature.
@@ -111,6 +112,11 @@ func (s PostQuantumSigner) Sender(tx *Transaction) (types.Address, error) {
 		return types.Address{}, ErrNotPostQuantumTx
 	}
 
+	if s.strictWire {
+		if err := validatePQWire(pqTx); err != nil {
+			return types.Address{}, err
+		}
+	}
 	// Verify chain ID
 	chainIdU256, _ := uint256.FromBig(s.chainId)
 	if pqTx.ChainID.Cmp(chainIdU256) != 0 {
@@ -419,4 +425,11 @@ func MakeSignerWithPQ(chainId *big.Int, usePQ bool) Signer {
 		return NewPostQuantumSigner(chainId)
 	}
 	return NewLondonSigner(chainId)
+}
+
+// NewFalconTransactionSigner enforces the canonical, activated 0x05 v1 shape.
+func NewFalconTransactionSigner(chainID *big.Int) Signer {
+	s := NewPostQuantumSigner(chainID).(PostQuantumSigner)
+	s.strictWire = true
+	return s
 }

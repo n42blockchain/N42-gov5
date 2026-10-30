@@ -743,6 +743,22 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 // now filled in from the recovery, and a present one still has to match.
 func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 	declaredFrom := tx.From()
+	if tx.Type() == transaction.PostQuantumTxType {
+		head := currentBlock(pool.bc)
+		if head == nil {
+			return false
+		}
+		height, err := requireBlockNumber(head, "PQ admission requires a canonical head")
+		if err != nil || !pool.eip1559 || !pool.chainconfig.IsPQTx(height.ToBig()) {
+			return false
+		}
+		sender, err := transaction.Sender(transaction.NewFalconTransactionSigner(pool.chainconfig.ChainID), tx)
+		if err != nil || (declaredFrom != nil && sender != *declaredFrom) {
+			return false
+		}
+		tx.SetFrom(sender)
+		return true
+	}
 
 	v, r, s := tx.RawSignatureValues()
 	if v == nil || r == nil || s == nil {

@@ -255,6 +255,7 @@ func txDataFromProtoMessage(message proto.Message) (TxData, error) {
 
 	case PostQuantumTxType:
 		inner = &PostQuantumTx{
+			fromCache:   convertProtoToAddress(pbTx.From),
 			ChainID:     uint256.NewInt(pbTx.ChainID),
 			Nonce:       pbTx.Nonce,
 			Gas:         pbTx.Gas,
@@ -338,6 +339,9 @@ func (tx *Transaction) toProtoFields() *types_pb.Transaction {
 		pbTx.PriorityFeePerGas = convertUint256IntToH256IfSet(t.GasTipCap)
 
 	case *PostQuantumTx:
+		if from := tx.From(); from != nil {
+			pbTx.From = utils.ConvertAddressToH160(*from)
+		}
 		if t.ChainID != nil {
 			pbTx.ChainID = t.ChainID.Uint64()
 		}
@@ -550,6 +554,8 @@ func (tx *Transaction) SetFrom(addr types.Address) {
 	case *BlobTx:
 		t.fromCache = &a
 	case *SetCodeTx:
+		t.fromCache = &a
+	case *PostQuantumTx:
 		t.fromCache = &a
 	}
 }

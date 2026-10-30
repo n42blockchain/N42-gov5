@@ -435,8 +435,8 @@ func TestPostQuantumTxConstants(t *testing.T) {
 	if Falcon512PublicKeySize != 897 {
 		t.Errorf("Falcon512PublicKeySize = %d, want 897", Falcon512PublicKeySize)
 	}
-	if Falcon512SignatureSize != 690 {
-		t.Errorf("Falcon512SignatureSize = %d, want 690", Falcon512SignatureSize)
+	if Falcon512SignatureSize != 666 {
+		t.Errorf("Falcon512SignatureSize = %d, want 666", Falcon512SignatureSize)
 	}
 	if SQIsignPublicKeySize != 64 {
 		t.Errorf("SQIsignPublicKeySize = %d, want 64", SQIsignPublicKeySize)
