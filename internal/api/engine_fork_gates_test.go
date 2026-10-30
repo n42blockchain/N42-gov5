@@ -249,3 +249,43 @@ func TestEngineForkGatesTreatPectraAsPrague(t *testing.T) {
 	}, []types.Hash{}, &root, []hexutil.Bytes{})
 	requireEngineErrorCode(t, err, -38005)
 }
+
+// Amsterdam payloads carry the EIP-7928 block access list and the slot
+// number: newPayloadV4 and forkchoiceUpdatedV3 must refuse them, while an N42
+// native chain with Glamsterdam scheduled stays on the Osaka methods.
+func TestEngineForkGatesRejectAmsterdamOnPragueMethods(t *testing.T) {
+	t.Parallel()
+
+	amsterdamTS := mainnetOsakaTS + 10_000_000
+	api, headHash := newMainnetEngineTestAPI(t, mainnetOsakaTS)
+	api.chainConfig.GlamsterdamTime = new(big.Int).SetUint64(amsterdamTS)
+	v3 := NewEngineAPIBlob(NewBlockChainAPI(api))
+	v4 := NewEngineAPIv4(NewBlockChainAPI(api))
+	root := types.Hash{0x04}
+	payloadV4 := func(ts uint64) *ExecutionPayloadV4 {
+		return &ExecutionPayloadV4{
+			BlockNumber: 22_000_001, Timestamp: hexutil.Uint64(ts), GasLimit: 36_000_000,
+			BaseFeePerGas: hexBigFromUint64(1), Withdrawals: []*Withdrawal{},
+			BlobGasUsed: hexUint64Ptr(0), ExcessBlobGas: hexUint64Ptr(0),
+		}
+	}
+	_, err := v4.NewPayloadV4(context.Background(), payloadV4(amsterdamTS), []types.Hash{}, &root, []hexutil.Bytes{})
+	requireEngineErrorCode(t, err, -38005)
+	_, err = v4.NewPayloadV4(context.Background(), payloadV4(amsterdamTS-1), []types.Hash{}, &root, []hexutil.Bytes{})
+	requireNotUnsupportedFork(t, err)
+
+	_, err = v3.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{HeadBlockHash: headHash}, &PayloadAttributesV3{
+		Timestamp:             hexutil.Uint64(amsterdamTS),
+		Withdrawals:           []*Withdrawal{},
+		ParentBeaconBlockRoot: &root,
+	})
+	requireEngineErrorCode(t, err, -38005)
+
+	native := &params.ChainConfig{
+		OsakaTime:       new(big.Int),
+		GlamsterdamTime: new(big.Int),
+		Consensus:       params.HotStuffConsensus,
+	}
+	require.Equal(t, engineForkOsaka, engineLatestFork(native, 1, 1))
+	require.Equal(t, engineForkAmsterdam, engineLatestFork(api.chainConfig, 22_000_001, amsterdamTS))
+}
