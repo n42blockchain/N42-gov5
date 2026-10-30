@@ -91,6 +91,18 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 	author, txContext := policy.systemCallContext(header, msg)
 
 	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, &chainConfig, author)
+	if chainConfig.IsGlamsterdam(header.Time) {
+		// Like the start-of-block system calls and geth's system-call
+		// mode, make no value transfer: the system address is then never
+		// touched and stays out of the EIP-7928 block access list.
+		transfer := blockContext.Transfer
+		blockContext.Transfer = func(db evmtypes.IntraBlockState, sender, recipient types.Address, amount *uint256.Int, bailout bool) {
+			if sender == state.SystemAddress {
+				return
+			}
+			transfer(db, sender, recipient, amount, bailout)
+		}
+	}
 	evm := vm.NewEVM(blockContext, txContext, ibs, &chainConfig, vmConfig)
 	if rules := evm.ChainRules(); rules.IsBerlin {
 		ibs.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), nil)
