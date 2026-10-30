@@ -196,26 +196,28 @@ func EngineAPIs(api *API) []jsonrpc.API {
 
 // supportedEngineMethods is the engine_exchangeCapabilities answer: every
 // method this node serves, except engine_exchangeCapabilities itself (the
-// spec forbids listing it) and the N42-specific engine_forkchoiceUpdatedV4,
-// which takes Prague attributes and must not be mistaken for the Amsterdam
-// method of the same name. getClientCapabilitiesV1 lists it.
+// spec forbids listing it).
 //
 // Osaka reuses newPayloadV4 and forkchoiceUpdatedV3 and adds getPayloadV5
-// and getBlobsV2 (EIP-7594 cell proofs).
+// and getBlobsV2 (EIP-7594 cell proofs). Amsterdam adds newPayloadV5,
+// forkchoiceUpdatedV4 and getPayloadV6.
 func supportedEngineMethods() []string {
 	return []string{
 		"engine_newPayloadV1",
 		"engine_newPayloadV2",
 		"engine_newPayloadV3",
 		"engine_newPayloadV4",
+		"engine_newPayloadV5",
 		"engine_getPayloadV1",
 		"engine_getPayloadV2",
 		"engine_getPayloadV3",
 		"engine_getPayloadV4",
 		"engine_getPayloadV5",
+		"engine_getPayloadV6",
 		"engine_forkchoiceUpdatedV1",
 		"engine_forkchoiceUpdatedV2",
 		"engine_forkchoiceUpdatedV3",
+		"engine_forkchoiceUpdatedV4",
 		"engine_getPayloadBodiesByHashV1",
 		"engine_getPayloadBodiesByRangeV1",
 		"engine_getBlobsBundleV1",
@@ -229,9 +231,9 @@ func supportedEngineMethods() []string {
 }
 
 // clientCapabilityMethods is the engine_getClientCapabilitiesV1 method list:
-// the exchangeCapabilities set plus the N42-specific methods.
+// the exchangeCapabilities set plus engine_exchangeCapabilities.
 func clientCapabilityMethods() []string {
-	return append(supportedEngineMethods(), "engine_forkchoiceUpdatedV4", "engine_exchangeCapabilities")
+	return append(supportedEngineMethods(), "engine_exchangeCapabilities")
 }
 
 func supportedEngineForks() []string {
