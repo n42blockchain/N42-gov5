@@ -292,6 +292,9 @@ type BlockChain struct {
 	committeePool CommitteeEvidenceBuilder
 	// e1Src overrides N42_E1_SOURCE for this chain (tests; e1.go).
 	e1Src atomic.Pointer[string]
+	// e1Early holds a light node's fetched results until their block is
+	// stored (N42_E1_EARLY; e1.go): hash -> rawdb.ExecutedResult.
+	e1Early sync.Map
 }
 
 // CommitteeEvidenceBuilder builds the consensus evidence for a freshly persisted

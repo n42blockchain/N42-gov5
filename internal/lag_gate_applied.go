@@ -74,8 +74,12 @@ func (bc *BlockChain) SetLagResultHook(fn func(hash types.Hash)) {
 
 // pendingExecutedResult returns the executed result of hash when it is the
 // block whose write is in flight and the result is complete in memory (its
-// receipts part hashed); it never waits.
+// receipts part hashed), or a light E=1 node's fetched result whose block
+// is not stored yet (e1EarlyResult); it never waits.
 func (bc *BlockChain) pendingExecutedResult(hash types.Hash) (rawdb.ExecutedResult, bool) {
+	if r, ok := bc.e1EarlyResult(hash); ok {
+		return r, true
+	}
 	if !lagGateApplied {
 		return rawdb.ExecutedResult{}, false
 	}

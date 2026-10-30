@@ -222,6 +222,10 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 		e1Stats.notReady.Add(1)
 		return false, nil
 	}
+	if e1Early {
+		bc.e1EarlyPublish(b.Hash(), r)
+		defer bc.e1Early.Delete(b.Hash())
+	}
 	if err := bc.ResolveFrames(b); err != nil {
 		return false, err
 	}
@@ -265,6 +269,41 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 	}
 	e1Stats.imported.Add(1)
 	return true, nil
+}
+
+// e1Early is N42_E1_EARLY: a light node publishes a fetched result before
+// it stores the block (2026-10-30 E1N26 run 4: at a 60 ms interval a light
+// leader waited ~60 ms a block for its own store, frames included, while
+// node0's own blocks came 65 ms apart and the light leaders' 80 ms). The
+// gate and the build read the result from memory, as the executor's gate
+// does for a write in flight (lag_gate_applied.go); everything else still
+// sees the stored block only. The result is the executor's either way.
+var e1Early = parseLagPipeline(os.Getenv("N42_E1_EARLY"))
+
+// SetE1EarlyForTest switches N42_E1_EARLY and returns the restore.
+func SetE1EarlyForTest(on bool) func() {
+	prev := e1Early
+	e1Early = on
+	return func() { e1Early = prev }
+}
+
+// e1EarlyPublish holds hash's fetched result until its block is stored and
+// tells consensus, which resumes a leader view the lag gate parked on it.
+func (bc *BlockChain) e1EarlyPublish(hash types.Hash, r rawdb.ExecutedResult) {
+	bc.e1Early.Store(hash, r)
+	if fn := bc.lagExec.resultHook.Load(); fn != nil {
+		go (*fn)(hash)
+	}
+}
+
+// e1EarlyResult returns hash's fetched result while its block is being
+// stored.
+func (bc *BlockChain) e1EarlyResult(hash types.Hash) (rawdb.ExecutedResult, bool) {
+	v, ok := bc.e1Early.Load(hash)
+	if !ok {
+		return rawdb.ExecutedResult{}, false
+	}
+	return v.(rawdb.ExecutedResult), true
 }
 
 // e1LightStep is lagStep on a light node: the lowest queued block whose

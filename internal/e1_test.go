@@ -29,6 +29,15 @@ import (
 // stored results equal the executor's, its leader gate opens on them and
 // its availability check of the next header passes against them.
 func TestE1LightFollowsExecutor(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stored", true: "early"}[early], func(t *testing.T) {
+			defer SetE1EarlyForTest(early)()
+			testE1LightFollowsExecutor(t)
+		})
+	}
+}
+
+func testE1LightFollowsExecutor(t *testing.T) {
 	const (
 		blocks   = 6
 		frames   = 2
@@ -153,6 +162,37 @@ func TestE1LightFollowsExecutor(t *testing.T) {
 	}))
 	imported, _, _, _ := E1LightStats()
 	require.GreaterOrEqual(t, imported, uint64(blocks))
+	light.bc.e1Early.Range(func(k, _ any) bool {
+		t.Errorf("early result of %v kept after its block was stored", k)
+		return true
+	})
+}
+
+// TestE1EarlyResult: a published result is read by the gate's lookup and
+// tells the result hook; once dropped, the lookup misses again.
+func TestE1EarlyResult(t *testing.T) {
+	lc := newLagChainEngine(t, nil, importBenchEngine{})
+	h := types.HexToHash("0x0e")
+	want := rawdb.ExecutedResult{Root: types.HexToHash("0xaa"), GasUsed: 21000}
+	_, ok := lc.bc.pendingExecutedResult(h)
+	require.False(t, ok)
+	told := make(chan types.Hash, 1)
+	lc.bc.SetLagResultHook(func(hash types.Hash) { told <- hash })
+	defer lc.bc.SetLagResultHook(nil)
+
+	lc.bc.e1EarlyPublish(h, want)
+	got, ok := lc.bc.pendingExecutedResult(h)
+	require.True(t, ok)
+	require.Equal(t, want, got)
+	select {
+	case got := <-told:
+		require.Equal(t, h, got)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the result hook was not told")
+	}
+	lc.bc.e1Early.Delete(h)
+	_, ok = lc.bc.pendingExecutedResult(h)
+	require.False(t, ok)
 }
 
 // TestE1ServeResult: the executor answers a stored result, 204 for a hash it
