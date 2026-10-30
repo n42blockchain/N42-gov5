@@ -42,7 +42,11 @@ type ExecutionPayloadAmsterdam struct {
 // amsterdamPayloadFields are the header inputs an Amsterdam payload adds.
 type amsterdamPayloadFields struct {
 	blockAccessList []byte
-	slotNumber      uint64
+	// blockAccessListHash, when set, stands in for blockAccessList: an
+	// in-process historical import knows only the header's hash. Execution
+	// still checks the hash against the list it builds.
+	blockAccessListHash *types.Hash
+	slotNumber          uint64
 }
 
 // apply sets the block access list hash, keccak256 of the payload's encoded
@@ -54,6 +58,9 @@ func (f *amsterdamPayloadFields) apply(blk block.IBlock) block.IBlock {
 	}
 	header = block.CopyHeader(header)
 	balHash := crypto.Keccak256Hash(f.blockAccessList)
+	if f.blockAccessListHash != nil {
+		balHash = *f.blockAccessListHash
+	}
 	slot := f.slotNumber
 	header.BlockAccessListHash = &balHash
 	header.SlotNumber = &slot

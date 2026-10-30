@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/ecdsa"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -249,4 +250,53 @@ func TestAmsterdamForkchoiceUpdatedV4GetPayloadV6RoundTrip(t *testing.T) {
 	status, err = v4.NewPayloadV5(ctx, &tampered, []types.Hash{}, &beaconRoot, got.ExecutionRequests)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, status.Status)
+}
+
+// The embedded consensus client in cmd/eth-el imports an Amsterdam payload
+// through NewPayloadV4AnyFork, with the access list it received or, on a
+// historical import, only the header's hash of it. Without the Amsterdam
+// fields the call is refused instead of failing on the block hash.
+func TestNewPayloadV4AnyForkAmsterdam(t *testing.T) {
+	for _, hashOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hashOnly=%v", hashOnly), func(t *testing.T) {
+			bt := newAmsterdamBuildTest(t)
+			v4 := NewEngineAPIv4(NewBlockChainAPI(bt.api))
+			ctx := context.Background()
+			beaconRoot := types.Hash{0x42}
+			slot := hexutil.Uint64(5)
+			resp, err := v4.ForkchoiceUpdatedV4(ctx, &ForkchoiceStateV1{HeadBlockHash: bt.headHash}, &PayloadAttributesV4{
+				Timestamp:             2,
+				PrevRandao:            types.Hash{0x11},
+				SuggestedFeeRecipient: bt.coinbase,
+				Withdrawals:           []*Withdrawal{},
+				ParentBeaconBlockRoot: &beaconRoot,
+				SlotNumber:            &slot,
+			})
+			require.NoError(t, err)
+			got, err := v4.GetPayloadV6(ctx, *resp.PayloadID)
+			require.NoError(t, err)
+			payload := got.ExecutionPayload
+
+			_, err = NewPayloadV4AnyFork(v4, &payload.ExecutionPayloadV4, []types.Hash{}, &beaconRoot, got.ExecutionRequests, nil)
+			requireEngineErrorCode(t, err, -32602)
+
+			fields := &AmsterdamPayloadFields{SlotNumber: uint64(*payload.SlotNumber)}
+			if hashOnly {
+				balHash := crypto.Keccak256Hash(payload.BlockAccessList)
+				fields.BlockAccessListHash = &balHash
+			} else {
+				fields.BlockAccessList = payload.BlockAccessList
+			}
+			status, err := NewPayloadV4AnyFork(v4, &payload.ExecutionPayloadV4, []types.Hash{}, &beaconRoot, got.ExecutionRequests, fields)
+			require.NoError(t, err)
+			require.Equal(t, PayloadStatusValid, status.Status, statusString(status))
+
+			// The slot number is part of the block hash.
+			wrong := *fields
+			wrong.SlotNumber++
+			status, err = NewPayloadV4AnyFork(v4, &payload.ExecutionPayloadV4, []types.Hash{}, &beaconRoot, got.ExecutionRequests, &wrong)
+			require.NoError(t, err)
+			require.Equal(t, PayloadStatusInvalid, status.Status)
+		})
+	}
 }

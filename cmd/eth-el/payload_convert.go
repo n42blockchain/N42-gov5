@@ -28,6 +28,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
 	dephexutil "github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
 	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
+	"github.com/n42blockchain/N42/params"
 )
 
 // extractBaseFeePerGasUint64 converts the cltypes BaseFeePerGas (32 B
@@ -224,6 +225,35 @@ func depBlockToExecutionPayloadV4(blk *deptypes.Block) (*api.ExecutionPayloadV4,
 		BlobGasUsed:   blobGasUsed,
 		ExcessBlobGas: excessBlobGas,
 	}, nil
+}
+
+// eth1BlockAmsterdamFields returns the Amsterdam header inputs of a Gloas
+// payload, its RLP-encoded EIP-7928 access list and its slot number, or nil
+// when the chain has no such fields at the payload's timestamp.
+func eth1BlockAmsterdamFields(blk *cltypes.Eth1Block, cfg *params.ChainConfig) *api.AmsterdamPayloadFields {
+	if blk == nil || cfg == nil || !cfg.UsesEIP7928AccessList(blk.Time) {
+		return nil
+	}
+	list := []byte{}
+	if blk.BlockAccessList != nil {
+		list = append(list, blk.BlockAccessList.Bytes()...)
+	}
+	return &api.AmsterdamPayloadFields{BlockAccessList: list, SlotNumber: blk.SlotNumber}
+}
+
+// depBlockAmsterdamFields returns the Amsterdam header inputs of a historical
+// block: the header carries only the hash of its access list, which the
+// import checks against the list it builds. Nil for a header without them.
+func depBlockAmsterdamFields(blk *deptypes.Block) *api.AmsterdamPayloadFields {
+	if blk == nil {
+		return nil
+	}
+	h := blk.Header()
+	if h == nil || h.BlockAccessListHash == nil || h.SlotNumber == nil {
+		return nil
+	}
+	balHash := types.Hash(*h.BlockAccessListHash)
+	return &api.AmsterdamPayloadFields{BlockAccessListHash: &balHash, SlotNumber: *h.SlotNumber}
 }
 
 // --- Phase 7.4 reverse converters (api → caplin) -------------------------

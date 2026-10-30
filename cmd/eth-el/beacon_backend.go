@@ -269,7 +269,7 @@ func (b *ethELBackend) ExecutePayload(
 		reqs[i] = hexutil.Bytes(append([]byte(nil), r...))
 	}
 
-	status, err := api.NewPayloadV4AnyFork(b.engineV4, payload, vh, parentRoot, reqs)
+	status, err := api.NewPayloadV4AnyFork(b.engineV4, payload, vh, parentRoot, reqs, eth1BlockAmsterdamFields(blk, b.exec.ChainConfig()))
 	if err != nil {
 		return execution_client.PayloadStatusNotValidated, err
 	}
@@ -649,7 +649,7 @@ func (b *ethELBackend) insertBlockViaNewPayload(ctx context.Context, blk *deptyp
 		v := types.Hash(*h.ParentBeaconBlockRoot)
 		parentRoot = &v
 	}
-	status, err := api.NewPayloadV4AnyFork(b.engineV4, payload, nil, parentRoot, nil)
+	status, err := api.NewPayloadV4AnyFork(b.engineV4, payload, nil, parentRoot, nil, depBlockAmsterdamFields(blk))
 	if err != nil {
 		return fmt.Errorf("NewPayloadV4: %w", err)
 	}
