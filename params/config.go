@@ -458,6 +458,14 @@ func (c *ChainConfig) UsesDirectBeaconRootWrites() bool {
 	return c.IsN42Native()
 }
 
+// UsesEIP7928AccessList reports whether a block at time commits to the
+// Ethereum (Amsterdam) EIP-7928 block access list: Glamsterdam on a chain
+// that is not N42 native. N42 native chains keep their own access list
+// behind BALTime.
+func (c *ChainConfig) UsesEIP7928AccessList(time uint64) bool {
+	return c != nil && c.IsGlamsterdam(time) && !c.IsN42Native()
+}
+
 // IsN42Native reports whether this is an N42 native chain (HotStuff or APoS
 // consensus). Validity rules Ethereum added after these chains started
 // producing blocks are only enforced elsewhere, so their history replays

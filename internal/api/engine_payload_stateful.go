@@ -113,7 +113,12 @@ func applyExecutionWithdrawals(ibs *state.IntraBlockState, withdrawals []*Withdr
 	}
 	gwei := uint256.NewInt(params.GWei)
 	for _, withdrawal := range withdrawals {
-		if withdrawal == nil || withdrawal.Amount == 0 {
+		if withdrawal == nil {
+			continue
+		}
+		if withdrawal.Amount == 0 {
+			// Credits nothing, but EIP-7928 still lists the recipient.
+			ibs.RecordAccountAccess(withdrawal.Address)
 			continue
 		}
 		amount := new(uint256.Int).Mul(uint256.NewInt(uint64(withdrawal.Amount)), gwei)
