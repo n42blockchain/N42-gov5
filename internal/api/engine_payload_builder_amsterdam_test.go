@@ -9,6 +9,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
+	"github.com/n42blockchain/N42/common/bal"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -130,6 +131,28 @@ func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
 	require.NotEqual(t, cumulative, header.GasUsed, "an Amsterdam header must not carry the receipts' cumulative gas")
 
 	require.NoError(t, engine.validatePayloadExecution(result.block, headHash, &beaconRoot, result.executionRequests))
+
+	// The header commits to the recorded EIP-7928 list, which leaves out
+	// the sender whose transaction failed, and to the slot number.
+	require.NotNil(t, header.BlockAccessListHash)
+	require.Equal(t, crypto.Keccak256Hash(result.blockAccessList), *header.BlockAccessListHash)
+	require.NotNil(t, header.SlotNumber)
+	require.Equal(t, uint64(0), *header.SlotNumber)
+	list, err := bal.Decode(result.blockAccessList)
+	require.NoError(t, err)
+	listed := map[types.Address]bool{}
+	for _, acc := range list {
+		listed[acc.Address] = true
+	}
+	require.True(t, listed[keys[0].addr])
+	require.True(t, listed[keys[2].addr])
+	require.True(t, listed[params.BeaconRootsAddress])
+	require.False(t, listed[keys[1].addr], "the failed transaction's sender must not be listed")
+
+	slot := uint64(9)
+	result = engine.buildExecutionPayloadStatefulWithSlot(genesisBlock, headHash, attrs, []*Withdrawal{}, &beaconRoot, &slot)
+	require.NotNil(t, result)
+	require.Equal(t, slot, *result.block.Header().(*block.Header).SlotNumber)
 }
 
 type amsterdamBuildKey struct {

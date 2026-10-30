@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -101,6 +102,9 @@ type statefulPayloadBuildResult struct {
 	blockValue        *big.Int
 	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
+	// blockAccessList is the RLP-encoded EIP-7928 list of an Amsterdam
+	// payload, nil before Amsterdam.
+	blockAccessList []byte
 }
 
 func clonePayloadBodyWithdrawals(withdrawals []*Withdrawal) []*Withdrawal {
@@ -309,6 +313,15 @@ func (e *EngineAPIV1) buildExecutionPayloadV1Stateful(parent block.IBlock, paren
 }
 
 func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash) *statefulPayloadBuildResult {
+	return e.buildExecutionPayloadStatefulWithSlot(parent, parentHash, attrs, withdrawals, parentBeaconRoot, nil)
+}
+
+// buildExecutionPayloadStatefulWithSlot builds a payload on parent's state.
+// An Amsterdam payload carries slotNumber (EIP-7843) in its header and
+// records the EIP-7928 block access list, with the import side's indices:
+// 0 for the pre-execution system calls, i+1 for transaction i, n+1 for the
+// withdrawals and the post-execution system calls.
+func (e *EngineAPIV1) buildExecutionPayloadStatefulWithSlot(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash, slotNumber *uint64) *statefulPayloadBuildResult {
 	if e == nil || e.api == nil || e.api.api == nil || e.api.api.engine == nil || e.api.api.txspool == nil {
 		return nil
 	}
@@ -327,6 +340,15 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 	err := withParentState(db, parentHeader.Number.Uint64(), e.parentStateOverlay(parentHash), func(tx kv.Tx, _ state.StateReader, ibs *state.IntraBlockState) error {
 		header := buildStatefulPayloadHeader(parentHeader, parentHash, attrs, e.chainConfig())
 		prepareStatefulPayloadHeader(e.chainConfig(), parentHeader, header, withdrawals, parentBeaconRoot)
+		specBAL := e.chainConfig().UsesEIP7928AccessList(header.Time)
+		if specBAL {
+			slot := uint64(0)
+			if slotNumber != nil {
+				slot = *slotNumber
+			}
+			header.SlotNumber = &slot
+			ibs.EnableBlockAccessList()
+		}
 		if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, e.chainConfig(), ibs, header, e.api.api.engine); err != nil {
 			return err
 		}
@@ -335,6 +357,7 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 			return err
 		}
 		setStatefulPayloadBlobGasUsed(header, txs)
+		ibs.SetBlockAccessIndex(uint64(len(txs)) + 1)
 		applyExecutionWithdrawals(ibs, withdrawals)
 		if err := finalizeExecutionStateChanges(e.chainConfig(), header, ibs); err != nil {
 			return err
@@ -344,6 +367,18 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 			return err
 		}
 		setStatefulPayloadRequestsHash(e.chainConfig(), header, actualRequests)
+		var accessList []byte
+		if specBAL {
+			list := ibs.BlockAccessList()
+			if err := list.ValidateSize(header.GasLimit); err != nil {
+				return err
+			}
+			if accessList, err = list.Encode(); err != nil {
+				return fmt.Errorf("encode block access list: %w", err)
+			}
+			balHash := crypto.Keccak256Hash(accessList)
+			header.BlockAccessListHash = &balHash
+		}
 		_, _, err = e.api.api.engine.Finalize(e.api.api.BlockChain(), header, ibs, txs, nil)
 		if err != nil {
 			return err
@@ -364,6 +399,7 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 			blockValue:        executionPayloadBlockValue(header, txs, receipts),
 			blobsBundle:       executionPayloadBlobsBundle(txs),
 			executionRequests: cloneHexutilBytesList(actualRequests),
+			blockAccessList:   accessList,
 		}
 		return nil
 	})
@@ -496,6 +532,7 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 	var blobGasUsed uint64
 
 	commitTx := func(txn *transaction.Transaction) error {
+		ibs.SetBlockAccessIndex(uint64(len(txs)) + 1)
 		ibs.Prepare(txn.Hash(), types.Hash{}, len(txs))
 		// A struct copy: the Amsterdam block counters must survive a revert.
 		gasSnapshot := *gasPool
@@ -505,6 +542,8 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 		receipt, _, err := internalcore.ApplyTransaction(e.chainConfig(), blockHashFunc, e.api.api.engine, &coinbase, gasPool, ibs, stateWriter, header, txn, &header.GasUsed, vmConfig)
 		if err != nil {
 			ibs.RevertToSnapshot(snapshot)
+			// The next transaction takes this block access index.
+			ibs.DiscardBlockAccessIndex()
 			*gasPool = gasSnapshot
 			header.GasUsed = usedGasSnapshot
 			return err
