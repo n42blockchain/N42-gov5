@@ -759,6 +759,7 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 			"coinbase", header.Coinbase, "coinbaseBal", ibs.GetBalance(header.Coinbase).String(),
 			"faucetBal", ibs.GetBalance(fa).String(), "txs", len(txs), "dirtyAccts", accts, "dirtySlots", stor)
 	}
+	ibs.SetSkipUnchangedAccounts(h.chainConfig.IsUnchangedAccountNoOp(header.Time))
 	localRoot := ibs.IntermediateRoot()
 	if finalizeTrace {
 		log.Warn("finalize trace root", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),

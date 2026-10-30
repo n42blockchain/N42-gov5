@@ -461,6 +461,12 @@ func (c *ChainConfig) IsDeferredExecution(time uint64) bool {
 	return isForked(c.DeferredExecutionTime, time)
 }
 
+// IsUnchangedAccountNoOp returns whether a block at time leaves an account it
+// touched but did not change out of the state root (UnchangedAccountNoOpTime).
+func (c *ChainConfig) IsUnchangedAccountNoOp(time uint64) bool {
+	return isForked(c.UnchangedAccountNoOpTime, time)
+}
+
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
 func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
 	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)

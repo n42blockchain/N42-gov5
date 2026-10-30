@@ -944,6 +944,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				// Compute state roots.
 				var stateRoot types.Hash
 				if e.cfg.EnableJMT || useTrie {
+					// The rebuilt chain's own UnchangedAccountNoOpTime: a base
+					// rebuilt for the rule sets it at or before its first block.
+					ibs.SetSkipUnchangedAccounts(e.cfg.ChainConfig.IsUnchangedAccountNoOp(srcTime))
 					stateRoot = ibs.IntermediateRoot()
 
 					if (useMPT || useTrie) && e.cfg.VerifyMPT {
