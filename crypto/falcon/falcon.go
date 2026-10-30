@@ -33,270 +33,150 @@ package falcon
 import (
 	"crypto"
 	"crypto/rand"
+	"crypto/subtle"
 	"errors"
+	"github.com/pornin/go-fn-dsa/fndsa"
+	"golang.org/x/crypto/sha3"
 	"io"
 )
 
-// Falcon-512 parameter sizes
-const (
-	// PublicKeySize is the size of a packed Falcon-512 public key in bytes.
-	PublicKeySize = 897
+const PublicKeySize = 897
+const PrivateKeySize = 1281
+const SignatureSize = 666
+const SignatureAverageSize = 666
+const SeedSize = 48
+const N = 512
+const LogN = 9
+const Q = 12289
 
-	// PrivateKeySize is the size of a packed Falcon-512 private key in bytes.
-	PrivateKeySize = 1281
+var ErrInvalidPublicKey = errors.New("falcon: invalid public key")
+var ErrInvalidPrivateKey = errors.New("falcon: invalid private key")
+var ErrInvalidSignature = errors.New("falcon: invalid signature")
+var ErrSignatureTooLarge = errors.New("falcon: signature too large")
+var ErrInvalidSeedSize = errors.New("falcon: invalid seed size")
 
-	// SignatureSize is the maximum size of a Falcon-512 signature in bytes.
-	// Actual signatures may be smaller due to compression.
-	SignatureSize = 690
+// Original Falcon hash-to-point mode, NOT a claim of finalized FN-DSA compliance.
+// Pinned fndsa v0.1.0 implements the actual NTRU equation and norm check. The
+// previous local hash-commitment demonstrator is deliberately not accepted.
+const originalFalcon = crypto.Hash(0xFFFFFFFF)
 
-	// SignatureAverageSize is the typical size of a Falcon-512 signature.
-	SignatureAverageSize = 666
-
-	// SeedSize is the size of the seed for deterministic key generation.
-	SeedSize = 48
-
-	// N is the degree of the polynomial ring used in Falcon-512.
-	N = 512
-
-	// LogN is log2(N).
-	LogN = 9
-
-	// Q is the modulus used in Falcon.
-	Q = 12289
-)
-
-var (
-	// ErrInvalidPublicKey is returned when a public key cannot be parsed.
-	ErrInvalidPublicKey = errors.New("falcon: invalid public key")
-
-	// ErrInvalidPrivateKey is returned when a private key cannot be parsed.
-	ErrInvalidPrivateKey = errors.New("falcon: invalid private key")
-
-	// ErrInvalidSignature is returned when a signature cannot be verified.
-	ErrInvalidSignature = errors.New("falcon: invalid signature")
-
-	// ErrSignatureTooLarge is returned when a signature exceeds the maximum size.
-	ErrSignatureTooLarge = errors.New("falcon: signature too large")
-
-	// ErrInvalidSeedSize is returned when the seed size is incorrect.
-	ErrInvalidSeedSize = errors.New("falcon: invalid seed size")
-)
-
-// PublicKey represents a Falcon-512 public key.
-type PublicKey struct {
-	// h is the public polynomial h = g/f mod q
-	h [N]int16
-
-	// packed is the cached packed representation
-	packed [PublicKeySize]byte
-}
-
-// PrivateKey represents a Falcon-512 private key.
+type PublicKey struct{ packed [PublicKeySize]byte }
 type PrivateKey struct {
-	// f, g are the secret polynomials
-	f [N]int8
-	g [N]int8
-
-	// F, G are computed such that fG - gF = q
-	F [N]int8
-	G [N]int8
-
-	// pk is the corresponding public key
-	pk *PublicKey
-
-	// packed is the cached packed representation
 	packed [PrivateKeySize]byte
+	pk     *PublicKey
 }
 
-// GenerateKey generates a new Falcon-512 public/private key pair.
-// If rand is nil, crypto/rand.Reader will be used.
 func GenerateKey(random io.Reader) (*PublicKey, *PrivateKey, error) {
 	if random == nil {
 		random = rand.Reader
 	}
-
-	var seed [SeedSize]byte
-	if _, err := io.ReadFull(random, seed[:]); err != nil {
+	sk, pk, err := fndsa.KeyGen(9, random)
+	if err != nil {
 		return nil, nil, err
 	}
-
-	return NewKeyFromSeed(seed[:])
+	p := &PublicKey{}
+	copy(p.packed[:], pk)
+	s := &PrivateKey{pk: p}
+	copy(s.packed[:], sk)
+	return p, s, nil
 }
-
-// NewKeyFromSeed derives a public/private key pair from the given seed.
-// The seed must be exactly SeedSize bytes.
 func NewKeyFromSeed(seed []byte) (*PublicKey, *PrivateKey, error) {
 	if len(seed) != SeedSize {
 		return nil, nil, ErrInvalidSeedSize
 	}
-
-	pk := &PublicKey{}
-	sk := &PrivateKey{pk: pk}
-
-	// Generate key pair from seed using SHAKE256
-	if err := generateKeyPairFromSeed(pk, sk, seed); err != nil {
-		return nil, nil, err
-	}
-
-	return pk, sk, nil
+	x := sha3.NewShake256()
+	x.Write([]byte("N42-Falcon512-keygen-v1"))
+	x.Write(seed)
+	return GenerateKey(x)
 }
-
-// Sign signs the message with the private key and returns the signature.
-func Sign(sk *PrivateKey, msg []byte) ([]byte, error) {
-	if sk == nil {
-		return nil, ErrInvalidPrivateKey
-	}
-
-	// Use crypto/rand for nonce generation
-	return SignWithRandom(sk, msg, rand.Reader)
-}
-
-// SignWithRandom signs the message with the private key using the provided
-// random source for nonce generation.
+func Sign(sk *PrivateKey, msg []byte) ([]byte, error) { return SignWithRandom(sk, msg, rand.Reader) }
 func SignWithRandom(sk *PrivateKey, msg []byte, random io.Reader) ([]byte, error) {
-	if sk == nil {
+	if sk == nil || sk.pk == nil {
 		return nil, ErrInvalidPrivateKey
 	}
 	if random == nil {
 		random = rand.Reader
 	}
-
-	// Generate signature
-	sig := make([]byte, SignatureSize)
-	sigLen, err := signMessage(sig, sk, msg, random)
+	sig, err := fndsa.Sign(random, sk.packed[:], fndsa.DOMAIN_NONE, originalFalcon, msg)
 	if err != nil {
 		return nil, err
 	}
-
-	return sig[:sigLen], nil
+	if !Verify(sk.pk, msg, sig) {
+		return nil, ErrInvalidSignature
+	}
+	return sig, nil
 }
-
-// Verify checks whether the signature is valid for the message and public key.
 func Verify(pk *PublicKey, msg, sig []byte) bool {
-	if pk == nil || len(sig) == 0 || len(sig) > SignatureSize {
-		return false
-	}
-
-	return verifySignature(pk, msg, sig)
+	return pk != nil && len(sig) == SignatureSize && fndsa.Verify(pk.packed[:], fndsa.DOMAIN_NONE, originalFalcon, msg, sig)
 }
-
-// Bytes returns the packed representation of the public key.
-func (pk *PublicKey) Bytes() []byte {
-	buf := make([]byte, PublicKeySize)
-	pk.Pack(buf)
-	return buf
-}
-
-// Pack packs the public key into buf.
-// Panics if buf is not of size PublicKeySize.
-func (pk *PublicKey) Pack(buf []byte) {
-	if len(buf) != PublicKeySize {
-		panic("falcon: buf must be of length PublicKeySize")
-	}
-	packPublicKey(buf, pk)
-}
-
-// Unpack unpacks the public key from buf.
-// Returns an error if buf is not a valid public key.
+func (pk *PublicKey) Bytes() []byte   { return append([]byte(nil), pk.packed[:]...) }
+func (pk *PublicKey) Pack(buf []byte) { copy(buf, pk.packed[:]) }
 func (pk *PublicKey) Unpack(buf []byte) error {
-	if len(buf) != PublicKeySize {
+	if len(buf) != PublicKeySize || buf[0] != 9 {
 		return ErrInvalidPublicKey
 	}
-	return unpackPublicKey(pk, buf)
+	// Canonical 14-bit coefficients, each strictly below q.
+	var acc uint32
+	bits := 0
+	i := 1
+	for j := 0; j < N; j++ {
+		for bits < 14 {
+			acc = (acc << 8) | uint32(buf[i])
+			i++
+			bits += 8
+		}
+		bits -= 14
+		if (acc>>bits)&16383 >= Q {
+			return ErrInvalidPublicKey
+		}
+	}
+	copy(pk.packed[:], buf)
+	return nil
 }
-
-// MarshalBinary implements encoding.BinaryMarshaler.
-func (pk *PublicKey) MarshalBinary() ([]byte, error) {
-	return pk.Bytes(), nil
-}
-
-// UnmarshalBinary implements encoding.BinaryUnmarshaler.
-func (pk *PublicKey) UnmarshalBinary(data []byte) error {
-	return pk.Unpack(data)
-}
-
-// Equal returns true if the two public keys are equal.
+func (pk *PublicKey) MarshalBinary() ([]byte, error) { return pk.Bytes(), nil }
+func (pk *PublicKey) UnmarshalBinary(b []byte) error { return pk.Unpack(b) }
 func (pk *PublicKey) Equal(other crypto.PublicKey) bool {
-	otherPK, ok := other.(*PublicKey)
-	if !ok {
-		return false
-	}
-	return pk.h == otherPK.h
+	p, ok := other.(*PublicKey)
+	return ok && subtle.ConstantTimeCompare(pk.packed[:], p.packed[:]) == 1
 }
-
-// Bytes returns the packed representation of the private key.
-func (sk *PrivateKey) Bytes() []byte {
-	buf := make([]byte, PrivateKeySize)
-	sk.Pack(buf)
-	return buf
-}
-
-// Pack packs the private key into buf.
-// Panics if buf is not of size PrivateKeySize.
-func (sk *PrivateKey) Pack(buf []byte) {
-	if len(buf) != PrivateKeySize {
-		panic("falcon: buf must be of length PrivateKeySize")
-	}
-	packPrivateKey(buf, sk)
-}
-
-// Unpack unpacks the private key from buf.
-// Returns an error if buf is not a valid private key.
+func (sk *PrivateKey) Bytes() []byte   { return append([]byte(nil), sk.packed[:]...) }
+func (sk *PrivateKey) Pack(buf []byte) { copy(buf, sk.packed[:]) }
 func (sk *PrivateKey) Unpack(buf []byte) error {
-	if len(buf) != PrivateKeySize {
+	if len(buf) != PrivateKeySize || buf[0] != 0x59 {
 		return ErrInvalidPrivateKey
 	}
-	return unpackPrivateKey(sk, buf)
+	p, err := publicFromPrivate(buf)
+	if err != nil {
+		return err
+	}
+	copy(sk.packed[:], buf)
+	sk.pk = p
+	return nil
 }
-
-// MarshalBinary implements encoding.BinaryMarshaler.
-func (sk *PrivateKey) MarshalBinary() ([]byte, error) {
-	return sk.Bytes(), nil
-}
-
-// UnmarshalBinary implements encoding.BinaryUnmarshaler.
-func (sk *PrivateKey) UnmarshalBinary(data []byte) error {
-	return sk.Unpack(data)
-}
-
-// Public returns the public key corresponding to this private key.
-func (sk *PrivateKey) Public() crypto.PublicKey {
-	return sk.pk
-}
-
-// Sign implements crypto.Signer.
-// opts is ignored as Falcon does not support pre-hashing.
+func (sk *PrivateKey) MarshalBinary() ([]byte, error) { return sk.Bytes(), nil }
+func (sk *PrivateKey) UnmarshalBinary(b []byte) error { return sk.Unpack(b) }
+func (sk *PrivateKey) Public() crypto.PublicKey       { return sk.pk }
 func (sk *PrivateKey) Sign(random io.Reader, msg []byte, opts crypto.SignerOpts) ([]byte, error) {
-	if opts != nil && opts.HashFunc() != crypto.Hash(0) {
-		return nil, errors.New("falcon: cannot sign pre-hashed message")
+	if opts != nil && opts.HashFunc() != 0 {
+		return nil, errors.New("falcon: raw message required")
 	}
 	return SignWithRandom(sk, msg, random)
 }
-
-// Equal returns true if the two private keys are equal.
 func (sk *PrivateKey) Equal(other crypto.PrivateKey) bool {
-	otherSK, ok := other.(*PrivateKey)
-	if !ok {
-		return false
-	}
-	return sk.f == otherSK.f && sk.g == otherSK.g &&
-		sk.F == otherSK.F && sk.G == otherSK.G
+	s, ok := other.(*PrivateKey)
+	return ok && subtle.ConstantTimeCompare(sk.packed[:], s.packed[:]) == 1
 }
-
-// PublicKeyFromBytes parses a public key from its packed representation.
-func PublicKeyFromBytes(data []byte) (*PublicKey, error) {
-	pk := &PublicKey{}
-	if err := pk.Unpack(data); err != nil {
+func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
+	p := &PublicKey{}
+	if err := p.Unpack(b); err != nil {
 		return nil, err
 	}
-	return pk, nil
+	return p, nil
 }
-
-// PrivateKeyFromBytes parses a private key from its packed representation.
-func PrivateKeyFromBytes(data []byte) (*PrivateKey, error) {
-	sk := &PrivateKey{pk: &PublicKey{}}
-	if err := sk.Unpack(data); err != nil {
+func PrivateKeyFromBytes(b []byte) (*PrivateKey, error) {
+	s := &PrivateKey{}
+	if err := s.Unpack(b); err != nil {
 		return nil, err
 	}
-	return sk, nil
+	return s, nil
 }

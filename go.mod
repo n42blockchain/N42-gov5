@@ -222,6 +222,7 @@ require (
 	github.com/pion/transport/v4 v4.1.1 // indirect
 	github.com/pion/transport/v5 v5.1.1 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
+	github.com/pornin/go-fn-dsa v0.1.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20260916203055-22a1a467d9f0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/protolambda/ctxlock v0.2.0 // indirect
