@@ -138,11 +138,12 @@ the same block contents pass through the `ImportSyncedBlock` path above.
 
 ## Remaining failures
 
-State tests: none.
+State tests: none. Blockchain tests: none, since the spec BAL follow-up below.
 
-Blockchain tests, 102 cases, all one gap — the spec EIP-7928 block-level access list is not
-built or verified on import (N42 keeps its own BAL format; the header only carries the
-fixture's `blockAccessListHash`, which goes into the header hash but is not recomputed):
+The 102 blockchain failures of this phase were all one gap: the spec EIP-7928 block-level
+access list was not built or verified on import (N42 keeps its own BAL format; the header only
+carried the fixture's `blockAccessListHash`, which went into the header hash but was not
+recomputed):
 
 | Expected exception | Cases | Where |
 |---|---|---|
@@ -151,17 +152,56 @@ fixture's `blockAccessListHash`, which goes into the header hash but is not reco
 | `INCORRECT_BLOCK_FORMAT` (block accepted) | 2 | eip7928 |
 | `INVALID_BAL_HASH\|INVALID_BLOCK_HASH` | 1 | eip7928 |
 | `INVALID_BLOCK_ACCESS_LIST\|INVALID_GAS_USED` | 1 | eip7928 |
-| `RLP_BLOCK_LIMIT_EXCEEDED` (block accepted) | 1 | `osaka/eip7934 block_at_rlp_size_limit_boundary[max_rlp_size_plus_1_byte]`: the Amsterdam block RLP includes the BAL, which N42 does not carry, so the size is short by its encoding |
+| `RLP_BLOCK_LIMIT_EXCEEDED` (block accepted) | 1 | `osaka/eip7934 block_at_rlp_size_limit_boundary[max_rlp_size_plus_1_byte]`: the EIP-7934 size left out the header's `blockAccessListHash` and `slotNumber` (34 bytes). The BAL itself is not part of the v21.0.2 block RLP |
 
 Other known gaps, not covered by these fixtures:
 
-- `engine_newPayloadV5` / `engine_getPayloadV6` (engine fixtures skipped, see above).
-- `lib/txpool` still applies the Osaka 2^24 per-transaction gas cap under Amsterdam rules
-  instead of `TX_MAX_TOTAL_GAS_LIMIT`.
-- Block production (miner/worker) does not build Amsterdam blocks: no two-dimensional
-  `gasUsed`, no spec BAL / `blockAccessListHash`, no slot number.
-- The legacy `TransitionDb` path keeps unreachable Glamsterdam branches of the old EIP-7778
-  draft; Amsterdam transactions now go through `state_transition_amsterdam.go`.
+- `engine_newPayloadV5` / `engine_getPayloadV6` (engine fixtures skipped, see above), and with
+  them building the spec BAL and slot number into Amsterdam payloads.
+- The eth-el batch replay (`internal/ethel/process.go`) does not build or check the spec BAL.
+  Left out on purpose: its extra state reads could shift the position-consumed witness streams
+  of witness replay and evmsdk.
+
+## Follow-up: spec BAL and Amsterdam block gas (2026-10-29)
+
+| Commit | Subject |
+|---|---|
+| `3bd04949` | fix(txpool): apply the per-transaction gas cap by fork on admission |
+| `afa0e0f9` | fix(api): keep the Amsterdam block gas counters in the payload builder |
+| `16e39664` | fix(miner): build Glamsterdam blocks with the EIP-8037 header gas used |
+| `9c53b2c0` | fix(core): check a Glamsterdam header against the EIP-8037 gas figure |
+| `223ce0ef` | fix(core): keep Glamsterdam blocks off the Block-STM executor |
+| `f19f8ea3` | feat(common): EIP-7928 block access list model and builder |
+| `16f931ca` | feat(state): record the EIP-7928 block access list on IntraBlockState |
+| `945eaed7` | fix(api): count the Amsterdam header fields in the EIP-7934 block size |
+| `f8a4dea9` | fix(vm): reject static-frame writes before touching state under Amsterdam |
+| `6d5ec867` | fix(vm): access the EIP-7702 delegation target once its gas is paid |
+| `fd39661e` | fix(core): no value transfer in Amsterdam request system calls |
+| `9289c436` | feat(api): verify the EIP-7928 block access list of Amsterdam blocks |
+| `130f04c6` | fix(txpool): replace the EIP-7825 cap with the EIP-8037 cap in Glamsterdam |
+| `f1a8d43a` | test(core): close the coreT fixture databases before their directory goes |
+| `c1293637` | fix(ethel): check receipts root and logs bloom on the parallel replay path |
+| `86e7db1e` | refactor(core): drop the dead pre-8037 EIP-7778 branch from TransitionDb |
+
+The access list is recorded only on the engine/newPayload execution path, and only where
+`ChainConfig.UsesEIP7928AccessList` holds (Glamsterdam on a chain that is not N42 native). The
+IntraBlockState hooks cost a nil check when recording is off. N42's own BAL (`IsBAL`,
+`BALCapture`) is unchanged.
+
+Results on the merged code (`86e7db1e`, same tree as the run's `94526bc7`):
+
+| Suite | Pass | Fail | Skip |
+|---|---|---|---|
+| Amsterdam blockchain | 26349 | 0 | 0 |
+| Amsterdam engine | 0 | 0 | 26392 (needs `engine_newPayloadV5`) |
+| Osaka/BPO blockchain | 21667 | 0 | 0 |
+| Osaka/BPO engine | 21686 | 0 | 0 |
+| v5.4.0 stable blockchain | 38702 | 0 | 0 |
+| v5.4.0 stable engine | 38721 | 0 | 0 |
+
+`go test ./tests/` (Amsterdam state tests) passes, and so do the packages `common/bal`,
+`modules/state`, `params`, `internal`, `internal/api`, `internal/vm`, `internal/txspool`,
+`internal/miner` and `lib/txpool`.
 
 ## Changes
 
