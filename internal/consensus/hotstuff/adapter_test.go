@@ -309,30 +309,47 @@ func TestVerifyHeader_ValidQC(t *testing.T) {
 func TestVerifyHeader_MobileAnchorForkShape(t *testing.T) {
 	h := New(&params.HotStuffConfig{}, nil)
 	chain := newMockChainReader()
-	chain.config = &params.ChainConfig{MobileAnchorTime: big.NewInt(100)}
-	parent := &block.Header{Number: uint256.NewInt(0), Time: 90}
+	// MobileAnchor at 50, Glamsterdam at 100: the root (element 24) appears
+	// only once the slot number (element 23) does.
+	chain.config = &params.ChainConfig{MobileAnchorTime: big.NewInt(50), GlamsterdamTime: big.NewInt(100)}
+	parent := &block.Header{Number: uint256.NewInt(0), Time: 40}
 	chain.headers[0] = parent
 
 	extra := make([]byte, extraMinLen)
 	copy(extra[:extraMagicLen], extraMagic[:])
+	slot := uint64(1)
+	root := types.Hash{0x42}
 	child := &block.Header{
 		Number:     uint256.NewInt(1),
 		ParentHash: parent.Hash(),
 		Time:       100,
 		Extra:      extra,
+		SlotNumber: &slot,
 	}
 	if err := h.VerifyHeader(chain, child, false); err == nil {
 		t.Fatal("post-fork header without MobileRegistryRoot was accepted")
 	}
-	root := types.Hash{0x42}
 	child.MobileRegistryRoot = &root
 	if err := h.VerifyHeader(chain, child, false); err != nil {
-		t.Fatalf("post-fork header with MobileRegistryRoot rejected: %v", err)
+		t.Fatalf("post-fork header with slot and MobileRegistryRoot rejected: %v", err)
+	}
+	child.SlotNumber = nil
+	if err := h.VerifyHeader(chain, child, false); err == nil {
+		t.Fatal("post-Glamsterdam header without SlotNumber was accepted")
 	}
 
+	// MobileAnchor active, Glamsterdam not: no root, no slot.
 	child.Time = 99
 	if err := h.VerifyHeader(chain, child, false); err == nil {
-		t.Fatal("pre-fork header with MobileRegistryRoot was accepted")
+		t.Fatal("a MobileRegistryRoot without a slot number was accepted")
+	}
+	child.MobileRegistryRoot = nil
+	if err := h.VerifyHeader(chain, child, false); err != nil {
+		t.Fatalf("pre-Glamsterdam header without root and slot rejected: %v", err)
+	}
+	child.SlotNumber = &slot
+	if err := h.VerifyHeader(chain, child, false); err == nil {
+		t.Fatal("pre-Glamsterdam header with SlotNumber was accepted")
 	}
 }
 
