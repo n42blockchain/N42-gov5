@@ -88,14 +88,15 @@ func blobsBundleV2(bundle *BlobsBundleV1) (*BlobsBundleV2, error) {
 //
 // Per spec the response is all or nothing: if any requested blob is missing,
 // or only held with a version-0 (blob proof) sidecar, the result is null.
-// Before Osaka the method also answers null, as geth does.
+// Before Osaka the method also answers null, as geth does. Amsterdam keeps
+// the Osaka cell proofs.
 func (e *EngineAPIv4) GetBlobsV2(ctx context.Context, versionedHashes []types.Hash) ([]*BlobAndProofV2, error) {
 	if len(versionedHashes) > maxGetBlobsRequest {
 		return nil, &engineTooLargeRequestError{msg: fmt.Sprintf("requested blob count too large: %d", len(versionedHashes))}
 	}
 	head := blockHeader(e.v1.currentHead())
 	if head == nil || head.Number64() == nil ||
-		!engineForkIn(e.v1.chainConfig(), head.Number64().Uint64(), head.Time, engineForkOsaka) {
+		!engineForkIn(e.v1.chainConfig(), head.Number64().Uint64(), head.Time, engineForkOsaka, engineForkAmsterdam) {
 		return nil, nil
 	}
 	wanted := make(map[types.Hash]*BlobAndProofV2, len(versionedHashes))

@@ -16,6 +16,7 @@ const (
 	engineForkCancun
 	engineForkPrague
 	engineForkOsaka
+	engineForkAmsterdam
 )
 
 // engineLatestFork returns the latest Engine API generation active at the
@@ -25,8 +26,14 @@ const (
 // PragueTime (PectraTime is nil on Ethereum mainnet), N42 native chains
 // through PectraTime. Osaka covers the BPO forks after it, which change only
 // blob parameters and keep the Osaka methods.
+//
+// Amsterdam is Glamsterdam on a chain that commits to the EIP-7928 block
+// access list, which Amsterdam payloads carry; N42 native chains keep the
+// Osaka methods.
 func engineLatestFork(cfg *params.ChainConfig, number, timestamp uint64) engineFork {
 	switch {
+	case cfg.UsesEIP7928AccessList(timestamp):
+		return engineForkAmsterdam
 	case cfg.IsOsaka(timestamp):
 		return engineForkOsaka
 	case cfg.IsPrague(timestamp) || cfg.IsPectra(timestamp):

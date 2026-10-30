@@ -375,6 +375,9 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	if cfg := e.v1().chainConfig(); cfg != nil && !cfg.IsCancunAt(nextNumber, uint64(attrs.Timestamp)) {
 		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV3 called for pre-Cancun timestamp, use forkchoiceUpdatedV2"}
 	}
+	if cfg := e.v1().chainConfig(); cfg != nil && engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) >= engineForkAmsterdam {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV3 called for Amsterdam timestamp, use forkchoiceUpdatedV4"}
+	}
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
