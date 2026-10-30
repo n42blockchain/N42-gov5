@@ -229,6 +229,10 @@ type IntraBlockState struct {
 	// leaves and a wrong state root). Only populated when a RootComputer is set
 	// and the reader supports enumeration; the legacy Keccak path is unaffected.
 	wipedStorageSlots map[types.Address]map[types.Hash]uint256.Int
+
+	// bal records the EIP-7928 block access list when enabled
+	// (EnableBlockAccessList); nil otherwise.
+	bal *balTracker
 }
 
 // New creates a new IntraBlockState with the given state reader.
@@ -558,6 +562,7 @@ func (sdb *IntraBlockState) Reset() {
 		sdb.accessList.Reset()
 	}
 	sdb.balanceInc = make(map[types.Address]*BalanceIncrease)
+	sdb.bal = nil
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -631,6 +636,7 @@ func (sdb *IntraBlockState) Exist(addr types.Address) bool {
 // that can escape EVM snapshot/revert boundaries.
 // Used by gas cost calculations which must be side-effect-free.
 func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
+	sdb.balAccountAccess(addr)
 	// Check live objects.
 	if obj := sdb.stateObjects[addr]; obj != nil {
 		return !obj.deleted
@@ -860,6 +866,7 @@ func (sdb *IntraBlockState) GetCodeHash(addr types.Address) types.Hash {
 
 // GetState retrieves a value from the given account's storage trie.
 func (sdb *IntraBlockState) GetState(addr types.Address, key *types.Hash, value *uint256.Int) {
+	sdb.balSlotAccess(addr, key)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		stateObject.GetState(key, value)
@@ -870,6 +877,7 @@ func (sdb *IntraBlockState) GetState(addr types.Address, key *types.Hash, value 
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
 func (sdb *IntraBlockState) GetCommittedState(addr types.Address, key *types.Hash, value *uint256.Int) {
+	sdb.balSlotAccess(addr, key)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		stateObject.GetCommittedState(key, value)
@@ -898,6 +906,7 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 		needAccount = true
 	}
 	if !needAccount {
+		sdb.balAccountAccess(addr)
 		sdb.journal.push(balanceIncrease{
 			account:  &addr,
 			increase: *amount,
@@ -957,6 +966,7 @@ func (sdb *IntraBlockState) SetCode(addr types.Address, code []byte) {
 
 // SetState sets a storage value for the given address.
 func (sdb *IntraBlockState) SetState(addr types.Address, key *types.Hash, value uint256.Int) {
+	sdb.balSlotAccess(addr, key)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetState(key, value)
@@ -979,6 +989,7 @@ func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
 }
 
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
+	sdb.balAccountAccess(addr)
 	// Prefer 'live' objects; the last one resolved is checked before the map.
 	if obj := sdb.lastObj; obj != nil && sdb.lastAddr == addr {
 		sdb.foldBalanceIncrease(addr, obj)
