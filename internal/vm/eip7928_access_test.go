@@ -120,3 +120,23 @@ func TestAmsterdamStaticSelfdestructDoesNotAccessBeneficiary(t *testing.T) {
 		t.Fatalf("beneficiary of a static SELFDESTRUCT is in the access list: %+v", list)
 	}
 }
+
+// The delegation target of a CALL that fails on the sender's balance has
+// passed its gas check and is in the access list.
+func TestAmsterdamDelegationTargetAccessedOnFailedCall(t *testing.T) {
+	delegated := bal7928Target
+	target := types.HexToAddress("0x5000000000000000000000000000000000000005")
+	list := bal7928Run(t, callTargetWithValue(), nil, func(ibs *state.IntraBlockState) {
+		ibs.CreateAccount(delegated, false)
+		ibs.SetCode(delegated, append([]byte{0xef, 0x01, 0x00}, target[:]...))
+	})
+	if bal7928Account(list, delegated) == nil {
+		t.Fatalf("delegated callee missing: %+v", list)
+	}
+	if bal7928Account(list, target) == nil {
+		t.Fatalf("delegation target missing: %+v", list)
+	}
+	if acc := bal7928Account(list, bal7928Outer); acc == nil || len(acc.BalanceChanges) != 0 {
+		t.Fatalf("outer frame: %+v", acc)
+	}
+}
