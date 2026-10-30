@@ -158,8 +158,7 @@ func TestEngineForkchoiceUpdatedV3BuildsPraguePayloadForGetPayloadV4(t *testing.
 }
 
 // engine_exchangeCapabilities must list only methods the node serves, must not
-// list itself, and must not advertise the N42-specific forkchoiceUpdatedV4 that
-// shares its name with the Amsterdam method of a different shape.
+// list itself, and must list the Amsterdam methods.
 func TestEngineExchangeCapabilitiesListsOnlyServedStandardMethods(t *testing.T) {
 	t.Parallel()
 
@@ -181,11 +180,10 @@ func TestEngineExchangeCapabilitiesListsOnlyServedStandardMethods(t *testing.T) 
 		seen[m] = true
 	}
 	require.False(t, seen["engine_exchangeCapabilities"])
-	require.False(t, seen["engine_forkchoiceUpdatedV4"])
 	for _, m := range []string{
-		"engine_newPayloadV3", "engine_newPayloadV4",
-		"engine_getPayloadV3", "engine_getPayloadV4",
-		"engine_forkchoiceUpdatedV3",
+		"engine_newPayloadV3", "engine_newPayloadV4", "engine_newPayloadV5",
+		"engine_getPayloadV3", "engine_getPayloadV4", "engine_getPayloadV6",
+		"engine_forkchoiceUpdatedV3", "engine_forkchoiceUpdatedV4",
 		"engine_getPayloadBodiesByHashV1", "engine_getPayloadBodiesByRangeV1",
 		"engine_getBlobsV1",
 	} {

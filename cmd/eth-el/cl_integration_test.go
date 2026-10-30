@@ -226,12 +226,9 @@ func TestCL_ExchangeCapabilities(t *testing.T) {
 			t.Errorf("exchangeCapabilities: missing %q", m)
 		}
 	}
-	// The spec forbids listing exchangeCapabilities itself, and N42's own
-	// forkchoiceUpdatedV4 is not the Amsterdam method of that name.
-	for _, m := range []string{"engine_exchangeCapabilities", "engine_forkchoiceUpdatedV4"} {
-		if have[m] {
-			t.Errorf("exchangeCapabilities: must not list %q", m)
-		}
+	// The spec forbids listing exchangeCapabilities itself.
+	if have["engine_exchangeCapabilities"] {
+		t.Errorf("exchangeCapabilities: must not list %q", "engine_exchangeCapabilities")
 	}
 }
 
