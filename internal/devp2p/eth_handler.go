@@ -406,7 +406,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 		if err != nil {
 			return cleanExit(err)
 		}
-		if err := h.handleMessage(peer, rw, msg); err != nil {
+		if err := h.handleMessage(peer, rw, msg, version); err != nil {
 			log.Debug("devp2p message handling error (ignored — stub never disconnects on a message)",
 				"peer", peer.ID().String()[:16], "msg", msg.Code, "err", err)
 			// keep the peer
@@ -415,7 +415,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 }
 
 // handleMessage routes an incoming message to the appropriate handler.
-func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
+func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, msg gethp2p.Msg, version uint) error {
 	defer msg.Discard()
 	peerID := peer.ID().String()
 
@@ -500,7 +500,7 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		return h.handleGetPooledTransactions(rw, msg)
 
 	case 15:
-		return nil // TODO: serve from freezer
+		return h.handleGetReceipts(rw, msg, version)
 
 	case 10:
 		var packet pooledTransactionsPacket

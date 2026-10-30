@@ -407,6 +407,33 @@ func (p *chaindataProvider) GetHeaderByHash(hash types.Hash) (*block.Header, err
 	return rawdb.ReadHeader(tx, storedHash, *num), nil
 }
 
+// GetReceiptsByHash returns the receipts of a canonical block for
+// GetReceipts, with their transaction types set, or nil when the block or
+// its receipts are not held. A block without transactions has none.
+func (p *chaindataProvider) GetReceiptsByHash(hash types.Hash) (block.Receipts, error) {
+	tx, err := p.db.BeginRo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	number := rawdb.ReadHeaderNumber(tx, hash)
+	if number == nil {
+		return nil, nil
+	}
+	storedHash, err := rawdb.ReadCanonicalHash(tx, *number)
+	if err != nil || storedHash != hash {
+		return nil, err
+	}
+	b := rawdb.ReadBlock(tx, hash, *number)
+	if b == nil {
+		return nil, nil
+	}
+	if len(b.Transactions()) == 0 {
+		return block.Receipts{}, nil
+	}
+	return rawdb.ReadReceipts(tx, b, nil), nil
+}
+
 func (p *chaindataProvider) GetBlockBodyByHash(hash types.Hash) (*devp2p.BlockBody, error) {
 	tx, err := p.db.BeginRo(context.Background())
 	if err != nil {

@@ -54,7 +54,7 @@ func dispatchSendMessage(t *testing.T, h *EthHandler, code uint64, payload inter
 		t.Fatal(err)
 	}
 	msg := gethp2p.Msg{Code: code, Size: uint32(len(encoded)), Payload: bytes.NewReader(encoded)}
-	return h.handleMessage(dispatchTestPeer(), nil, msg)
+	return h.handleMessage(dispatchTestPeer(), nil, msg, 69)
 }
 
 func TestHandleMessageNewBlockHashesRoutesToResponseHandler(t *testing.T) {
@@ -122,9 +122,6 @@ func TestHandleMessageNewBlockAndUnknownCodesAreIgnored(t *testing.T) {
 	if err := dispatchSendMessage(t, h, 7, struct{}{}); err != nil {
 		t.Fatalf("NewBlock (code 7): %v", err)
 	}
-	if err := dispatchSendMessage(t, h, 15, struct{}{}); err != nil {
-		t.Fatalf("code 15: %v", err)
-	}
 	if err := dispatchSendMessage(t, h, 17, struct{}{}); err != nil {
 		t.Fatalf("code 17 (range update): %v", err)
 	}
@@ -137,7 +134,7 @@ func TestHandleMessageDecodeErrorsAreSurfaced(t *testing.T) {
 	h := &EthHandler{}
 	// Code 1 expects an RLP list of NewBlockHashesEntry; a bare integer fails to decode.
 	msg := gethp2p.Msg{Code: 1, Size: 1, Payload: bytes.NewReader([]byte{0x01})}
-	if err := h.handleMessage(dispatchTestPeer(), nil, msg); err == nil {
+	if err := h.handleMessage(dispatchTestPeer(), nil, msg, 69); err == nil {
 		t.Fatal("expected decode error for malformed NewBlockHashes payload")
 	}
 }
