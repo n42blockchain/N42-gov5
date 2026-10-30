@@ -246,6 +246,9 @@ func makeCallVariantGas8037(execFn callExecutionGasFunc, newAccountState bool) g
 			if !contract.UseGas(delegCost) {
 				return 0, ErrOutOfGas
 			}
+			// The target has passed its gas check: it is accessed (EIP-7928)
+			// even if the call then fails on the sender balance or depth.
+			ibs.GetCode(target)
 		}
 		if transfers && ibs.Empty(addr) {
 			if !contract.chargeState(newAccountState8037()) {
