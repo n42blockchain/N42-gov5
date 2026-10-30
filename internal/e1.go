@@ -298,6 +298,24 @@ func (bc *BlockChain) e1LightStep(list []*lagQueued, committedNum uint64) bool {
 	return false
 }
 
+// e1LightQueue is every import path of a light node other than its lag
+// executor (fetch-on-miss, gossip, the future queue, the miner's parent
+// import): the blocks go to the lag executor, which stores them with the
+// executor's result and runs the import hooks. Executing one here would
+// run on state this node never applied (2026-10-30 E1N26 B1: a fetched
+// block hit a QMDB discontinuity on a light node). It reports every block
+// as taken.
+func (bc *BlockChain) e1LightQueue(chain []block.IBlock) int {
+	for _, ib := range chain {
+		b, ok := ib.(*block.Block)
+		if !ok || bc.e1HasResult(b.Hash()) {
+			continue
+		}
+		bc.EnqueueLagImport(b)
+	}
+	return len(chain)
+}
+
 // e1HasResult reports whether hash's result is stored here.
 func (bc *BlockChain) e1HasResult(hash types.Hash) bool {
 	ok := false

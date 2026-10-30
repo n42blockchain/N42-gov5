@@ -2147,6 +2147,9 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 	if bc.insertStopped() {
 		return 0, nil
 	}
+	if bc.E1Light() {
+		return bc.e1LightQueue(chain), nil
+	}
 	// Only the child of the block whose write is in flight imports while
 	// that write runs; everything else sees the durable state.
 	if bc.lagWrite.inflight != nil && !bc.lagWriteFastCandidate(chain, lag) {

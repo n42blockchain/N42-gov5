@@ -107,7 +107,15 @@ func TestE1LightFollowsExecutor(t *testing.T) {
 			require.NoError(t, err)
 			return ready
 		}, 30*time.Second, time.Millisecond, "light gate for block %d", i+1)
-		check(light.bc, b)
+		if i == blocks-1 {
+			// The last block reaches the light node only through an import
+			// path (fetch-on-miss after a missed push): it is stored with
+			// the executor's result too, never executed here.
+			_, err := light.bc.InsertChain([]block.IBlock{overWire(t, b)})
+			require.NoError(t, err)
+		} else {
+			check(light.bc, b)
+		}
 		chain = append(chain, b)
 		parent = b.Header().(*block.Header)
 	}
