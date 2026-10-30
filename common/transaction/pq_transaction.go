@@ -40,7 +40,7 @@ const PostQuantumTxType = 0x05
 
 // Post-quantum signature algorithm identifiers
 const (
-	// PQAlgoFalcon512 uses Falcon-512 signatures (NIST standard, fast, 666B sig)
+	// PQAlgoFalcon512 uses padded Falcon-512 signatures (experimental, 666B sig)
 	PQAlgoFalcon512 uint8 = 0
 
 	// PQAlgoSQIsign uses SQIsign-I signatures (compact, 177B sig, slower)
@@ -58,7 +58,7 @@ const (
 	// Falcon-512 sizes
 	Falcon512PublicKeySize  = 897
 	Falcon512PrivateKeySize = 1281
-	Falcon512SignatureSize  = 690 // Maximum size
+	Falcon512SignatureSize  = 666 // Padded Falcon-512 wire encoding
 
 	// SQIsign-I sizes
 	SQIsignPublicKeySize  = 64
@@ -81,6 +81,7 @@ const (
 
 // PostQuantumTx represents a post-quantum secure transaction.
 type PostQuantumTx struct {
+	fromCache *types.Address // Untrusted until the active signer verifies it.
 	ChainID   *uint256.Int   // Chain ID
 	Nonce     uint64         // Sender nonce
 	GasTipCap *uint256.Int   // Max priority fee per gas (EIP-1559)
@@ -110,6 +111,7 @@ func (tx *PostQuantumTx) txType() byte { return PostQuantumTxType }
 func (tx *PostQuantumTx) copy() TxData {
 	cpy := &PostQuantumTx{
 		Nonce:      tx.Nonce,
+		fromCache:  copyAddressPtr(tx.fromCache),
 		To:         copyAddressPtr(tx.To),
 		Data:       make([]byte, len(tx.Data)),
 		Gas:        tx.Gas,
@@ -175,7 +177,7 @@ func (tx *PostQuantumTx) gasFeeCap() *uint256.Int     { return tx.GasFeeCap }
 func (tx *PostQuantumTx) value() *uint256.Int         { return tx.Value }
 func (tx *PostQuantumTx) nonce() uint64               { return tx.Nonce }
 func (tx *PostQuantumTx) to() *types.Address          { return tx.To }
-func (tx *PostQuantumTx) from() *types.Address        { return nil } // Computed from PQ signature
+func (tx *PostQuantumTx) from() *types.Address        { return tx.fromCache }
 func (tx *PostQuantumTx) sign() []byte                { return tx.PQSignature }
 
 // hash computes the transaction hash for signing and identification

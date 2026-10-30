@@ -109,6 +109,9 @@ func MakeSignerWithTimestamp(config *params.ChainConfig, blockNumber *big.Int, t
 		blockNum = blockNumber.Uint64()
 	}
 	rules := config.RulesWithTimestamp(blockNum, timestamp)
+	if rules.IsLondon && config.IsPQTx(blockNumber) {
+		return NewFalconTransactionSigner(config.ChainID)
+	}
 	switch {
 	case rules.IsLondon:
 		if config.ChainID == nil {
