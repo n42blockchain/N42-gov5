@@ -89,6 +89,11 @@ func enable8037And8038(jt *JumpTable) {
 // access, STORAGE_WRITE on the first change of a slot, and state gas for a
 // slot created from zero, refilled inline when the slot is reset to zero.
 func gasSStore8037(evm VMInterpreter, contract *Contract, stk *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	// A static frame is rejected before the slot is read, as go-ethereum
+	// does, so the slot stays out of the EIP-7928 block access list.
+	if interpreterReadOnly(evm) {
+		return 0, ErrWriteProtection
+	}
 	if contract.Gas <= params.SstoreSentryGasEIP2200 {
 		return 0, errors.New("not enough gas for reentrancy sentry")
 	}
@@ -278,9 +283,27 @@ var (
 )
 
 // gasCall8037 prices CALL. A value transfer in a static context is
-// rejected by opCall, which halts the frame; the charges made here are then
-// burned or refilled with it.
-var gasCall8037 = innerGasCall8037
+// rejected before any account is touched, as go-ethereum does: the frame
+// halts either way, but the EIP-7702 delegation lookup reads the callee's
+// code, which would put it in the EIP-7928 block access list.
+func gasCall8037(evm VMInterpreter, contract *Contract, stk *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	if !stk.Back(2).IsZero() && interpreterReadOnly(evm) {
+		return 0, ErrWriteProtection
+	}
+	return innerGasCall8037(evm, contract, stk, mem, memorySize)
+}
+
+// interpreterReadOnly reports whether the running frame is static. An EVM
+// that does not expose its interpreter reads as not static, leaving the
+// rejection to the opcode.
+func interpreterReadOnly(evm VMInterpreter) bool {
+	if e, ok := evm.(interface{ Interpreter() Interpreter }); ok {
+		if in, ok := e.Interpreter().(interface{ getReadonly() bool }); ok {
+			return in.getReadonly()
+		}
+	}
+	return false
+}
 
 // gasCreate8037 and gasCreate2_8037 are the CREATE/CREATE2 dynamic gas:
 // memory and init-code words (the EIP-7954 cap applies). The new account's
@@ -300,6 +323,11 @@ func gasSelfdestruct8037(evm VMInterpreter, contract *Contract, stk *stack.Stack
 		ibs     = evm.IntraBlockState()
 		address = types.Address(stk.Peek().Bytes20())
 	)
+	// Rejected in a static frame before the beneficiary is touched, so it
+	// stays out of the EIP-7928 block access list.
+	if interpreterReadOnly(evm) {
+		return 0, ErrWriteProtection
+	}
 	if !ibs.AddressInAccessList(address) {
 		ibs.AddAddressToAccessList(address)
 		gas = coldAccountAccess8038
