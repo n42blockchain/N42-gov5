@@ -252,11 +252,18 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 		usedGas := uint64(0)
 		receipts := make(block.Receipts, 0, len(concreteBlock.Transactions()))
 		cfg := e.chainConfig()
+		// EIP-7928 (Amsterdam): rebuild the block access list to check it
+		// against the header, as the state adapter does.
+		specBAL := cfg.UsesEIP7928AccessList(header.Time)
+		if specBAL {
+			ibs.EnableBlockAccessList()
+		}
 		if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, cfg, ibs, header, e.api.api.engine); err != nil {
 			return err
 		}
 
 		for i, txn := range concreteBlock.Transactions() {
+			ibs.SetBlockAccessIndex(uint64(i) + 1)
 			ibs.Prepare(txn.Hash(), concreteBlock.Hash(), i)
 			receipt, _, err := internalcore.ApplyTransaction(cfg, blockHashFunc, e.api.api.engine, nil, gasPool, ibs, stateWriter, header, txn, &usedGas, vm2.Config{})
 			if err != nil {
@@ -273,10 +280,16 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 		if err := finalizeExecutionStateChanges(cfg, header, ibs); err != nil {
 			return err
 		}
+		ibs.SetBlockAccessIndex(uint64(len(concreteBlock.Transactions())) + 1)
 		applyExecutionWithdrawals(ibs, withdrawals)
 		actualRequests, err := internalcore.ProcessExecutionBlockEnd(receipts, cfg, ibs, header, e.api.api.engine)
 		if err != nil {
 			return err
+		}
+		if specBAL {
+			if err := validateBlockAccessList(ibs.BlockAccessList(), header); err != nil {
+				return err
+			}
 		}
 		var rules *params.Rules
 		if cfg != nil {
