@@ -694,17 +694,6 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		ret, st.gas, vmerr = st.evm.Call(sender, st.to(), st.data, st.gas, st.value, bailout)
 	}
 
-	// EIP-7778 (Amsterdam): block-level gas accounting excludes refunds — the
-	// block consumes max(pre-refund gas used, calldata floor) even though the
-	// sender's bill below still benefits from the refund.
-	blockGasUsed := uint64(0)
-	if rules.IsGlamsterdam {
-		blockGasUsed = st.gasUsed()
-		if floorDataGas > blockGasUsed {
-			blockGasUsed = floorDataGas
-		}
-	}
-
 	if refunds {
 		// Dump refund state when DBG_SSTORE targets this block.
 		if dbgRefundBlock > 0 && st.evm.Context().BlockNumber == dbgRefundBlock {
@@ -714,9 +703,9 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 			}
 		}
 		if rules.IsLondon {
-			st.refundGas(params.RefundQuotientEIP3529, floorDataGas, blockGasUsed)
+			st.refundGas(params.RefundQuotientEIP3529, floorDataGas)
 		} else {
-			st.refundGas(params.RefundQuotient, floorDataGas, blockGasUsed)
+			st.refundGas(params.RefundQuotient, floorDataGas)
 		}
 	} else if rules.IsPrague && floorDataGas > 0 {
 		if gasUsed := st.gasUsed(); gasUsed < floorDataGas {
@@ -745,22 +734,17 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		st.creditFee(burntContractAddress, burnAmount)
 	}
 
-	if blockGasUsed == 0 {
-		blockGasUsed = st.gasUsed()
-	}
 	return &ExecutionResult{
 		UsedGas:      st.gasUsed(),
-		BlockGasUsed: blockGasUsed,
+		BlockGasUsed: st.gasUsed(),
 		Err:          vmerr,
 		ReturnData:   ret,
 	}, nil
 }
 
 // refundGas returns unused gas to the sender and the block gas pool.
-// blockGasUsed is non-zero only under EIP-7778 (Amsterdam): the block
-// pool is then credited with initialGas−blockGasUsed — refunds lower the
-// sender's bill but never make room for more block gas.
-func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64, blockGasUsed uint64) {
+// Glamsterdam blocks settle gas in transitionAmsterdam instead.
+func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64) {
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
@@ -775,11 +759,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64,
 
 	remaining := new(uint256.Int).Mul(new(uint256.Int).SetUint64(st.gas), st.gasPrice)
 	st.state.AddBalance(st.msg.From(), remaining)
-	poolCredit := st.gas
-	if blockGasUsed > 0 {
-		poolCredit = st.initialGas - blockGasUsed
-	}
-	st.gp.AddGas(poolCredit)
+	st.gp.AddGas(st.gas)
 }
 
 func (st *StateTransition) gasUsed() uint64 {
