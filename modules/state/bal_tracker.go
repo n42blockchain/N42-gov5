@@ -80,6 +80,17 @@ func (sdb *IntraBlockState) SetBlockAccessIndex(index uint64) {
 	sdb.bal.index = index
 }
 
+// DiscardBlockAccessIndex forgets the accesses noted in the current index,
+// keeping the index. A block builder calls it after reverting a transaction
+// it leaves out of the block, so the next transaction starts the index
+// afresh. No-op unless recording is enabled.
+func (sdb *IntraBlockState) DiscardBlockAccessIndex() {
+	if t := sdb.bal; t != nil {
+		clear(t.accounts)
+		clear(t.slots)
+	}
+}
+
 // BlockAccessList ends the current index and returns the block's access list,
 // or nil when recording is not enabled.
 func (sdb *IntraBlockState) BlockAccessList() accesslist.BlockAccessList {
