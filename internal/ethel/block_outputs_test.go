@@ -5,6 +5,7 @@ package ethel
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 
 	iinternal "github.com/n42blockchain/N42/internal"
@@ -67,7 +69,8 @@ func buildTamperedFreezer(t *testing.T, dir string, tamper func(*block.Header)) 
 }
 
 // Batch replay checks a block's receipts root and logs bloom against its
-// header, as geth's ValidateState does, not only its gas used.
+// header, as geth's ValidateState does, not only its gas used. The
+// Block-STM path (--parallel-evm) checks them too.
 func TestExecutorRejectsReceiptsRootAndBloomMismatch(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -78,23 +81,25 @@ func TestExecutorRejectsReceiptsRootAndBloomMismatch(t *testing.T) {
 		{"receipts root", func(h *block.Header) { h.ReceiptHash = types.Hash{0xde, 0xad} }, "receipts root mismatch"},
 		{"logs bloom", func(h *block.Header) { h.Bloom[7] = 0x10 }, "logs bloom mismatch"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fz := buildTamperedFreezer(t, t.TempDir(), tc.tamper)
-			defer fz.Close()
-			chainCfg := byzantiumFromGenesis()
-			executor := NewExecutor(fz, memdb.NewTestDB(t), chainCfg, NewEthReplayEngine(chainCfg),
-				ExecutorConfig{StartBlock: 0, EndBlock: 2, CommitInterval: 1}, nil)
-			err := executor.Run(context.Background())
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("Run: %v", err)
+		for _, parallel := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/parallel=%v", tc.name, parallel), func(t *testing.T) {
+				fz := buildTamperedFreezer(t, t.TempDir(), tc.tamper)
+				defer fz.Close()
+				chainCfg := byzantiumFromGenesis()
+				executor := NewExecutor(fz, memdb.NewTestDB(t), chainCfg, NewEthReplayEngine(chainCfg),
+					ExecutorConfig{StartBlock: 0, EndBlock: 2, CommitInterval: 1, ParallelEVM: parallel, ParallelWorkers: 2}, nil)
+				err := executor.Run(context.Background())
+				if tc.wantErr == "" {
+					if err != nil {
+						t.Fatalf("Run: %v", err)
+					}
+					return
 				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Run err = %v, want %q", err, tc.wantErr)
-			}
-		})
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Run err = %v, want %q", err, tc.wantErr)
+				}
+			})
+		}
 	}
 }
 
@@ -171,5 +176,40 @@ func TestValidateBlockOutputs(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// parallelReceipt rebuilds from a Block-STM output the receipt the
+// sequential path produces, so both commit to the same receipts root.
+func TestParallelReceiptMatchesSequential(t *testing.T) {
+	logs := []*block.Log{
+		{Address: types.Address{0x42}, Topics: []types.Hash{{1}, {2}}, Data: []byte{1, 2}},
+		{Address: types.Address{0x43}},
+	}
+	seq := block.Receipts{
+		{Type: 2, Status: block.ReceiptStatusSuccessful, CumulativeGasUsed: 50_000, Logs: logs},
+		{Type: 0, Status: block.ReceiptStatusFailed, CumulativeGasUsed: 71_000},
+	}
+	for _, r := range seq {
+		r.Bloom = block.CreateBloom(block.Receipts{r})
+	}
+	outputs := []state.TxOutput{
+		{GasUsed: 50_000, Status: 1, Logs: []state.Log{
+			{Address: logs[0].Address, Topics: logs[0].Topics, Data: logs[0].Data},
+			{Address: logs[1].Address},
+		}},
+		{GasUsed: 21_000, Status: 0},
+	}
+	var par block.Receipts
+	var cumulative uint64
+	for i, out := range outputs {
+		cumulative += out.GasUsed
+		par = append(par, parallelReceipt(seq[i].Type, out, cumulative))
+	}
+	if got, want := EthReceiptHash(par), EthReceiptHash(seq); got != want {
+		t.Fatalf("receipts root %s, want %s", got.Hex(), want.Hex())
+	}
+	if got, want := block.CreateBloom(par), block.CreateBloom(seq); got != want {
+		t.Fatal("logs bloom differs")
 	}
 }

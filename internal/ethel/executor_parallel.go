@@ -107,6 +107,7 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 	}
 
 	totalGas := uint64(0)
+	var receipts []*block.Receipt
 	if len(body.Transactions) > 0 {
 		numWorkers := e.cfg.ParallelWorkers
 		if numWorkers <= 0 {
@@ -161,8 +162,10 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 			break
 		}
 
-		for _, out := range outputs {
+		receipts = make([]*block.Receipt, len(outputs))
+		for i, out := range outputs {
 			totalGas += out.GasUsed
+			receipts[i] = parallelReceipt(body.Transactions[i].Type(), out, totalGas)
 		}
 		// Gas sanity checks BEFORE we flush writes. If we're wrong about
 		// gas, the block state is already inconsistent — bail before
@@ -209,6 +212,15 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 		return fmt.Errorf("block %d: --parallel-evm does not yet support post-Prague receipts for ProcessExecutionBlockEnd",
 			blockNum)
 	}
+	// The logs bloom and receipts root, as the sequential path checks them.
+	if traceTxHashEnv == "" {
+		if err := ValidateBlockOutputs(e.chainCfg, header, &BlockResult{Receipts: receipts}); err != nil {
+			if !e.cfg.SkipErrors {
+				return fmt.Errorf("block %d (parallel): %w", blockNum, err)
+			}
+			log.Warn("Block output mismatch (skipped, parallel)", "block", blockNum, "err", err)
+		}
+	}
 	if _, err := iinternal.ProcessExecutionBlockEnd(nil, e.chainCfg, ibsPost, header, e.engine); err != nil {
 		return fmt.Errorf("ProcessExecutionBlockEnd: %w", err)
 	}
@@ -234,4 +246,15 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 		gasUsed: totalGas,
 	})
 	return nil
+}
+
+// parallelReceipt builds the consensus fields of a transaction's receipt
+// from its Block-STM output; cumulative includes the transaction's own gas.
+func parallelReceipt(txType uint8, out state.TxOutput, cumulative uint64) *block.Receipt {
+	r := &block.Receipt{Type: txType, Status: uint64(out.Status), CumulativeGasUsed: cumulative, GasUsed: out.GasUsed}
+	for _, l := range out.Logs {
+		r.Logs = append(r.Logs, &block.Log{Address: l.Address, Topics: l.Topics, Data: l.Data})
+	}
+	r.Bloom = block.CreateBloom(block.Receipts{r})
+	return r
 }
