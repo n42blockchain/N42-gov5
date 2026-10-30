@@ -91,7 +91,8 @@ type ConsolidationRequest struct {
 	TargetPubkey  hexutil.Bytes `json:"targetPubkey"`  // Target validator BLS public key
 }
 
-// PayloadAttributesV4 extends PayloadAttributesV3 with Pectra fields
+// PayloadAttributesV4 extends PayloadAttributesV3 with the Amsterdam slot
+// number, and with an N42 Pectra field.
 type PayloadAttributesV4 struct {
 	Timestamp             hexutil.Uint64 `json:"timestamp"`
 	PrevRandao            types.Hash     `json:"prevRandao"`
@@ -101,6 +102,9 @@ type PayloadAttributesV4 struct {
 
 	// Pectra additions
 	TargetBlobsPerBlock *hexutil.Uint64 `json:"targetBlobsPerBlock,omitempty"` // EIP-7840
+
+	// Amsterdam additions
+	SlotNumber *hexutil.Uint64 `json:"slotNumber,omitempty"` // EIP-7843
 }
 
 // GetPayloadResponseV4 is the response for engine_getPayloadV4
@@ -350,8 +354,12 @@ func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*G
 	return nil, errPayloadNotFound
 }
 
-// ForkchoiceUpdatedV4 updates the fork choice with Pectra support
-// engine_forkchoiceUpdatedV4
+// ForkchoiceUpdatedV4 updates the fork choice and starts Amsterdam builds,
+// whose attributes carry the slot number; the payload is fetched with
+// getPayloadV6. engine_forkchoiceUpdatedV4
+//
+// N42 also accepts Prague and Osaka attributes here and builds a payload for
+// getPayloadV4/V5, as before Amsterdam had a forkchoiceUpdatedV4.
 func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	ctx context.Context,
 	state *ForkchoiceStateV1,
@@ -390,10 +398,12 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if head != nil && head.Number64() != nil {
 		nextNumber = head.Number64().Uint64() + 1
 	}
-	// This N42 variant builds Prague-shaped payloads (execution requests)
-	// that only getPayloadV4 returns. It is not the Amsterdam
-	// forkchoiceUpdatedV4 and is not advertised in exchangeCapabilities;
-	// consensus clients build with forkchoiceUpdatedV3.
+	if cfg := e.v1.chainConfig(); cfg != nil && engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) == engineForkAmsterdam {
+		if attrs.SlotNumber == nil {
+			return nil, &engineInvalidPayloadAttributesError{msg: "missing slot number"}
+		}
+		return e.buildAndStorePayloadV4(head, headHash, attrs), nil
+	}
 	if !engineForkIn(e.v1.chainConfig(), nextNumber, uint64(attrs.Timestamp), engineForkPrague, engineForkOsaka) {
 		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV4 called for pre-Prague timestamp, use forkchoiceUpdatedV3"}
 	}
@@ -402,8 +412,18 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 
 // buildAndStorePayloadV4 builds a Prague+ payload on head, stores every
 // payload representation under its id and returns the forkchoice response.
+// An Amsterdam payload also keeps its block access list and slot number.
 func (e *EngineAPIv4) buildAndStorePayloadV4(head block.IBlock, headHash types.Hash, attrs *PayloadAttributesV4) *ForkchoiceUpdatedResponseV3 {
-	payload, executionRequests, blockValue, blobsBundle := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	payload, executionRequests, blockValue, blobsBundle, accessList := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	amsterdam := false
+	if cfg := e.v1.chainConfig(); cfg != nil {
+		amsterdam = cfg.UsesEIP7928AccessList(uint64(attrs.Timestamp))
+	}
+	if amsterdam && (payload == nil || accessList == nil || attrs.SlotNumber == nil) {
+		// An Amsterdam payload commits to the access list its execution
+		// builds; there is no stateless fallback.
+		return invalidForkchoiceResponse("failed to build payload")
+	}
 	if payload == nil {
 		payload = buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
 		executionRequests = []hexutil.Bytes{}
@@ -418,17 +438,26 @@ func (e *EngineAPIv4) buildAndStorePayloadV4(head block.IBlock, headHash types.H
 	if attrs.TargetBlobsPerBlock != nil {
 		binary.BigEndian.PutUint64(targetBlobBytes[:], uint64(*attrs.TargetBlobsPerBlock))
 	}
+	extras := [][]byte{withdrawalsRoot[:], attrs.ParentBeaconBlockRoot[:], targetBlobBytes[:]}
+	var slotNumber *hexutil.Uint64
+	if amsterdam {
+		var slotBytes [8]byte
+		binary.BigEndian.PutUint64(slotBytes[:], uint64(*attrs.SlotNumber))
+		extras = append(extras, slotBytes[:])
+		slot := *attrs.SlotNumber
+		slotNumber = &slot
+	}
 	payloadID := makePayloadIDWithExtras(
 		headHash,
 		uint64(attrs.Timestamp),
 		attrs.SuggestedFeeRecipient,
 		attrs.PrevRandao,
-		withdrawalsRoot[:],
-		attrs.ParentBeaconBlockRoot[:],
-		targetBlobBytes[:],
+		extras...,
 	)
 	if overlay := e.v1.overlay(); overlay != nil {
 		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			blockAccessList:   append(hexutil.Bytes(nil), accessList...),
+			slotNumber:        slotNumber,
 			blockValue:        blockValue,
 			v4:                payload,
 			v3:                &ExecutionPayloadV3{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions), Withdrawals: cloneWithdrawals(payload.Withdrawals), BlobGasUsed: payload.BlobGasUsed, ExcessBlobGas: payload.ExcessBlobGas},
@@ -618,22 +647,29 @@ func payloadBodyFromBlock(blk block.IBlock, withdrawals []*Withdrawal) *Executio
 	}
 }
 
-func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes, *big.Int, *BlobsBundleV1) {
+// buildExecutionPayloadV4Stateful builds a Prague+ payload on parent's state.
+// It also returns the encoded block access list of an Amsterdam payload.
+func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes, *big.Int, *BlobsBundleV1, []byte) {
 	if attrs == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
-	result := e.v1.buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
+	var slotNumber *uint64
+	if attrs.SlotNumber != nil {
+		slot := uint64(*attrs.SlotNumber)
+		slotNumber = &slot
+	}
+	result := e.v1.buildExecutionPayloadStatefulWithSlot(parent, parentHash, &PayloadAttributesV1{
 		Timestamp:             attrs.Timestamp,
 		PrevRandao:            attrs.PrevRandao,
 		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
-	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
+	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot, slotNumber)
 	if result == nil || result.block == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	v1 := blockToExecutionPayloadV1(result.block, e.v1.chainConfig())
 	header := blockHeader(result.block)
 	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	payload := &ExecutionPayloadV4{
 		ParentHash:            v1.ParentHash,
@@ -665,7 +701,7 @@ func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, paren
 		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
 		requestsHash:       &requestsHash,
 	})
-	return payload, cloneHexutilBytesList(result.executionRequests), result.blockValue, result.blobsBundle
+	return payload, cloneHexutilBytesList(result.executionRequests), result.blockValue, result.blobsBundle, result.blockAccessList
 }
 
 // =============================================================================

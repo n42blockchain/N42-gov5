@@ -29,6 +29,10 @@ type engineBuiltPayload struct {
 	blockValue        *big.Int
 	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
+	// blockAccessList and slotNumber are the fields an Amsterdam payload
+	// adds to v4; both are nil before Amsterdam.
+	blockAccessList hexutil.Bytes
+	slotNumber      *hexutil.Uint64
 }
 
 type engineOverlayTxLookup struct {

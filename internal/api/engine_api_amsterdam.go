@@ -14,7 +14,8 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
-// Engine API methods introduced with Amsterdam: engine_newPayloadV5.
+// Engine API methods introduced with Amsterdam: engine_newPayloadV5 and
+// engine_getPayloadV6. engine_forkchoiceUpdatedV4 is in engine_api_v4.go.
 // Reference: https://github.com/ethereum/execution-apis/blob/main/src/engine/amsterdam.md
 
 package api
@@ -97,4 +98,47 @@ func (e *EngineAPIv4) NewPayloadV5(
 		blockAccessList: payload.BlockAccessList,
 		slotNumber:      uint64(*payload.SlotNumber),
 	})
+}
+
+// GetPayloadResponseV6 is the response for engine_getPayloadV6.
+type GetPayloadResponseV6 struct {
+	ExecutionPayload      *ExecutionPayloadAmsterdam `json:"executionPayload"`
+	BlockValue            *hexutil.Big               `json:"blockValue"`
+	BlobsBundle           *BlobsBundleV2             `json:"blobsBundle"`
+	ShouldOverrideBuilder bool                       `json:"shouldOverrideBuilder"`
+	ExecutionRequests     []hexutil.Bytes            `json:"executionRequests"`
+}
+
+// GetPayloadV6 retrieves an Amsterdam payload with its block access list and
+// slot number; its blobs bundle carries cell proofs, as in Osaka.
+// engine_getPayloadV6
+func (e *EngineAPIv4) GetPayloadV6(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV6, error) {
+	built := e.v1.builtPayload(payloadID)
+	if built == nil || built.v4 == nil {
+		return nil, errPayloadNotFound
+	}
+	if built.slotNumber == nil || built.blockAccessList == nil ||
+		!builtPayloadForkIn(e.v1.chainConfig(), built, engineForkAmsterdam) {
+		return nil, &engineUnsupportedForkError{msg: "getPayloadV6 called for a payload outside Amsterdam"}
+	}
+	bundle, err := blobsBundleV2(built.blobsBundle)
+	if err != nil {
+		return nil, err
+	}
+	slot := *built.slotNumber
+	requests := cloneHexutilBytesList(built.executionRequests)
+	if requests == nil {
+		requests = []hexutil.Bytes{} // an array, never null
+	}
+	return &GetPayloadResponseV6{
+		ExecutionPayload: &ExecutionPayloadAmsterdam{
+			ExecutionPayloadV4: *built.v4,
+			BlockAccessList:    append(hexutil.Bytes(nil), built.blockAccessList...),
+			SlotNumber:         &slot,
+		},
+		BlockValue:            enginePayloadBlockValue(built.blockValue),
+		BlobsBundle:           bundle,
+		ShouldOverrideBuilder: false,
+		ExecutionRequests:     requests,
+	}, nil
 }
