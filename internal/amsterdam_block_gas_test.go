@@ -158,3 +158,24 @@ func TestProcessAmsterdamChecksBlockGasFigure(t *testing.T) {
 		return nil
 	}))
 }
+
+// The Block-STM executor meters each transaction with a gas pool of its own
+// and sums the receipts, so it cannot reproduce the EIP-8037 figure;
+// ProcessParallel and BuildParallel leave Glamsterdam blocks to the serial
+// path.
+func TestProcessParallelAmsterdamUsesBlockGasFigure(t *testing.T) {
+	db, proc, blk, blockHashFunc := amsterdamGasTestBlock(t)
+	header := blk.Header().(*block.Header)
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		reader := state.NewPlainStateReader(tx)
+		_, _, _, usedGas, err := proc.ProcessParallel(blk, state.New(reader), reader, state.NewNoopWriter(), blockHashFunc)
+		if err != nil {
+			return err
+		}
+		require.Equal(t, header.GasUsed, usedGas)
+		return nil
+	}))
+
+	_, err := proc.BuildParallel(header, blk.Transactions(), nil, blockHashFunc)
+	require.ErrorIs(t, err, ErrParallelNotApplicable)
+}

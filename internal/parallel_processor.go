@@ -233,6 +233,13 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if !ok {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: invalid header type assertion for block %v", b.Number64())
 	}
+	// The executor meters each transaction with its own gas pool and sums
+	// the receipts; a Glamsterdam header carries the EIP-8037 block figure,
+	// max(cumulative execution, cumulative state), which only the serial
+	// path keeps.
+	if p.config.IsGlamsterdam(concreteHeader.Time) {
+		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
+	}
 	if touchesAny(txs, deferredFeeRecipients(p.config, concreteHeader)) {
 		// A block that sends from or to a fee recipient cannot defer the
 		// credit (see runParallel) and runs sequentially.
@@ -251,6 +258,9 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 // does that. ErrParallelNotApplicable when a candidate touches a fee
 // recipient.
 func (p *StateProcessor) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if p.config.IsGlamsterdam(header.Time) {
+		return nil, ErrParallelNotApplicable // see ProcessParallel
+	}
 	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
 		return nil, ErrParallelNotApplicable
 	}
