@@ -278,6 +278,8 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 // gate and the build read the result from memory, as the executor's gate
 // does for a write in flight (lag_gate_applied.go); everything else still
 // sees the stored block only. The result is the executor's either way.
+// Default on, like N42_LAG_GATE_APPLIED; "0", "false" or "off" waits for
+// the stored block.
 var e1Early = parseLagPipeline(os.Getenv("N42_E1_EARLY"))
 
 // SetE1EarlyForTest switches N42_E1_EARLY and returns the restore.
