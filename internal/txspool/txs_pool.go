@@ -41,9 +41,11 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/tracing"
+	"github.com/n42blockchain/N42/lib/common/fixedgas"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
+	"github.com/n42blockchain/N42/params"
 )
 
 // NewTxsPool creates a new transaction pool to gather, sort and filter inbound
@@ -673,6 +675,17 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
 	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
+	isOsaka := pool.chainconfig != nil && current != nil && pool.chainconfig.IsOsaka(current.Time())
+	// Per-transaction gas cap, as the state transition enforces it: EIP-7825
+	// from Osaka, EIP-8037's TX_MAX_TOTAL_GAS_LIMIT from Glamsterdam. A
+	// transaction above it would fail every block build while it sat here.
+	if isGlamsterdam {
+		if tx.Gas() > params.MaxTxTotalGasEIP8037 {
+			return internal.ErrGasLimitTooHigh
+		}
+	} else if isOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
+		return internal.ErrGasLimitTooHigh
+	}
 	hasValue := tx.Value() != nil && !tx.Value().IsZero()
 	isSelfTransfer := tx.To() != nil && fromPtr != nil && *tx.To() == *fromPtr
 	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam, hasValue, isSelfTransfer)
