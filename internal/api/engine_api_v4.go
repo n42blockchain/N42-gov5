@@ -28,6 +28,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/bal"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
@@ -177,7 +178,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if !engineForkIn(e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), engineForkPrague, engineForkOsaka) {
 		return nil, &engineUnsupportedForkError{msg: "newPayloadV4 called for a timestamp outside Prague/Osaka"}
 	}
-	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests)
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, nil)
 }
 
 // NewPayloadV4AnyFork runs the newPayloadV4 validation and import without
@@ -195,14 +196,17 @@ func NewPayloadV4AnyFork(
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
-	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests)
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, nil)
 }
 
+// newPayloadV4 validates and imports a Prague+ payload. amsterdam carries the
+// fields an Amsterdam payload (newPayloadV5) adds; it is nil before Amsterdam.
 func (e *EngineAPIv4) newPayloadV4(
 	payload *ExecutionPayloadV4,
 	expectedBlobVersionedHashes []types.Hash,
 	parentBeaconBlockRoot *types.Hash,
 	executionRequests []hexutil.Bytes,
+	amsterdam *amsterdamPayloadFields,
 ) (*PayloadStatusV1, error) {
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
@@ -246,6 +250,9 @@ func (e *EngineAPIv4) newPayloadV4(
 		return nil, &engineInvalidParamsError{msg: err.Error()}
 	}
 	blk = applyExecutionPayloadForkFields(blk, nil, nil, nil, parentBeaconBlockRoot, executionRequests)
+	if amsterdam != nil {
+		blk = amsterdam.apply(blk)
+	}
 	requestsHash := executionRequestsHash(executionRequests)
 	blockHash := ethCompatibleEngineBlockHash(blk, e.v1.chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
@@ -265,6 +272,11 @@ func (e *EngineAPIv4) newPayloadV4(
 	parent := e.v1.parentHeader(payload.ParentHash)
 	if latestValidHash, ok := e.v1.rejectedAncestorLatestValidHash(payload.ParentHash); ok {
 		return e.v1.invalidPayloadStatus(engineRejectedAncestorReason, blk, blockHash, latestValidHash, body), nil
+	}
+	if amsterdam != nil {
+		if _, err := bal.Decode(amsterdam.blockAccessList); err != nil {
+			return e.v1.invalidPayloadStatus("invalid block access list: "+err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+		}
 	}
 	if err := validateExecutionPayloadBlobHeader(blockHeader(blk), parent, e.v1.chainConfig()); err != nil {
 		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
