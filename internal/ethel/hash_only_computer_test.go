@@ -24,7 +24,7 @@ import (
 
 func TestHashOnlyComputer_ComputeRoot_PutAndNormalize(t *testing.T) {
 	ctx := context.Background()
-	db := memdb.New(t.TempDir())
+	db := memdb.NewTestDB(t)
 	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestHashOnlyComputer_ComputeRoot_PutAndNormalize(t *testing.T) {
 
 func TestHashOnlyComputer_ComputeRoot_DeleteSweepsStorage(t *testing.T) {
 	ctx := context.Background()
-	db := memdb.New(t.TempDir())
+	db := memdb.NewTestDB(t)
 	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestHashOnlyComputer_ComputeRoot_DeleteSweepsStorage(t *testing.T) {
 
 func TestHashOnlyComputer_ComputeRoot_Empty(t *testing.T) {
 	ctx := context.Background()
-	db := memdb.New(t.TempDir())
+	db := memdb.NewTestDB(t)
 	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		t.Fatal(err)
