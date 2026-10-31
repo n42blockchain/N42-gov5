@@ -12,6 +12,7 @@ package hotstuff
 import (
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
@@ -231,6 +232,10 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 	blockHash := qc.BlockHash
 	prepareQCMsg := &PrepareQCMsg{View: view, BlockHash: blockHash, QC: qc.Clone()}
 
+	if commitJournalEarly {
+		return e.broadcastPrepareQCThenSelfVote(view, blockHash, prepareQCMsg)
+	}
+
 	// Journal the lock just advanced above together with the Round 2 commitment
 	// the leader is about to make (its self commit-vote, which counts toward the
 	// CommitQC) — before either leaves this node. Abstaining on a journal failure
@@ -271,6 +276,36 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 		_ = e.commitCollector.AddVote(e.myIndex, commitSig)
 	}
 
+	return e.tryFormCommitQC()
+}
+
+// broadcastPrepareQCThenSelfVote is tryFormPrepareQC's tail under
+// commitJournalEarly: the PrepareQC aggregates the followers' votes and is no
+// commitment of the leader's, so it leaves before the leader journals its own
+// lock and commitment, and the followers' Round 2 runs alongside that write.
+// The self commit vote is counted only once the commitment is durable; if the
+// journal fails the leader abstains in Round 2 and the CommitQC can still form
+// from the followers' votes.
+func (e *ConsensusEngine) broadcastPrepareQCThenSelfVote(view ViewNumber, blockHash types.Hash, prepareQCMsg *PrepareQCMsg) error {
+	if err := e.emit(EngineOutput{
+		Type: OutputBroadcast,
+		Message: &ConsensusMsg{
+			Type:    MsgPrepareQC,
+			Payload: prepareQCMsg,
+		},
+	}); err != nil {
+		return err
+	}
+	if err := e.journalCommitVote(view, blockHash); err != nil {
+		return err
+	}
+	if leaderWriteAfterJournalEnabled {
+		e.fireWriteLatch(blockHash, "journal")
+	}
+	commitSig := e.secretKey.Sign(e.commitSigningMessage(view, blockHash))
+	if e.commitCollector != nil {
+		_ = e.commitCollector.AddVote(e.myIndex, commitSig)
+	}
 	return e.tryFormCommitQC()
 }
 

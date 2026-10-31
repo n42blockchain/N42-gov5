@@ -425,7 +425,9 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gat
 		return
 	}
 	held := e.pendingCommitQC
+	journaled := e.pendingCommitJournaled
 	e.pendingCommitQC = nil
+	e.pendingCommitJournaled = false
 	if held.View != e.roundState.CurrentView() {
 		return
 	}
@@ -433,10 +435,48 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gat
 		e.viewTiming.Contention.commitVoteGate = gate
 	}
 	log.Info("two-phase vote: casting held commit vote", "view", held.View, "blockHash", blockHash,
-		"deferred", !e.importedBlocks[blockHash], "tMs", time.Now().UnixMilli())
-	if err := e.processPrepareQC(held, msgTiming{}); err != nil {
+		"deferred", !e.importedBlocks[blockHash], "journaled", journaled, "tMs", time.Now().UnixMilli())
+	var err error
+	if journaled {
+		err = e.releaseJournaledCommitVote(held)
+	} else {
+		err = e.processPrepareQC(held, msgTiming{})
+	}
+	if err != nil {
 		log.Debug("two-phase held commit vote failed", "err", err)
 	}
+}
+
+// journalHeldCommitVote makes a held Round 2 commitment durable while the
+// block's attestation is still pending (commitJournalEarly): the PrepareQC is
+// verified, the lock advances to it and the lock and the commit vote are
+// journalled together, as processPrepareQC would at the release. Journalling a
+// commitment that is never sent is safe -- it only stops this node from commit
+// voting another block in this view, which it may not do anyway -- and locking
+// on a valid PrepareQC is what every node that receives it may do. On a journal
+// error the vote stays held unjournalled and the release journals it.
+func (e *ConsensusEngine) journalHeldCommitVote(pqc *PrepareQCMsg) {
+	if !e.isMember() {
+		return
+	}
+	e.roundState.UpdateLockedQC(&pqc.QC)
+	if err := e.journalCommitVote(pqc.View, pqc.BlockHash); err != nil {
+		return
+	}
+	e.pendingCommitJournaled = true
+}
+
+// releaseJournaledCommitVote casts a held commit vote whose commitment
+// journalHeldCommitVote already made durable: the extends-check that needs
+// the attested parent, then sign and send -- no journal write on the path.
+func (e *ConsensusEngine) releaseJournaledCommitVote(pqc *PrepareQCMsg) error {
+	if !e.extendsJustify(pqc.View, pqc.BlockHash) {
+		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block or the committed block",
+			"view", pqc.View, "blockHash", pqc.BlockHash)
+		return nil
+	}
+	e.roundState.EnterPreCommit()
+	return e.emitCommitVote(pqc.View, pqc.BlockHash)
 }
 
 // onBlockChecked records a block the service verified under deferred
@@ -561,6 +601,9 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 		}
 		log.Info("two-phase vote: holding commit vote until block imports",
 			"view", view, "blockHash", pqc.BlockHash)
+		if commitJournalEarly {
+			e.journalHeldCommitVote(&held)
+		}
 		return nil
 	}
 
@@ -593,14 +636,21 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 		return err // abstain: the commitment is not durable
 	}
 
-	// Send CommitVote (Round 2).
-	commitMsg := e.commitSigningMessage(view, pqc.BlockHash)
+	// The commitment was already recorded (and made durable) by
+	// journalCommitVote above, which also prevents a re-attempt.
+	return e.emitCommitVote(view, pqc.BlockHash)
+}
+
+// emitCommitVote signs and sends this node's Round 2 vote for blockHash to the
+// view's leader. The caller has journalled the commitment.
+func (e *ConsensusEngine) emitCommitVote(view ViewNumber, blockHash types.Hash) error {
+	commitMsg := e.commitSigningMessage(view, blockHash)
 	commitSig := e.secretKey.Sign(commitMsg)
 	leader := LeaderForView(view, e.validatorSet())
 
 	commitVote := &CommitVote{
 		View:      view,
-		BlockHash: pqc.BlockHash,
+		BlockHash: blockHash,
 		Voter:     e.myIndex,
 		Signature: commitSig.Marshal(),
 		HighTC:    e.roundState.HighestTC(),
@@ -608,8 +658,6 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 
 	now := time.Now()
 	e.viewTiming.CommitVoteSent = &now
-	// The commitment was already recorded (and made durable) by
-	// journalCommitVote above, which also prevents a re-attempt.
 
 	return e.emit(EngineOutput{
 		Type:   OutputSendToValidator,

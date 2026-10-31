@@ -29,6 +29,24 @@ import (
 // 520ms consensus round-trip unattributed to any named wait; this measures it.
 var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
 
+// commitJournalEarly is N42_COMMIT_JOURNAL_EARLY=1: take the Round 2 journal
+// write (an fsync) off the commit round's critical path. A follower whose
+// commit vote is held for the block's attestation locks on the PrepareQC and
+// journals the commitment while it waits, so the release only signs and sends
+// (proposal.go); the leader broadcasts the PrepareQC before journalling its own
+// commitment and counts its self commit vote only once that is durable
+// (voting.go). Votes are still never released before they are on disk.
+// Off by default.
+var commitJournalEarly = os.Getenv("N42_COMMIT_JOURNAL_EARLY") == "1"
+
+// SetCommitJournalEarlyForTest switches commitJournalEarly and returns the
+// restore.
+func SetCommitJournalEarlyForTest(on bool) func() {
+	prev := commitJournalEarly
+	commitJournalEarly = on
+	return func() { commitJournalEarly = prev }
+}
+
 // Protocol constants.
 const (
 	// FutureViewWindow is the maximum number of views ahead a future message can be buffered.
@@ -177,6 +195,9 @@ type ConsensusEngine struct {
 	// availability, execution runs behind.
 	voteOnAvailability bool
 	pendingCommitQC *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
+	// pendingCommitJournaled: the held commitment (lock + commit vote) is
+	// already durable (commitJournalEarly); the release only signs and sends.
+	pendingCommitJournaled bool
 
 	// committedChain is this node's own committed chain (committed_floor.go):
 	// no vote and no local commit may conflict with it. Nil disables the
@@ -1091,6 +1112,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.timeoutCollector = nil
 	e.prepareQC = nil
 	e.pendingCommitQC = nil // a held two-phase CommitVote is view-scoped
+	e.pendingCommitJournaled = false
 	// Keep importedBlocks/importedFIFO across the view change: a block we have
 	// imported we still have, and the next leader typically RE-proposes the same
 	// (uncommitted) block in the new view. Wiping it made the re-proposed block
