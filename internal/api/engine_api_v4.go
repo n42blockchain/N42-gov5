@@ -395,8 +395,8 @@ func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*G
 // whose attributes carry the slot number; the payload is fetched with
 // getPayloadV6. engine_forkchoiceUpdatedV4
 //
-// N42 also accepts Prague and Osaka attributes here and builds a payload for
-// getPayloadV4/V5, as before Amsterdam had a forkchoiceUpdatedV4.
+// Attributes for an earlier fork are refused with unsupported fork, as the
+// spec requires: Prague and Osaka builds start with forkchoiceUpdatedV3.
 func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	ctx context.Context,
 	state *ForkchoiceStateV1,
@@ -435,14 +435,11 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if head != nil && head.Number64() != nil {
 		nextNumber = head.Number64().Uint64() + 1
 	}
-	if cfg := e.v1.chainConfig(); cfg != nil && engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) == engineForkAmsterdam {
-		if attrs.SlotNumber == nil {
-			return nil, &engineInvalidPayloadAttributesError{msg: "missing slot number"}
-		}
-		return e.buildAndStorePayloadV4(head, headHash, attrs), nil
+	if cfg := e.v1.chainConfig(); cfg == nil || engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) < engineForkAmsterdam {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV4 called for pre-Amsterdam timestamp, use forkchoiceUpdatedV3"}
 	}
-	if !engineForkIn(e.v1.chainConfig(), nextNumber, uint64(attrs.Timestamp), engineForkPrague, engineForkOsaka) {
-		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV4 called for pre-Prague timestamp, use forkchoiceUpdatedV3"}
+	if attrs.SlotNumber == nil {
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing slot number"}
 	}
 	return e.buildAndStorePayloadV4(head, headHash, attrs), nil
 }

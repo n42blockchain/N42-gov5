@@ -157,6 +157,32 @@ func TestEngineForkchoiceUpdatedV3BuildsPraguePayloadForGetPayloadV4(t *testing.
 	requireEngineErrorCode(t, err, -38005)
 }
 
+// forkchoiceUpdatedV4 is Amsterdam only: attributes for Cancun, Prague or
+// Osaka are refused with unsupported fork even when they carry a slot number.
+func TestEngineForkchoiceUpdatedV4RefusesPreAmsterdamAttributes(t *testing.T) {
+	t.Parallel()
+
+	for _, ts := range []uint64{mainnetCancunTS, mainnetPragueTS, mainnetOsakaTS} {
+		api, headHash := newMainnetEngineTestAPI(t, ts)
+		v4 := NewEngineAPIv4(NewBlockChainAPI(api))
+		root := types.Hash{0x03}
+		slot := hexutil.Uint64(1)
+		resp, err := v4.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{HeadBlockHash: headHash}, &PayloadAttributesV4{
+			Timestamp:             hexutil.Uint64(ts + 12),
+			Withdrawals:           []*Withdrawal{},
+			ParentBeaconBlockRoot: &root,
+			SlotNumber:            &slot,
+		})
+		require.Nil(t, resp, "timestamp %d", ts)
+		requireEngineErrorCode(t, err, -38005)
+
+		// Without attributes it is a plain forkchoice update in any fork.
+		resp, err = v4.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{HeadBlockHash: headHash}, nil)
+		require.NoError(t, err)
+		require.Equal(t, PayloadStatusValid, resp.PayloadStatus.Status)
+	}
+}
+
 // engine_exchangeCapabilities must list only methods the node serves, must not
 // list itself, and must list the Amsterdam methods.
 func TestEngineExchangeCapabilitiesListsOnlyServedStandardMethods(t *testing.T) {
