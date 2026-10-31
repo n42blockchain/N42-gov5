@@ -71,6 +71,12 @@ var (
 	ErrInsufficientFunds  = errors.New("insufficient funds for gas * price + value")
 	ErrTipAboveFeeCap     = errors.New("max priority fee per gas higher than max fee per gas")
 
+	// ErrLegacyBlobSidecar rejects a version-0 (EIP-4844) blob sidecar once
+	// the head is in Osaka; from then on only version-1 (cell proof)
+	// sidecars are carried. Submissions over RPC are converted before they
+	// reach the pool.
+	ErrLegacyBlobSidecar = errors.New("legacy blob sidecar unsupported after Osaka")
+
 	// EIP-7702 (SetCode) authorization pool restrictions — mirror go-ethereum's
 	// legacypool. Prevent an attacker from stacking transactions on an account
 	// that has an in-flight delegation, or reserving an authority with multiple
@@ -217,6 +223,10 @@ type TxsPool struct {
 	// place (Put/Filter drop the cache; Forward reslices), so a snapshot
 	// stays valid after the lists move on.
 	pendingSnap atomic.Pointer[map[types.Address][]*transaction.Transaction]
+	// legacySidecarsConverted is set at the first reset onto an Osaka head,
+	// when the version-0 blob sidecars then in the pool are queued for
+	// conversion (see convertLegacySidecars).
+	legacySidecarsConverted atomic.Bool
 	// reorgWaiting is set while a reorg waits for pool.mu; inserters yield
 	// to it (see addTxs).
 	reorgWaiting atomic.Bool
