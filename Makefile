@@ -48,10 +48,14 @@ DOCKER_GID ?= $(shell id -g)
 #OSFLAG=$(shell uname -sm)
 
 ANDROID_SDK=$(ANDROID_HOME)
-NDK_VERSION=25.2.9519653
-NDK_HOME=$(ANDROID_SDK)/ndk/$(NDK_VERSION)
+NDK_VERSION ?= 25.2.9519653
+NDK_HOME ?= $(ANDROID_SDK)/ndk/$(NDK_VERSION)
 #ANDROID_SDK=/Users/mac/Library/Android/sdk
-MOBILE_GO_FLAGS = -ldflags "-X ${PACKAGE}/cmd/evmsdk/common.VERSION=${GIT_COMMIT}"
+# -s -w: no symbol table or DWARF, about half the size per ABI (panics
+# still name functions). -checklinkname=0: github.com/wlynxg/anet (libp2p,
+# android) links to net.zoneCache, which the Go linker refuses by default
+# since Go 1.23.
+MOBILE_GO_FLAGS = -ldflags "-s -w -checklinkname=0 -X ${PACKAGE}/cmd/evmsdk/common.VERSION=${GIT_COMMIT}"
 MOBILE_PACKAGE= $(shell pwd)/cmd/evmsdk
 BUILD_MOBILE_PATH = ./build/mobile/
 
@@ -173,15 +177,24 @@ release-docker:
 
 
 #== mobiles start
+.PHONY: mobile mobile-dir mobile-tools ios android
 mobile: clean mobile-dir android ios
+
+# gomobile and gobind at the versions go.mod pins with its tool directives;
+# gomobile looks gobind up on PATH.
+mobile-tools:
+	go install golang.org/x/mobile/cmd/gomobile golang.org/x/mobile/cmd/gobind
 
 mobile-dir:
 	#go get golang.org/x/mobile/bind/objc
 	mkdir -p $(BUILD_MOBILE_PATH)/android
-ios:
-	GOOS=ios CGO_ENABLED=1 GOARCH=arm64 gomobile bind ${MOBILE_GO_FLAGS}  -o $(BUILD_MOBILE_PATH)/evmsdk.xcframework -target=ios/arm64  $(MOBILE_PACKAGE)
-android:
-	CGO_ENABLED=1 ANDROID_HOME=$(ANDROID_SDK) ANDROID_NDK_HOME=$(NDK_HOME) gomobile bind -x ${MOBILE_GO_FLAGS} -androidapi 23 -o $(BUILD_MOBILE_PATH)/android/evmsdk.aar -target=android/arm -v $(MOBILE_PACKAGE)
+ios: mobile-tools
+	CGO_ENABLED=1 gomobile bind ${MOBILE_GO_FLAGS}  -o $(BUILD_MOBILE_PATH)/evmsdk.xcframework -target=ios/arm64,iossimulator/arm64  $(MOBILE_PACKAGE)
+# All four ABIs the app ships (arm, arm64, 386, amd64). -Wno-error=int-conversion:
+# blst's x86-64 SIGILL probe initialises bionic's struct sigaction
+# positionally, which clang 16+ (NDK 26+) rejects; it was a warning before.
+android: mobile-tools mobile-dir
+	CGO_ENABLED=1 CGO_CFLAGS="-O2 -g -Wno-error=int-conversion" ANDROID_HOME=$(ANDROID_SDK) ANDROID_NDK_HOME=$(NDK_HOME) gomobile bind -x ${MOBILE_GO_FLAGS} -androidapi 23 -o $(BUILD_MOBILE_PATH)/android/evmsdk.aar -target=android -v $(MOBILE_PACKAGE)
 #   ANDROID_NDK_CC=$(NDK_HOME)/bin/arm-linux-androideabi-gcc NDK_CC=$(NDK_HOME)/bin/arm-linux-androideabi-gcc
 # GOARCH=arm GOOS=android CGO_ENABLED=1
 open-output:
