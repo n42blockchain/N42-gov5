@@ -110,6 +110,11 @@ func (s *PacketService) Get(blockHash types.Hash) ([]byte, bool) {
 	return s.cache.Get(blockHash)
 }
 
+// Has reports whether the packet for a block hash is cached.
+func (s *PacketService) Has(blockHash types.Hash) bool {
+	return s.cache.Has(blockHash)
+}
+
 func (s *PacketService) receiveLoop(sub *pubsub.Subscription) {
 	defer s.wg.Done()
 	defer sub.Cancel()

@@ -2686,6 +2686,13 @@ func (n *Node) startMobileVerify() error {
 	if addr := n.config.MobileVerifyCfg.HTTPAddr; addr != "" {
 		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileCohort, n.mobileCertStore)
 		httpSrv.SetAlarms(n.mobileAlarms)
+		httpSrv.SetHead(func() (uint64, types.Hash, bool) {
+			head := n.blockChain.CurrentBlock()
+			if head == nil || head.Number64() == nil {
+				return 0, types.Hash{}, false
+			}
+			return head.Number64().Uint64(), head.Hash(), true
+		})
 		// Sybil gate (design §7 item 2): registration proof-of-work. A device
 		// attestor (Play Integrity / DeviceCheck adapter) can be wired here
 		// once an operator supplies one; the HTTP gate is already in place.

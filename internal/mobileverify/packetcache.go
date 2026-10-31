@@ -96,6 +96,15 @@ func (c *PacketCache) Get(blockHash types.Hash) ([]byte, bool) {
 	return append([]byte(nil), data...), true
 }
 
+// Has reports whether a packet for the block hash is cached, without
+// copying it.
+func (c *PacketCache) Has(blockHash types.Hash) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.byHash[blockHash]
+	return ok
+}
+
 // Len returns the number of cached packets.
 func (c *PacketCache) Len() int {
 	c.mu.RLock()
