@@ -248,6 +248,10 @@ func supportedEngineForks() []string {
 
 const engineRejectedAncestorReason = "links to previously rejected block"
 
+// maxForkchoiceReorgDepth is how many blocks a forkchoice update may move the
+// head back to a canonical ancestor, as geth's maxReorgDepth.
+const maxForkchoiceReorgDepth = 32
+
 // NewPayloadV1 processes a Paris execution payload.
 func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloadV1) (*PayloadStatusV1, error) {
 	if payload == nil {
@@ -710,12 +714,37 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 		return nil, types.Hash{}, nil, err
 	}
 	headHash := e.currentHeadHash()
+	// adoptFromChain is set for a canonical ancestor the overlay no longer
+	// holds; the overlay adopts it from chaindata once the head moved back.
+	adoptFromChain := false
 	if state.HeadBlockHash != headHash {
 		if latestValidHash, ok := e.rejectedAncestorLatestValidHash(state.HeadBlockHash); ok {
 			return nil, types.Hash{}, invalidForkchoiceResponseWithLatestValid(engineRejectedAncestorReason, latestValidHash), nil
 		}
+		// A canonical block below the head (execution-apis #786, needed once
+		// ePBS lets the consensus client move the head back to a parent whose
+		// child's payload was withheld): at or below the finalized block the
+		// update is skipped and no build starts; above it the head is moved
+		// back, unless that is maxForkchoiceReorgDepth blocks or more.
+		rewind := false
+		if e.stateAdapter != nil {
+			depth, finalized, ok, err := e.stateAdapter.canonicalAncestor(state.HeadBlockHash)
+			if err != nil {
+				return nil, types.Hash{}, nil, err
+			}
+			switch {
+			case ok && finalized:
+				return nil, types.Hash{}, validForkchoiceResponse(state.HeadBlockHash, nil), nil
+			case ok && depth >= maxForkchoiceReorgDepth:
+				return nil, types.Hash{}, nil, &engineTooDeepReorgError{msg: fmt.Sprintf("reorg depth %d exceeds limit %d", depth, maxForkchoiceReorgDepth)}
+			}
+			rewind = ok
+		}
 		if !e.adoptForkchoiceHead(state.HeadBlockHash) {
-			return nil, types.Hash{}, syncingForkchoiceResponse(), nil
+			if !rewind {
+				return nil, types.Hash{}, syncingForkchoiceResponse(), nil
+			}
+			adoptFromChain = true
 		}
 		head = e.currentHead()
 		headHash = e.currentHeadHash()
@@ -734,6 +763,10 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 			head = e.currentHead()
 			headHash = e.currentHeadHash()
 			e.removeCanonicalTransactions(head)
+			// The public eth_* methods read the overlay's head.
+			if overlay := e.overlay(); adoptFromChain && overlay != nil && head != nil && headHash == state.HeadBlockHash {
+				overlay.importBlock(head, headHash, overlay.receiptsByBlockHash(headHash))
+			}
 		}
 	}
 	return head, headHash, nil, nil
