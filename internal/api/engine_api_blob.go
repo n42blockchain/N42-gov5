@@ -744,6 +744,20 @@ func (e *engineInvalidPayloadAttributesError) ErrorCode() int {
 // engineUnsupportedForkError is returned when Engine API is called with a
 // payload version that does not match the fork active at the given timestamp.
 // Error code -38005 per Engine API specification.
+// engineTooDeepReorgError refuses a forkchoice update that would move the
+// head back further than maxForkchoiceReorgDepth blocks.
+type engineTooDeepReorgError struct {
+	msg string
+}
+
+func (e *engineTooDeepReorgError) Error() string {
+	return e.msg
+}
+
+func (e *engineTooDeepReorgError) ErrorCode() int {
+	return -38006
+}
+
 type engineUnsupportedForkError struct {
 	msg string
 }

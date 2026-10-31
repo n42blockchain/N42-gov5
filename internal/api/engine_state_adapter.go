@@ -1260,6 +1260,40 @@ func (a *EngineStateAdapter) canonicalBlockNumber(engineHash types.Hash) (uint64
 	return *number, canonicalHash == storedHash, nil
 }
 
+// canonicalAncestor reports whether engineHash is a canonical block below the
+// current head, how many blocks below it is, and whether it is at or below
+// the forkchoice finalized block.
+func (a *EngineStateAdapter) canonicalAncestor(engineHash types.Hash) (depth uint64, finalized, ok bool, err error) {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return 0, false, false, err
+	}
+	defer tx.Rollback()
+
+	storedHash, err := a.resolveCanonicalStoredHash(tx, engineHash)
+	if err != nil || storedHash == (types.Hash{}) {
+		return 0, false, false, err
+	}
+	number := rawdb.ReadHeaderNumber(tx, storedHash)
+	if number == nil {
+		return 0, false, false, nil
+	}
+	canonicalHash, err := rawdb.ReadCanonicalHash(tx, *number)
+	if err != nil || canonicalHash != storedHash {
+		return 0, false, false, err
+	}
+	headNumber := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx))
+	if headNumber == nil || *number >= *headNumber {
+		return 0, false, false, nil
+	}
+	if finalizedHash := rawdb.ReadForkchoiceFinalizedHash(tx); finalizedHash != (types.Hash{}) {
+		if fin := rawdb.ReadHeaderNumber(tx, finalizedHash); fin != nil && *number <= *fin {
+			finalized = true
+		}
+	}
+	return *headNumber - *number, finalized, true, nil
+}
+
 // reorgCanonicalTo unwinds the persisted world state and canonical index to a
 // known ancestor. The caller can then execute a previously validated staged
 // branch forward from exactly that ancestor.
