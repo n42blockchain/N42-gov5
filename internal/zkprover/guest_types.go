@@ -55,6 +55,7 @@ type ForkConfig struct {
 	IsParlia              bool
 	IsAura                bool
 	IsPQPrecompiles       bool // Post-quantum precompiles (Falcon, Dilithium)
+	IsGlamsterdam         bool // Ethereum Amsterdam rules
 }
 
 // GuestInput is the input data for the zkVM guest program.
@@ -178,6 +179,9 @@ func EncodeGuestInput(input *GuestInput) ([]byte, error) {
 	if input.ForkConfig.IsPQPrecompiles {
 		flags |= 1 << 22
 	}
+	if input.ForkConfig.IsGlamsterdam {
+		flags |= 1 << 23
+	}
 	fb := make([]byte, 4)
 	binary.LittleEndian.PutUint32(fb, flags)
 	buf = append(buf, fb...)
@@ -255,6 +259,7 @@ func DecodeGuestInput(data []byte) (*GuestInput, error) {
 		IsParlia:              flags&(1<<20) != 0,
 		IsAura:                flags&(1<<21) != 0,
 		IsPQPrecompiles:       flags&(1<<22) != 0,
+		IsGlamsterdam:         flags&(1<<23) != 0,
 	}
 
 	return input, nil

@@ -44,13 +44,9 @@ var (
 
 // GuestExecutionResult is the result of applying a message in the guest context.
 type GuestExecutionResult struct {
-	UsedGas uint64
-	// BlockGasUsed is the EIP-7778 block-level figure: pre-refund gas
-	// clamped to the calldata floor under Glamsterdam, equal to UsedGas
-	// otherwise. Cumulative (receipt-trie) gas must use this value.
-	BlockGasUsed uint64
-	Err          error
-	ReturnData   []byte
+	UsedGas    uint64
+	Err        error
+	ReturnData []byte
 }
 
 // ApplyMessageForGuest executes a message against the EVM for the zkVM guest.
@@ -72,6 +68,9 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	gas := msg.Gas()
 	rules := realEVM.ChainRules()
 	gasPrice := msg.GasPrice()
+	if rules.IsGlamsterdam {
+		return applyMessageForGuestAmsterdam(realEVM, msg, gp)
+	}
 
 	// Nonce validation: verify the transaction nonce matches the sender's current nonce.
 	// Defense-in-depth — the witness state is Merkle-verified, so a tampered
@@ -104,14 +103,12 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	if gasRemaining < intrinsicGas {
 		return nil, errGuestIntrinsicGas
 	}
-	// EIP-7623/7976 calldata floor: mirror the host's UP-FRONT rejection
+	// EIP-7623 calldata floor: mirror the host's up-front rejection
 	// (state_transition.go). The floor may legitimately exceed intrinsic
-	// gas; without this reject, gas < floor later underflows the clamp and
-	// the EIP-7778 pool credit (gas−blockGasUsed wraps to ~2^64), either
-	// panicking the pool or neutering the block gas limit.
+	// gas; without this reject, gas < floor later underflows the clamp.
 	var floorDataGas uint64
 	if rules.IsPrague {
-		floorDataGas = FloorDataGas(msg.Data(), rules.IsGlamsterdam)
+		floorDataGas = FloorDataGas(msg.Data(), false)
 		if gas < floorDataGas {
 			return nil, errGuestIntrinsicGas
 		}
@@ -142,13 +139,6 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	// Step 3: Refund gas — return unused gas * gasPrice to sender.
 	// EIP-3529: max refund = gasUsed / 5 after London (was gasUsed / 2 before).
 	gasUsed := gas - gasRemaining
-	// EIP-7778 block accounting (mirrors internal.StateTransition): the
-	// floor (validated up-front: gas >= floorDataGas) caps the post-refund
-	// remainder; the block figure is the pre-refund max(gasUsed, floor).
-	blockGasUsed := gasUsed
-	if rules.IsGlamsterdam && floorDataGas > blockGasUsed {
-		blockGasUsed = floorDataGas
-	}
 	refund := ibs.GetRefund()
 	maxRefund := gasUsed / 2
 	if rules.IsLondon {
@@ -168,12 +158,7 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	remaining.Mul(remaining, gasPrice)
 	ibs.AddBalance(sender, remaining)
 
-	// EIP-7778: the block pool never gets refunds back under Glamsterdam.
-	if rules.IsGlamsterdam {
-		gp.AddGas(gas - blockGasUsed)
-	} else {
-		gp.AddGas(gasRemaining)
-	}
+	gp.AddGas(gasRemaining)
 
 	// Step 4: Pay coinbase — effectiveTip * gasUsed to block producer.
 	effectiveTip := gasPrice
@@ -191,27 +176,21 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	coinbasePayment.Mul(coinbasePayment, effectiveTip)
 	ibs.AddBalance(realEVM.Context().Coinbase, coinbasePayment)
 
-	if !rules.IsGlamsterdam {
-		if rules.IsPrague && gasUsed < floorDataGas {
-			gasUsed = floorDataGas
-		}
-		blockGasUsed = gasUsed
+	if rules.IsPrague && gasUsed < floorDataGas {
+		gasUsed = floorDataGas
 	}
 	return &GuestExecutionResult{
-		UsedGas:      gasUsed,
-		BlockGasUsed: blockGasUsed,
-		Err:          vmerr,
-		ReturnData:   ret,
+		UsedGas:    gasUsed,
+		Err:        vmerr,
+		ReturnData: ret,
 	}, nil
 }
 
 // guestIntrinsicGas computes the intrinsic gas cost for a transaction.
 // Returns math.MaxUint64 on overflow to ensure the transaction is rejected.
 //
-// The EIP-7623/7976 floor and EIP-7778 block accounting are mirrored in
-// ApplyMessageForGuest (up-front floor reject, BlockGasUsed result). The
-// remaining known deviation is the EIP-8037 reservoir approximation
-// shared with the host (direct charge; awaiting devnet parameters).
+// Glamsterdam messages go through applyMessageForGuestAmsterdam, which adds
+// the EIP-7702 authorization cost and checks the EIP-7976/7981 floor.
 func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules, hasValue, isSelfTransfer bool) uint64 {
 	var gas uint64
 	if rules.IsGlamsterdam {

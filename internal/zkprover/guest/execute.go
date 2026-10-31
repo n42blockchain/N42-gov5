@@ -136,12 +136,11 @@ func Execute(input *GuestInput) *GuestOutput {
 			output.Error = fmt.Sprintf("tx %d execution failed: %v", i, err)
 			return output
 		}
-		// EIP-7778: the receipt records CumulativeGas built from BlockGasUsed,
-		// so the running base must advance by the same quantity. Mixing the
-		// post-refund GasUsed here skewed every receipt after the first and
-		// broke DeriveSha against header.ReceiptHash.
+		// The receipts' cumulative gas. Under Glamsterdam the block limit
+		// applies to the EIP-8037 figure the pool keeps instead, which
+		// ApplyTx has already charged.
 		totalGasUsed = txResult.CumulativeGas
-		if totalGasUsed > header.GasLimit {
+		if !input.ForkConfig.IsGlamsterdam && totalGasUsed > header.GasLimit {
 			output.Error = fmt.Sprintf("cumulative gas %d exceeds block gas limit %d after tx %d", totalGasUsed, header.GasLimit, i)
 			return output
 		}
@@ -178,6 +177,10 @@ func Execute(input *GuestInput) *GuestOutput {
 	copy(output.ReceiptsRoot[:], receiptsRoot[:])
 
 	output.GasUsed = totalGasUsed
+	if input.ForkConfig.IsGlamsterdam {
+		// EIP-8037: max(cumulative execution gas, cumulative state gas).
+		output.GasUsed = gp.UsedAmsterdam()
+	}
 	output.Success = true
 
 	return output

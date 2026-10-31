@@ -67,9 +67,10 @@ func TestBuildGuestForkConfigCapturesBlockTimeAndConsensusFlags(t *testing.T) {
 		Parlia:                        &params.ParliaConfig{},
 		Aura:                          &params.AuRaConfig{},
 		PQPrecompilesTime:             big.NewInt(20),
+		GlamsterdamTime:               big.NewInt(20),
 	}
 
-	forkConfig := buildGuestForkConfig(cfg, 10, 20)
+	forkConfig := BuildGuestForkConfig(cfg, 10, 20)
 	if !forkConfig.IsHomestead || !forkConfig.IsEIP150 || !forkConfig.IsEIP155 || !forkConfig.IsEIP158 {
 		t.Fatalf("expected early block forks to be enabled, got %+v", forkConfig)
 	}
@@ -87,6 +88,9 @@ func TestBuildGuestForkConfigCapturesBlockTimeAndConsensusFlags(t *testing.T) {
 	}
 	if !forkConfig.IsParlia || !forkConfig.IsAura || !forkConfig.IsPQPrecompiles {
 		t.Fatalf("expected consensus/precompile flags to be enabled, got %+v", forkConfig)
+	}
+	if !forkConfig.IsGlamsterdam || BuildGuestForkConfig(cfg, 10, 19).IsGlamsterdam {
+		t.Fatalf("expected Glamsterdam from its fork time only, got %+v", forkConfig)
 	}
 }
 
