@@ -1209,7 +1209,8 @@ func (s *Service) handleSendToValidator(output EngineOutput, tDeq time.Time) {
 						enc := s.p2p.Encoding()
 						if _, encErr := enc.EncodeGossip(&buf, &rawSSZMarshaler{data: data}); encErr == nil {
 							rotorAttempted = true
-							if sendErr := sender.SendRawBytes(s.ctx, buf.Bytes(), s.rpcTopic, pid); sendErr == nil {
+							sendErr := sender.SendRawBytes(s.ctx, buf.Bytes(), s.rpcTopic, pid)
+							if sendErr == nil {
 								s.rotor.RecordVoteDirect()
 								s.logVoteRouting()
 								directDelivered = true
@@ -1228,10 +1229,17 @@ func (s *Service) handleSendToValidator(output EngineOutput, tDeq time.Time) {
 							// from that validator re-learns the fresh peer.ID
 							// (learnValidatorPeer). Safety is unaffected either
 							// way — this path already falls back to broadcast.
-							if addr, aerr := vs.GetAddress(output.Target); aerr == nil {
-								s.rotor.UnregisterValidator(addr)
-								log.Debug("hotstuff: dropped stale rotor peer mapping after failed direct send",
-									"validator", addr, "peer", pid)
+							//
+							// Without rotorMapFix this also runs after a send that
+							// succeeded, so every direct vote dropped its target's
+							// mapping and the next vote to the same leader went
+							// gossip only.
+							if sendErr != nil || !rotorMapFix {
+								if addr, aerr := vs.GetAddress(output.Target); aerr == nil {
+									s.rotor.UnregisterValidator(addr)
+									log.Debug("hotstuff: dropped stale rotor peer mapping after failed direct send",
+										"validator", addr, "peer", pid)
+								}
 							}
 						}
 					}
@@ -1333,6 +1341,22 @@ func (s *Service) subscribeMessages() {
 		}
 		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom, tRx, "gossip")
 	}
+}
+
+// rotorMapFix is N42_ROTOR_MAP_FIX=1: keep a validator's Rotor peer mapping
+// after a direct send succeeds (only a failed send drops it), and do not learn
+// a proposer's peer from a Proposal that a relay forwarded. Without it, 86% of
+// commit votes found no mapping for the leader -- the prepare vote's
+// successful send had just dropped it -- and went gossip only, 6 ms from
+// publish to the leader's receipt, against 0 ms on a Rotor stream (E1N26 run
+// 7).
+var rotorMapFix = os.Getenv("N42_ROTOR_MAP_FIX") == "1"
+
+// SetRotorMapFixForTest switches rotorMapFix and returns the restore.
+func SetRotorMapFixForTest(on bool) func() {
+	prev := rotorMapFix
+	rotorMapFix = on
+	return func() { rotorMapFix = prev }
 }
 
 // gossipVoteLane is N42_GOSSIP_VOTE_LANE=1: hand gossiped votes to their own
@@ -1442,7 +1466,14 @@ func (s *Service) handleConsensusMsg(consensusMsg *ConsensusMsg, from peer.ID, t
 	// registry and every send stayed on the fallback broadcast path. The
 	// mapping only affects routing, not consensus safety (see learnValidatorPeer),
 	// so learning it from any successfully decoded message is sufficient.
-	s.learnValidatorPeer(consensusMsg, from)
+	//
+	// A Proposal on a Rotor stream comes from the relay that forwarded it, not
+	// from its proposer, so under rotorMapFix it teaches nothing: learning it
+	// pointed the leader's mapping at the relay, and the followers' votes went
+	// to the relay instead of the leader.
+	if !(rotorMapFix && via == "rotor" && consensusMsg.Type == MsgProposal) {
+		s.learnValidatorPeer(consensusMsg, from)
+	}
 
 	if err := ce.ProcessEvent(ConsensusEvent{
 		Type:       EventMessage,
