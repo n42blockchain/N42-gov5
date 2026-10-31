@@ -611,6 +611,27 @@ func (tx *Transaction) BlobHashes() []types.Hash {
 	return nil
 }
 
+// WithBlobTxSidecar returns a copy of a blob transaction that carries
+// sidecar in place of its own, with the same hash, sender and arrival time.
+// The receiver is not modified, so readers holding it are unaffected. Any
+// other transaction is returned as is.
+func (tx *Transaction) WithBlobTxSidecar(sidecar *BlobTxSidecar) *Transaction {
+	blobTx, ok := tx.inner.(*BlobTx)
+	if !ok {
+		return tx
+	}
+	inner := *blobTx
+	inner.Sidecar = sidecar
+	cpy := &Transaction{inner: &inner, time: tx.time}
+	if h := tx.hash.Load(); h != nil {
+		cpy.hash.Store(h)
+	}
+	if f := tx.from.Load(); f != nil {
+		cpy.from.Store(f)
+	}
+	return cpy
+}
+
 // BlobTxSidecar returns the propagation sidecar attached to a blob transaction.
 func (tx *Transaction) BlobTxSidecar() *BlobTxSidecar {
 	if blobTx, ok := tx.inner.(*BlobTx); ok {

@@ -686,6 +686,9 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	} else if isOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
 		return internal.ErrGasLimitTooHigh
 	}
+	if sc := tx.BlobTxSidecar(); isOsaka && sc != nil && sc.Version == transaction.BlobSidecarVersion0 {
+		return ErrLegacyBlobSidecar
+	}
 	hasValue := tx.Value() != nil && !tx.Value().IsZero()
 	isSelfTransfer := tx.To() != nil && fromPtr != nil && *tx.To() == *fromPtr
 	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam, hasValue, isSelfTransfer)
@@ -1077,6 +1080,10 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	nQueue, nPending = len(pool.queue), len(pool.pending)
 	pool.changesSinceReorg = 0
 	pool.mu.Unlock()
+
+	if reset != nil && reset.newBlock != nil {
+		pool.maybeConvertLegacySidecars(reset.newBlock)
+	}
 
 	// Info only when the reorg is slow enough to explain a missed block, Debug
 	// otherwise: it runs on every new head and the interesting case is the
