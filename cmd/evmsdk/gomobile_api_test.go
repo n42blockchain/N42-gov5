@@ -44,3 +44,46 @@ func TestExportedFunctionsAreBindable(t *testing.T) {
 		}
 	}
 }
+
+// The session is what the app calls; every method of it must reach Java
+// and Swift, and gobind silently drops a method it cannot bind. So its
+// API, and its constructor's, takes and returns strings, int64s, bools
+// and errors only.
+func TestSessionAPIIsBindable(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mobileverify_session.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{"string": true, "int64": true, "bool": true, "error": true}
+	methods := 0
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || !fd.Name.IsExported() {
+			continue
+		}
+		var fields []*ast.Field
+		fields = append(fields, fd.Type.Params.List...)
+		if fd.Type.Results != nil {
+			fields = append(fields, fd.Type.Results.List...)
+		}
+		for _, f := range fields {
+			typ := f.Type
+			if star, ok := typ.(*ast.StarExpr); ok && fd.Recv == nil {
+				typ = star.X // the constructor returns *MobileVerifySession
+				if id, ok := typ.(*ast.Ident); ok && id.Name == "MobileVerifySession" {
+					continue
+				}
+			}
+			if id, ok := typ.(*ast.Ident); !ok || !allowed[id.Name] {
+				t.Errorf("%s: %s uses a type gobind does not bind for the session", fset.Position(f.Pos()), fd.Name.Name)
+			}
+		}
+		if fd.Recv != nil {
+			methods++
+		}
+	}
+	if methods < 8 {
+		t.Fatalf("found %d session methods, want the 8 the app calls", methods)
+	}
+}
