@@ -1,6 +1,6 @@
 # Plan: move n42appv2 mining onto /mobileverify
 
-Status: plan only (2026-10-29). Nothing below is implemented in the app yet.
+Status: phase 1 done (2026-10-31), see "Progress" at the end; the rest is still a plan.
 
 ## Where the app is today
 
@@ -95,3 +95,39 @@ The phone runs the Go fleet's mobile verification loop, the same one
 - Keep the Rust (`consensusBeaconExt`) path for the n42-26 chain, or retire it.
 - Reward model for `/mobileverify` receipts (item 8).
 - Who operates the TLS proxy and which nodes are exposed (item 4).
+
+## Progress
+
+### Phase 1 (2026-10-31): SDK facade, head endpoint, Android probe
+
+Go side (N42):
+
+- `GET /mobileverify/latest` returns the canonical head (number, hash) and whether the node
+  already caches its packet (item 2).
+- `cmd/evmsdk/mobileverify_session.go`: `MobileVerifySession`, the gomobile face of the client
+  (item 1): `NewMobileVerifySession(baseURL, privKeyHex, chainName)`, `Register`, `Latest`,
+  `VerifyBlock`, `Cert`, `Health`, `PubkeyHex`, `SetTimeoutMs`, `Close`, JSON results. The chain
+  is required: the nil default would re-execute `mainnet_qmdb_staggered` packets under the
+  mainnet rules and fail every block.
+- `make android` / `make ios` build again (item 3). They had been broken since 2026-03 by two
+  unbindable exported functions (gobind rejects the whole package), `lib/mmap` not compiling
+  for 32-bit, the `wlynxg/anet` linkname, blst under NDK 26+, and no `golang.org/x/mobile` in
+  `go.mod` (now tool directives). `make android` builds all four ABIs the app ships.
+
+App side (n42appv2, branch `feat/mining-v3-mobileverify`, not pushed):
+
+- `evm.aar` rebuilt from N42 `d2fae7b3` in both places (item 5); `Evmsdk.emit` kept for v1.
+- `flutter_mining` gains the `n42/mobileverify` channel (`MobileVerifyHandler.kt`) and
+  `lib/mobileverify.dart` (item 6).
+- `lib/features/mining_v3`: `MobileVerifyProbe` and a debug-only settings page that registers,
+  waits for the epoch commit, verifies the head and waits for its certificate.
+
+Not yet verified on a device: there is no emulator on the build machine, and the fleet needs
+a roll before it serves `/latest`. The session itself ran against the live 7-node fleet from
+the desktop (head taken from JSON-RPC instead): registered and committed within a minute, then
+3 blocks (25, 2 and 21 transactions) re-executed under `mainnet_qmdb_staggered`, submitted, and
+certified with its signature.
+
+Next: phase 2 (`MiningEngineKind{v1,v2,v3}` replacing `miningUseV2Provider`, behind a
+`MiningEngine` interface), phase 3 (foreground service, iOS), phase 4 (reward model, remote
+flag, TLS endpoint: items 4 and 8).
