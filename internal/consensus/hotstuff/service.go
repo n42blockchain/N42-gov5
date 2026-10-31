@@ -527,8 +527,9 @@ type Service struct {
 	// journal off the chain database's single writer (vote_journal_db.go).
 	journalDB kv.RwDB
 
-	gossipTopic  string // fully qualified gossip topic string
-	rpcTopic     string // fully qualified RPC topic string
+	gossipTopic  string        // fully qualified gossip topic string
+	rpcTopic     string        // fully qualified RPC topic string
+	voteLane     chan struct{} // gossipVoteLane slots (dispatchGossipMessage)
 	h2V4Identity *H2V4ChainIdentity
 
 	blockProducer    BlockProducer
@@ -630,6 +631,7 @@ func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpc
 		db:                db,
 		gossipTopic:       gossipTopic,
 		rpcTopic:          rpcTopic,
+		voteLane:          make(chan struct{}, gossipVoteLaneMax),
 		rotor:             NewRotor(3),
 		ctx:               ctx,
 		cancel:            cancel,
@@ -1325,8 +1327,57 @@ func (s *Service) subscribeMessages() {
 		if contentionDiagEnabled {
 			tRx = time.Now()
 		}
+		if gossipVoteLane {
+			s.dispatchGossipMessage(msg.Data, enc, msg.ReceivedFrom, tRx)
+			continue
+		}
 		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom, tRx, "gossip")
 	}
+}
+
+// gossipVoteLane is N42_GOSSIP_VOTE_LANE=1: hand gossiped votes to their own
+// goroutines instead of processing them on the serial gossip loop.
+//
+// The loop calls ProcessEvent inline, so every message waits for the engine
+// lock behind the one before it, and the next sub.Next() waits for both.
+// On the leader that queue is where its Round 2 went: a follower's commit
+// vote took 6 ms from the follower's publish to the leader's sub.Next()
+// (every leader/follower pair alike), against 0 ms for the same vote over a
+// Rotor stream (one goroutine per stream) and 0.2 ms for the PrepareQC
+// gossiped the other way, to followers whose loops were idle (E1N26 run 7).
+// Votes need no order among themselves -- the Rotor path already delivers
+// them concurrently and out of order with the gossip copies -- so they get
+// a goroutine each; every other message stays on the loop, in order.
+var gossipVoteLane = os.Getenv("N42_GOSSIP_VOTE_LANE") == "1"
+
+// gossipVoteLaneMax bounds the vote goroutines in flight; past it a vote is
+// processed on the loop as before, which is the backpressure.
+const gossipVoteLaneMax = 64
+
+// dispatchGossipMessage is the gossip loop's entry under gossipVoteLane: it
+// decodes the message and runs a Vote or CommitVote on its own goroutine,
+// anything else inline.
+func (s *Service) dispatchGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID, rxAt time.Time) {
+	var tArrive time.Time
+	if contentionDiagEnabled {
+		tArrive = time.Now()
+	}
+	msg, ok := decodeConsensusGossip(data, enc)
+	if !ok {
+		return
+	}
+	if msg.Type == MsgVote || msg.Type == MsgCommitVote {
+		select {
+		case s.voteLane <- struct{}{}:
+			go func() {
+				defer func() { <-s.voteLane }()
+				s.handleConsensusMsg(msg, from, tArrive, rxAt, "gossip")
+			}()
+			return
+		default:
+		}
+	}
+	s.handleConsensusMsg(msg, from, tArrive, rxAt, "gossip")
 }
 
 // processGossipMessage is the single entry point for every inbound consensus
@@ -1351,19 +1402,32 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 		tArrive = time.Now()
 	}
 
-	// Decompress snappy.
+	consensusMsg, ok := decodeConsensusGossip(data, enc)
+	if !ok {
+		return
+	}
+	s.handleConsensusMsg(consensusMsg, from, tArrive, rxAt, via)
+}
+
+// decodeConsensusGossip undoes the snappy gossip envelope and decodes the
+// consensus message inside.
+func decodeConsensusGossip(data []byte, enc encoder.NetworkEncoding) (*ConsensusMsg, bool) {
 	raw := &rawSSZMarshaler{}
 	if err := enc.DecodeGossip(data, raw); err != nil {
 		log.Debug("hotstuff: failed to decode gossip message", "err", err)
-		return
+		return nil, false
 	}
-
 	consensusMsg, err := DecodeConsensusMsg(raw.data)
 	if err != nil {
 		log.Debug("hotstuff: failed to decode consensus message", "err", err)
-		return
+		return nil, false
 	}
+	return consensusMsg, true
+}
 
+// handleConsensusMsg learns the sender's peer and hands a decoded message to
+// the engine.
+func (s *Service) handleConsensusMsg(consensusMsg *ConsensusMsg, from peer.ID, tArrive, rxAt time.Time, via string) {
 	ce := s.engine.Engine()
 	if ce == nil {
 		return
