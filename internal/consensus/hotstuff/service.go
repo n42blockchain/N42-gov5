@@ -1343,14 +1343,13 @@ func (s *Service) subscribeMessages() {
 	}
 }
 
-// rotorMapFix is N42_ROTOR_MAP_FIX=1: keep a validator's Rotor peer mapping
-// after a direct send succeeds (only a failed send drops it), and do not learn
-// a proposer's peer from a Proposal that a relay forwarded. Without it, 86% of
-// commit votes found no mapping for the leader -- the prepare vote's
-// successful send had just dropped it -- and went gossip only, 6 ms from
-// publish to the leader's receipt, against 0 ms on a Rotor stream (E1N26 run
-// 7).
-var rotorMapFix = os.Getenv("N42_ROTOR_MAP_FIX") == "1"
+// rotorMapFix keeps a validator's Rotor peer mapping after a direct send
+// succeeds (only a failed send drops it), and does not learn a proposer's
+// peer from a Proposal that a relay forwarded. Without it, 86% of commit
+// votes found no mapping for the leader -- the prepare vote's successful send
+// had just dropped it -- and went gossip only (E1N26 run 7). On by default;
+// N42_ROTOR_MAP_FIX=0 restores the old behaviour.
+var rotorMapFix = os.Getenv("N42_ROTOR_MAP_FIX") != "0"
 
 // SetRotorMapFixForTest switches rotorMapFix and returns the restore.
 func SetRotorMapFixForTest(on bool) func() {
