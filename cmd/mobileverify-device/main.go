@@ -80,11 +80,11 @@ func main() {
 
 	devs := make([]*device, *devicesN)
 	for i := range devs {
-		priv, pub, _, err := evmsdk.GenerateMobileBLSKey()
+		key, err := evmsdk.GenerateMobileBLSKey()
 		if err != nil {
 			log.Fatalf("keygen: %v", err)
 		}
-		c, err := evmsdk.NewMobileVerifyClient(nodes[i%len(nodes)], priv)
+		c, err := evmsdk.NewMobileVerifyClient(nodes[i%len(nodes)], key.PrivHex)
 		if err != nil {
 			log.Fatalf("client: %v", err)
 		}
@@ -92,7 +92,7 @@ func main() {
 		if _, err := c.Register(ctx); err != nil {
 			log.Fatalf("device %d register at %s: %v", i, devs[i].node, err)
 		}
-		log.Printf("device %d registered at %s pubkey=%s...", i, devs[i].node, pub[:16])
+		log.Printf("device %d registered at %s pubkey=%s...", i, devs[i].node, key.PubHex[:16])
 	}
 
 	// Registration is gossiped and committed per node on its own epoch timer.

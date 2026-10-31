@@ -20,28 +20,41 @@ import (
 	"fmt"
 )
 
-// GenerateMobileBLSKey creates a fresh BLS identity for this device. It
-// returns the 32-byte secret hex (persist this in secure storage), the
-// 48-byte compressed public key hex (the registry identity), and the 20-byte
-// address hex (first 20 bytes of the pubkey — a display/identity convenience,
-// matching the validator address convention). Call once, then persist privHex.
+// MobileBLSKey is a device's BLS identity, as GenerateMobileBLSKey returns
+// it. A struct rather than several results: gobind binds one result and
+// an error, and rejects the whole package otherwise.
+type MobileBLSKey struct {
+	// PrivHex is the 32-byte secret hex, the only value to persist (in
+	// secure storage); the others derive from it.
+	PrivHex string
+	// PubHex is the 48-byte compressed public key hex, the registry
+	// identity.
+	PubHex string
+	// AddrHex is the 20-byte address hex: the first 20 bytes of the
+	// pubkey, a display/identity convenience matching the validator
+	// address convention.
+	AddrHex string
+}
+
+// GenerateMobileBLSKey creates a fresh BLS identity for this device. Call
+// once, then persist PrivHex.
 //
-// privHex is a 32-byte SEED interpreted exactly as NewMobileVerifyClient /
+// PrivHex is a 32-byte SEED interpreted exactly as NewMobileVerifyClient /
 // decodeSecretKey interpret it (SecretKeyFromRandom32Byte KDF), so a key
 // generated here reloads to the identical BLS key — the round-trip the
 // lifecycle test pins.
-func GenerateMobileBLSKey() (privHex, pubHex, addrHex string, err error) {
+func GenerateMobileBLSKey() (*MobileBLSKey, error) {
 	var seed [32]byte
 	if _, err := rand.Read(seed[:]); err != nil {
-		return "", "", "", fmt.Errorf("mobileverify keygen: %w", err)
+		return nil, fmt.Errorf("mobileverify keygen: %w", err)
 	}
-	privHex = hex.EncodeToString(seed[:])
+	privHex := hex.EncodeToString(seed[:])
 	sk, err := decodeSecretKey(privHex)
 	if err != nil {
-		return "", "", "", fmt.Errorf("mobileverify keygen: %w", err)
+		return nil, fmt.Errorf("mobileverify keygen: %w", err)
 	}
 	pub := sk.PublicKey().Marshal()
-	return privHex, hex.EncodeToString(pub), hex.EncodeToString(pub[:20]), nil
+	return &MobileBLSKey{PrivHex: privHex, PubHex: hex.EncodeToString(pub), AddrHex: hex.EncodeToString(pub[:20])}, nil
 }
 
 // MobileBLSPublicKey derives the 48-byte compressed public key hex from a

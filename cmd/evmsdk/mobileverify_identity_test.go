@@ -13,10 +13,11 @@ import (
 // TestMobileIdentityLifecycle: generate → persist(hex) → reload derives the
 // SAME pubkey/address, and the PoP verifies against the derived pubkey.
 func TestMobileIdentityLifecycle(t *testing.T) {
-	privHex, pubHex, addrHex, err := GenerateMobileBLSKey()
+	key, err := GenerateMobileBLSKey()
 	if err != nil {
 		t.Fatal(err)
 	}
+	privHex, pubHex, addrHex := key.PrivHex, key.PubHex, key.AddrHex
 	if len(mustHex(t, privHex)) != 32 || len(mustHex(t, pubHex)) != 48 || len(mustHex(t, addrHex)) != 20 {
 		t.Fatalf("bad lengths: priv=%d pub=%d addr=%d", len(privHex)/2, len(pubHex)/2, len(addrHex)/2)
 	}

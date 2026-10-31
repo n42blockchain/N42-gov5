@@ -42,9 +42,9 @@ func TestWireHeaderRoundtrip(t *testing.T) {
 		t.Fatalf("EncodeWireHeader() len = %d, want %d", len(encoded), WireHeaderSize)
 	}
 
-	hdr, payload, err := DecodeWireHeader(encoded)
+	hdr, payload, err := decodeWireHeader(encoded)
 	if err != nil {
-		t.Fatalf("DecodeWireHeader() error = %v", err)
+		t.Fatalf("decodeWireHeader() error = %v", err)
 	}
 
 	if hdr.Version != WireVersion1 {
@@ -61,9 +61,9 @@ func TestWireHeaderRoundtrip(t *testing.T) {
 func TestWireHeaderWithFlags(t *testing.T) {
 	encoded := EncodeWireHeader(WireVersion1, FlagHasBytecodes)
 
-	hdr, _, err := DecodeWireHeader(encoded)
+	hdr, _, err := decodeWireHeader(encoded)
 	if err != nil {
-		t.Fatalf("DecodeWireHeader() error = %v", err)
+		t.Fatalf("decodeWireHeader() error = %v", err)
 	}
 
 	if !hdr.HasBytecodes() {
@@ -77,9 +77,9 @@ func TestWireHeaderWithFlags(t *testing.T) {
 
 	// Without flag.
 	encodedNoFlag := EncodeWireHeader(WireVersion1, 0x00)
-	hdrNoFlag, _, err := DecodeWireHeader(encodedNoFlag)
+	hdrNoFlag, _, err := decodeWireHeader(encodedNoFlag)
 	if err != nil {
-		t.Fatalf("DecodeWireHeader() error = %v", err)
+		t.Fatalf("decodeWireHeader() error = %v", err)
 	}
 	if hdrNoFlag.HasBytecodes() {
 		t.Error("HasBytecodes() = true, want false")
@@ -88,35 +88,35 @@ func TestWireHeaderWithFlags(t *testing.T) {
 
 func TestWireHeaderErrors(t *testing.T) {
 	t.Run("too short", func(t *testing.T) {
-		_, _, err := DecodeWireHeader([]byte{0x4E, 0x32})
+		_, _, err := decodeWireHeader([]byte{0x4E, 0x32})
 		if !errors.Is(err, ErrWireTooShort) {
 			t.Errorf("error = %v, want %v", err, ErrWireTooShort)
 		}
 	})
 
 	t.Run("empty", func(t *testing.T) {
-		_, _, err := DecodeWireHeader([]byte{})
+		_, _, err := decodeWireHeader([]byte{})
 		if !errors.Is(err, ErrWireTooShort) {
 			t.Errorf("error = %v, want %v", err, ErrWireTooShort)
 		}
 	})
 
 	t.Run("invalid magic", func(t *testing.T) {
-		_, _, err := DecodeWireHeader([]byte{0x00, 0x00, 0x01, 0x00})
+		_, _, err := decodeWireHeader([]byte{0x00, 0x00, 0x01, 0x00})
 		if !errors.Is(err, ErrWireInvalidMagic) {
 			t.Errorf("error = %v, want %v", err, ErrWireInvalidMagic)
 		}
 	})
 
 	t.Run("unsupported version", func(t *testing.T) {
-		_, _, err := DecodeWireHeader([]byte{0x4E, 0x32, 0xFF, 0x00})
+		_, _, err := decodeWireHeader([]byte{0x4E, 0x32, 0xFF, 0x00})
 		if !errors.Is(err, ErrWireUnsupportedVersion) {
 			t.Errorf("error = %v, want %v", err, ErrWireUnsupportedVersion)
 		}
 	})
 
 	t.Run("version zero", func(t *testing.T) {
-		_, _, err := DecodeWireHeader([]byte{0x4E, 0x32, 0x00, 0x00})
+		_, _, err := decodeWireHeader([]byte{0x4E, 0x32, 0x00, 0x00})
 		if !errors.Is(err, ErrWireUnsupportedVersion) {
 			t.Errorf("error = %v, want %v", err, ErrWireUnsupportedVersion)
 		}
@@ -127,9 +127,9 @@ func TestWireHeaderPayloadPreserved(t *testing.T) {
 	extra := []byte{0xDE, 0xAD, 0xBE, 0xEF}
 	data := append(EncodeWireHeader(WireVersion1, 0x00), extra...)
 
-	_, payload, err := DecodeWireHeader(data)
+	_, payload, err := decodeWireHeader(data)
 	if err != nil {
-		t.Fatalf("DecodeWireHeader() error = %v", err)
+		t.Fatalf("decodeWireHeader() error = %v", err)
 	}
 
 	if len(payload) != len(extra) {

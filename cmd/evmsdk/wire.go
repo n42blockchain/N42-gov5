@@ -64,9 +64,11 @@ func EncodeWireHeader(version, flags uint8) []byte {
 	return buf
 }
 
-// DecodeWireHeader parses a V2 wire header from data.
+// decodeWireHeader parses a V2 wire header from data.
 // Returns the parsed header and the remaining payload after the header.
-func DecodeWireHeader(data []byte) (*WireHeader, []byte, error) {
+// Unexported: gobind rejects the whole package over an exported function
+// with more than one result besides an error.
+func decodeWireHeader(data []byte) (*WireHeader, []byte, error) {
 	if len(data) < WireHeaderSize {
 		return nil, nil, ErrWireTooShort
 	}
