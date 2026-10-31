@@ -1,6 +1,6 @@
 # Plan: move n42appv2 mining onto /mobileverify
 
-Status: phase 1 done (2026-10-31), see "Progress" at the end; the rest is still a plan.
+Status: phases 1 and 2 done (2026-10-31), see "Progress" at the end; the rest is still a plan.
 
 ## Where the app is today
 
@@ -114,7 +114,7 @@ Go side (N42):
   for 32-bit, the `wlynxg/anet` linkname, blst under NDK 26+, and no `golang.org/x/mobile` in
   `go.mod` (now tool directives). `make android` builds all four ABIs the app ships.
 
-App side (n42appv2, branch `feat/mining-v3-mobileverify`, not pushed):
+App side (n42appv2, branch `feat/mining-v3-mobileverify`):
 
 - `evm.aar` rebuilt from N42 `d2fae7b3` in both places (item 5); `Evmsdk.emit` kept for v1.
 - `flutter_mining` gains the `n42/mobileverify` channel (`MobileVerifyHandler.kt`) and
@@ -122,12 +122,28 @@ App side (n42appv2, branch `feat/mining-v3-mobileverify`, not pushed):
 - `lib/features/mining_v3`: `MobileVerifyProbe` and a debug-only settings page that registers,
   waits for the epoch commit, verifies the head and waits for its certificate.
 
-Not yet verified on a device: there is no emulator on the build machine, and the fleet needs
-a roll before it serves `/latest`. The session itself ran against the live 7-node fleet from
+Not yet verified on a device: there is no emulator on the build machine. The fleet was rolled
+to `9e357bff` the same day, so it serves `/latest` (the `cmd/mobileverify-device` regression
+after the roll: 20/20 certified); the Android device run is task T30 in the app's
+`Codex-N42.md`. The session itself ran against the live 7-node fleet from
 the desktop (head taken from JSON-RPC instead): registered and committed within a minute, then
 3 blocks (25, 2 and 21 transactions) re-executed under `mainnet_qmdb_staggered`, submitted, and
 certified with its signature.
 
-Next: phase 2 (`MiningEngineKind{v1,v2,v3}` replacing `miningUseV2Provider`, behind a
-`MiningEngine` interface), phase 3 (foreground service, iOS), phase 4 (reward model, remote
-flag, TLS endpoint: items 4 and 8).
+### Phase 2 (2026-10-31): v3 as a selectable engine
+
+App side only (n42appv2 `fdaab631`):
+
+- `MiningEngineKind{v1,v2,v3}` replaces `miningUseV2Provider`. It is stored under
+  `miningEngine`; installs with only the old bool keep their choice, and the bool is still
+  written so a downgraded app opens v1 or v2. v3 is offered only in debug builds or with
+  `--dart-define=MINING_V3=true`. No common `MiningEngine` interface yet: v1 and v2 keep their
+  own pages, the tab just switches on the kind.
+- `MiningV3Engine` runs the loop until stopped: register until committed, poll `/latest`
+  every second, verify each new head once (failures counted, loop goes on), read the
+  certificate 20 s later and count the block uncertified after 2 minutes; any other error
+  reopens the session after 10 s. `MiningV3Page` is the v3 mining tab (status, counters, node
+  URL, start/stop, log).
+
+Next: phase 3 (foreground service so the loop survives the background, iOS), phase 4 (reward
+model, remote flag, TLS endpoint, localized v3 strings: items 4 and 8).
