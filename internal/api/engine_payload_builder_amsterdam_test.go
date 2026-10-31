@@ -184,7 +184,7 @@ func TestStatefulPayloadBuildAmsterdamGasUsed(t *testing.T) {
 	require.ErrorContains(t, err, "block access list hash mismatch")
 
 	slot := uint64(9)
-	result = engine.buildExecutionPayloadStatefulWithSlot(genesisBlock, headHash, attrs, []*Withdrawal{}, &beaconRoot, &slot)
+	result = engine.buildExecutionPayloadStatefulWithSlot(genesisBlock, headHash, attrs, []*Withdrawal{}, &beaconRoot, &slot, nil)
 	require.NotNil(t, result)
 	require.Equal(t, slot, *result.block.Header().(*block.Header).SlotNumber)
 }
@@ -250,6 +250,61 @@ func TestAmsterdamForkchoiceUpdatedV4GetPayloadV6RoundTrip(t *testing.T) {
 	status, err = v4.NewPayloadV5(ctx, &tampered, []types.Hash{}, &beaconRoot, got.ExecutionRequests)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, status.Status)
+}
+
+// With ePBS the consensus client passes the gas limit it wants in the
+// forkchoiceUpdatedV4 attributes: an Amsterdam payload's gas limit moves from
+// the parent's towards targetGasLimit by at most the per-block bound, the
+// target takes part in the payload id, and the payload imports.
+func TestAmsterdamForkchoiceUpdatedV4TargetGasLimit(t *testing.T) {
+	beaconRoot := types.Hash{0x42}
+	shared := newAmsterdamBuildTest(t)
+	parent := shared.genesis.GasLimit()
+	bound := parent/params.GasLimitBoundDivisor - 1
+	target := func(v uint64) *hexutil.Uint64 { h := hexutil.Uint64(v); return &h }
+	ctx := context.Background()
+	forkchoice := func(bt *amsterdamBuildTest, target *hexutil.Uint64) (*EngineAPIv4, PayloadID) {
+		v4 := NewEngineAPIv4(NewBlockChainAPI(bt.api))
+		slot := hexutil.Uint64(5)
+		resp, err := v4.ForkchoiceUpdatedV4(ctx, &ForkchoiceStateV1{HeadBlockHash: bt.headHash}, &PayloadAttributesV4{
+			Timestamp:             2,
+			PrevRandao:            types.Hash{0x11},
+			SuggestedFeeRecipient: bt.coinbase,
+			Withdrawals:           []*Withdrawal{},
+			ParentBeaconBlockRoot: &beaconRoot,
+			SlotNumber:            &slot,
+			TargetGasLimit:        target,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, resp.PayloadID)
+		return v4, *resp.PayloadID
+	}
+
+	ids := map[PayloadID]bool{}
+	for _, tc := range []struct {
+		target *hexutil.Uint64
+		want   uint64
+	}{
+		{nil, parent},
+		{target(parent), parent},
+		{target(parent * 2), parent + bound},
+		{target(parent / 2), parent - bound},
+		{target(parent + 10), parent + 10},
+	} {
+		// The same attributes on the same head, but another target.
+		_, id := forkchoice(shared, tc.target)
+		require.False(t, ids[id], "payload id reused for target %v", tc.target)
+		ids[id] = true
+
+		// A fresh chain, so the payload imports onto the head.
+		v4, id := forkchoice(newAmsterdamBuildTest(t), tc.target)
+		got, err := v4.GetPayloadV6(ctx, id)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, uint64(got.ExecutionPayload.GasLimit), "target %v", tc.target)
+		status, err := v4.NewPayloadV5(ctx, got.ExecutionPayload, []types.Hash{}, &beaconRoot, got.ExecutionRequests)
+		require.NoError(t, err)
+		require.Equal(t, PayloadStatusValid, status.Status, statusString(status))
+	}
 }
 
 // The embedded consensus client in cmd/eth-el imports an Amsterdam payload

@@ -105,6 +105,10 @@ type PayloadAttributesV4 struct {
 
 	// Amsterdam additions
 	SlotNumber *hexutil.Uint64 `json:"slotNumber,omitempty"` // EIP-7843
+	// TargetGasLimit is the gas limit the consensus client wants the chain
+	// to move towards, which with ePBS (EIP-7732) it passes in the
+	// attributes; optional, as in geth.
+	TargetGasLimit *hexutil.Uint64 `json:"targetGasLimit,omitempty"`
 }
 
 // GetPayloadResponseV4 is the response for engine_getPayloadV4
@@ -478,6 +482,11 @@ func (e *EngineAPIv4) buildAndStorePayloadV4(head block.IBlock, headHash types.H
 		var slotBytes [8]byte
 		binary.BigEndian.PutUint64(slotBytes[:], uint64(*attrs.SlotNumber))
 		extras = append(extras, slotBytes[:])
+		if attrs.TargetGasLimit != nil {
+			var targetBytes [8]byte
+			binary.BigEndian.PutUint64(targetBytes[:], uint64(*attrs.TargetGasLimit))
+			extras = append(extras, targetBytes[:])
+		}
 		slot := *attrs.SlotNumber
 		slotNumber = &slot
 	}
@@ -687,16 +696,20 @@ func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, paren
 	if attrs == nil {
 		return nil, nil, nil, nil, nil
 	}
-	var slotNumber *uint64
+	var slotNumber, targetGasLimit *uint64
 	if attrs.SlotNumber != nil {
 		slot := uint64(*attrs.SlotNumber)
 		slotNumber = &slot
+	}
+	if attrs.TargetGasLimit != nil {
+		target := uint64(*attrs.TargetGasLimit)
+		targetGasLimit = &target
 	}
 	result := e.v1.buildExecutionPayloadStatefulWithSlot(parent, parentHash, &PayloadAttributesV1{
 		Timestamp:             attrs.Timestamp,
 		PrevRandao:            attrs.PrevRandao,
 		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
-	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot, slotNumber)
+	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot, slotNumber, targetGasLimit)
 	if result == nil || result.block == nil {
 		return nil, nil, nil, nil, nil
 	}
