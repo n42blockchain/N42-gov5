@@ -21,6 +21,7 @@ package mmap
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"syscall"
 	"unsafe"
@@ -28,7 +29,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const MaxMapSize = 0xFFFFFFFFFFFF
+// MaxMapSize bounds the array type a mapping is viewed through: 256 TiB,
+// or the largest int on 32-bit targets, where the 64-bit bound is not a
+// valid array length (the mobile SDK builds for android/arm and 386).
+const MaxMapSize = min(0xFFFFFFFFFFFF, math.MaxInt)
 
 // MmapRw memory maps a file with read-write permissions.
 func MmapRw(f *os.File, size int) ([]byte, *[MaxMapSize]byte, error) {
