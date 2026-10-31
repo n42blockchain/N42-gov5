@@ -326,15 +326,16 @@ func (e *EngineAPIV1) buildExecutionPayloadV1Stateful(parent block.IBlock, paren
 }
 
 func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash) *statefulPayloadBuildResult {
-	return e.buildExecutionPayloadStatefulWithSlot(parent, parentHash, attrs, withdrawals, parentBeaconRoot, nil)
+	return e.buildExecutionPayloadStatefulWithSlot(parent, parentHash, attrs, withdrawals, parentBeaconRoot, nil, nil)
 }
 
 // buildExecutionPayloadStatefulWithSlot builds a payload on parent's state.
 // An Amsterdam payload carries slotNumber (EIP-7843) in its header and
 // records the EIP-7928 block access list, with the import side's indices:
 // 0 for the pre-execution system calls, i+1 for transaction i, n+1 for the
-// withdrawals and the post-execution system calls.
-func (e *EngineAPIV1) buildExecutionPayloadStatefulWithSlot(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash, slotNumber *uint64) *statefulPayloadBuildResult {
+// withdrawals and the post-execution system calls. Its gas limit moves from
+// the parent's towards targetGasLimit when the consensus client sets one.
+func (e *EngineAPIV1) buildExecutionPayloadStatefulWithSlot(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash, slotNumber, targetGasLimit *uint64) *statefulPayloadBuildResult {
 	if e == nil || e.api == nil || e.api.api == nil || e.api.api.engine == nil || e.api.api.txspool == nil {
 		return nil
 	}
@@ -360,6 +361,9 @@ func (e *EngineAPIV1) buildExecutionPayloadStatefulWithSlot(parent block.IBlock,
 				slot = *slotNumber
 			}
 			header.SlotNumber = &slot
+			if targetGasLimit != nil {
+				header.GasLimit = calcTargetGasLimit(parentHeader.GasLimit, *targetGasLimit)
+			}
 			ibs.EnableBlockAccessList()
 		}
 		if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, e.chainConfig(), ibs, header, e.api.api.engine); err != nil {
@@ -481,6 +485,26 @@ func populateEthereumExecutionPayloadHeader(header *block.Header, txs []*transac
 	header.ReceiptHash = ethel.EthReceiptHash(receipts)
 	header.Bloom = block.CreateBloom(receipts)
 	return nil
+}
+
+// calcTargetGasLimit moves the gas limit from the parent's towards target by
+// at most the per-block bound, as geth's core.CalcGasLimit (whose bound
+// underflows below GasLimitBoundDivisor; this one does not).
+func calcTargetGasLimit(parentGasLimit, target uint64) uint64 {
+	if target < params.MinGasLimit {
+		target = params.MinGasLimit
+	}
+	delta := parentGasLimit / params.GasLimitBoundDivisor
+	if delta > 0 {
+		delta--
+	}
+	switch {
+	case parentGasLimit < target:
+		return min(parentGasLimit+delta, target)
+	case parentGasLimit > target:
+		return max(parentGasLimit-delta, target)
+	}
+	return parentGasLimit
 }
 
 func buildStatefulPayloadHeader(parentHeader *block.Header, parentHash types.Hash, attrs *PayloadAttributesV1, cfg *params.ChainConfig) *block.Header {
