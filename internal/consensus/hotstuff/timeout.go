@@ -376,7 +376,8 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 func (e *ConsensusEngine) processDecide(decide *Decide) error {
 	currentView := e.roundState.CurrentView()
 
-	if decide.View < currentView {
+	trailing := e.trailing != nil && !e.trailingActive && decide.View == e.trailing.view
+	if decide.View < currentView && !trailing {
 		return nil
 	}
 
@@ -427,6 +428,32 @@ func (e *ConsensusEngine) processDecide(decide *Decide) error {
 			return err
 		}
 		return e.emit(EngineOutput{Type: OutputViewChanged, View: e.roundState.CurrentView()})
+	}
+
+	if trailing {
+		// pipelinePropose: the node is already in a later view; commit the
+		// trailing round's block without moving the view.
+		if e.checkCommittedFloor(decide.BlockHash) == floorRefuse {
+			log.Error("hotstuff: Decide NOT committed locally: block conflicts with this node's committed block",
+				"view", decide.View, "blockHash", decide.BlockHash)
+			metricVoteCommittedFloor.Inc()
+			e.dropTrailing("floor")
+			return nil
+		}
+		return e.inTrailing(func() error {
+			log.Info("received Decide, committing block", "view", decide.View, "blockHash", decide.BlockHash)
+			now := time.Now()
+			e.viewTiming.CommitQCFormed = &now
+			e.roundState.UpdateLockedQC(&decide.CommitQC)
+			e.roundState.CommitKeepPhase(decide.CommitQC.Clone())
+			e.trailing.committed = true
+			return e.emit(EngineOutput{
+				Type: OutputBlockCommitted,
+				View: decide.View,
+				Hash: decide.BlockHash,
+				QC:   &decide.CommitQC,
+			})
+		})
 	}
 
 	log.Info("received Decide, committing block", "view", decide.View, "blockHash", decide.BlockHash)

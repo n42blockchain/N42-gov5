@@ -276,7 +276,10 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 		_ = e.commitCollector.AddVote(e.myIndex, commitSig)
 	}
 
-	return e.tryFormCommitQC()
+	if err := e.tryFormCommitQC(); err != nil {
+		return err
+	}
+	return e.pipelineAdvance(view, qc)
 }
 
 // broadcastPrepareQCThenSelfVote is tryFormPrepareQC's tail under
@@ -306,7 +309,10 @@ func (e *ConsensusEngine) broadcastPrepareQCThenSelfVote(view ViewNumber, blockH
 	if e.commitCollector != nil {
 		_ = e.commitCollector.AddVote(e.myIndex, commitSig)
 	}
-	return e.tryFormCommitQC()
+	if err := e.tryFormCommitQC(); err != nil {
+		return err
+	}
+	return e.pipelineAdvance(view, &prepareQCMsg.QC)
 }
 
 // processCommitVote processes a Round 2 (Commit) vote from a validator. mt
@@ -314,7 +320,7 @@ func (e *ConsensusEngine) broadcastPrepareQCThenSelfVote(view ViewNumber, blockH
 func (e *ConsensusEngine) processCommitVote(cv *CommitVote, mt msgTiming) error {
 	receivedAt := mt.arrive
 	tLocked := time.Now()
-	view := e.roundState.CurrentView()
+	view := e.r2View()
 
 	if cv.View != view {
 		return &ViewMismatchError{Current: view, Received: cv.View}
@@ -450,7 +456,7 @@ func (e *ConsensusEngine) flushCommitVotes() error {
 
 // tryFormCommitQC attempts to form a Commit QC from collected Round 2 votes.
 func (e *ConsensusEngine) tryFormCommitQC() error {
-	view := e.roundState.CurrentView()
+	view := e.r2View()
 	vs := e.validatorSet()
 
 	// Flush remaining buffered votes before checking quorum.
@@ -486,7 +492,12 @@ func (e *ConsensusEngine) tryFormCommitQC() error {
 
 	log.Info("block committed!", "view", view, "blockHash", blockHash)
 
-	e.roundState.Commit(commitQC.Clone())
+	if e.trailingActive {
+		// The view already moved on (pipelinePropose): keep its phase.
+		e.roundState.CommitKeepPhase(commitQC.Clone())
+	} else {
+		e.roundState.Commit(commitQC.Clone())
+	}
 
 	// Broadcast Decide.
 	decide := &Decide{
@@ -512,6 +523,10 @@ func (e *ConsensusEngine) tryFormCommitQC() error {
 		QC:   commitQC,
 	}); err != nil {
 		return err
+	}
+	if e.trailingActive {
+		e.trailing.committed = true
+		return nil
 	}
 
 	nextView := view + 1

@@ -418,6 +418,7 @@ func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
 // "checked" (see contentionStamps.commitVoteGate) -- recorded only when the
 // vote was actually held; ignored otherwise.
 func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gate string) {
+	e.trailingCastHeld(blockHash, gate)
 	if !e.twoPhaseVote || e.pendingCommitQC == nil || e.pendingCommitQC.BlockHash != blockHash {
 		return
 	}
@@ -428,7 +429,7 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gat
 	journaled := e.pendingCommitJournaled
 	e.pendingCommitQC = nil
 	e.pendingCommitJournaled = false
-	if held.View != e.roundState.CurrentView() {
+	if held.View != e.r2View() {
 		return
 	}
 	if contentionDiagEnabled {
@@ -475,7 +476,9 @@ func (e *ConsensusEngine) releaseJournaledCommitVote(pqc *PrepareQCMsg) error {
 			"view", pqc.View, "blockHash", pqc.BlockHash)
 		return nil
 	}
-	e.roundState.EnterPreCommit()
+	if !e.trailingActive {
+		e.roundState.EnterPreCommit()
+	}
 	return e.emitCommitVote(pqc.View, pqc.BlockHash)
 }
 
@@ -573,7 +576,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 			}
 		}
 	}
-	view := e.roundState.CurrentView()
+	view := e.r2View()
 
 	if pqc.View != view {
 		return &ViewMismatchError{Current: view, Received: pqc.View}
@@ -581,6 +584,9 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 
 	if err := e.verifyQCWithSet(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
 		return err
+	}
+	if pipelinePropose && (pqc.QC.View != view || pqc.QC.BlockHash != pqc.BlockHash) {
+		return &ViewMismatchError{Current: view, Received: pqc.QC.View}
 	}
 
 	// Double-vote prevention: only send one Round 2 commit vote per view.
@@ -604,7 +610,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 		if commitJournalEarly {
 			e.journalHeldCommitVote(&held)
 		}
-		return nil
+		return e.pipelineAdvance(view, &held.QC)
 	}
 
 	// S26 (docs/OPEN_ISSUES.md "A quorum-committed block that no node
@@ -626,7 +632,9 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 	}
 
 	e.roundState.UpdateLockedQC(&pqc.QC)
-	e.roundState.EnterPreCommit()
+	if !e.trailingActive {
+		e.roundState.EnterPreCommit()
+	}
 
 	// Journal the Round 2 commitment BEFORE signing/sending it. The snapshot
 	// also carries the lock just advanced above, so the lock and the vote it
@@ -638,7 +646,10 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 
 	// The commitment was already recorded (and made durable) by
 	// journalCommitVote above, which also prevents a re-attempt.
-	return e.emitCommitVote(view, pqc.BlockHash)
+	if err := e.emitCommitVote(view, pqc.BlockHash); err != nil {
+		return err
+	}
+	return e.pipelineAdvance(view, &pqc.QC)
 }
 
 // emitCommitVote signs and sends this node's Round 2 vote for blockHash to the
@@ -796,6 +807,13 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// Two-phase mode: a held Round-2 CommitVote fires as soon as its block
 	// imports (processPrepareQC parked it; re-entering is idempotent via
 	// HasCommitVotedInView).
+	if t := e.trailing; e.twoPhaseVote && t != nil && t.held != nil {
+		gate := "parent-import"
+		if blockHash == t.held.BlockHash {
+			gate = "own-import"
+		}
+		e.trailingCastHeld(t.held.BlockHash, gate)
+	}
 	if e.twoPhaseVote && e.pendingCommitQC != nil {
 		// This block, or a checked child of it whose guarantee this import
 		// completes (deferred execution attests the parent, not the block).

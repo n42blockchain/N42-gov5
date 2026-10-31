@@ -25,6 +25,7 @@ type RoundState struct {
 	lastCommittedQC     QuorumCertificate   // most recently committed
 	highestTC           *TimeoutCertificate // highest known TC (SyncInfo piggyback)
 	consecutiveTimeouts uint32
+	timedOutView        ViewNumber // the last view this node timed out in
 
 	// Double-vote prevention: track which view we've already voted in. These
 	// fields are the node's vote commitment and are journalled to disk BEFORE
@@ -105,6 +106,14 @@ func (rs *RoundState) Commit(commitQC QuorumCertificate) {
 	rs.consecutiveTimeouts = 0
 }
 
+// CommitKeepPhase is Commit for a view the node already left (a trailing
+// round under pipelinePropose): the current view's phase is not touched.
+func (rs *RoundState) CommitKeepPhase(commitQC QuorumCertificate) {
+	phase := rs.phase
+	rs.Commit(commitQC)
+	rs.phase = phase
+}
+
 // AdvanceView advances to a new view, resetting the phase.
 // Enforces monotonicity: the view can only move forward.
 func (rs *RoundState) AdvanceView(newView ViewNumber) {
@@ -175,10 +184,16 @@ func (rs *RoundState) RestoreVoteCommitments(votedView ViewNumber, votedHash typ
 // Timeout transitions to timed-out phase and increments the backoff counter.
 func (rs *RoundState) Timeout() {
 	rs.phase = PhaseTimedOut
+	rs.timedOutView = rs.currentView
 	rs.consecutiveTimeouts++
 	if rs.consecutiveTimeouts == 0 { // overflow protection
 		rs.consecutiveTimeouts--
 	}
+}
+
+// TimedOutIn reports whether this node timed out in view.
+func (rs *RoundState) TimedOutIn(view ViewNumber) bool {
+	return view > 0 && rs.timedOutView == view
 }
 
 // ResetConsecutiveTimeouts resets the timeout counter.

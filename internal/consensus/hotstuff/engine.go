@@ -262,6 +262,12 @@ type ConsensusEngine struct {
 	// returned latch OUTSIDE e.mu. See write_latch.go.
 	writeLatchMu sync.Mutex
 	writeLatches map[types.Hash]*writeLatch
+
+	// trailing is the previous view's Round 2 under pipelinePropose
+	// (pipeline_propose.go); trailingActive is set while inTrailing has its
+	// state swapped into the Round 2 fields above.
+	trailing       *trailingRound
+	trailingActive bool
 }
 
 // VoteJournal persists the engine's safety state. Implementations MUST make the
@@ -1126,8 +1132,11 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 			delete(e.pendingProposals, v)
 		}
 	}
+	if t := e.trailing; t != nil && newView > t.view+FutureViewWindow {
+		e.dropTrailing("stale")
+	}
 	for v := range e.pendingJustifyBlocks {
-		if v < newView {
+		if v < newView && (e.trailing == nil || v != e.trailing.view) {
 			delete(e.pendingJustifyBlocks, v)
 		}
 	}
@@ -1200,6 +1209,13 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg, mt msgTiming) error {
 			(msg.Type == MsgTimeout && msgView <= currentView+FutureViewWindow)
 
 		if msgView > currentView && !isExempt {
+			// Pipelined proposals: view current+1's proposal carries this
+			// view's PrepareQC as its JustifyQC; take it instead of waiting.
+			if msg.Type == MsgProposal && pipelinePropose {
+				if p, ok := msg.Payload.(*Proposal); ok && p != nil && e.pipelineFromJustify(p) {
+					return e.dispatchMessage(msg, mt)
+				}
+			}
 			if msgView <= currentView+FutureViewWindow {
 				if len(e.futureMsgBuffer) >= MaxFutureMessages {
 					// Evict lowest view entry.
@@ -1229,6 +1245,13 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg, mt msgTiming) error {
 				}
 			}
 			return nil
+		}
+	}
+
+	// The trailing round (pipelinePropose) still takes its commit votes.
+	if t := e.trailing; t != nil && msgView == t.view && msg.Type == MsgCommitVote {
+		if cv, ok := msg.Payload.(*CommitVote); ok && cv != nil {
+			return e.trailingCommitVote(cv, mt)
 		}
 	}
 
