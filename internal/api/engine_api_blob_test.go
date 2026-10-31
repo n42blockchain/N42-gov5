@@ -1068,18 +1068,17 @@ func TestEngineAPIv4BuildsAndImportsMinimalPayloadV4(t *testing.T) {
 
 	api, headHash := newEnginePraguePayloadTestAPI()
 	engine := NewEngineAPIv4(NewBlockChainAPI(api))
+	builder := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x55}
-	targetBlobs := hexutil.Uint64(1)
 
-	forkchoiceResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+	forkchoiceResp, err := builder.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash: headHash,
-	}, &PayloadAttributesV4{
+	}, &PayloadAttributesV3{
 		Timestamp:             2,
 		PrevRandao:            typesHashFromHexByte(0x33),
 		SuggestedFeeRecipient: types.Address{0x66},
 		Withdrawals:           []*Withdrawal{},
 		ParentBeaconBlockRoot: &beaconRoot,
-		TargetBlobsPerBlock:   &targetBlobs,
 	})
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
@@ -1091,29 +1090,27 @@ func TestEngineAPIv4BuildsAndImportsMinimalPayloadV4(t *testing.T) {
 	require.Empty(t, payloadResp.ExecutionRequests)
 
 	otherBeaconRoot := types.Hash{0x77}
-	secondResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+	secondResp, err := builder.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash: headHash,
-	}, &PayloadAttributesV4{
+	}, &PayloadAttributesV3{
 		Timestamp:             2,
 		PrevRandao:            typesHashFromHexByte(0x33),
 		SuggestedFeeRecipient: types.Address{0x66},
 		Withdrawals:           []*Withdrawal{},
 		ParentBeaconBlockRoot: &otherBeaconRoot,
-		TargetBlobsPerBlock:   &targetBlobs,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, secondResp.PayloadID)
 	require.NotEqual(t, *forkchoiceResp.PayloadID, *secondResp.PayloadID)
 
-	thirdResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+	thirdResp, err := builder.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash: headHash,
-	}, &PayloadAttributesV4{
+	}, &PayloadAttributesV3{
 		Timestamp:             2,
 		PrevRandao:            typesHashFromHexByte(0x34),
 		SuggestedFeeRecipient: types.Address{0x66},
 		Withdrawals:           []*Withdrawal{},
 		ParentBeaconBlockRoot: &beaconRoot,
-		TargetBlobsPerBlock:   &targetBlobs,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, thirdResp.PayloadID)
