@@ -80,7 +80,13 @@ func applyEthelWithdrawals(chainCfg *params.ChainConfig, header *block.Header, i
 	}
 	gwei := uint256.NewInt(params.GWei)
 	for _, withdrawal := range withdrawals {
-		if withdrawal == nil || withdrawal.Amount == 0 {
+		if withdrawal == nil {
+			continue
+		}
+		if withdrawal.Amount == 0 {
+			// Credits nothing, but EIP-7928 still lists the recipient; a
+			// no-op unless the block access list is recorded.
+			ibs.RecordAccountAccess(withdrawal.Address)
 			continue
 		}
 		amount := new(uint256.Int).Mul(uint256.NewInt(withdrawal.Amount), gwei)
@@ -142,6 +148,17 @@ func ProcessBlock(
 		misc.ApplyDAOHardFork(ibs)
 	}
 
+	// EIP-7928 (Amsterdam): record the block access list from index 0, the
+	// pre-execution system calls, and check it against the header as the
+	// engine import does. The recorder's own reads go through the block's
+	// state reader like every other read, so a witness stream recorded by the
+	// executor replays here in the same order. Before Amsterdam nothing
+	// changes, so existing witness streams are unaffected.
+	specBAL := chainCfg.UsesEIP7928AccessList(header.Time)
+	if specBAL {
+		ibs.EnableBlockAccessList()
+	}
+
 	// Pre-block system calls (beacon root, Prague system contracts, etc.).
 	if err := iinternal.ProcessExecutionBlockStart(header.ParentBeaconRoot, chainCfg, ibs, header, engine); err != nil {
 		return nil, err
@@ -170,7 +187,9 @@ func ProcessBlock(
 	// observer (delegates to noop); nil and zero-overhead when the fork is off.
 	writer := state.StateWriter(noop)
 	var balCap *iinternal.BALCapture
-	if chainCfg.IsBAL(header.Time) {
+	// N42's own BAL commits to the same header field, so it gives way to the
+	// spec list.
+	if chainCfg.IsBAL(header.Time) && !specBAL {
 		balCap = iinternal.NewBALCapture(noop)
 		writer = balCap
 	}
@@ -201,6 +220,7 @@ func ProcessBlock(
 				continue
 			}
 		}
+		ibs.SetBlockAccessIndex(uint64(i) + 1)
 		ibs.Prepare(txn.Hash(), blockHash, i)
 		if balCap != nil {
 			balCap.BeginTx(txn.Hash())
@@ -347,6 +367,10 @@ func ProcessBlock(
 
 	}
 
+	// The withdrawals and end-of-block system calls are the last block
+	// access index.
+	ibs.SetBlockAccessIndex(uint64(len(txs)) + 1)
+
 	// EIP-4895 validator withdrawals (Shanghai+). Apply before the end-of-block
 	// system calls so Prague-era deposit/request processing sees the updated
 	// balances if a future fork ever couples the two.
@@ -356,6 +380,20 @@ func ProcessBlock(
 	requests, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine)
 	if err != nil {
 		return nil, err
+	}
+
+	if specBAL {
+		list := ibs.BlockAccessList()
+		if err := list.ValidateSize(header.GasLimit); err != nil {
+			return nil, err
+		}
+		got, err := list.Hash()
+		if err != nil {
+			return nil, fmt.Errorf("compute block access list hash: %w", err)
+		}
+		if want := header.BlockAccessListHash; want == nil || *want != got {
+			return nil, fmt.Errorf("block access list hash mismatch: header %v, computed %s", want, got.Hex())
+		}
 	}
 
 	// Finalize (block rewards + uncle rewards).
