@@ -339,6 +339,15 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 		return true, err
 	}
 	tFrames = time.Now()
+	// The preparation starts now (N42_AVAIL_EARLY_PREP); every refusal from
+	// here on drops it.
+	if b, ok := blk.(*block.Block); ok && bc.startAvailEarlyPrep(b) {
+		defer func() {
+			if err != nil {
+				go bc.dropAheadPrep(b.Hash())
+			}
+		}()
+	}
 	var gas uint64
 	for _, t := range body.Txs {
 		gas += t.Gas()
@@ -507,7 +516,10 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 	if fresh && !bc.E1Light() {
 		// Its senders are recovered from now on, not when it executes (P7).
 		if prep {
-			bc.startAheadPrep(b)
+			// The availability check may have started it already.
+			if !bc.heldAheadPrep(b.Hash()) {
+				bc.startAheadPrep(b)
+			}
 		} else {
 			bc.startSenderJob(b, nil)
 		}

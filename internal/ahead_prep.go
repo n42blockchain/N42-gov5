@@ -133,8 +133,12 @@ func aheadPrepWorkers() int {
 // aheadPrepUsable: blocks of this chain may be prepared (they can run on
 // the ahead path).
 func (bc *BlockChain) aheadPrepUsable() bool {
-	return aheadPrepOn && bc.lagPipeUsable()
+	return aheadPrepOn && (bc.lagPipeUsable() || aheadPrepUsableForTest)
 }
+
+// aheadPrepUsableForTest lets a test chain without the lag pipeline
+// register preparations.
+var aheadPrepUsableForTest bool
 
 // newAheadPrep registers a pending preparation of b, or returns nil when
 // there is one already or the cap keeps lower blocks.
@@ -178,6 +182,11 @@ func (bc *BlockChain) startAheadPrep(b *block.Block) {
 		bc.startSenderJob(b, nil)
 		return
 	}
+	bc.startAheadPrepFor(pr, b)
+}
+
+// startAheadPrepFor starts b's sender job and then the registered pr.
+func (bc *BlockChain) startAheadPrepFor(pr *aheadPrep, b *block.Block) {
 	bc.startSenderJob(b, func(ok bool) {
 		if !ok {
 			bc.dropAheadPrep(pr.hash)
@@ -185,6 +194,51 @@ func (bc *BlockChain) startAheadPrep(b *block.Block) {
 		}
 		go bc.runAheadPrep(pr, b)
 	})
+}
+
+// availEarlyPrepOn is N42_AVAIL_EARLY_PREP (default on; "0", "false" or
+// "off" disables): the availability check starts a block's preparation as
+// soon as its frames are resolved instead of once the check passed. Under
+// load the ahead run waits ~14 ms for its preparation (E1N26 run 13), and
+// the check's last steps (the gas sum and the lagged result, ~6 ms at 163k)
+// need nothing the preparation reads. A block the check then refuses has
+// its preparation dropped; the preparation only reads the transactions.
+var availEarlyPrepOn = parseLagPipeline(os.Getenv("N42_AVAIL_EARLY_PREP"))
+
+// SetAvailEarlyPrepForTest switches N42_AVAIL_EARLY_PREP and returns the
+// restore.
+func SetAvailEarlyPrepForTest(on bool) func() {
+	prev := availEarlyPrepOn
+	availEarlyPrepOn = on
+	return func() { availEarlyPrepOn = prev }
+}
+
+// availEarlyPreps counts preparations started by the availability check
+// (process-wide, since start).
+var availEarlyPreps atomic.Uint64
+
+// startAvailEarlyPrep registers and starts b's preparation from the
+// availability check; false when it did not (switch off, light node, or a
+// preparation is held or kept out by the cap), and the queueing starts it
+// as before.
+func (bc *BlockChain) startAvailEarlyPrep(b *block.Block) bool {
+	if !availEarlyPrepOn || b == nil || bc.E1Light() || bc.LagImportQueued(b.Hash()) {
+		return false
+	}
+	pr := bc.newAheadPrep(b)
+	if pr == nil {
+		return false
+	}
+	availEarlyPreps.Add(1)
+	bc.startAheadPrepFor(pr, b)
+	return true
+}
+
+// heldAheadPrep reports whether h has a registered preparation.
+func (bc *BlockChain) heldAheadPrep(h types.Hash) bool {
+	bc.aheadPreps.mu.Lock()
+	defer bc.aheadPreps.mu.Unlock()
+	return bc.aheadPreps.m[h] != nil
 }
 
 // runAheadPrep computes pr unless an import claimed or it was dropped first.

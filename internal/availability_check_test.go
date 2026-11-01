@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/holiman/uint256"
@@ -238,5 +239,50 @@ func TestLagReadyWaitsForNMinusTwo(t *testing.T) {
 	res, target, err := bc.LaggedExecutedResult(rtx, child, nil)
 	if err != nil || target.Hash() != g.Hash() || res.Root != (types.Hash{3}) {
 		t.Fatalf("lagged result: %+v err=%v", res, err)
+	}
+}
+
+// TestAvailabilityEarlyPrep: with N42_AVAIL_EARLY_PREP the check registers
+// the block's preparation once its frames are resolved, the queueing keeps
+// that one, and a block the check refuses afterwards (a wrong lagged
+// result) has it dropped. Off, the queueing registers it as before.
+func TestAvailabilityEarlyPrep(t *testing.T) {
+	defer block.SetDeferredDepthForTest(2, 0)()
+	defer block.SetVoteOnAvailabilityForTest(true)()
+	defer SetAheadPrepForTest(true)()
+	prevUsable := aheadPrepUsableForTest
+	aheadPrepUsableForTest = true
+	defer func() { aheadPrepUsableForTest = prevUsable }()
+
+	for _, on := range []bool{false, true} {
+		restore := SetAvailEarlyPrepForTest(on)
+		c := newAvailChain(t)
+		before := availEarlyPreps.Load()
+		blk := c.child(gResult(c.g), c.hashes)
+		if _, retry, err := c.bc.CheckDeferredBlock(blk); retry || err != nil {
+			t.Fatalf("on=%v: check: retry=%v err=%v", on, retry, err)
+		}
+		if !c.bc.heldAheadPrep(blk.Hash()) {
+			t.Fatalf("on=%v: no preparation registered for a queued block", on)
+		}
+		if got, want := availEarlyPreps.Load()-before, map[bool]uint64{false: 0, true: 1}[on]; got != want {
+			t.Fatalf("on=%v: early preparations %d, want %d", on, got, want)
+		}
+
+		wrong := gResult(c.g)
+		wrong.Root = types.Hash{0xEE}
+		bad := c.child(wrong, c.hashes)
+		if _, _, err := c.bc.CheckDeferredBlock(bad); err == nil {
+			t.Fatalf("on=%v: wrong lagged root passed", on)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for c.bc.heldAheadPrep(bad.Hash()) && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if c.bc.heldAheadPrep(bad.Hash()) {
+			t.Fatalf("on=%v: refused block kept its preparation", on)
+		}
+		c.bc.dropAheadPrep(blk.Hash())
+		restore()
 	}
 }
