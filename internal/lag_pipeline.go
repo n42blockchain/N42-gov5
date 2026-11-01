@@ -313,6 +313,8 @@ func (bc *BlockChain) LagReady(parent types.Hash) (ready bool, waitFor types.Has
 // is not known yet, or frames could not be pulled).
 func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, body *block.Body) (retry bool, err error) {
 	t0 := time.Now()
+	// Stage ends for the "availability check phases" line (big blocks).
+	var tParent, tStatic, tRoot, tFrames, tResult time.Time
 	number := hdr.Number.Uint64()
 	tx, err := bc.ChainDB.BeginRo(context.Background())
 	if err != nil {
@@ -324,15 +326,19 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 	if parent == nil {
 		return true, fmt.Errorf("%w: parent %x of block %d not known", ErrDeferredResultUnknown, hdr.ParentHash[:8], number)
 	}
+	tParent = time.Now()
 	if err := checkStaticHeader(bc, hdr, parent); err != nil {
 		return false, err
 	}
+	tStatic = time.Now()
 	if got, want := hdr.TxHash, block.BodyTxRoot(body, hdr.Time); got != want {
 		return false, fmt.Errorf("availability: block %d transactions root %x is not its body's %x", number, got[:8], want[:8])
 	}
+	tRoot = time.Now()
 	if err := bc.ResolveFrames(blk); err != nil {
 		return true, err
 	}
+	tFrames = time.Now()
 	var gas uint64
 	for _, t := range body.Txs {
 		gas += t.Gas()
@@ -351,9 +357,17 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 			}
 		}
 	}
+	tResult = time.Now()
 	if b, ok := blk.(*block.Block); ok {
 		bc.RememberAvailable(b)
 		bc.enqueueLagImportTimed(b, true, time.Since(t0))
+	}
+	if len(body.Txs) >= 1000 {
+		log.Info("availability check phases", "n", number, "txs", len(body.Txs), "startTMs", t0.UnixMilli(),
+			"parentUs", tParent.Sub(t0).Microseconds(), "staticUs", tStatic.Sub(tParent).Microseconds(),
+			"txRootUs", tRoot.Sub(tStatic).Microseconds(), "framesUs", tFrames.Sub(tRoot).Microseconds(),
+			"resultUs", tResult.Sub(tFrames).Microseconds(), "enqueueUs", time.Since(tResult).Microseconds(),
+			"totalUs", time.Since(t0).Microseconds())
 	}
 	return false, nil
 }

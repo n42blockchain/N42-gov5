@@ -99,6 +99,11 @@ type aheadPrep struct {
 	// dropping: the block will not use the preparation; its base prefill
 	// stops reading at the next key.
 	dropping atomic.Bool
+
+	// Timings for the "parallel block" line: registered (the block was
+	// queued), its senders settled (the computation started) and the
+	// computation done (the base prefill started). Set before done closes.
+	queuedAt, startedAt, computedAt time.Time
 }
 
 type aheadPreps struct {
@@ -137,7 +142,7 @@ func (bc *BlockChain) newAheadPrep(b *block.Block) *aheadPrep {
 	if b == nil || !bc.aheadPrepUsable() {
 		return nil
 	}
-	pr := &aheadPrep{hash: b.Hash(), number: b.Number64().Uint64(), done: make(chan struct{})}
+	pr := &aheadPrep{hash: b.Hash(), number: b.Number64().Uint64(), done: make(chan struct{}), queuedAt: time.Now()}
 	ps := &bc.aheadPreps
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -187,6 +192,7 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if !pr.state.CompareAndSwap(prepPending, prepRunning) {
 		return
 	}
+	pr.startedAt = time.Now()
 	defer func() {
 		// A panic leaves the preparation unusable; the run computes its own.
 		if recover() != nil {
@@ -215,6 +221,7 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	}
 	pr.txs, pr.signer, pr.baseFee, pr.engine = txs, signer, hdr.BaseFee, sp.engine != nil
 	pr.prepared, pr.aff, pr.ok = prepared, aff, true
+	pr.computedAt = time.Now()
 	if fn := aheadPrepDoneForTest; fn != nil {
 		fn(pr)
 	}

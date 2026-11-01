@@ -133,6 +133,7 @@ type aheadBase struct {
 	depth  uint64        // N - at, N the child's parent
 	waited time.Duration // for the tree to reach a usable state
 	took   time.Duration // the fill itself
+	keys   time.Duration // of took, collecting the keys
 	skip   string
 	// cut: the claim stopped the fill; pf holds the keys read before.
 	cut atomic.Bool
@@ -348,6 +349,7 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	}
 	tFill := time.Now()
 	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)
+	ab.keys = time.Since(tFill)
 	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
 	// The fill copied what it read and its workers are done: nothing reads
 	// the key lists any more.

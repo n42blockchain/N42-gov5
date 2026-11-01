@@ -222,6 +222,9 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 		e1Stats.notReady.Add(1)
 		return false, nil
 	}
+	if body, ok := b.Body().(*block.Body); ok && (len(body.FrameHashes) > 0 || len(body.Txs) >= 1000) {
+		log.Info("e1 light: result fetched", "n", n, "fetchUs", time.Since(t0).Microseconds(), "tMs", time.Now().UnixMilli())
+	}
 	if e1Early {
 		bc.e1EarlyPublish(b.Hash(), r)
 		defer bc.e1Early.Delete(b.Hash())
