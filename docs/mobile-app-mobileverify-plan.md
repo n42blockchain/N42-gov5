@@ -1,6 +1,6 @@
 # Plan: move n42appv2 mining onto /mobileverify
 
-Status: phases 1 and 2 done (2026-10-31), see "Progress" at the end; the rest is still a plan.
+Status: phases 1 and 2 done, phase 3 done for Android (2026-10-31), see "Progress" at the end; the rest is still a plan.
 
 ## Where the app is today
 
@@ -145,5 +145,27 @@ App side only (n42appv2 `fdaab631`):
   reopens the session after 10 s. `MiningV3Page` is the v3 mining tab (status, counters, node
   URL, start/stop, log).
 
-Next: phase 3 (foreground service so the loop survives the background, iOS), phase 4 (reward
-model, remote flag, TLS endpoint, localized v3 strings: items 4 and 8).
+### Phase 3 (2026-10-31): the loop in Go, hosted by an Android foreground service
+
+The app work moved to GitHub `n42blockchain/n42appv2` (the active line; the gitee repo is an
+older, unrelated history that GitHub rejects for its >100 MB build outputs). The phase 1 and 2
+commits were replayed onto GitHub master: branch `feat/mining-v3-mobileverify`, phase 2 head
+`71650b32`.
+
+- N42 `524444d8`: `MobileVerifyMiner` in `cmd/evmsdk` runs the whole loop that phase 2 had in
+  Dart (register until committed, verify each new head once, certificates after 20 s,
+  uncertified after 2 min, reconnect after 10 s) behind a bindable API: `Start`, `Stop`,
+  `Running`, `Status` (JSON), `SetIntervalsMs`, `PubkeyHex`. Tested against a scripted node and
+  end to end against the real HTTP server (`internal/mobileverify/miner_e2e_test.go`).
+- App `ad262088`: `MobileVerifyMinerService`, a `specialUse` foreground service (a `dataSync`
+  one is stopped after 6 h a day on Android 15+) with a partial wake lock and a notification
+  showing the counters, owns the miner; the channel gains `minerStart` / `minerStop` /
+  `minerStatus`, and `MiningV3Engine` only drives it and reads its status. A Play release needs
+  the special-use declaration in the Play Console.
+
+Not yet verified on a device (T30 is blocked on the test phone refusing USB installs). iOS has
+no host for the miner yet: iOS does not allow a continuous background loop, so it would be
+foreground-only or periodic background tasks.
+
+Next: iOS (xcframework + Swift channel, needs the Mac), phase 4 (reward model, remote flag, TLS
+endpoint, localized v3 strings: items 4 and 8).
