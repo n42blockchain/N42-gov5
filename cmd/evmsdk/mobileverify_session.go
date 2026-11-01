@@ -154,27 +154,48 @@ func (s *MobileVerifySession) VerifyBlock(blockHashHex string) (string, error) {
 		return "", err
 	}
 	defer cancel()
+	v, err := verifyAndSubmit(ctx, s.client, s.codes, s.cfg, blockHashHex)
+	if err != nil {
+		return "", err
+	}
+	return sessionJSON(v)
+}
+
+// mobileVerifyResult is one verified and accepted block, the JSON
+// VerifyBlock returns and the miner reports.
+type mobileVerifyResult struct {
+	BlockNumber  uint64 `json:"blockNumber"`
+	BlockHash    string `json:"blockHash"`
+	ReceiptsRoot string `json:"receiptsRoot"`
+	Txs          int    `json:"txs"`
+	Index        uint32 `json:"index"`
+	ElapsedMs    int64  `json:"elapsedMs"`
+}
+
+// verifyAndSubmit fetches a block's packet, re-executes it under cfg and
+// signs and submits the receipt.
+func verifyAndSubmit(ctx context.Context, client *MobileVerifyClient, codes *CodeCache, cfg *params.ChainConfig, blockHashHex string) (*mobileVerifyResult, error) {
 	start := time.Now()
-	pkt, err := s.client.FetchPacket(ctx, blockHashHex)
+	pkt, err := client.FetchPacket(ctx, blockHashHex)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	res, err := ExecuteAndVerifyV2(pkt, s.codes, s.cfg)
+	res, err := ExecuteAndVerifyV2(pkt, codes, cfg)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	idx, err := s.client.SubmitReceipt(ctx, s.client.SignReceipt(res))
+	idx, err := client.SubmitReceipt(ctx, client.SignReceipt(res))
 	if err != nil {
-		return "", fmt.Errorf("mobileverify session: verified block %d but submit failed: %w", res.BlockNumber, err)
+		return nil, fmt.Errorf("mobileverify: verified block %d but submit failed: %w", res.BlockNumber, err)
 	}
-	return sessionJSON(map[string]any{
-		"blockNumber":  res.BlockNumber,
-		"blockHash":    res.BlockHash.Hex(),
-		"receiptsRoot": res.ComputedReceiptsRoot.Hex(),
-		"txs":          res.TxCount,
-		"index":        idx,
-		"elapsedMs":    time.Since(start).Milliseconds(),
-	})
+	return &mobileVerifyResult{
+		BlockNumber:  res.BlockNumber,
+		BlockHash:    res.BlockHash.Hex(),
+		ReceiptsRoot: res.ComputedReceiptsRoot.Hex(),
+		Txs:          res.TxCount,
+		Index:        idx,
+		ElapsedMs:    time.Since(start).Milliseconds(),
+	}, nil
 }
 
 // Health returns the node's /mobileverify/health JSON.
