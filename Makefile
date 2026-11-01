@@ -177,7 +177,7 @@ release-docker:
 
 
 #== mobiles start
-.PHONY: mobile mobile-dir mobile-tools ios android
+.PHONY: mobile mobile-dir mobile-tools ios ios-mobileverify android
 mobile: clean mobile-dir android ios
 
 # gomobile and gobind at the versions go.mod pins with its tool directives;
@@ -190,6 +190,10 @@ mobile-dir:
 	mkdir -p $(BUILD_MOBILE_PATH)/android
 ios: mobile-tools
 	CGO_ENABLED=1 gomobile bind ${MOBILE_GO_FLAGS}  -o $(BUILD_MOBILE_PATH)/evmsdk.xcframework -target=ios/arm64,iossimulator/arm64  $(MOBILE_PACKAGE)
+
+# String-only Objective-C surface for the V3 Flutter bridge.
+ios-mobileverify: mobile-tools mobile-dir
+	CGO_ENABLED=1 gomobile bind ${MOBILE_GO_FLAGS} -o $(BUILD_MOBILE_PATH)/N42MobileVerify.xcframework -target=ios/arm64,iossimulator/arm64 ./cmd/mobileverifyios
 # All four ABIs the app ships (arm, arm64, 386, amd64). -Wno-error=int-conversion:
 # blst's x86-64 SIGILL probe initialises bionic's struct sigaction
 # positionally, which clang 16+ (NDK 26+) rejects; it was a warning before.
