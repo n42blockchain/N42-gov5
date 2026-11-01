@@ -128,6 +128,7 @@ type minerStatus struct {
 	LastError   string              `json:"lastError,omitempty"`
 	StartedAtMs int64               `json:"startedAtMs,omitempty"`
 	Log         []string            `json:"log"`
+	LogTimeUTC  bool                `json:"logTimeUtc"`
 }
 
 // MobileVerifyMiner runs the verification loop against one node. Its
@@ -240,6 +241,7 @@ func (m *MobileVerifyMiner) Running() bool {
 func (m *MobileVerifyMiner) Status() string {
 	m.mu.Lock()
 	st := m.st
+	st.LogTimeUTC = true
 	st.Log = append([]string(nil), m.st.Log...)
 	m.mu.Unlock()
 	b, err := json.Marshal(st)
@@ -250,7 +252,7 @@ func (m *MobileVerifyMiner) Status() string {
 }
 
 func (m *MobileVerifyMiner) logf(format string, args ...any) {
-	line := m.now().Format("15:04:05") + " " + fmt.Sprintf(format, args...)
+	line := m.now().UTC().Format("15:04:05") + " " + fmt.Sprintf(format, args...)
 	m.mu.Lock()
 	m.st.Log = append(m.st.Log, line)
 	if n := len(m.st.Log); n > minerLogLimit {

@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+func TestMinerLogClockIsExplicitUTC(t *testing.T) {
+	m := &MobileVerifyMiner{now: func() time.Time {
+		return time.Date(2026, 11, 1, 23, 59, 58, 0, time.FixedZone("test", -5*60*60))
+	}}
+	m.logf("verified block %d (%d txs, %d ms)", 42, 3, 15)
+	var status minerStatus
+	if err := json.Unmarshal([]byte(m.Status()), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.LogTimeUTC || len(status.Log) != 1 || status.Log[0] != "04:59:58 verified block 42 (3 txs, 15 ms)" {
+		t.Fatalf("ambiguous log clock: %+v", status)
+	}
+}
+
 // scriptedNode plays a node: heads are served in order (the last one
 // repeats), the registration commits on the commitOn-th call, certs maps a
 // block hash to its certificates and hashes in failing do not verify.
