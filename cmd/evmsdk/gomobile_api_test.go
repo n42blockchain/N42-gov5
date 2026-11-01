@@ -45,13 +45,26 @@ func TestExportedFunctionsAreBindable(t *testing.T) {
 	}
 }
 
-// The session is what the app calls; every method of it must reach Java
-// and Swift, and gobind silently drops a method it cannot bind. So its
-// API, and its constructor's, takes and returns strings, int64s, bools
-// and errors only.
+// The session and the miner are what the app calls; every method of them
+// must reach Java and Swift, and gobind silently drops a method it cannot
+// bind. So their API, and their constructors', takes and returns strings,
+// int64s, bools and errors only.
 func TestSessionAPIIsBindable(t *testing.T) {
+	for _, tc := range []struct {
+		file, typ string
+		methods   int
+	}{
+		{"mobileverify_session.go", "MobileVerifySession", 8},
+		{"mobileverify_miner.go", "MobileVerifyMiner", 6},
+	} {
+		checkBindableAPI(t, tc.file, tc.typ, tc.methods)
+	}
+}
+
+func checkBindableAPI(t *testing.T, path, typeName string, wantMethods int) {
+	t.Helper()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "mobileverify_session.go", nil, 0)
+	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,20 +83,20 @@ func TestSessionAPIIsBindable(t *testing.T) {
 		for _, f := range fields {
 			typ := f.Type
 			if star, ok := typ.(*ast.StarExpr); ok && fd.Recv == nil {
-				typ = star.X // the constructor returns *MobileVerifySession
-				if id, ok := typ.(*ast.Ident); ok && id.Name == "MobileVerifySession" {
+				typ = star.X // the constructor returns the bound type
+				if id, ok := typ.(*ast.Ident); ok && id.Name == typeName {
 					continue
 				}
 			}
 			if id, ok := typ.(*ast.Ident); !ok || !allowed[id.Name] {
-				t.Errorf("%s: %s uses a type gobind does not bind for the session", fset.Position(f.Pos()), fd.Name.Name)
+				t.Errorf("%s: %s uses a type gobind does not bind", fset.Position(f.Pos()), fd.Name.Name)
 			}
 		}
 		if fd.Recv != nil {
 			methods++
 		}
 	}
-	if methods < 8 {
-		t.Fatalf("found %d session methods, want the 8 the app calls", methods)
+	if methods < wantMethods {
+		t.Fatalf("%s: found %d %s methods, want the %d the app calls", path, methods, typeName, wantMethods)
 	}
 }
