@@ -169,3 +169,37 @@ foreground-only or periodic background tasks.
 
 Next: iOS (xcframework + Swift channel, needs the Mac), phase 4 (reward model, remote flag, TLS
 endpoint, localized v3 strings: items 4 and 8).
+
+### T30 device run and follow-ups (2026-11-01)
+
+The Android device run (T30, Xiaomi, Android 16) passed 9 of 10 cases against the fleet through
+the LAN proxy: first registration to certificate in about 44 s, five runs in a row certified,
+key and device index kept across restarts, wrong port and flight mode fail cleanly and recover.
+
+- App `bea818f0`: the probe polled `register` every 2 s and hit the node's limit of 10
+  registrations a minute per IP (HTTP 429); registration is now polled every 10 s.
+- N42 `815a0952`: `Emit` logged every request value, so the v1 `setting`, `blssign`,
+  `blspubk` and `decrypt` calls wrote the private key to GoLog (found on the device). The log
+  now names the request fields only. AAR rebuilt into the app (`24df062c`).
+- Case 5 (chain `mainnet` must fail) was wrong: fleet blocks re-execute to the same receipts
+  root under the `mainnet` rules. It moved to N42 `39cff9ce`
+  (`TestMinerOnTheWrongChainFailsWithoutSubmitting`, under `eth-sepolia` rules): every head
+  fails, nothing is submitted, the miner keeps going.
+- The Mac side added a v3 dashboard (session stats, block cards, en / zh_TW strings) and a
+  mining-version setting; merged into `feat/mining-v3-mobileverify` at `95fac518`.
+
+Open:
+
+- T30: re-check case 9 on the new AAR (no private key in `logcat | grep GoLog`); the optional
+  10-minute background and screen-off runs.
+- T31 (iOS on the Mac): `make ios`, vendor the xcframework into `flutter_mining`, a Swift
+  channel mirroring `MobileVerifyHandler.kt`, foreground-only mining. Task in GitHub
+  `codex-n42` / `Codex-N42.md`.
+- Phase 4: reward model, remote flag, TLS endpoint, Play Console special-use declaration.
+- The device runs reach the fleet through `mvproxy` on the Windows host
+  (`0.0.0.0:21100` -> `127.0.0.1:21012`); it must keep running until T30 / T31 finish.
+
+Toolchain for the app line (moving to Linux): Flutter >= 3.47 / Dart >= 3.13; Android NDK
+28.2.13676358 for `make android`; `android/local.properties` with `sdk.dir` and
+`flutter.sdk`; a full `:app` build needs `google-services.json` and GitHub Packages
+credentials for `com.trustwallet:wallet-core`. The GitHub line does not track `gradlew`.
