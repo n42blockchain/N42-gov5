@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -57,8 +58,10 @@ func Emit(jsonText string) string {
 		return emitJSON(er)
 	}
 
+	// Request values carry private keys and plaintexts, so only the
+	// field names are logged.
 	if eq.Val != nil {
-		simpleLog("emit:", eq.Typ, eq.Val)
+		simpleLog("emit:", eq.Typ, requestFields(eq.Val))
 	} else {
 		simpleLog("emit:", eq.Typ)
 	}
@@ -125,6 +128,21 @@ func Emit(jsonText string) string {
 	}
 
 	return emitJSON(er)
+}
+
+// requestFields describes a request value for the log without any of its
+// contents: the sorted field names of an object, else the value's type.
+func requestFields(val interface{}) string {
+	m, ok := val.(map[string]interface{})
+	if !ok {
+		return fmt.Sprintf("<%T>", val)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return "fields=[" + strings.Join(keys, ",") + "]"
 }
 
 func emitJSON(j interface{}) string {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,5 +110,47 @@ func TestEmitBlsSignDispatch(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("Emit() data = %q, want %q", got, want)
+	}
+}
+
+// captureOutput returns what fn writes to stdout and stderr.
+func captureOutput(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = w, w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	defer func() {
+		os.Stdout, os.Stderr = oldOut, oldErr
+	}()
+	fn()
+	w.Close()
+	return <-done
+}
+
+// The Emit log names the request fields but never prints their values,
+// which hold private keys and plaintexts.
+func TestEmitDoesNotLogRequestValues(t *testing.T) {
+	const secret = "202cbf36864a88e348c8f573aa0bc79f5a7119e58251c3580bb08af70cb2dfed"
+	for _, typ := range []string{"setting", "blssign", "blspubk", "decrypt", "encrypt"} {
+		t.Run(typ, func(t *testing.T) {
+			useTestEngine(t)
+			out := captureOutput(t, func() {
+				Emit(`{"type":"` + typ + `","val":{"priv_key":"` + secret + `","msg":"` + secret + `"}}`)
+			})
+			if strings.Contains(out, secret) {
+				t.Fatalf("log leaks a request value: %q", out)
+			}
+			if !strings.Contains(out, "fields=[msg,priv_key]") {
+				t.Fatalf("log does not name the request fields: %q", out)
+			}
+		})
 	}
 }
