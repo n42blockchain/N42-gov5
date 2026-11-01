@@ -125,3 +125,84 @@ func TestMinerEndToEnd(t *testing.T) {
 		t.Fatalf("after Stop: %s", m.Status())
 	}
 }
+
+// A miner started with the wrong chain name re-executes the head under
+// that chain's rules, which yields another receipts root: every attempt
+// counts as failed, nothing reaches the server, and the miner keeps
+// running instead of giving up.
+func TestMinerOnTheWrongChainFailsWithoutSubmitting(t *testing.T) {
+	const number = 88
+	root := internal.ReceiptsRootFor(params.MainnetChainConfig, number, nil)
+	hash, encoded := executablePacket(t, number, root)
+	next, nextEncoded := executablePacket(t, number+1, root)
+
+	reg := NewRegistry()
+	cache := NewPacketCache(8)
+	cache.Put(hash, number, encoded)
+	cache.Put(next, number+1, nextEncoded)
+	store := NewCertStore(8)
+	windows := NewWindowManager(reg, fixedLookup(map[types.Hash]uint64{hash: number, next: number + 1}), 20*time.Millisecond, store)
+	defer windows.Stop()
+	srv := NewHTTPServer("127.0.0.1:0", reg, NewPacketService(cache, nil, "/test"), windows, store)
+	var advanced atomic.Bool
+	srv.SetHead(func() (uint64, types.Hash, bool) {
+		if advanced.Load() {
+			return number + 1, next, true
+		}
+		return number, hash, true
+	})
+	ts := httptest.NewServer(srv.srv.Handler)
+	defer ts.Close()
+
+	k, err := evmsdk.GenerateMobileBLSKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := evmsdk.NewMobileVerifyMiner(ts.URL, k.PrivHex, "eth-sepolia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetIntervalsMs(5, 5, 50); err != nil {
+		t.Fatal(err)
+	}
+	type status struct {
+		Running   bool   `json:"running"`
+		Phase     string `json:"phase"`
+		Verified  int    `json:"verified"`
+		Failed    int    `json:"failed"`
+		LastError string `json:"lastError"`
+	}
+	waitFor := func(what string, cond func(status) bool) status {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			var st status
+			if err := json.Unmarshal([]byte(m.Status()), &st); err != nil {
+				t.Fatal(err)
+			}
+			if cond(st) {
+				return st
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s: %s", what, m.Status())
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	m.Start()
+	defer m.Stop()
+	waitFor("the provisional registration", func(st status) bool { return st.Phase == evmsdk.MinerPhaseRegistering })
+	reg.CommitEpoch()
+	waitFor("the first head to fail", func(st status) bool { return st.Failed == 1 })
+	advanced.Store(true)
+	st := waitFor("the next head to fail", func(st status) bool { return st.Failed == 2 })
+	if st.Verified != 0 || !st.Running || st.Phase != evmsdk.MinerPhaseMining || st.LastError == "" {
+		t.Fatalf("status %s", m.Status())
+	}
+	// Both windows have closed by now; neither block got a certificate.
+	time.Sleep(100 * time.Millisecond)
+	if store.Len() != 0 {
+		t.Fatalf("cert blocks = %d, want none", store.Len())
+	}
+}
