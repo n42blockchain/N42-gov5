@@ -193,7 +193,7 @@ ios: mobile-tools
 
 # String-only Objective-C surface for the V3 Flutter bridge.
 ios-mobileverify: mobile-tools mobile-dir
-	CGO_ENABLED=1 gomobile bind ${MOBILE_GO_FLAGS} -o $(BUILD_MOBILE_PATH)/N42MobileVerify.xcframework -target=ios/arm64,iossimulator/arm64 ./cmd/mobileverifyios
+	CGO_ENABLED=1 gomobile bind ${MOBILE_GO_FLAGS} -o $(BUILD_MOBILE_PATH)/N42MobileVerify.xcframework -target=ios/arm64,iossimulator/arm64,iossimulator/amd64 ./cmd/mobileverifyios
 # All four ABIs the app ships (arm, arm64, 386, amd64). -Wno-error=int-conversion:
 # blst's x86-64 SIGILL probe initialises bionic's struct sigaction
 # positionally, which clang 16+ (NDK 26+) rejects; it was a warning before.
