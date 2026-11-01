@@ -295,6 +295,9 @@ type BlockChain struct {
 	// e1Early holds a light node's fetched results until their block is
 	// stored (N42_E1_EARLY; e1.go): hash -> rawdb.ExecutedResult.
 	e1Early sync.Map
+	// e1Prefetch holds the blocks a light node fetches results for ahead of
+	// its stores (N42_E1_PREFETCH; e1.go): hash -> block number.
+	e1Prefetch sync.Map
 }
 
 // CommitteeEvidenceBuilder builds the consensus evidence for a freshly persisted

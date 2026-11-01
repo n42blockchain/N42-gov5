@@ -447,6 +447,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			prep, prepWait = p.bc.claimAheadPrep(blockHash)
 		}
 	}
+	// The preparation's stages, from the block's queueing: its senders
+	// settling (prepSendersUs) and the computation (prepComputeUs). Taken
+	// here: prep is cleared once adopted.
+	var prepSenders, prepCompute time.Duration
+	if prep != nil && !prep.startedAt.IsZero() {
+		prepSenders = prep.startedAt.Sub(prep.queuedAt)
+		if !prep.computedAt.IsZero() {
+			prepCompute = prep.computedAt.Sub(prep.startedAt)
+		}
+	}
 	// The base prefill (ahead_base_prefill.go): the run's tree reads answer
 	// its keys without the tree's lock.
 	base := prep.prefill()
@@ -1168,15 +1178,6 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			baseTook, baseKeys, baseClaimWait, baseTreeWait, baseAt, baseSkip, baseCut = base.took, base.keys, base.claimWait, base.waited, base.at, base.skip, base.cut.Load()
 			if basePF != nil {
 				baseDepth = int64(base.depth)
-			}
-		}
-		// The preparation's stages, from the block's queueing: its senders
-		// settling (prepSendersUs) and the computation (prepComputeUs).
-		var prepSenders, prepCompute time.Duration
-		if prep != nil && !prep.startedAt.IsZero() {
-			prepSenders = prep.startedAt.Sub(prep.queuedAt)
-			if !prep.computedAt.IsZero() {
-				prepCompute = prep.computedAt.Sub(prep.startedAt)
 			}
 		}
 		if lenient && failed > 0 {

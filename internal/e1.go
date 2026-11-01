@@ -211,23 +211,28 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	t0 := time.Now()
-	r, ok, err := e1Fetch(ctx, bc.e1Source(), b.Hash())
-	e1Stats.waitNs.Add(int64(time.Since(t0)))
-	if err != nil {
-		e1Stats.failed.Add(1)
-		return false, err
-	}
-	if !ok {
-		e1Stats.notReady.Add(1)
-		return false, nil
-	}
-	if body, ok := b.Body().(*block.Body); ok && (len(body.FrameHashes) > 0 || len(body.Txs) >= 1000) {
-		log.Info("e1 light: result fetched", "n", n, "fetchUs", time.Since(t0).Microseconds(), "tMs", time.Now().UnixMilli())
-	}
-	if e1Early {
-		bc.e1EarlyPublish(b.Hash(), r)
+	r, ok := bc.e1EarlyResult(b.Hash())
+	if ok {
+		// Prefetched (N42_E1_PREFETCH): published already.
 		defer bc.e1Early.Delete(b.Hash())
+	} else {
+		t0 := time.Now()
+		var err error
+		r, ok, err = e1Fetch(ctx, bc.e1Source(), b.Hash())
+		e1Stats.waitNs.Add(int64(time.Since(t0)))
+		if err != nil {
+			e1Stats.failed.Add(1)
+			return false, err
+		}
+		if !ok {
+			e1Stats.notReady.Add(1)
+			return false, nil
+		}
+		e1LogFetched(b, n, t0, false)
+		if e1Early {
+			bc.e1EarlyPublish(b.Hash(), r)
+			defer bc.e1Early.Delete(b.Hash())
+		}
 	}
 	if err := bc.ResolveFrames(b); err != nil {
 		return false, err
@@ -311,9 +316,97 @@ func (bc *BlockChain) e1EarlyResult(hash types.Hash) (rawdb.ExecutedResult, bool
 	return v.(rawdb.ExecutedResult), true
 }
 
+// e1LogFetched logs when a frame block's result reached this light node.
+func e1LogFetched(b *block.Block, n uint64, t0 time.Time, prefetched bool) {
+	if body, ok := b.Body().(*block.Body); ok && (len(body.FrameHashes) > 0 || len(body.Txs) >= 1000) {
+		log.Info("e1 light: result fetched", "n", n, "fetchUs", time.Since(t0).Microseconds(), "prefetch", prefetched,
+			"tMs", time.Now().UnixMilli())
+	}
+}
+
+// e1Prefetch is N42_E1_PREFETCH=1 (default off): a light node fetches the
+// result of every queued block at once, instead of each block's after its
+// parent is stored, and publishes it early (N42_E1_EARLY). E1N26 run 12: a
+// light leader started fetching the result its gate waits for (N-2's, for
+// height N) a median 8.5 ms, mean 10 ms and p90 50 ms after node0 had it,
+// behind its own store of N-3 (a 163k-transaction block). The stores still
+// run in parent order; only the result arrives sooner.
+var e1Prefetch = os.Getenv("N42_E1_PREFETCH") == "1"
+
+// SetE1PrefetchForTest switches N42_E1_PREFETCH and returns the restore.
+func SetE1PrefetchForTest(on bool) func() {
+	prev := e1Prefetch
+	e1Prefetch = on
+	return func() { e1Prefetch = prev }
+}
+
+// e1PrefetchQueued starts a result fetch for each queued block that has
+// none running or published, and forgets the prefetches of blocks two or
+// more below the committed height (stored or dropped by then).
+func (bc *BlockChain) e1PrefetchQueued(list []*lagQueued, committedNum uint64) {
+	bc.e1Prefetch.Range(func(k, v any) bool {
+		if v.(uint64)+2 <= committedNum {
+			bc.e1Prefetch.Delete(k)
+			bc.e1Early.Delete(k)
+		}
+		return true
+	})
+	for _, q := range list {
+		b := q.blk
+		n := b.Number64().Uint64()
+		if n <= committedNum {
+			continue
+		}
+		if _, running := bc.e1Prefetch.LoadOrStore(b.Hash(), n); running {
+			continue
+		}
+		go bc.e1PrefetchOne(b, n)
+	}
+}
+
+// e1PrefetchOne long-polls the executor for b's result until it has it,
+// b is stored or b left the queue.
+func (bc *BlockChain) e1PrefetchOne(b *block.Block, n uint64) {
+	ctx := bc.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h := b.Hash()
+	t0 := time.Now()
+	for ctx.Err() == nil && bc.LagImportQueued(h) {
+		if _, ok := bc.e1EarlyResult(h); ok {
+			return
+		}
+		r, ok, err := e1Fetch(ctx, bc.e1Source(), h)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(e1PrefetchRetry):
+			}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if bc.e1HasResult(h) {
+			return
+		}
+		e1LogFetched(b, n, t0, true)
+		bc.e1EarlyPublish(h, r)
+		return
+	}
+}
+
+// e1PrefetchRetry spaces a prefetch's retries after a failed fetch.
+const e1PrefetchRetry = 20 * time.Millisecond
+
 // e1LightStep is lagStep on a light node: the lowest queued block whose
 // parent is stored is stored with the executor's result.
 func (bc *BlockChain) e1LightStep(list []*lagQueued, committedNum uint64) bool {
+	if e1Prefetch && e1Early {
+		bc.e1PrefetchQueued(list, committedNum)
+	}
 	for _, q := range list {
 		b := q.blk
 		n := b.Number64().Uint64()

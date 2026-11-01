@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -29,9 +30,10 @@ import (
 // stored results equal the executor's, its leader gate opens on them and
 // its availability check of the next header passes against them.
 func TestE1LightFollowsExecutor(t *testing.T) {
-	for _, early := range []bool{false, true} {
-		t.Run(map[bool]string{false: "stored", true: "early"}[early], func(t *testing.T) {
-			defer SetE1EarlyForTest(early)()
+	for _, mode := range []string{"stored", "early", "prefetch"} {
+		t.Run(mode, func(t *testing.T) {
+			defer SetE1EarlyForTest(mode != "stored")()
+			defer SetE1PrefetchForTest(mode == "prefetch")()
 			testE1LightFollowsExecutor(t)
 		})
 	}
@@ -192,6 +194,48 @@ func TestE1EarlyResult(t *testing.T) {
 	}
 	lc.bc.e1Early.Delete(h)
 	_, ok = lc.bc.pendingExecutedResult(h)
+	require.False(t, ok)
+}
+
+// TestE1PrefetchAheadOfParent: with N42_E1_PREFETCH a queued block's result
+// is fetched and published while its parent is not stored here, once per
+// block, and forgotten two blocks below the committed height.
+func TestE1PrefetchAheadOfParent(t *testing.T) {
+	defer SetE1EarlyForTest(true)()
+	defer SetE1PrefetchForTest(true)()
+	ex := newLagChainEngine(t, nil, importBenchEngine{})
+	light := newLagChainEngine(t, nil, importBenchEngine{})
+	srv := httptest.NewServer(http.HandlerFunc(ex.bc.serveE1Result))
+	defer srv.Close()
+	light.bc.SetE1SourceForTest(srv.URL)
+
+	hdr := &block.Header{ParentHash: types.HexToHash("0x0f"), Number: uint256.NewInt(5), GasLimit: 1}
+	b := block.NewBlock(hdr, nil).(*block.Block)
+	q := &lagQueued{blk: b, since: time.Now()}
+	le := &light.bc.lagExec
+	le.mu.Lock()
+	if le.queued == nil {
+		le.queued = make(map[types.Hash]*lagQueued)
+	}
+	le.queued[b.Hash()] = q
+	le.mu.Unlock()
+	require.False(t, light.bc.blockStored(b.ParentHash(), 4))
+
+	light.bc.e1PrefetchQueued([]*lagQueued{q}, 0)
+	light.bc.e1PrefetchQueued([]*lagQueued{q}, 0) // one fetch per block
+	want := rawdb.ExecutedResult{Root: types.HexToHash("0xaa"), GasUsed: 21000}
+	require.NoError(t, ex.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return rawdb.WriteExecutedResult(tx, b.Hash(), want)
+	}))
+	require.Eventually(t, func() bool {
+		got, ok := light.bc.pendingExecutedResult(b.Hash())
+		return ok && got == want
+	}, 10*time.Second, time.Millisecond)
+
+	light.bc.e1PrefetchQueued(nil, 7)
+	_, ok := light.bc.pendingExecutedResult(b.Hash())
+	require.False(t, ok, "prefetched result kept two blocks below the committed height")
+	_, ok = light.bc.e1Prefetch.Load(b.Hash())
 	require.False(t, ok)
 }
 
