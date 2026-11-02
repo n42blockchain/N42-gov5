@@ -9,12 +9,6 @@ package api
 // which imports internal/api, so pulling it into an internal/api test file
 // is an import cycle. debug_trace.go's own TraceTransaction path does not
 // consult that registry anyway (see TestDebugTraceTransactionNamedTracerRejected).
-//
-// A genuine historical-state gap (see the comment above
-// TestDebugTraceTransactionDefaultStructLogger) means every replay here
-// fails at the EVM-execution step; the tests below cover the real code paths
-// up to and including that failure, and assert the documented failure mode
-// instead of pretending it succeeds.
 
 import (
 	"context"
@@ -48,25 +42,6 @@ func apiXNewAPIForFixture(fx *apiXChainFixture) *API {
 	}
 }
 
-// Note: a default-struct-logger TraceTransaction test (the common case) is
-// deliberately NOT included here. traceTx replays a block's prefix against
-// state.NewPlainState(tx, targetBlockNumber-1), which resolves historical
-// account values through the AccountsHistory roaring-bitmap index plus the
-// AccountChangeSet "original value" rows written by PlainStateWriter. On
-// this fixture that lookup returns a nil account (no error) for the funded
-// senders at their very first spend, so the replay fails with "insufficient
-// funds" even though the real balances are present in current PlainState —
-// confirmed with a throwaway probe: the AccountsHistory index has entries
-// for every address that changed, but state.NewPlainState(tx,
-// 0).ReadAccountData(sender) still returns (nil, nil) for a block-0 lookup.
-// This looks like a genuine gap in the GetAsOf/FindByHistory path for an
-// account whose first-ever change is the one being looked up through (i.e.
-// its pre-image is the genesis allocation, not a prior change-set row), but
-// pinning it down further is beyond this task's test-only scope — left as a
-// follow-up rather than guessed at. TestDebugTraceBlockByHash below still
-// exercises traceBlock/traceTx end-to-end and documents the same symptom
-// via the per-tx Error field traceBlock captures instead of propagating.
-
 func TestDebugTraceTransactionNamedTracerRejected(t *testing.T) {
 	// internal/tracers/native (callTracer, prestateTracer) cannot be imported
 	// from internal/api tests: it pulls in internal/tracers, which imports
@@ -97,17 +72,13 @@ func TestDebugTraceBlockByNumber(t *testing.T) {
 	api := apiXNewAPIForFixture(fx)
 	debug := NewDebugAPI(api)
 
-	// TraceBlockByNumber/traceBlock never returns a top-level error for a
-	// per-transaction replay failure — it captures it in txTraceResult.Error
-	// instead (see debug_trace.go's traceBlock). This exercises exactly that
-	// branch: given the historical-state gap documented above
-	// TestDebugTraceTransactionDefaultStructLogger, every replay here hits
-	// it, so err is always nil and the result carries one Error string.
+	// The replay executes against the parent state, where the sender is funded.
 	results, err := debug.TraceBlockByNumber(context.Background(), jsonrpc.BlockNumber(1), nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, fx.ValueTransferTxs[0].Hash(), results[0].TxHash)
-	require.NotEmpty(t, results[0].Error)
+	require.Empty(t, results[0].Error)
+	require.NotNil(t, results[0].Result)
 }
 
 func TestDebugTraceBlockByHash(t *testing.T) {
@@ -127,7 +98,7 @@ func TestDebugTraceBlockByHash(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, byHash, 2)
 	for _, r := range byHash {
-		require.NotEmpty(t, r.Error)
+		require.Empty(t, r.Error)
 	}
 }
 
@@ -153,13 +124,7 @@ func TestCreateAccessListForValueTransfer(t *testing.T) {
 	res, err := bcAPI.CreateAccessList(context.Background(), args, nil)
 	require.NoError(t, err)
 	require.NotNil(t, res)
-	// Same historical-state gap as TraceTransaction (see the comment above
-	// TestDebugTraceTransactionDefaultStructLogger): CreateAccessList reads
-	// state via state.NewPlainState(tx, headerNumber) rather than current
-	// PlainState, which hits the same GetAsOf/FindByHistory resolution and
-	// (for this fixture's senders) reports a zero balance instead of the
-	// real one. Execution errors surface through AccessListResult.Error,
-	// not a returned error, so the simulation path up to and including that
-	// failure is what's exercised and asserted here.
-	require.Contains(t, res.Error, "insufficient funds")
+	// The funded sender must be read as funded: state stays open during execution.
+	require.Empty(t, res.Error)
+	require.NotZero(t, uint64(res.GasUsed))
 }

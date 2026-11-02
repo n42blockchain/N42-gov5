@@ -98,6 +98,28 @@ type StructLogRes struct {
 // Transaction Tracing
 // =============================================================================
 
+// openBlockState returns the state after blockNumber, read through the same
+// checks as every other state RPC. The returned state reads through the read
+// transaction it was built on, and closing that transaction closes its cursors,
+// so release must not run until execution against the state has finished.
+func openBlockState(ctx context.Context, api *API, blockNumber uint64) (*state.IntraBlockState, func(), error) {
+	tx, err := api.Database().BeginRo(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	ibs := api.State(tx, jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.BlockNumber(blockNumber)))
+	if ibs == nil {
+		tx.Rollback()
+		return nil, nil, fmt.Errorf("state of block %d not available", blockNumber)
+	}
+	stateDB, err := requireIntraBlockState(ibs, "unexpected state type")
+	if err != nil {
+		tx.Rollback()
+		return nil, nil, err
+	}
+	return stateDB, tx.Rollback, nil
+}
+
 // TraceTransaction returns the structured logs created during the execution of EVM
 // and returns them as a JSON object.
 func (debug *DebugAPI) TraceTransaction(ctx context.Context, hash types.Hash, config *TraceConfig) (interface{}, error) {
@@ -165,22 +187,15 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 	if err != nil {
 		return nil, err
 	}
-	var ibs *state.IntraBlockState
-	err = debug.api.Database().View(ctx, func(t kv.Tx) error {
-		blockNum := blockNumber.Uint64()
-		if blockNum > 0 {
-			blockNum--
-		}
-		if err := rawdb.CheckHistoricalState(blockNum); err != nil {
-			return err
-		}
-		stateReader := state.NewPlainState(t, blockNum)
-		ibs = state.New(stateReader)
-		return nil
-	})
+	var parent uint64
+	if n := blockNumber.Uint64(); n > 0 {
+		parent = n - 1
+	}
+	ibs, release, err := openBlockState(ctx, debug.api, parent)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	// Get header as concrete type
 	header, ok := blk.Header().(*block.Header)
@@ -413,18 +428,11 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 	}
 
 	// Get state
-	var ibs *state.IntraBlockState
-	err = debug.api.Database().View(ctx, func(t kv.Tx) error {
-		if err := rawdb.CheckHistoricalState(headerNumber.Uint64()); err != nil {
-			return err
-		}
-		stateReader := state.NewPlainState(t, headerNumber.Uint64())
-		ibs = state.New(stateReader)
-		return nil
-	})
+	ibs, release, err := openBlockState(ctx, debug.api, headerNumber.Uint64())
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	// Apply state overrides
 	if config != nil && config.StateOverrides != nil {
@@ -461,8 +469,9 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 		evm.Cancel()
 	}()
 
-	// Execute
-	gp := new(common.GasPool).AddGas(header.GasLimit)
+	// Execute. The call is capped by its own gas, which RPCGasCap may set above
+	// the block gas limit.
+	gp := new(common.GasPool).AddGas(msg.Gas())
 	result, err := internal.ApplyMessage(evm, msg, gp, true, false)
 	if err != nil {
 		return nil, err
@@ -567,15 +576,7 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 
 	for i := 0; i < 10; i++ {
 		// Get fresh state for each iteration
-		var ibs *state.IntraBlockState
-		err = s.api.Database().View(ctx, func(t kv.Tx) error {
-			if err := rawdb.CheckHistoricalState(headerNumber.Uint64()); err != nil {
-				return err
-			}
-			stateReader := state.NewPlainState(t, headerNumber.Uint64())
-			ibs = state.New(stateReader)
-			return nil
-		})
+		ibs, release, err := openBlockState(ctx, s.api, headerNumber.Uint64())
 		if err != nil {
 			return nil, err
 		}
@@ -596,6 +597,7 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 		// Execute transaction
 		gp := new(common.GasPool).AddGas(header.GasLimit)
 		result, execError := internal.ApplyMessage(evm, msg, gp, true, false)
+		release()
 		if execError != nil {
 			return &AccessListResult{Error: execError.Error()}, nil
 		}

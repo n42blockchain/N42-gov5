@@ -30,16 +30,11 @@ func TestDebugTraceCallAtLatest(t *testing.T) {
 	}
 	latest := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
 
-	// TraceCall resolves state via state.NewPlainState(tx, headerNumber)
-	// where headerNumber is the current head's own number (5) rather than
-	// head+1: the same historical-state gap documented above
-	// TestDebugTraceTransactionDefaultStructLogger in
-	// apix_debug_trace_test.go, which reports a zero balance for senders
-	// here even though PlainState currently holds the real balance. This
-	// exercises the real code path up to and including that documented
-	// failure.
-	_, err := debug.TraceCall(context.Background(), args, latest, nil)
-	require.ErrorContains(t, err, "insufficient funds")
+	// The default gas exceeds the block gas limit, and the sender's balance
+	// must come from the state at head.
+	result, err := debug.TraceCall(context.Background(), args, latest, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
 }
 
 func TestDebugTraceCallCustomTracerRejected(t *testing.T) {
