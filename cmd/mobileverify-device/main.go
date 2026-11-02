@@ -17,12 +17,22 @@
 //	mobileverify-device \
 //	  -mv http://127.0.0.1:21012,http://127.0.0.1:21013,http://127.0.0.1:21014 \
 //	  -rpc http://127.0.0.1:20012 -chain mainnet_qmdb_staggered -blocks 20
+//
+// A chain with no params name (a devnet, e.g. n42-rs's n42_devnet.json,
+// chain id 1143) is given by its genesis file instead: -genesis <file> reads
+// the chain config the way `n42 init` does and overrides -chain.
+//
+// On a mixed fleet only some members build stream packets (the Go ones);
+// -skip-no-packet treats a block whose packet the node does not hold
+// ("packet not in window" after -packet-wait) as skipped rather than as a
+// failure, and needs at least one verified block.
 package main
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -33,6 +43,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/cmd/evmsdk"
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -60,10 +71,19 @@ func main() {
 	blocks := flag.Int("blocks", 20, "number of new blocks to verify")
 	settle := flag.Duration("settle", 30*time.Second, "time to wait for windows to close before reading certificates")
 	commitWait := flag.Duration("commit-wait", 3*time.Minute, "max time to wait for the registrations to be committed fleet-wide")
+	genesisPath := flag.String("genesis", "", "genesis JSON whose chain config to re-execute under (overrides -chain; for chains with no params name)")
+	skipNoPacket := flag.Bool("skip-no-packet", false, "skip blocks whose packet the node does not hold instead of failing (mixed fleets)")
+	packetWait := flag.Duration("packet-wait", 3*time.Second, "with -skip-no-packet: how long to retry a missing packet before skipping the block")
 	flag.Parse()
 
-	cfg := params.ChainConfigByChainName(*chain)
-	if cfg == nil {
+	var cfg *params.ChainConfig
+	if *genesisPath != "" {
+		var err error
+		if cfg, err = chainConfigFromGenesis(*genesisPath); err != nil {
+			log.Fatalf("genesis %s: %v", *genesisPath, err)
+		}
+		log.Printf("chain config from %s: chainId=%v", *genesisPath, cfg.ChainID)
+	} else if cfg = params.ChainConfigByChainName(*chain); cfg == nil {
 		log.Fatalf("unknown chain %q", *chain)
 	}
 	nodes := strings.Split(*mvList, ",")
@@ -129,7 +149,7 @@ func main() {
 		log.Fatalf("eth_blockNumber: %v", err)
 	}
 	var results []*blockResult
-	failures := 0
+	failures, skipped := 0, 0
 	for next := head + 1; len(results) < *blocks; {
 		cur, err := blockNumber(*rpcURL)
 		if err != nil || cur < next {
@@ -141,6 +161,12 @@ func main() {
 			log.Fatalf("header %d: %v", next, err)
 		}
 		br := &blockResult{number: next, hash: hdr.Hash, txs: len(hdr.Transactions)}
+		if *skipNoPacket && !packetHeld(ctx, devs[0].client, hdr.Hash, *packetWait) {
+			log.Printf("block %d %s: no packet at %s, skipped", next, hdr.Hash, devs[0].node)
+			skipped++
+			next++
+			continue
+		}
 		for _, d := range devs {
 			res, err := d.client.VerifyBlock(ctx, hdr.Hash, d.codes, cfg)
 			if res != nil {
@@ -184,9 +210,46 @@ func main() {
 			certified++
 		}
 	}
-	fmt.Printf("SUMMARY devices=%d blocks=%d failures=%d certified(all devices)=%d/%d\n", len(devs), len(results), failures, certified, len(results))
+	fmt.Printf("SUMMARY devices=%d blocks=%d skipped=%d failures=%d certified(all devices)=%d/%d\n", len(devs), len(results), skipped, failures, certified, len(results))
 	if failures > 0 || certified < len(results) {
 		os.Exit(1)
+	}
+}
+
+// chainConfigFromGenesis reads a genesis file's chain config as `n42 init`
+// does (cmd/n42/initcmd.go): decode, hive env overrides, consensus
+// normalisation.
+func chainConfigFromGenesis(path string) (*params.ChainConfig, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	genesis := new(conf.Genesis)
+	if err := json.NewDecoder(f).Decode(genesis); err != nil {
+		return nil, err
+	}
+	conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
+	if genesis.Config == nil {
+		return nil, fmt.Errorf("missing chain config")
+	}
+	return params.NormalizeConsensus(genesis.Config), nil
+}
+
+// packetHeld reports whether the node serves the block's packet, retrying a
+// "packet not in window" for up to wait (a relayed packet may trail the
+// block on a mixed fleet).
+func packetHeld(ctx context.Context, c *evmsdk.MobileVerifyClient, hash string, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
+		_, err := c.FetchPacket(ctx, hash)
+		if err == nil {
+			return true
+		}
+		if !errors.Is(err, evmsdk.ErrMobileVerifyNotFound) || time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
