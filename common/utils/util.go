@@ -430,10 +430,10 @@ func ConvertSignatureToH768(p [96]byte) *types_pb.H768 {
 
 func ConvertH2048ToBloom(h2048 *types_pb.H2048) [256]byte {
 	var bloom [256]byte
-	copy(bloom[:], ConvertH512ToBytes(h2048.Hi.Hi))
-	copy(bloom[64:], ConvertH512ToBytes(h2048.Hi.Lo))
-	copy(bloom[128:], ConvertH512ToBytes(h2048.Lo.Hi))
-	copy(bloom[192:], ConvertH512ToBytes(h2048.Lo.Lo))
+	copy(bloom[:], ConvertH512ToBytes(h2048.GetHi().GetHi()))
+	copy(bloom[64:], ConvertH512ToBytes(h2048.GetHi().GetLo()))
+	copy(bloom[128:], ConvertH512ToBytes(h2048.GetLo().GetHi()))
+	copy(bloom[192:], ConvertH512ToBytes(h2048.GetLo().GetLo()))
 	return bloom
 }
 

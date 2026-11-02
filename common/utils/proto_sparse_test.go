@@ -33,3 +33,17 @@ func TestSparseProtoNumbers(t *testing.T) {
 		ConvertH768ToSignature(p)
 	}
 }
+
+func TestSparseProtoBloom(t *testing.T) {
+	cases := []*types_pb.H2048{
+		nil,
+		{},
+		{Hi: &types_pb.H1024{}},
+		{Lo: &types_pb.H1024{Hi: &types_pb.H512{}}},
+	}
+	for _, p := range cases {
+		if bloom := ConvertH2048ToBloom(p); bloom != ([256]byte{}) {
+			t.Fatalf("sparse bloom %v decoded to a non-zero value", p)
+		}
+	}
+}
