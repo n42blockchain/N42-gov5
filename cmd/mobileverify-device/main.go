@@ -79,7 +79,7 @@ func main() {
 	var cfg *params.ChainConfig
 	if *genesisPath != "" {
 		var err error
-		if cfg, err = chainConfigFromGenesis(*genesisPath); err != nil {
+		if cfg, err = conf.LoadGenesisChainConfig(*genesisPath); err != nil {
 			log.Fatalf("genesis %s: %v", *genesisPath, err)
 		}
 		log.Printf("chain config from %s: chainId=%v", *genesisPath, cfg.ChainID)
@@ -214,26 +214,6 @@ func main() {
 	if failures > 0 || certified < len(results) {
 		os.Exit(1)
 	}
-}
-
-// chainConfigFromGenesis reads a genesis file's chain config as `n42 init`
-// does (cmd/n42/initcmd.go): decode, hive env overrides, consensus
-// normalisation.
-func chainConfigFromGenesis(path string) (*params.ChainConfig, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	genesis := new(conf.Genesis)
-	if err := json.NewDecoder(f).Decode(genesis); err != nil {
-		return nil, err
-	}
-	conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
-	if genesis.Config == nil {
-		return nil, fmt.Errorf("missing chain config")
-	}
-	return params.NormalizeConsensus(genesis.Config), nil
 }
 
 // packetHeld reports whether the node serves the block's packet, retrying a
