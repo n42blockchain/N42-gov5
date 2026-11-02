@@ -67,44 +67,46 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 		return nil, seekErr
 	}
 
-	if k == nil {
-		return nil, ethdb.ErrKeyNotFound
-	}
-	if storage {
-		// Storage key = addr(20) + slot(32) = 52B.
-		if !bytes.Equal(k[:types.AddressLength], key[:types.AddressLength]) ||
-			!bytes.Equal(k[types.AddressLength:types.AddressLength+types.HashLength], key[types.AddressLength:]) {
-			return nil, ethdb.ErrKeyNotFound
+	// A branch switch deletes the reverted block's changesets but keeps its bit
+	// in the index, so a bit with no changeset entry is not the next change:
+	// step over it, across chunks, or the caller answers from current state.
+	for next := timestamp; k != nil; {
+		if storage {
+			// Storage key = addr(20) + slot(32) = 52B.
+			if !bytes.Equal(k[:types.AddressLength], key[:types.AddressLength]) ||
+				!bytes.Equal(k[types.AddressLength:types.AddressLength+types.HashLength], key[types.AddressLength:]) {
+				return nil, ethdb.ErrKeyNotFound
+			}
+		} else {
+			if !bytes.HasPrefix(k, key) {
+				return nil, ethdb.ErrKeyNotFound
+			}
 		}
-	} else {
-		if !bytes.HasPrefix(k, key) {
-			return nil, ethdb.ErrKeyNotFound
+		index := roaring64.New()
+		if _, err := index.ReadFrom(bytes.NewReader(v)); err != nil {
+			return nil, err
 		}
-	}
-	index := roaring64.New()
-	if _, err := index.ReadFrom(bytes.NewReader(v)); err != nil {
-		return nil, err
-	}
-	found, ok := bitmapdb.SeekInBitmap64(index, timestamp)
-	changeSetBlock := found
-
-	var data []byte
-	var err error
-	if ok {
-		data, err = changeset.Mapper[csBucket].Find(changesC, changeSetBlock, key)
-		if err != nil {
+		for {
+			changeSetBlock, ok := bitmapdb.SeekInBitmap64(index, next)
+			if !ok {
+				break
+			}
+			// Phase B: account changeset OldValues are self-contained (full V2
+			// with CodeHash inline); no historical CodeHash recovery is needed.
+			data, err := changeset.Mapper[csBucket].Find(changesC, changeSetBlock, key)
+			if err == nil {
+				return data, nil
+			}
 			if !errors.Is(err, changeset.ErrNotFound) {
 				return nil, fmt.Errorf("finding %x in the changeset %d: %w", key, changeSetBlock, err)
 			}
-			return nil, ethdb.ErrKeyNotFound
+			next = changeSetBlock + 1
 		}
-	} else {
-		return nil, ethdb.ErrKeyNotFound
+		if k, v, seekErr = indexC.Next(); seekErr != nil {
+			return nil, seekErr
+		}
 	}
-
-	// Phase B: account changeset OldValues are self-contained (full V2 with
-	// CodeHash inline); no historical CodeHash recovery is needed.
-	return data, nil
+	return nil, ethdb.ErrKeyNotFound
 }
 
 // WalkAsOfStorage walks the storage of one account as of a historical block.
