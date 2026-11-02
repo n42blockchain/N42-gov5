@@ -64,6 +64,8 @@ Weekly order:
 Sync (item 1). Run from `D:\mainnet`: the datadir is the relative `./mainnet`, and
 started from any other directory the node creates a new empty datadir there
 (`D:\mainnet\n42q.bat` is the same command).
+`n42q.exe` is built from branch `legacy/v5.6.823-block-only-sync` (v5.6.823 plus the
+block-only import patch); current main cannot sync the legacy chain.
 
 ```powershell
 $env:N42_BLOCK_ONLY_SYNC = '1'          # block-only sync, no state execution
