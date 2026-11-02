@@ -62,14 +62,10 @@ func TestBlockNumberOrHashUnmarshalJSON(t *testing.T) {
 	if err := bnh2.UnmarshalJSON([]byte(`"` + hashHex + `"`)); err != nil {
 		t.Fatalf("unexpected err %v", err)
 	}
-	// NOTE: BlockNumberOrHash.UnmarshalJSON calls UnmarshalText(hash, ...) with
-	// hash passed by value (not *types.Hash), so the decoded bytes are written
-	// into a local copy and never reach the caller's hash variable. The parsed
-	// hash therefore stays zero-valued even though err == nil. This looks like a
-	// pre-existing bug in UnmarshalText's signature; left unmodified per task
-	// instructions (non-test code must not change). Assert the actual behavior.
-	if _, ok := bnh2.Hash(); !ok {
+	if got, ok := bnh2.Hash(); !ok {
 		t.Fatal("expected hash field set")
+	} else if got.Hex() != hashHex {
+		t.Errorf("got hash %s, want %s", got.Hex(), hashHex)
 	}
 
 	var bnh3 BlockNumberOrHash
