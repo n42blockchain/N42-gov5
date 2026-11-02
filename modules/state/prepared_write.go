@@ -242,7 +242,11 @@ type PreparedStateWrite struct {
 	acct, stor []ChangeSetRow
 	nAccts     int
 	nSlots     int
+	phases     PrepPhases
 }
+
+// Phases returns the sharded preparation's step times (zero otherwise).
+func (p *PreparedStateWrite) Phases() PrepPhases { return p.phases }
 
 // PrepareStateWrite runs ibs.CommitBlock against a StateWriteLog and, when
 // no call needs the store and the history index is not written per block,

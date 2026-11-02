@@ -20,7 +20,9 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -44,6 +46,23 @@ import (
 // serial). Blocks with fewer than prepShardMinObjects objects stay serial.
 
 var prepShards = parsePrepShards(os.Getenv("N42_STATE_WRITE_PREP_SHARDS"))
+
+// prepDeferLoads is N42_STATE_WRITE_PREP_DEFER_LOADS (default on; "0" off,
+// E1N26 run 18). Under the no-journal fold an import's ~23k credited
+// recipients stay pending until the write, and making each one's object
+// live -- the read, the object, the live-set insert, the fold and its
+// journal record -- took ~0.94 µs serially: ~21 ms of a 35 ms sharded
+// write in the benchmark, more on node0. With it on only the reads stay
+// serial; each shard builds its credited accounts' objects itself.
+var prepDeferLoads = os.Getenv("N42_STATE_WRITE_PREP_DEFER_LOADS") != "0"
+
+// SetPrepDeferLoadsForTest switches the deferred credited loads and
+// returns the restore.
+func SetPrepDeferLoadsForTest(on bool) func() {
+	prev := prepDeferLoads
+	prepDeferLoads = on
+	return func() { prepDeferLoads = prev }
+}
 
 func parsePrepShards(v string) int {
 	if v == "" {
@@ -71,10 +90,41 @@ const prepShardMinObjects = 4096
 // commitBlockShards is CommitBlock into one StateWriteLog per address
 // shard: shard k holds the accounts whose first byte b has b*shards/256 ==
 // k, in address order, so the logs in shard order are CommitBlock's log.
-func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards int) ([]*StateWriteLog, error) {
-	for _, addr := range sdb.pendingIncreaseAddrs() {
-		sdb.getStateObject(addr)
+func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards int, ph *PrepPhases) ([]*StateWriteLog, error) {
+	t0 := time.Now()
+	pending := sdb.pendingIncreaseAddrs()
+	var deferred [][]creditedLoad
+	if prepDeferLoads {
+		deferred = make([][]creditedLoad, shards)
 	}
+	for _, addr := range pending {
+		if _, live := sdb.stateObjects[addr]; live || deferred == nil {
+			if !live {
+				ph.Loaded++
+			}
+			sdb.getStateObject(addr)
+			continue
+		}
+		ph.Loaded++
+		// getStateObject's read, without the live object: the shard
+		// builds it (creditedObject).
+		var acc *account.StateAccount
+		if _, absent := sdb.nilAccounts[addr]; !absent {
+			a, err := sdb.stateReader.ReadAccountData(addr)
+			if err != nil {
+				return nil, err
+			}
+			if a != nil && sdb.snap != nil && sdb.snap.CanWrite() {
+				sdb.snap.AddAccount(addr, a)
+			}
+			acc = a
+		}
+		k := int(addr[0]) * shards / 256
+		deferred[k] = append(deferred[k], creditedLoad{addr: addr, acc: acc, bi: sdb.balanceInc[addr]})
+	}
+	ph.Pending = len(pending)
+	t1 := time.Now()
+	ph.Load = t1.Sub(t0)
 	for addr := range sdb.journal.dirties {
 		sdb.stateObjectsDirty[addr] = struct{}{}
 	}
@@ -90,6 +140,8 @@ func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards i
 		k := int(addr[0]) * shards / 256
 		buckets[k] = append(buckets[k], addr)
 	}
+	t2 := time.Now()
+	ph.Mark = t2.Sub(t1)
 	policy := newAccountWritePolicy(chainRules)
 	logs := make([]*StateWriteLog, shards)
 	errs := make([]error, shards)
@@ -100,12 +152,32 @@ func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards i
 			defer wg.Done()
 			addrs := buckets[k]
 			sortAddresses(addrs)
+			var credited []creditedLoad
+			if deferred != nil {
+				credited = deferred[k] // in address order, as pending is
+			}
 			l := &StateWriteLog{}
-			l.reserveAccountWrites(len(addrs))
-			for _, addr := range addrs {
-				_, isDirty := sdb.stateObjectsDirty[addr]
+			l.reserveAccountWrites(len(addrs) + len(credited))
+			// The live and the credited addresses are disjoint; merged in
+			// address order.
+			for len(addrs) > 0 || len(credited) > 0 {
+				var (
+					addr    types.Address
+					obj     *stateObject
+					isDirty bool
+				)
+				if len(credited) == 0 || (len(addrs) > 0 && compareAddresses(addrs[0], credited[0].addr) < 0) {
+					addr, addrs = addrs[0], addrs[1:]
+					obj = sdb.stateObjects[addr]
+					_, isDirty = sdb.stateObjectsDirty[addr]
+				} else {
+					c := credited[0]
+					credited = credited[1:]
+					// The fold's journal entry made it dirty.
+					addr, obj, isDirty = c.addr, sdb.creditedObject(c), true
+				}
 				_, needsWipe := sdb.storageWipes[addr]
-				if err := updateAccountWithWipe(policy, l, addr, sdb.stateObjects[addr], isDirty, needsWipe); err != nil {
+				if err := updateAccountWithWipe(policy, l, addr, obj, isDirty, needsWipe); err != nil {
 					errs[k] = err
 					return
 				}
@@ -119,8 +191,47 @@ func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards i
 			return nil, err
 		}
 	}
+	t3 := time.Now()
+	ph.Commit = t3.Sub(t2)
 	sdb.clearJournalAndRefund()
+	ph.Reset = time.Since(t3)
 	return logs, nil
+}
+
+// creditedLoad is a pending balance increase's account read for the
+// sharded write: acc is the stored account, nil when there is none.
+type creditedLoad struct {
+	addr types.Address
+	acc  *account.StateAccount
+	bi   *BalanceIncrease
+}
+
+// creditedObject is the object getStateObject would make live for c and
+// fold c's increase into (createObject for an absent account), built off
+// the live set: the write is the block's last use of the state, so only
+// the written values have to match. The object's journal records and the
+// fold's touched list, which the write's journal reset drops, are skipped.
+func (sdb *IntraBlockState) creditedObject(c creditedLoad) *stateObject {
+	var obj *stateObject
+	if c.acc == nil {
+		obj = newObject(sdb, c.addr, new(account.StateAccount), &account.StateAccount{})
+		obj.setNonce(0)
+	} else {
+		obj = newObject(sdb, c.addr, c.acc, c.acc)
+	}
+	obj.data.Balance.Add(&obj.data.Balance, &c.bi.increase)
+	c.bi.transferred = true
+	return obj
+}
+
+// PrepPhases times a sharded prepared write's steps: Load materialises the
+// pending balance increases' objects (Pending addresses, Loaded of them not
+// yet live), Mark builds the dirty set and the shards, Commit records the
+// shards' writes, Reset clears the journal, Encode replays and encodes the
+// shards, Merge concatenates them. Zero for a serial or slow-path write.
+type PrepPhases struct {
+	Load, Mark, Commit, Reset, Encode, Merge time.Duration
+	Pending, Loaded                          int
 }
 
 // appendLog appends o's calls after l's.
@@ -157,10 +268,11 @@ type preparedShard struct {
 // prepareStateWriteShards is PrepareStateWrite's sharded run. ok is false
 // when the block is too small to split (the caller runs serially).
 func prepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number uint64, shards int) (p *PreparedStateWrite, ok bool, err error) {
-	if shards < 2 || len(ibs.stateObjects) < prepShardMinObjects {
+	if shards < 2 || len(ibs.stateObjects)+len(ibs.balanceInc) < prepShardMinObjects {
 		return nil, false, nil
 	}
-	logs, err := ibs.commitBlockShards(rules, shards)
+	var ph PrepPhases
+	logs, err := ibs.commitBlockShards(rules, shards, &ph)
 	if err != nil {
 		return nil, true, err
 	}
@@ -174,6 +286,7 @@ func prepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number u
 	if number == 0 || !(HistoryIndexDisabled() || HistoryIndexDeferred()) {
 		return &PreparedStateWrite{log: merged()}, true, nil
 	}
+	tEnc := time.Now()
 	parts := make([]preparedShard, shards)
 	var wg sync.WaitGroup
 	for k := range logs {
@@ -192,6 +305,8 @@ func prepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number u
 		}(k)
 	}
 	wg.Wait()
+	tMerge := time.Now()
+	ph.Encode = tMerge.Sub(tEnc)
 	var nRows, nAcct, nStor int
 	for k := range parts {
 		if parts[k].err != nil {
@@ -218,6 +333,8 @@ func prepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number u
 		p.nSlots += parts[k].nSlots
 	}
 	p.fast = true
+	ph.Merge = time.Since(tMerge)
+	p.phases = ph
 	// The calls are kept only for the transaction's check of created
 	// addresses (WriteState).
 	for _, l := range logs {

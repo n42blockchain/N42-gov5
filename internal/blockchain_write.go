@@ -787,6 +787,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		if dPrep > 0 {
 			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
+			if ph := prepared.Phases(); ph.Commit > 0 {
+				fields = append(fields, "prepLoad", ph.Load, "prepMark", ph.Mark,
+					"prepCommit", ph.Commit, "prepReset", ph.Reset, "prepEncode", ph.Encode,
+					"prepMerge", ph.Merge, "prepPending", ph.Pending, "prepLoaded", ph.Loaded)
+			}
 		}
 		if dFrames > 0 {
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
