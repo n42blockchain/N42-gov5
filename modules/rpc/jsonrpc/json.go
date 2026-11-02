@@ -45,6 +45,9 @@ const (
 
 	defaultWriteTimeout = 10 * time.Second
 	maxBatchSize        = 1000
+	// maxBatchResponseBytes bounds the results one batch holds in memory. Calls
+	// after it is reached are answered with an error instead of being executed.
+	maxBatchResponseBytes = 25 * 1024 * 1024
 )
 
 var null = json.RawMessage("null")

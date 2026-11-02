@@ -102,8 +102,16 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 	// Process calls on a goroutine because they may block indefinitely:
 	h.startCallProc(func(cp *callProc) {
 		answers := make([]*jsonrpcMessage, 0, len(msgs))
+		size := 0
 		for _, msg := range calls {
+			if size >= maxBatchResponseBytes {
+				if msg.isCall() {
+					answers = append(answers, msg.errorResponse(&batchResponseTooLargeError{}))
+				}
+				continue
+			}
 			if answer := h.handleCallMsg(cp, msg); answer != nil {
+				size += len(answer.Result)
 				answers = append(answers, answer)
 			}
 		}

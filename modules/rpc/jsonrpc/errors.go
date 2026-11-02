@@ -92,6 +92,12 @@ func (e *invalidMessageError) ErrorCode() int { return -32700 }
 
 func (e *invalidMessageError) Error() string { return e.message }
 
+type batchResponseTooLargeError struct{}
+
+func (e *batchResponseTooLargeError) ErrorCode() int { return -32003 }
+
+func (e *batchResponseTooLargeError) Error() string { return "batch response too large" }
+
 type invalidParamsError struct{ message string }
 
 func (e *invalidParamsError) ErrorCode() int { return -32602 }
