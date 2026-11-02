@@ -61,7 +61,17 @@ func (g *capabilityGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.next.ServeHTTP(w, r)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxGateBody))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxGateBody+1))
+	if err == nil && len(body) > maxGateBody {
+		// Too large to peek: pass it through whole. The rpc server enforces its
+		// own, larger limit, so the unread tail must stay readable.
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), r.Body), r.Body}
+		g.next.ServeHTTP(w, r)
+		return
+	}
 	r.Body.Close()
 	if err != nil {
 		// Can't peek — let the rpc server return its own parse error.
