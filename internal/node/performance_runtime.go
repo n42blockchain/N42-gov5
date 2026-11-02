@@ -212,7 +212,7 @@ func newPerformanceValidatorNode(ctx context.Context, cancel context.CancelFunc,
 	}
 	n.engine = rt.engine
 	rt.client = sharedexec.NewClient(cfg.NodeCfg.PerformanceExecutionSocket, sharedexec.Identity{Version: 1, Namespace: genesis.chainConfig.Performance.NetworkNamespace, ChainID: genesis.chainConfig.ChainID.String(), GenesisHash: gb.Hash()})
-	if rt.replica, err = sharedvalidator.New(ctx, n.db, genesis.chainConfig, gb, rt.engine, rt.client); err != nil {
+	if rt.replica, err = sharedvalidator.New(ctx, n.db, genesis.chainConfig, gb, rt.engine, rt.client, sharedvalidator.Options{ImportByReference: cfg.NodeCfg.PerformanceImportRef}); err != nil {
 		return nil, err
 	}
 	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)

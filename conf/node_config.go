@@ -53,6 +53,7 @@ type NodeConfig struct {
 	// Runtime topology is process-local; all participants retain one genesis.
 	PerformanceRole            string `json:"performance_role,omitempty" yaml:"performance_role,omitempty"`
 	PerformanceExecutionSocket string `json:"performance_execution_socket,omitempty" yaml:"performance_execution_socket,omitempty"`
+	PerformanceImportRef       bool   `json:"performance_import_ref,omitempty" yaml:"performance_import_ref,omitempty"`
 	Miner                      bool   `json:"miner" yaml:"miner"`
 
 	AuthRPC          bool     `json:"auth_rpc" yaml:"auth_rpc"`

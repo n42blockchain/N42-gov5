@@ -22,22 +22,29 @@ import (
 var metadataKey = []byte("performance-validator-metadata-v1")
 var executionPrefix = []byte("performance-remote-executed/")
 
+// Options affect only this process transport, never chain rules or genesis.
+type Options struct{ ImportByReference bool }
+
 type Replica struct {
-	ctx      context.Context
-	db       kv.RwDB
-	cfg      *params.ChainConfig
-	genesis  *block.Block
-	identity sharedexec.Identity
-	engine   *hotstuff.HotStuff
-	client   *sharedexec.Client
-	bridge   *sharedexec.CertificateBridge
-	mu       sync.Mutex
-	service  *hotstuff.Service
+	ctx               context.Context
+	db                kv.RwDB
+	cfg               *params.ChainConfig
+	genesis           *block.Block
+	identity          sharedexec.Identity
+	engine            *hotstuff.HotStuff
+	client            *sharedexec.Client
+	bridge            *sharedexec.CertificateBridge
+	mu                sync.Mutex
+	service           *hotstuff.Service
+	importByReference bool
 }
 
 // New initializes/binds a metadata-only store. The caller owns database,
 // engine and client lifecycle. It never loads execution state or signing keys.
-func New(ctx context.Context, db kv.RwDB, cfg *params.ChainConfig, genesis *block.Block, engine *hotstuff.HotStuff, client *sharedexec.Client) (*Replica, error) {
+func New(ctx context.Context, db kv.RwDB, cfg *params.ChainConfig, genesis *block.Block, engine *hotstuff.HotStuff, client *sharedexec.Client, options ...Options) (*Replica, error) {
+	if len(options) > 1 {
+		return nil, errors.New("one shared validator runtime options value required")
+	}
 	if ctx == nil || db == nil || cfg == nil || cfg.Performance == nil || cfg.HotStuff == nil || len(cfg.HotStuff.Validators) != 7 || genesis == nil || engine == nil || engine.Engine() == nil || client == nil {
 		return nil, errors.New("shared validator requires explicit performance genesis, seven validators and initialized consensus/client")
 	}
@@ -64,6 +71,9 @@ func New(ctx context.Context, db kv.RwDB, cfg *params.ChainConfig, genesis *bloc
 		return nil, err
 	}
 	r := &Replica{ctx: ctx, db: db, cfg: &bound, genesis: genesis, identity: identity, engine: engine, client: client}
+	if len(options) == 1 {
+		r.importByReference = options[0].ImportByReference
+	}
 	if err := InitializeMetadata(ctx, db, cfg, genesis); err != nil {
 		return nil, err
 	}
@@ -142,7 +152,22 @@ func (r *Replica) importLocked(ctx context.Context, b *block.Block, raw []byte) 
 	if err := r.db.Update(ctx, func(tx kv.RwTx) error { return rawdb.WriteBlock(tx, b) }); err != nil {
 		return sharedexec.ImportResult{}, err
 	}
-	result, err := r.client.Import(ctx, sharedexec.ImportRequest{Identity: r.identity, BlockHash: b.Hash(), BlockRLP: raw})
+	var result sharedexec.ImportResult
+	var err error
+	needBody := true
+	if r.importByReference {
+		reference, refErr := r.client.ImportRef(ctx, sharedexec.ImportRefRequest{Identity: r.identity, BlockHash: b.Hash()}, header)
+		if refErr != nil {
+			return sharedexec.ImportResult{}, refErr
+		}
+		needBody = reference.NeedBody
+		if !needBody {
+			result = *reference.Imported
+		}
+	}
+	if needBody {
+		result, err = r.client.Import(ctx, sharedexec.ImportRequest{Identity: r.identity, BlockHash: b.Hash(), BlockRLP: raw})
+	}
 	if err != nil || !result.Durable {
 		return result, err
 	}

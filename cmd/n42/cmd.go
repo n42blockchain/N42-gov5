@@ -610,6 +610,10 @@ var (
 		Name: "performance.role", Usage: "Explicit performance process role: validator (metadata-only)", Category: "DEVELOPMENT",
 		Destination: &DefaultConfig.NodeCfg.PerformanceRole,
 	}
+	PerformanceImportRefFlag = &cli.BoolFlag{
+		Name: "performance.import-ref", Usage: "Use sealed-hash import references on an explicit performance validator", Category: "DEVELOPMENT",
+		Destination: &DefaultConfig.NodeCfg.PerformanceImportRef,
+	}
 	PerformanceExecutionSocketFlag = &cli.StringFlag{
 		Name: "performance.execution-socket", Usage: "Private Unix socket of the isolated Go execution owner", Category: "DEVELOPMENT",
 		Destination: &DefaultConfig.NodeCfg.PerformanceExecutionSocket,
@@ -721,6 +725,7 @@ var (
 		PerformanceGenesisFlag,
 		PerformanceRoleFlag,
 		PerformanceExecutionSocketFlag,
+		PerformanceImportRefFlag,
 		MinFreeDiskSpaceFlag,
 		CSWarmDirFlag,
 	}
