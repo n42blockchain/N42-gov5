@@ -105,6 +105,16 @@ func TestLagPipelineAheadBasePrefill(t *testing.T) {
 		require.GreaterOrEqual(t, used, uint64(8), "the ahead runs did not read through their prefills")
 		require.NotZero(t, hits)
 	})
+	t.Run("afterCompute", func(t *testing.T) {
+		// N42_AHEAD_BASE_EARLY=0: the fill starts once the preparation is
+		// computed and reads its keys from the prepared messages.
+		defer SetAheadBasePrefetchForTest(true)()
+		defer SetAheadBaseClaimWaitForTest(true)()
+		defer SetAheadBaseEarlyForTest(false)()
+		used, _, hits := run(t)
+		require.GreaterOrEqual(t, used, uint64(8), "the ahead runs did not read through their prefills")
+		require.NotZero(t, hits)
+	})
 	t.Run("grandparent", func(t *testing.T) {
 		defer SetAheadBasePrefetchForTest(true)()
 		lagPipeAwaitBaseForTest = true

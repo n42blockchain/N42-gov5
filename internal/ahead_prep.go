@@ -93,8 +93,9 @@ type aheadPrep struct {
 	engine   bool
 	prepared *preparedSet
 	aff      *parallel.AffinityPrep
-	// base: the block's base prefill (ahead_base_prefill.go), started once
-	// the preparation is computed; nil when off or not started.
+	// base: the block's base prefill (ahead_base_prefill.go), started with
+	// the computation (aheadBaseEarlyOn) or once it is done; nil when off or
+	// not started.
 	base *aheadBase
 	// dropping: the block will not use the preparation; its base prefill
 	// stops reading at the next key.
@@ -251,6 +252,7 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 		// A panic leaves the preparation unusable; the run computes its own.
 		if recover() != nil {
 			pr.ok = false
+			pr.dropping.Store(true)
 		}
 		pr.state.Store(prepDone)
 		close(pr.done)
@@ -269,8 +271,16 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	}
 	txs := b.Transactions()
 	signer := transaction.MakeSignerWithTimestamp(sp.config, hdr.Number.ToBig(), hdr.Time)
+	early := aheadBaseEarlyOn && bc.aheadBaseUsable()
+	if early {
+		// The keys come from the transactions' settled senders and
+		// recipients, which the computation does not change.
+		pr.base = bc.startAheadBase(hdr, txs, nil, sp, pr.dropping.Load)
+	}
 	prepared, aff := sp.prepareParallelRun(txs, signer, hdr.BaseFee, parallelWorkers(), aheadPrepWorkers())
 	if aff == nil {
+		// No preparation, so no ahead run reads the prefill.
+		pr.dropping.Store(true)
 		return
 	}
 	pr.txs, pr.signer, pr.baseFee, pr.engine = txs, signer, hdr.BaseFee, sp.engine != nil
@@ -279,9 +289,25 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if fn := aheadPrepDoneForTest; fn != nil {
 		fn(pr)
 	}
-	if bc.aheadBaseUsable() {
+	if !early && bc.aheadBaseUsable() {
 		pr.base = bc.startAheadBase(hdr, txs, prepared, sp, pr.dropping.Load)
 	}
+}
+
+// aheadBaseEarlyOn is N42_AHEAD_BASE_EARLY (default on; "0", "false" or
+// "off" disables): a preparation starts its base prefill together with its
+// computation instead of after it. Under load the ahead run's claim waits
+// ~9 ms for the fill (E1N26 run 15: basePrefillWaitMs p50 9, tree wait 0),
+// which only started once the ~10 ms computation was done, though its keys
+// need nothing the computation produces.
+var aheadBaseEarlyOn = parseLagPipeline(os.Getenv("N42_AHEAD_BASE_EARLY"))
+
+// SetAheadBaseEarlyForTest switches N42_AHEAD_BASE_EARLY and returns the
+// restore.
+func SetAheadBaseEarlyForTest(on bool) func() {
+	prev := aheadBaseEarlyOn
+	aheadBaseEarlyOn = on
+	return func() { aheadBaseEarlyOn = prev }
 }
 
 // aheadPrepDoneForTest runs on a computed preparation before it is

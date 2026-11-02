@@ -44,7 +44,9 @@ import (
 // and in state N agree on every key N did not change, and N's post-state
 // layer answers every key N did change (commitment/qmdb_base_prefill.go),
 // so the child's base values may come from either state. Once the child's
-// preparation (ahead_prep.go) is computed, its base prefill waits for the
+// senders are settled, its preparation (ahead_prep.go) starts the base
+// prefill with its computation (N42_AHEAD_BASE_EARLY, default on) or after
+// it; the prefill waits for the
 // tree to hold a block h of the child's own chain with N-K <= h <= N (a
 // labelled root, commitment.QMDBRootComputer.AppliedState; K is
 // N42_AHEAD_BASE_DEPTH, default 1), reads the accounts every transaction
