@@ -249,6 +249,9 @@ type PreparedStateWrite struct {
 // produces the plain rows and the encoded changesets of block number. It
 // owns ibs while it runs, as the write would.
 func PrepareStateWrite(ibs *IntraBlockState, rules *params.Rules, number uint64) (*PreparedStateWrite, error) {
+	if p, ok, err := prepareStateWriteShards(ibs, rules, number, prepShards); ok {
+		return p, err
+	}
 	log := &StateWriteLog{}
 	if err := ibs.CommitBlock(rules, log); err != nil {
 		return nil, err
