@@ -18,7 +18,7 @@
 # its smaller live heap makes GOGC 100 collect too often and starve the readers.
 set -u
 set -o pipefail
-BIN=${BIN:-/home/n42/src/n42/N42-gov5/build/bin/witness-replay}
+BIN=${BIN:-/home/n42/src/n42/n42-gov5/build/bin/witness-replay}
 HB=${HB:-/data/blockchain/witness-geth}
 READERS=${READERS:-6}
 # The kernel truncates comm to 15 chars, so pgrep -x / ps comm must be matched
