@@ -382,3 +382,54 @@ func TestRPCStateReader(t *testing.T) {
 		t.Fatalf("state at an unserved block: err %v, Err %v", err, other.Err())
 	}
 }
+
+// The follower sleeps only when idle: with a poll interval far longer than
+// the test, blocks that land while it is building (here, the next one is
+// appended as each packet is built) are still picked up at once, in order.
+func TestFollowerProcessesBacklogWithoutSleeping(t *testing.T) {
+	base := fixtureCases(t)[0] // empty block, mainnet rules: no state reads
+	const blocks = 5
+	var chain []packetdtest.Block
+	parent := types.Hash{0x01}
+	for i := uint64(1); i <= blocks; i++ {
+		h := block.CopyHeader(base.hdr)
+		h.Number = uint256.NewInt(i)
+		h.ParentHash = parent
+		h.ResetHashCache()
+		parent = h.Hash()
+		chain = append(chain, packetdtest.Block{Header: h})
+	}
+	node := &packetdtest.Node{First: 1, Blocks: chain[:1]}
+	rpc := httptest.NewServer(node)
+	defer rpc.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var got []uint64
+	f := &packetd.Follower{
+		RPC:    packetd.NewClient(rpc.URL, 5*time.Second),
+		Chain:  base.cfg,
+		OutDir: t.TempDir(),
+		Poll:   time.Minute,
+		Built: func(n uint64, _ *packetd.Block, _ *packetd.Built, _ *packetd.IngestResult) {
+			got = append(got, n)
+			if len(got) == blocks {
+				cancel()
+			} else {
+				node.Append(chain[len(got)])
+			}
+		},
+	}
+	start := time.Now()
+	_ = f.Run(ctx, 1)
+	if len(got) != blocks {
+		t.Fatalf("built %v, want blocks 1..%d", got, blocks)
+	}
+	for i, n := range got {
+		if n != uint64(i+1) {
+			t.Fatalf("built %v, want in order", got)
+		}
+	}
+	if el := time.Since(start); el > 10*time.Second {
+		t.Fatalf("backlog took %v: the follower slept between blocks", el)
+	}
+}

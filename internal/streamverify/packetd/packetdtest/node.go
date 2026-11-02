@@ -71,6 +71,13 @@ type response struct {
 	Error   *rpcErr         `json:"error,omitempty"`
 }
 
+// Append adds a block at the head, while the node is serving.
+func (n *Node) Append(b Block) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.Blocks = append(n.Blocks, b)
+}
+
 // ServeHTTP answers single and batch JSON-RPC requests.
 func (n *Node) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)

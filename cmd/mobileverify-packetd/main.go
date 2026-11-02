@@ -16,10 +16,15 @@
 // eth_getStorageAt), checks gas used and the receipts root against the
 // header, and PUTs the packet to <mv>/mobileverify/packet.
 //
+// The head is polled with eth_blockNumber every -poll (default 250ms,
+// minimum 50ms) while idle; a backlog is worked through without sleeping.
+// The interval bounds how late a packet lands after its block: a phone
+// reading /mobileverify/latest can see packet:false for up to that long.
+//
 // Usage:
 //
 //	mobileverify-packetd -rpc http://127.0.0.1:18545 -mv http://127.0.0.1:21010 \
-//	  -genesis crates/chainspec/res/genesis/n42_devnet.json [-from N] [-out DIR]
+//	  -genesis crates/chainspec/res/genesis/n42_devnet.json [-from N] [-out DIR] [-poll 250ms]
 package main
 
 import (
@@ -45,12 +50,15 @@ func main() {
 	genesis := flag.String("genesis", "", "genesis JSON whose chain config the blocks follow (overrides -chain)")
 	chain := flag.String("chain", "", "gov5 params chain name (when no -genesis)")
 	from := flag.Uint64("from", 0, "first block (0 = the node's current head)")
-	poll := flag.Duration("poll", time.Second, "head poll interval")
+	poll := flag.Duration("poll", packetd.DefaultPoll, "head poll interval (eth_blockNumber) while idle, minimum 50ms; a backlog is processed without sleeping")
 	conc := flag.Int("conc", 8, "concurrent JSON-RPC requests for the state prefetch")
 	byNumber := flag.Bool("state-by-number", false, "read the parent state by block number instead of by hash (EIP-1898)")
 	timeout := flag.Duration("rpc-timeout", 30*time.Second, "per-request JSON-RPC timeout")
 	verbosity := flag.String("verbosity", "info", "log level: error, warn, info, debug")
 	flag.Parse()
+	if *poll < packetd.MinPoll {
+		fatal("-poll %v is below the %v minimum", *poll, packetd.MinPoll)
+	}
 
 	lvl, err := log.LvlFromString(*verbosity)
 	if err != nil {

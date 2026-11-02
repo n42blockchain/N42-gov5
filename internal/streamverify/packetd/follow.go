@@ -42,7 +42,10 @@ type Follower struct {
 	// StateAtNumber reads the parent state by number instead of by hash.
 	StateAtNumber bool
 	Concurrency   int
-	Poll          time.Duration
+	// Poll is the head poll interval (eth_blockNumber) while idle; a
+	// backlog is processed without sleeping. Default DefaultPoll, floor
+	// MinPoll. It bounds how late a packet lands after its block.
+	Poll time.Duration
 
 	// Built, when set, is called for every packet handed off (tests).
 	Built func(n uint64, b *Block, built *Built, ingest *IngestResult)
@@ -62,10 +65,19 @@ type IngestResult struct {
 
 const doneCap = 1024
 
+// DefaultPoll and MinPoll bound Follower.Poll.
+const (
+	DefaultPoll = 250 * time.Millisecond
+	MinPoll     = 50 * time.Millisecond
+)
+
 // Run follows from block from (0 = the node's current head) until ctx ends.
 func (f *Follower) Run(ctx context.Context, from uint64) error {
 	if f.Poll <= 0 {
-		f.Poll = time.Second
+		f.Poll = DefaultPoll
+	}
+	if f.Poll < MinPoll {
+		f.Poll = MinPoll
 	}
 	next := from
 	if next == 0 {
@@ -85,23 +97,31 @@ func (f *Follower) Run(ctx context.Context, from uint64) error {
 			}
 			log.Warn("packetd: eth_blockNumber failed", "err", err)
 		}
+		progressed := false
 		for err == nil && next <= head {
 			perr := f.Process(ctx, next)
 			switch {
 			case perr == nil:
 				failures = 0
 				next++
+				progressed = true
 			case ctx.Err() != nil:
 				return ctx.Err()
 			case IsPermanent(perr):
 				log.Error("packetd: block dropped, no packet", "number", next, "err", perr)
 				failures = 0
 				next++
+				progressed = true
 			default:
 				failures++
 				log.Warn("packetd: block failed, retrying", "number", next, "attempt", failures, "err", perr)
 				err = perr // back off one poll before retrying
 			}
+		}
+		if err == nil && progressed {
+			// Blocks may have landed while this batch was built: ask again
+			// at once, sleep only when caught up (idle) or failing.
+			continue
 		}
 		select {
 		case <-ctx.Done():
