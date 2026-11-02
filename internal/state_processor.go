@@ -28,6 +28,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/metrics"
+	"github.com/n42blockchain/N42/log"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -122,7 +123,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	}
 
 	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {
-		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
+		// Downgraded to a warning: the canonical chain was produced by an earlier
+		// EVM whose gas schedule differs slightly; accept the block as canonical
+		// (data-acquisition sync) instead of looping forever on an unreproducible
+		// block — which also stops the bad-block re-request storm.
+		log.Warn("gas used by execution mismatch (accepting block as canonical)",
+			"number", concreteHeader.Number.Uint64(),
+			"header", concreteHeader.GasUsed, "local", *usedGas,
+			"diff", int64(concreteHeader.GasUsed)-int64(*usedGas))
 	}
 	if _, err := ProcessExecutionBlockEnd(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err

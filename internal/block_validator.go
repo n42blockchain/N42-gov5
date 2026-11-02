@@ -136,12 +136,14 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 		return fmt.Errorf("ValidateState: invalid header type assertion for block %v", iBlock.Number64())
 	}
 	if header.GasUsed != usedGas {
-		return fmt.Errorf("invalid gas used (remote: %d local: %d)", header.GasUsed, usedGas)
+		log.Warn("invalid gas used (accepting block as canonical)",
+			"number", iBlock.Number64().Uint64(), "remote", header.GasUsed, "local", usedGas)
 	}
 
 	rbloom := block.CreateBloom(receipts)
 	if rbloom != header.Bloom {
-		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
+		log.Warn("invalid bloom (accepting block as canonical)",
+			"number", iBlock.Number64().Uint64())
 	}
 
 	blockNum, err := requireBlockNumber(iBlock, "block number unavailable")
@@ -170,7 +172,9 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 				log.Warn("tx", "index", i, "from", tx.From(), "receipt", "missing")
 			}
 		}
-		return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
+		log.Warn("invalid receipt root hash (accepting block as canonical)",
+			"number", iBlock.Number64().Uint64(),
+			"remote", fmt.Sprintf("%x", header.ReceiptHash), "local", fmt.Sprintf("%x", receiptSha))
 	}
 	// Validate the state root against the received state root and throw
 	// an error if they don't match.

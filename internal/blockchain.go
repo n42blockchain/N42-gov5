@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -605,6 +606,14 @@ func (bc *BlockChain) AddFutureBlock(blk block.IBlock) error {
 // =============================================================================
 
 // InsertChain validates contiguity and inserts blocks into the canonical chain.
+// blockOnlySync, when enabled via the N42_BLOCK_ONLY_SYNC env var, makes
+// insertChain store each canonical block (header+body) WITHOUT EVM
+// re-execution or gas/state/merkle validation. Used for data-acquisition
+// sync when this binary's EVM cannot reproduce historical gas/state exactly
+// (post-audit EVM drift): the chain is captured verbatim for downstream
+// re-execution (replay-v2), which rebuilds a self-consistent state.
+var blockOnlySync = os.Getenv("N42_BLOCK_ONLY_SYNC") != ""
+
 func (bc *BlockChain) InsertChain(chain []block.IBlock) (int, error) {
 	if len(chain) == 0 {
 		return 0, nil
@@ -783,6 +792,23 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			// No proof present but required.
 			log.Warn("Block rejected: ZK proof required but not provided", "number", blk.Number64(), "hash", blk.Hash())
 			return it.index, errZKProofRequired
+		}
+
+		// Block-only import: store the canonical block without EVM execution or
+		// gas/state/merkle validation (see blockOnlySync). Mirrors the ZK
+		// fast-path write so head/canonical bookkeeping stays correct.
+		if blockOnlySync {
+			wstart := time.Now()
+			status, werr := bc.writeBlockWithState(blk, nil, nil, nil)
+			if werr != nil {
+				return it.index, werr
+			}
+			blockWriteTimer.Observe(float64(time.Since(wstart)))
+			stats.processed++
+			if status == CanonStatTy {
+				lastCanon = blk
+			}
+			continue
 		}
 
 		start := time.Now()

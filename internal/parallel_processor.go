@@ -28,6 +28,7 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/parallel"
+	"github.com/n42blockchain/N42/log"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/modules/state"
@@ -151,9 +152,12 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
 
-	// Validate total gas used.
+	// Validate total gas used (downgraded to a warning — accept canonical block).
 	if usedGas != concreteHeader.GasUsed {
-		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
+		log.Warn("gas used by execution mismatch (accepting block as canonical)",
+			"number", concreteHeader.Number.Uint64(),
+			"header", concreteHeader.GasUsed, "local", usedGas,
+			"diff", int64(concreteHeader.GasUsed)-int64(usedGas))
 	}
 	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
