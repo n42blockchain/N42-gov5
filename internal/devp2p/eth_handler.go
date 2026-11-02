@@ -560,7 +560,11 @@ func (h *EthHandler) handleGetPooledTransactions(rw gethp2p.MsgReadWriter, msg g
 	if h.txpool == nil {
 		return gethp2p.Send(rw, 10, &resp)
 	}
+	size := 0
 	for _, hash := range req.Hashes {
+		if size >= softResponseLimit {
+			break
+		}
 		tx := h.txpool.GetTx(hash)
 		if tx == nil {
 			continue
@@ -573,6 +577,7 @@ func (h *EthHandler) handleGetPooledTransactions(rw gethp2p.MsgReadWriter, msg g
 		if err != nil {
 			continue
 		}
+		size += len(raw)
 		resp.Transactions = append(resp.Transactions, raw)
 	}
 	return gethp2p.Send(rw, 10, &resp)
@@ -771,13 +776,22 @@ func (h *EthHandler) handleGetBlockBodies(rw gethp2p.MsgReadWriter, msg gethp2p.
 	if limit > 1024 {
 		limit = 1024
 	}
+	size := 0
 	for _, hash := range req.Hashes[:limit] {
+		if size >= softResponseLimit {
+			break
+		}
 		body, err := provider.GetBlockBodyByHash(hash)
 		if err != nil {
 			return err
 		}
 		if body == nil {
 			break
+		}
+		for _, list := range [][]rlp.RawValue{body.Transactions, body.Uncles, body.Withdrawals} {
+			for _, item := range list {
+				size += len(item)
+			}
 		}
 		resp.Bodies = append(resp.Bodies, *body)
 	}
