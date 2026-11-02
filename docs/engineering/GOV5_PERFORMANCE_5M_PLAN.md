@@ -1175,3 +1175,8 @@ for proving restart or fault recovery after a successful nonzero canonical run.
 A later, separate bounded recovery check must preserve the previous canonical
 counter/head and handle the actual account nonces; the zero-counter checker must
 not be reused as evidence of nonzero restart/2-offline/3-offline recovery.
+
+Verification update 2026-11-02: this work is committed in 33a95923. gofmt, go vet
+and `go test -short` pass on params, common/block and common/transaction, so the
+earlier "uncompiled, untested and uncommitted" and "drafted" wording is
+superseded for those packages. No fleet, hardware or runtime check has been run.
