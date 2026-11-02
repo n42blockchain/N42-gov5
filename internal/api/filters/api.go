@@ -63,8 +63,9 @@ func NewFilterAPI(api Api, timeout time.Duration) *FilterAPI {
 	return filterAPI
 }
 
-// Close stops the timeout loop and releases resources.
-func (filterApi *FilterAPI) Close() {
+// close stops the timeout loop and releases resources. It stays unexported:
+// every exported method of a registered service is callable over RPC.
+func (filterApi *FilterAPI) close() {
 	filterApi.cancel()
 }
 

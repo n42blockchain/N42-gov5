@@ -23,7 +23,7 @@ func g41NewAPI() Api {
 func TestNewFilterAPILifecycle(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, 50*time.Millisecond)
-	defer fa.Close()
+	defer fa.close()
 
 	if fa == nil {
 		t.Fatal("NewFilterAPI returned nil")
@@ -33,7 +33,7 @@ func TestNewFilterAPILifecycle(t *testing.T) {
 func TestFilterAPITimeoutLoopExpiresFilter(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, 10*time.Millisecond)
-	defer fa.Close()
+	defer fa.close()
 
 	id := fa.NewPendingTransactionFilter()
 
@@ -54,7 +54,7 @@ func TestFilterAPITimeoutLoopExpiresFilter(t *testing.T) {
 func TestNewPendingTransactionFilterAndChanges(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	id := fa.NewPendingTransactionFilter()
 	if id == "" {
@@ -85,7 +85,7 @@ func TestNewPendingTransactionFilterAndChanges(t *testing.T) {
 func TestNewBlockFilterLifecycle(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	id := fa.NewBlockFilter()
 	if id == "" {
@@ -108,7 +108,7 @@ func TestNewBlockFilterLifecycle(t *testing.T) {
 func TestGetFilterChangesUnknownID(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	_, err := fa.GetFilterChanges(jsonrpc.ID("0xdoesnotexist"))
 	if err == nil {
@@ -119,7 +119,7 @@ func TestGetFilterChangesUnknownID(t *testing.T) {
 func TestGetFilterLogsUnknownID(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	_, err := fa.GetFilterLogs(context.Background(), jsonrpc.ID("0xdoesnotexist"))
 	if err == nil {
@@ -168,7 +168,7 @@ func TestNewFilterAndGetFilterLogs(t *testing.T) {
 	api := &g41ScanAPI{filterAPIStub: filterAPIStub{bc: chain}, db: memdb.NewTestDB(t)}
 
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	crit := FilterCriteria{FromBlock: big.NewInt(1), ToBlock: big.NewInt(1)}
 	id, err := fa.NewFilter(crit)
@@ -203,7 +203,7 @@ func TestGetLogsBlockRangeTooLarge(t *testing.T) {
 	chain.current = &filterBlockStub{header: g41MakeHeader(0, block.Bloom{})}
 	api := &g41ScanAPI{filterAPIStub: filterAPIStub{bc: chain}, db: memdb.NewTestDB(t)}
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	crit := FilterCriteria{FromBlock: big.NewInt(0), ToBlock: big.NewInt(maxFilterBlockRange + 1)}
 	if _, err := fa.GetLogs(context.Background(), crit); err == nil {
@@ -214,7 +214,7 @@ func TestGetLogsBlockRangeTooLarge(t *testing.T) {
 func TestNotificationMethodsWithoutNotifier(t *testing.T) {
 	api := g41NewAPI()
 	fa := NewFilterAPI(api, time.Hour)
-	defer fa.Close()
+	defer fa.close()
 
 	if _, err := fa.NewPendingTransactions(context.Background()); err != jsonrpc.ErrNotificationsUnsupported {
 		t.Fatalf("NewPendingTransactions: expected ErrNotificationsUnsupported, got %v", err)
