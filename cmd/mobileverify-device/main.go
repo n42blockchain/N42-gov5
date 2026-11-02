@@ -25,7 +25,9 @@
 // On a mixed fleet only some members build stream packets (the Go ones);
 // -skip-no-packet treats a block whose packet the node does not hold
 // ("packet not in window" after -packet-wait) as skipped rather than as a
-// failure, and needs at least one verified block.
+// failure, and needs at least one verified block. Every block's packet is
+// waited for up to -packet-wait first: a sidecar-built packet (n42-rs with
+// cmd/mobileverify-packetd) reaches the node just after the block is visible.
 package main
 
 import (
@@ -73,7 +75,7 @@ func main() {
 	commitWait := flag.Duration("commit-wait", 3*time.Minute, "max time to wait for the registrations to be committed fleet-wide")
 	genesisPath := flag.String("genesis", "", "genesis JSON whose chain config to re-execute under (overrides -chain; for chains with no params name)")
 	skipNoPacket := flag.Bool("skip-no-packet", false, "skip blocks whose packet the node does not hold instead of failing (mixed fleets)")
-	packetWait := flag.Duration("packet-wait", 3*time.Second, "with -skip-no-packet: how long to retry a missing packet before skipping the block")
+	packetWait := flag.Duration("packet-wait", 3*time.Second, "how long to retry a missing packet before verifying (or, with -skip-no-packet, skipping) the block")
 	flag.Parse()
 
 	var cfg *params.ChainConfig
@@ -161,7 +163,9 @@ func main() {
 			log.Fatalf("header %d: %v", next, err)
 		}
 		br := &blockResult{number: next, hash: hdr.Hash, txs: len(hdr.Transactions)}
-		if *skipNoPacket && !packetHeld(ctx, devs[0].client, hdr.Hash, *packetWait) {
+		// A packet built by a sidecar reaches the node a moment after the block
+		// shows on the RPC; wait for it as the app waits for /latest's packet flag.
+		if !packetHeld(ctx, devs[0].client, hdr.Hash, *packetWait) && *skipNoPacket {
 			log.Printf("block %d %s: no packet at %s, skipped", next, hdr.Hash, devs[0].node)
 			skipped++
 			next++
