@@ -277,3 +277,20 @@ func TestExecuteAndVerifyV2_TamperedReadLog(t *testing.T) {
 		t.Fatalf("empty block with extra read log entry should still verify: %v", err)
 	}
 }
+
+// The cache outlives the packet and keeps the first bytes it sees for a hash,
+// so one forged entry would fail every later block using that contract.
+func TestExecuteAndVerifyV2_RejectsForgedBytecode(t *testing.T) {
+	hdr := minimalHeader(t, 100, emptyNativeReceiptsRoot)
+	pkt := emptyPacket(t, hdr)
+	hash := types.HexToHash("0x1234")
+	pkt.Bytecodes = []CodeEntry{{Hash: hash, Code: []byte{0xfe}}}
+
+	codes := NewCodeCache(8)
+	if _, err := ExecuteAndVerifyV2(pkt, codes, nil); err == nil {
+		t.Fatal("expected a bytecode hash mismatch error")
+	}
+	if codes.Contains(hash) {
+		t.Fatal("forged bytecode entered the shared cache")
+	}
+}

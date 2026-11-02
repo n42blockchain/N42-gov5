@@ -24,6 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
@@ -97,6 +98,11 @@ func ExecuteAndVerifyV2(pkt *StreamPacket, codes *CodeCache, chainCfg *params.Ch
 	uncached := 0
 	for _, e := range pkt.Bytecodes {
 		if _, hit := codes.Get(e.Hash); !hit {
+			// The header does not commit to this section, so the hash is the
+			// only proof of the bytes, and the cache outlives this packet.
+			if computed := crypto.Keccak256Hash(e.Code); computed != e.Hash {
+				return nil, fmt.Errorf("verify_v2: bytecode hash %x != packet entry %x", computed, e.Hash)
+			}
 			codes.Insert(e.Hash, e.Code)
 			uncached++
 		}
