@@ -1192,6 +1192,26 @@ func main() {
 			}
 		}()
 	}
+	// Workers take credit before claiming an index because -depth-by-nonce
+	// counts claimed indexes as in flight: a worker parked on a claim would
+	// inflate depth and could stop the refill that releases it. Closing
+	// exhausted on the final claim lets the remaining workers leave instead of
+	// waiting for credit that a full pool may never issue.
+	exhausted := make(chan struct{})
+	var exhaustOnce sync.Once
+	markExhausted := func() { exhaustOnce.Do(func() { close(exhausted) }) }
+	awaitPermit := func() bool {
+		if permits == nil {
+			return true
+		}
+		select {
+		case <-permits:
+			inFlight.Add(1)
+			return true
+		case <-exhausted:
+			return false
+		}
+	}
 	// Batched submission: claim a contiguous run of pre-signed transactions and
 	// hand them to eth_batchRawTransaction in one HTTP round trip. One permit
 	// covers the whole run (the top-up loop's shortfall is a transaction count,
@@ -1217,15 +1237,17 @@ func main() {
 					}
 				}()
 				for {
-					if permits != nil {
-						<-permits
-						inFlight.Add(1)
+					if !awaitPermit() {
+						return
 					}
 					// idx starts at -1 and holds the LAST claimed index (the
 					// single-tx path does AddInt64(+1) then uses the result), so
 					// a bn-sized claim owns [last-bn+1, last].
 					last := atomic.AddInt64(&idx, bn)
 					start := last - bn + 1
+					if last+1 >= int64(rawCount) {
+						markExhausted()
+					}
 					if start >= int64(rawCount) {
 						if permits != nil {
 							inFlight.Add(-1)
@@ -1329,11 +1351,13 @@ func main() {
 		go func(wid int) {
 			defer wg.Done()
 			for {
-				if permits != nil {
-					<-permits
-					inFlight.Add(1)
+				if !awaitPermit() {
+					return
 				}
 				i := atomic.AddInt64(&idx, 1)
+				if i+1 >= int64(rawCount) {
+					markExhausted()
+				}
 				if i >= int64(rawCount) {
 					if permits != nil {
 						inFlight.Add(-1)
