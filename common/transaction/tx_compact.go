@@ -92,7 +92,7 @@ type txCompactReader struct {
 const u256ArenaSize = 7
 
 func (r *txCompactReader) take(n int) ([]byte, error) {
-	if len(r.p) < n {
+	if n < 0 || len(r.p) < n {
 		return nil, fmt.Errorf("compact tx truncated: need %d, have %d", n, len(r.p))
 	}
 	b := r.p[:n]
@@ -174,6 +174,9 @@ func (r *txCompactReader) accessList() (AccessList, error) {
 	if err != nil {
 		return nil, err
 	}
+	if n > uint64(len(r.p))/types.AddressLength {
+		return nil, fmt.Errorf("compact tx: access list length %d exceeds remaining %d bytes", n, len(r.p))
+	}
 	al := make(AccessList, n)
 	for i := range al {
 		b, err := r.take(20)
@@ -184,6 +187,9 @@ func (r *txCompactReader) accessList() (AccessList, error) {
 		nk, err := r.uvarint()
 		if err != nil {
 			return nil, err
+		}
+		if nk > uint64(len(r.p))/types.HashLength {
+			return nil, fmt.Errorf("compact tx: storage key count %d exceeds remaining %d bytes", nk, len(r.p))
 		}
 		al[i].StorageKeys = make([]types.Hash, nk)
 		for j := range al[i].StorageKeys {

@@ -105,7 +105,7 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 	}
 	p := data[2:]
 	take := func(n int) ([]byte, error) {
-		if len(p) < n {
+		if n < 0 || len(p) < n {
 			return nil, fmt.Errorf("compact receipts truncated: need %d, have %d", n, len(p))
 		}
 		b := p[:n]
@@ -124,6 +124,11 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 	count, err := uvarint()
 	if err != nil {
 		return err
+	}
+	// A receipt takes at least its two-byte type and flags, so a larger count
+	// is malformed. Checking first keeps it from reaching make().
+	if count > uint64(len(p))/2 {
+		return fmt.Errorf("compact receipts: count %d exceeds remaining %d bytes", count, len(p))
 	}
 	out := make(Receipts, count)
 	for i := range out {
@@ -160,6 +165,9 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 		if err != nil {
 			return err
 		}
+		if nLogs > uint64(len(p))/types.AddressLength {
+			return fmt.Errorf("compact receipts: log count %d exceeds remaining %d bytes", nLogs, len(p))
+		}
 		r.Logs = make([]*Log, nLogs)
 		for j := range r.Logs {
 			lg := new(Log)
@@ -171,6 +179,9 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 			nTopics, err := uvarint()
 			if err != nil {
 				return err
+			}
+			if nTopics > uint64(len(p))/types.HashLength {
+				return fmt.Errorf("compact receipts: topic count %d exceeds remaining %d bytes", nTopics, len(p))
 			}
 			lg.Topics = make([]types.Hash, nTopics)
 			for k := range lg.Topics {

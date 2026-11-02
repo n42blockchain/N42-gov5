@@ -78,7 +78,7 @@ func (l *Logs) unmarshalCompact(data []byte) error {
 	pos := 2
 
 	take := func(n int) ([]byte, error) {
-		if n < 0 || pos+n > len(data) {
+		if n < 0 || n > len(data)-pos {
 			return nil, fmt.Errorf("compact logs truncated: need %d bytes at offset %d of %d", n, pos, len(data))
 		}
 		b := data[pos : pos+n]

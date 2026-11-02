@@ -218,7 +218,7 @@ func (h *Header) unmarshalCompact(data []byte) error {
 	p := data[5:]
 
 	take := func(n int) ([]byte, error) {
-		if len(p) < n {
+		if n < 0 || len(p) < n {
 			return nil, fmt.Errorf("compact header truncated: need %d, have %d", n, len(p))
 		}
 		b := p[:n]

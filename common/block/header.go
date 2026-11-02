@@ -371,7 +371,7 @@ func (h *Header) Unmarshal(data []byte) error {
 	protoData := data
 	if len(data) > 41 { // magic(4)+flags(1)+UncleHash(32)+protoLen(4) = 41 minimum
 		protoLen := binary.LittleEndian.Uint32(data[len(data)-4:])
-		if int(protoLen) < len(data) && protoLen > 0 {
+		if uint64(protoLen) < uint64(len(data)) && protoLen > 0 {
 			trailerStart := int(protoLen)
 			if trailerStart+4 <= len(data) &&
 				data[trailerStart] == 'N' && data[trailerStart+1] == '4' &&
