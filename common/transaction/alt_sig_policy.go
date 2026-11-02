@@ -11,11 +11,12 @@ import (
 	"filippo.io/edwards25519"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/params"
 )
 
 // AltSigRuleID names this Go acceptance policy, which is deliberately distinct
 // from Rust's cofactored equation. It does not activate runtime transaction rules.
-const AltSigRuleID = "gov5-ed25519-canonical-a-stdlib-v1"
+const AltSigRuleID = params.PerformanceEd25519RuleID
 
 func validateAltSigPublicKey(publicKey []byte) error {
 	point, err := new(edwards25519.Point).SetBytes(publicKey)

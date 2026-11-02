@@ -1113,3 +1113,65 @@ It then releases that build claim and independently reacquires the complete BOX
 protocol for one same-f1015a `--attempt root-rules` functional run, without init or
 reset. Initial counters must again be zero before nonce-zero replay. The third
 run, new binary SHA, recovered finality and all TPS results remain pending.
+
+
+## Stage 17 work in progress: protocol-bound offline block decoding
+
+The v2 descriptor adds signatureRule and Ed25519ActivationBlock; v1 requires
+both to remain empty/zero. Its exact binary preimage is the ASCII domain
+`gov5-performance-protocol` plus NUL, big-endian uint64 chain ID and version,
+then uint32-length-prefixed UTF-8 mode, chain-level role, transaction scheme and
+signature rule, followed by big-endian uint64 activation height (including zero).
+SHA256 of these bytes is the 32-byte genesis Extra marker. The network namespace
+is `gov5-performance-ed25519-v1-` followed by the complete lowercase digest.
+NetworkNamespace must match this derivation; it is not recursively hashed.
+This descriptor covers the listed performance signature metadata, not all
+ChainConfig fork or validator rules; their existing compatibility and consensus
+checks remain separate.
+The scheme `ethereum-secp256k1+ed25519` retains ordinary ETH transaction decoding
+and permits type 80 only at/after the configured height on the dedicated chain.
+
+The explicit offline transaction/block decoders check this configuration and
+activation for the Ed25519 branch. Ordinary ETH parser semantics are preserved;
+parsing an ETH transaction does not validate its chain ID or signature. Block decoding additionally checks the actual supplied genesis
+header's marker, timestamp and zero height, instead of accepting a cfg assertion
+alone. It shares the existing typed-RLP body parser through a private callback,
+rejects unsupported frames and does not use pool or sender memo shortcuts.
+Parsing remains distinct from signature, seal, ancestry and execution validation;
+callers use the separately named offline verification policy when authenticating.
+Default Block.Unmarshal/DecodeRLP/pool reuse, ETH decoding, runtime Signer/cache
+and all startup/P2P/owner/validator entrypoints remain closed to the new mode.
+Runtime selection still rejects v2 even with valid offline metadata.
+
+New metadata participates in the existing immutable performance configuration
+comparison. Fixed independent digest vectors cover activation zero and seven.
+Tests are drafted for complete block byte/hash/signature carrier roundtrip,
+actual-genesis/namespace/activation/chain-ID mismatches, nil/ETH/default pool
+rejection, ordinary ETH preservation, unsupported frames and trailing data.
+Validation is pending while another session owns the hardware/BOX claims. The
+fixed fb1671a4 repair monitor has priority when it becomes quiet. No compilation,
+test, benchmark or runtime enablement for this work in progress is claimed.
+
+
+Static review found a receiver-publication bug in the v2 offline entrypoint:
+rlp.DecodeBytes checks trailing input after its Decoder callback has returned.
+Publishing directly from that callback could therefore replace a previously
+populated Block despite returning a trailing-data error. The v2 entrypoint now
+decodes privately, transfers only header/body pointers after complete success,
+and resets hash/size atomic caches and pool-reuse statistics. It does not copy
+the Block struct (which contains atomic.Value), nor change the default decoder's
+behavior. The receiver requires exclusive caller access, like existing decoders.
+Unexecuted regression drafts check trailing/truncated/inactive-input failures
+preserve old payload/cache/statistics, successful reuse replaces them, and a
+nil v2 receiver returns an error. An additional draft verifies activation at zero
+does not enable runtime Sender/recovery/cache or wire From claims. These changes
+have only been formatted and checked for whitespace; they remain uncompiled,
+untested and uncommitted. Existing metadata-mismatch, activation-golden,
+ETH/default pool rejection and frame-rejection drafts are likewise unverified.
+
+The existing signed functional checker intentionally requires an initial zero
+committed/executed counter and sends nonce-zero/one transactions. It is unsuitable
+for proving restart or fault recovery after a successful nonzero canonical run.
+A later, separate bounded recovery check must preserve the previous canonical
+counter/head and handle the actual account nonces; the zero-counter checker must
+not be reused as evidence of nonzero restart/2-offline/3-offline recovery.

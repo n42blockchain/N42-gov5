@@ -222,6 +222,12 @@ func (b *Block) EncodeRLP(w io.Writer) error {
 
 // DecodeRLP implements rlp.Decoder.
 func (b *Block) DecodeRLP(s *rlp.Stream) error {
+	return b.decodeRLPTransactions(s, func(dec *blockRLP) ([]*transaction.Transaction, error) { return decodeBlockTxs(dec.TxData) })
+}
+
+// decodeRLPTransactions keeps the wire/body validation shared while callers
+// choose a narrowly scoped transaction decoder. Default decoding remains ETH-only.
+func (b *Block) decodeRLPTransactions(s *rlp.Stream, decode func(*blockRLP) ([]*transaction.Transaction, error)) error {
 	var dec blockRLP
 	if err := s.Decode(&dec); err != nil {
 		return err
@@ -229,7 +235,7 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 	if len(dec.FrameHashes) > 0 && len(dec.TxData) > 0 {
 		return errors.New("block: frame body must not carry transactions")
 	}
-	txs, err := decodeBlockTxs(dec.TxData)
+	txs, err := decode(&dec)
 	if err != nil {
 		return err
 	}

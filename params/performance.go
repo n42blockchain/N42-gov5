@@ -16,11 +16,13 @@ const (
 // Only the existing independent local executor and ETH transaction rules are
 // available. Shared roles and Ed25519 must fail closed until actually wired.
 type PerformanceChainConfig struct {
-	Version          uint64 `json:"version" yaml:"version"`
-	Mode             string `json:"mode" yaml:"mode"`
-	Role             string `json:"role" yaml:"role"`
-	Transactions     string `json:"transactions" yaml:"transactions"`
-	NetworkNamespace string `json:"networkNamespace" yaml:"network_namespace"`
+	Version                uint64 `json:"version" yaml:"version"`
+	Mode                   string `json:"mode" yaml:"mode"`
+	Role                   string `json:"role" yaml:"role"`
+	Transactions           string `json:"transactions" yaml:"transactions"`
+	NetworkNamespace       string `json:"networkNamespace" yaml:"network_namespace"`
+	SignatureRule          string `json:"signatureRule,omitempty" yaml:"signature_rule,omitempty"`
+	Ed25519ActivationBlock uint64 `json:"ed25519ActivationBlock,omitempty" yaml:"ed25519_activation_block,omitempty"`
 }
 
 func PerformanceConfigsEqual(a, b *PerformanceChainConfig) bool {
@@ -51,6 +53,9 @@ func (c *ChainConfig) ValidatePerformanceSelection(chain string, profile Profile
 	}
 	if p.Mode != PerformanceModeIndependent || p.Role != PerformanceRoleLocal {
 		return fmt.Errorf("performance mode %q role %q is not implemented; only independent/local is available", p.Mode, p.Role)
+	}
+	if p.SignatureRule != "" || p.Ed25519ActivationBlock != 0 {
+		return fmt.Errorf("performance v1 cannot contain Ed25519 rules")
 	}
 	if p.Transactions != PerformanceTransactionsETH {
 		return fmt.Errorf("performance transaction scheme %q is not implemented", p.Transactions)
