@@ -337,6 +337,32 @@ func (c *CohortCoordinator) Submit(r *Receipt) (MobileIndex, error) {
 			c.mu.Unlock()
 			return 0, fmt.Errorf("%w: receipt number %d, block is %d", ErrWrongBlock, r.BlockNumber, number)
 		}
+		// Reopening a certified block's window would finalize it with only
+		// the late signers and replace the stored certificate.
+		if len(c.certs.Get(r.BlockHash)) > 0 {
+			c.mu.Unlock()
+			return 0, ErrWindowClosed
+		}
+		// Windows are capped, so a receipt must pass the admission checks
+		// before it can hold one. They run unlocked: verifying is slow.
+		c.mu.Unlock()
+		if _, registered := c.reg.Lookup(r.VerifierPubkey); !registered {
+			return 0, ErrNotRegistered
+		}
+		if err := r.VerifySignature(); err != nil {
+			return 0, err
+		}
+		c.mu.Lock()
+		if c.stopped {
+			c.mu.Unlock()
+			return 0, ErrWindowClosed
+		}
+	}
+	if w, ok = c.windows[r.BlockHash]; !ok {
+		if len(c.certs.Get(r.BlockHash)) > 0 {
+			c.mu.Unlock()
+			return 0, ErrWindowClosed
+		}
 		if len(c.windows) >= maxOpenWindows {
 			c.mu.Unlock()
 			return 0, ErrTooManyWindows
