@@ -24,7 +24,10 @@ import (
 // accounts the block never loads stay pending into the write, as in an
 // import under the no-journal fold.
 func prepShardsBlock(tx kv.Tx, rules *params.Rules, pending bool) *IntraBlockState {
-	ibs := New(NewPlainStateReader(tx))
+	return prepShardsBlockOn(New(NewPlainStateReader(tx)), rules, pending)
+}
+
+func prepShardsBlockOn(ibs *IntraBlockState, rules *params.Rules, pending bool) *IntraBlockState {
 	ibs.SetDetachedPendingCredits(pending)
 	for i := 0; i < 3000; i++ {
 		a := benchAddr(1, i)
@@ -69,6 +72,71 @@ func TestPrepareStateWriteShardsMatchSerial(t *testing.T) {
 }
 
 func testPrepareStateWriteShardsMatchSerial(t *testing.T, pending bool) {
+	testPrepareStateWriteShardsMatchSerialOn(t, pending, false)
+}
+
+// newPrefetchState is a state over tx whose reader is a prefetch layer
+// seeded with every third credited recipient (stored or absent) and backed
+// by a known-account cache for every fifth: the rest miss and read the
+// store.
+func newPrefetchState(t *testing.T, tx kv.Tx) *IntraBlockState {
+	base := NewPlainStateReader(tx)
+	pf := NewAccountPrefetch(base)
+	seed := make(map[types.Address]*account.StateAccount)
+	known := mapKnownAccounts{}
+	for i := 0; i < 4000; i++ {
+		a := benchAddr(2, i)
+		if i%3 != 0 && i%5 != 0 {
+			continue
+		}
+		acc, err := base.ReadAccountData(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i%3 == 0 {
+			seed[a] = acc
+		} else {
+			known[a] = acc
+		}
+	}
+	pf.Seed(seed)
+	pf.SetKnown(known)
+	ibs := New(pf)
+	ibs.SetAccountPrefetch(pf)
+	return ibs
+}
+
+type mapKnownAccounts map[types.Address]*account.StateAccount
+
+func (m mapKnownAccounts) Peek(a types.Address) (*account.StateAccount, bool) {
+	v, ok := m[a]
+	return v, ok
+}
+
+func (m mapKnownAccounts) Get(a types.Address) (*account.StateAccount, bool) {
+	v, ok := m[a]
+	if !ok || v == nil {
+		return nil, ok
+	}
+	c := new(account.StateAccount)
+	c.Copy(v)
+	return c, true
+}
+
+// The parallel pending loads give the serial loads' prepared write, with
+// prefetch hits, known-cache hits and store misses mixed.
+func TestPrepareStateWriteParLoadMatchSerial(t *testing.T) {
+	defer SetFoldNoJournalForTest(true)()
+	defer SetPrepDeferLoadsForTest(true)()
+	for _, par := range []int{0, 3, 8} {
+		t.Run(fmt.Sprintf("par=%d", par), func(t *testing.T) {
+			defer SetPrepLoadParForTest(par)()
+			testPrepareStateWriteShardsMatchSerialOn(t, true, true)
+		})
+	}
+}
+
+func testPrepareStateWriteShardsMatchSerialOn(t *testing.T, pending, withPrefetch bool) {
 	defer SetHistoryIndexDeferredForTest(true)()
 	db := memdb.NewTestDB(t)
 	rules := params.MainnetChainConfig.Rules(1)
@@ -93,7 +161,11 @@ func testPrepareStateWriteShardsMatchSerial(t *testing.T, pending bool) {
 		var p *PreparedStateWrite
 		if err := db.View(context.Background(), func(tx kv.Tx) error {
 			var err error
-			p, err = PrepareStateWrite(prepShardsBlock(tx, rules, pending), rules, 1000)
+			ibs := prepShardsBlock(tx, rules, pending)
+			if withPrefetch {
+				ibs = prepShardsBlockOn(newPrefetchState(t, tx), rules, pending)
+			}
+			p, err = PrepareStateWrite(ibs, rules, 1000)
 			return err
 		}); err != nil {
 			t.Fatal(err)

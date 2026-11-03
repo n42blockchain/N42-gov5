@@ -92,6 +92,9 @@ const prepShardMinObjects = 4096
 // k, in address order, so the logs in shard order are CommitBlock's log.
 func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards int, ph *PrepPhases) ([]*StateWriteLog, error) {
 	t0 := time.Now()
+	if prepLoadPar > 1 && prepDeferLoads && sdb.accountPrefetch != nil && sdb.stateReader == StateReader(sdb.accountPrefetch) {
+		return sdb.commitBlockShardsParLoad(chainRules, shards, ph, t0)
+	}
 	pending := sdb.pendingIncreaseAddrs()
 	var deferred [][]creditedLoad
 	if prepDeferLoads {
@@ -123,6 +126,13 @@ func (sdb *IntraBlockState) commitBlockShards(chainRules *params.Rules, shards i
 		deferred[k] = append(deferred[k], creditedLoad{addr: addr, acc: acc, bi: sdb.balanceInc[addr]})
 	}
 	ph.Pending = len(pending)
+	return sdb.commitBlockShardsLoaded(chainRules, shards, ph, t0, deferred)
+}
+
+// commitBlockShardsLoaded is commitBlockShards after the pending loads:
+// deferred holds each shard's credited loads in address order (nil when
+// the loads are not deferred).
+func (sdb *IntraBlockState) commitBlockShardsLoaded(chainRules *params.Rules, shards int, ph *PrepPhases, t0 time.Time, deferred [][]creditedLoad) ([]*StateWriteLog, error) {
 	t1 := time.Now()
 	ph.Load = t1.Sub(t0)
 	for addr := range sdb.journal.dirties {
