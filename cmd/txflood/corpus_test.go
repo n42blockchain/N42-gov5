@@ -128,3 +128,101 @@ func benchTotal() int64 {
 	n, _ := strconv.ParseInt(os.Getenv("N42_FLOOD_BENCH"), 10, 64)
 	return n
 }
+
+// TestPresignReuse checks that -presign-reuse takes a corpus only when it was
+// built for exactly this run: same shape, gateway, start nonces and signed
+// transactions, written in full (v2, renamed into place).
+func TestPresignReuse(t *testing.T) {
+	_, st, stop, sink := sinkServer(t)
+	defer stop()
+	gw := sink.key
+	newRun := func(rawAt func(int64) []byte, peers int, nonces []uint64) *frameRun {
+		fr := &frameRun{peers: make([]string, peers), key: gw, total: 1234, rawAt: rawAt, workers: 3}
+		fr.fingerprint = fr.corpusFingerprint(nonces)
+		return fr
+	}
+	signed := signedRawAt()
+	nonces := []uint64{0, 0, 5}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "corpus-0.bin")
+
+	base := newRun(signed, 1, nonces)
+	if ok, _ := base.reusableCorpus(p); ok {
+		t.Fatal("missing file reported reusable")
+	}
+	if err := base.writeCorpus(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("tmp file left behind: %v", err)
+	}
+
+	// Same inputs, fresh signer closure: deterministic signatures give the
+	// same fingerprint and a byte-identical corpus.
+	again := newRun(signedRawAt(), 1, nonces)
+	if again.fingerprint != base.fingerprint {
+		t.Fatal("fingerprint not deterministic")
+	}
+	if ok, why := again.reusableCorpus(p); !ok {
+		t.Fatalf("identical run not reusable: %s", why)
+	}
+	p2 := filepath.Join(dir, "corpus-1.bin")
+	if err := again.writeCorpus(p2); err != nil {
+		t.Fatal(err)
+	}
+	b1, _ := os.ReadFile(p)
+	b2, _ := os.ReadFile(p2)
+	if len(b1) == 0 || string(b1) != string(b2) {
+		t.Fatalf("corpus bytes differ: %d vs %d", len(b1), len(b2))
+	}
+
+	// Any input that changes the transactions or the frames must miss.
+	otherTx := func(i int64) []byte {
+		b := signed(i)
+		if i == 1233 { // the last sample
+			b = append([]byte{}, b...)
+			b[len(b)-1] ^= 1
+		}
+		return b
+	}
+	for name, fr := range map[string]*frameRun{
+		"start nonce": newRun(signed, 1, []uint64{0, 1, 5}),
+		"peers":       newRun(signed, 2, nonces),
+		"last tx":     newRun(otherTx, 1, nonces),
+	} {
+		if ok, _ := fr.reusableCorpus(p); ok {
+			t.Fatalf("%s change not detected", name)
+		}
+	}
+	gw2 := newRun(signed, 1, nonces)
+	gw2.key = deriveKey(8)
+	gw2.fingerprint = gw2.corpusFingerprint(nonces)
+	if ok, _ := gw2.reusableCorpus(p); ok {
+		t.Fatal("gateway change not detected")
+	}
+
+	// A v1 corpus (no fingerprint) still replays but is never reused.
+	v1 := filepath.Join(dir, "v1.bin")
+	if err := os.WriteFile(v1, append([]byte(corpusMagicV1), b1[len(corpusMagic):len(corpusMagic)+21]...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := openCorpus(v1); err != nil || c.fp != nil {
+		t.Fatalf("v1 open: %v", err)
+	} else {
+		c.f.Close()
+	}
+	if ok, _ := base.reusableCorpus(v1); ok {
+		t.Fatal("v1 corpus reported reusable")
+	}
+
+	// The reused file replays every transaction to the sink.
+	c, err := openCorpus(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.total, sink.corpus = 1234, c
+	res := sink.run(false)
+	if res.Txs != 1234 || res.Failed != 0 || st.Len() != 3 {
+		t.Fatalf("replay: %s", res)
+	}
+}
