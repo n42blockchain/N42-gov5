@@ -56,6 +56,43 @@ type framePick struct {
 	gas    uint64 // sum of the frames' admission gas estimates
 	txs    int
 	held   int // gateways held back at a frame whose senders were not ready
+	// heldReady: ready frames passed over because their gateway was held;
+	// heldUnready: frames passed over as not ready (the holding frames
+	// included); capped: the pick stopped at the frame cap or the gas
+	// budget, not at the end of the store; hurried: held frames handed to
+	// the recoverer's priority lane (N42_FRAME_FILL_HELD).
+	heldReady, heldUnready int
+	capped                 bool
+	hurried                int
+}
+
+// EnvFrameFillHeld (N42_FRAME_FILL_HELD=1, default off): a build held on a
+// gateway whose next frame's senders are not cached hands that gateway's
+// unready frames to the sender recoverer's priority lane, so they are
+// recovered before newer frames of other gateways and are ready for the
+// next build. The pick itself is unchanged: the held gateway's later frames
+// stay out of the block (a sender's nonces span consecutive frames of one
+// gateway), and nothing is recovered at build time.
+const EnvFrameFillHeld = "N42_FRAME_FILL_HELD"
+
+var frameFillHeld = os.Getenv(EnvFrameFillHeld) == "1"
+
+// frameHurryCap bounds the frames one build hurries.
+const frameHurryCap = 256
+
+// Held-build counters (process-wide, since start): builds with a held
+// gateway, and those of them that still stopped at the cap or budget.
+var heldBuilds, heldFilledBuilds atomic.Uint64
+
+// countHeldBuild records one build's held outcome and returns the totals.
+func countHeldBuild(p framePick) (held, filled uint64) {
+	if p.held > 0 {
+		heldBuilds.Add(1)
+		if p.capped {
+			heldFilledBuilds.Add(1)
+		}
+	}
+	return heldBuilds.Load(), heldFilledBuilds.Load()
 }
 
 // EnvFramePickReady (N42_FRAME_PICK_READY, default on; "0" disables) makes
@@ -105,6 +142,7 @@ func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.A
 		}
 		return false
 	}
+	var hurry []types.Hash
 	st.ScanFillableReady(frameReadyGrace, func(h types.Hash, e store.Entry, ready bool) bool {
 		if inFlight != nil && inFlight(h) {
 			return true
@@ -115,15 +153,28 @@ func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.A
 		}
 		if frameReadyPick && gwOK {
 			if isHeld(gw) {
+				if ready {
+					p.heldReady++
+				} else {
+					p.heldUnready++
+					if frameFillHeld && len(hurry) < frameHurryCap {
+						hurry = append(hurry, h)
+					}
+				}
 				return true
 			}
 			if !ready {
 				held = append(held, gw)
 				p.held++
+				p.heldUnready++
+				if frameFillHeld && len(hurry) < frameHurryCap {
+					hurry = append(hurry, h)
+				}
 				return true
 			}
 		}
 		if len(p.hashes) >= maxFrames || p.gas+e.Gas > budget {
+			p.capped = true
 			return false
 		}
 		p.hashes = append(p.hashes, h)
@@ -132,6 +183,13 @@ func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.A
 		p.txs += e.Txs
 		return true
 	})
+	if maxFrames > 0 && len(p.hashes) >= maxFrames {
+		p.capped = true
+	}
+	if len(hurry) > 0 {
+		// After the scan: the scan holds the store's read lock.
+		p.hurried = st.Hurry(hurry)
+	}
 	if frameReadyPick && len(p.hashes) > 0 && st.Recovering() {
 		// Observability: frames taken as ready only past the grace.
 		late := 0
@@ -213,7 +271,8 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 		log.Info("miner: frame fill", "n", number, "path", path, "frames", len(hashes), "picked", len(pick.hashes),
 			"localFrames", len(local.hashes), "localTxs", local.txs,
 			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "cachedSenders", cachedSenders, "gasEst", pick.gas, "gasUsed", header.GasUsed,
-			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec))
+			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec),
+			"heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready, "hurried", gw.hurried)
 		internal.LogFrameSkips("build", number, len(env.txs), skipped, reasons)
 		return nil
 	}

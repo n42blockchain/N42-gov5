@@ -219,3 +219,105 @@ func TestPickFramesOnlyReady(t *testing.T) {
 		t.Fatalf("disabled: %d frames", len(p.hashes))
 	}
 }
+
+// hurryRecoverer records the frames handed to its priority lane.
+type hurryRecoverer struct {
+	noopRecoverer
+	got []types.Hash
+}
+
+func (r *hurryRecoverer) Hurry(h types.Hash, _ []byte) bool {
+	r.got = append(r.got, h)
+	return true
+}
+
+// TestPickFramesFillHeld (N42_FRAME_FILL_HELD): a gateway held at an
+// unready frame keeps every later frame out of the block, ready or not,
+// so each gateway's picked frames are an arrival-order prefix and a
+// sender's nonces spread over consecutive frames stay contiguous; the
+// other gateway's frames still fill; the held gateway's unready frames
+// are hurried, and the counters see the ready frame passed over. With the
+// flag off the pick is the same and nothing is hurried.
+func TestPickFramesFillHeld(t *testing.T) {
+	keysA := frametest.Keys(t, 9, 41)
+	keysB := frametest.Keys(t, 9, 42)
+	// One sender per gateway frame builder: frame i of A carries the
+	// sender's nonces right after frame i-1's.
+	ra, ha, _ := frametest.NewBuilder(keysA[0], big.NewInt(94), keysA[1:2]).Frames(t, 4, 5)
+	rb, hb, _ := frametest.NewBuilder(keysB[0], big.NewInt(94), keysB[1:]).Frames(t, 4, 5)
+	st := store.New(1 << 30)
+	rec := &hurryRecoverer{}
+	st.SetRecoverer(rec)
+	gwOf := map[types.Hash]int{}
+	var arrival []types.Hash
+	for i := 0; i < 4; i++ {
+		for g, fr := range []struct {
+			raw []byte
+			h   types.Hash
+		}{{ra[i], ha[i]}, {rb[i], hb[i]}} {
+			f, err := frame.Decode(fr.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !st.PutEntry(fr.h, store.Entry{Raw: fr.raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}) {
+				t.Fatal("put")
+			}
+			gwOf[fr.h] = g
+			arrival = append(arrival, fr.h)
+		}
+	}
+	// A: a0 ready, a1 not (recovery queued), a2 ready (recovered out of
+	// order by another worker), a3 not. B: all ready.
+	for _, h := range []types.Hash{ha[0], ha[2], hb[0], hb[1], hb[2], hb[3]} {
+		if !st.SetSenders(h, &store.Senders{Addrs: make([]types.Address, 5)}) {
+			t.Fatal("set senders")
+		}
+	}
+	defer func(prev time.Duration) { frameReadyGrace = prev }(frameReadyGrace)
+	frameReadyGrace = time.Hour
+	defer func(prev bool) { frameReadyPick = prev }(frameReadyPick)
+	frameReadyPick = true
+	defer func(prev bool) { frameFillHeld = prev }(frameFillHeld)
+
+	want := []types.Hash{ha[0], hb[0], hb[1], hb[2], hb[3]}
+	for _, on := range []bool{false, true} {
+		frameFillHeld = on
+		rec.got = nil
+		p := pickFrames(st, nil, types.Address{}, 1<<62, 1024)
+		if len(p.hashes) != len(want) {
+			t.Fatalf("flag %v: picked %d frames, want %d", on, len(p.hashes), len(want))
+		}
+		for i := range want {
+			if p.hashes[i] != want[i] {
+				t.Fatalf("flag %v: pick %d out of order", on, i)
+			}
+		}
+		// Per gateway the pick is a prefix of its arrivals.
+		next := map[int]int{}
+		perGw := map[int][]types.Hash{0: ha, 1: hb}
+		for _, h := range p.hashes {
+			g := gwOf[h]
+			if perGw[g][next[g]] != h {
+				t.Fatalf("flag %v: gateway %d frame taken out of its arrival order", on, g)
+			}
+			next[g]++
+		}
+		if p.held != 1 || p.heldReady != 1 || p.heldUnready != 2 || p.capped {
+			t.Fatalf("flag %v: held %d heldReady %d heldUnready %d capped %v", on, p.held, p.heldReady, p.heldUnready, p.capped)
+		}
+		if !on {
+			if len(rec.got) != 0 || p.hurried != 0 {
+				t.Fatalf("flag off hurried %d frames", len(rec.got))
+			}
+			continue
+		}
+		if p.hurried != 2 || len(rec.got) != 2 || rec.got[0] != ha[1] || rec.got[1] != ha[3] {
+			t.Fatalf("hurried %d (%d recorded), want a1 then a3", p.hurried, len(rec.got))
+		}
+	}
+	// A cap below the supply is a filled build even while held.
+	frameFillHeld = true
+	if p := pickFrames(st, nil, types.Address{}, 1<<62, 3); !p.capped || len(p.hashes) != 3 {
+		t.Fatalf("cap 3: picked %d, capped %v", len(p.hashes), p.capped)
+	}
+}
