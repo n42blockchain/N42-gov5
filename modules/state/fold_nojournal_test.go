@@ -69,12 +69,18 @@ func runNJBlock(t *testing.T, f *bulkFixture, nj, detach bool, fold int) njOutco
 	ibs, _, _ := f.build()
 	ibs.SetDetachedPendingCredits(detach)
 	ibs.SetFoldNoJournal(nj)
+	if njHooks.beforeFold != nil {
+		njHooks.beforeFold(ibs)
+	}
 	if fold > 0 {
 		ibs.ApplyAccountsSharded(f.entries, fold)
 	} else {
 		ibs.ApplyAccounts(f.entries, 8)
 	}
 	ibs.SetFoldNoJournal(false)
+	if njHooks.afterFold != nil {
+		njHooks.afterFold(ibs)
+	}
 	if nj && detach {
 		if ibs.FoldCredits() == 0 {
 			t.Fatal("the no-journal fold marked no credit")
@@ -121,10 +127,16 @@ func runNJBlock(t *testing.T, f *bulkFixture, nj, detach bool, fold int) njOutco
 	ibs.AddBalance(p.prepared[3], uint256.NewInt(4))
 	out.rewards = ibs.FinalizeDigestForTest()
 
+	if njHooks.beforeRoot != nil {
+		njHooks.beforeRoot(ibs)
+	}
 	rc := &capturingRootComputer{}
 	ibs.SetRootComputer(rc)
 	ibs.SetRootPostStateHook(func(ps *PostState) { out.post = ps })
 	ibs.IntermediateRoot()
+	if njHooks.afterRoot != nil {
+		njHooks.afterRoot(ibs)
+	}
 	for a, acc := range rc.accts {
 		if acc == nil {
 			out.rootRows = append(out.rootRows, fmt.Sprintf("%x del", a))
@@ -140,6 +152,12 @@ func runNJBlock(t *testing.T, f *bulkFixture, nj, detach bool, fold int) njOutco
 	}
 	out.rows = w.log
 	return out
+}
+
+// njHooks (tests only) run inside runNJBlock: around the fold and the
+// root.
+var njHooks struct {
+	beforeFold, afterFold, beforeRoot, afterRoot func(*IntraBlockState)
 }
 
 func compareNJ(t *testing.T, tag string, want, got njOutcome) {
