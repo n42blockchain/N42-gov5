@@ -94,6 +94,19 @@ func BenchmarkFrameImportPrep(b *testing.B) {
 			_ = f.resolve(b)
 		}
 	})
+	// A light node with N42_E1_LIGHT_NO_TXINDEX: the resolve skips the
+	// hashes (compare with "resolve").
+	b.Run("resolve-light-notxindex", func(b *testing.B) {
+		defer func(v bool) { e1LightNoTxIndex = v }(e1LightNoTxIndex)
+		e1LightNoTxIndex = true
+		f.bc.SetE1SourceForTest("http://127.0.0.1:1")
+		defer f.bc.e1Src.Store(nil)
+		b.ReportAllocs()
+		defer reportCPUPerTx(b)()
+		for i := 0; i < b.N; i++ {
+			_ = f.resolve(b)
+		}
+	})
 	b.Run("resolve+hash", func(b *testing.B) {
 		b.ReportAllocs()
 		defer reportCPUPerTx(b)()
