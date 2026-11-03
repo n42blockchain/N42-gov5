@@ -1184,13 +1184,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
-		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
+		blockLog := []any{"n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "baseKeysUs", baseKeys.Microseconds(),
 			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillDepth", baseDepth, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillTreeWaitMs", baseTreeWait.Milliseconds(), "basePrefillCut", baseCut, "basePrefillSkip", baseSkip,
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
-			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain)
+			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain}
+		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 
 	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay, phases: aheadPhases}, nil
