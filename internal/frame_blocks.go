@@ -407,6 +407,13 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	if fs.store != nil {
 		applied = make([]frameSenders, len(hashes))
 	}
+	// N42_AVAIL_ADMIT_GAS: each frame's gas sum is taken on its decode
+	// worker, where the transactions are hot; the availability check then
+	// reads the total instead of a serial pass over cold transactions.
+	var frameGas []uint64
+	if availAdmitGasMode != availAdmitGasOff {
+		frameGas = make([]uint64, len(hashes))
+	}
 	per, dropped, err := frame.DecodeFramesEachWith(raws, 0, func(i int, txs []*transaction.Transaction) {
 		if applied != nil {
 			ss := fs.store.Senders(hashes[i])
@@ -414,6 +421,9 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 			applied[i] = frameSenders{ss: ss, n: n, declared: d}
 		}
 		frame.HashTxs(txs)
+		if frameGas != nil {
+			frameGas[i] = saturatingGasSum(txs)
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("frame body: block %d: %w", b.Number64().Uint64(), err)
@@ -447,6 +457,13 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	txs := make([]*transaction.Transaction, 0, total)
 	for _, p := range per {
 		txs = append(txs, p...)
+	}
+	if frameGas != nil {
+		var gas uint64
+		for _, g := range frameGas {
+			gas = saturatingAdd(gas, g)
+		}
+		body.SetResolvedGas(gas, len(txs))
 	}
 	body.Txs = txs
 	body.FrameData = raws

@@ -52,11 +52,35 @@ type Body struct {
 	// copy) so persisting the block can write them to the Frames table. It
 	// is never encoded; a body read back from storage leaves it nil.
 	FrameData [][]byte
+
+	// resolvedGas is the saturating sum of the gas limits of the resolver's
+	// Txs, computed per frame on the worker that decoded it while its
+	// transactions were cache-hot (N42_AVAIL_ADMIT_GAS). resolvedGasTxs is
+	// len(Txs) at that time; resolvedGasOK says the sum was recorded. Never
+	// encoded.
+	resolvedGas    uint64
+	resolvedGasTxs int
+	resolvedGasOK  bool
 }
 
 // IsFrameBody reports whether the body references frames instead of
 // carrying its transactions.
 func (b *Body) IsFrameBody() bool { return b != nil && len(b.FrameHashes) > 0 }
+
+// SetResolvedGas records gas, the saturating sum of the gas limits of the
+// body's n resolved transactions.
+func (b *Body) SetResolvedGas(gas uint64, n int) {
+	b.resolvedGas, b.resolvedGasTxs, b.resolvedGasOK = gas, n, true
+}
+
+// ResolvedGas returns the sum SetResolvedGas recorded; false when none was
+// recorded or the transactions changed count since.
+func (b *Body) ResolvedGas() (uint64, bool) {
+	if b == nil || !b.resolvedGasOK || b.resolvedGasTxs != len(b.Txs) {
+		return 0, false
+	}
+	return b.resolvedGas, true
+}
 
 func (b *Body) ToProtoMessage() proto.Message {
 	pbTxs := make([]*types_pb.Transaction, 0, len(b.Txs))

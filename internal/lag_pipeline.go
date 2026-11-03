@@ -314,7 +314,7 @@ func (bc *BlockChain) LagReady(parent types.Hash) (ready bool, waitFor types.Has
 func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, body *block.Body) (retry bool, err error) {
 	t0 := time.Now()
 	// Stage ends for the "availability check phases" line (big blocks).
-	var tParent, tStatic, tRoot, tFrames, tResult time.Time
+	var tParent, tStatic, tRoot, tFrames, tPrep, tGas, tResult time.Time
 	number := hdr.Number.Uint64()
 	tx, err := bc.ChainDB.BeginRo(context.Background())
 	if err != nil {
@@ -348,13 +348,12 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 			}
 		}()
 	}
-	var gas uint64
-	for _, t := range body.Txs {
-		gas += t.Gas()
-		if gas > hdr.GasLimit {
-			return false, fmt.Errorf("availability: frame block %d exceeds its gas limit", number)
-		}
+	tPrep = time.Now()
+	within, gasFast := availGasWithin(body, hdr.GasLimit)
+	if !within {
+		return false, fmt.Errorf("availability: frame block %d exceeds its gas limit", number)
 	}
+	tGas = time.Now()
 	// The lagged result: checked now when this node has it (an honest
 	// follower one block behind usually has), otherwise at import, where a
 	// mismatch is the equivocation the import reports.
@@ -375,7 +374,9 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 		log.Info("availability check phases", "n", number, "txs", len(body.Txs), "startTMs", t0.UnixMilli(),
 			"parentUs", tParent.Sub(t0).Microseconds(), "staticUs", tStatic.Sub(tParent).Microseconds(),
 			"txRootUs", tRoot.Sub(tStatic).Microseconds(), "framesUs", tFrames.Sub(tRoot).Microseconds(),
-			"resultUs", tResult.Sub(tFrames).Microseconds(), "enqueueUs", time.Since(tResult).Microseconds(),
+			"resultUs", tResult.Sub(tFrames).Microseconds(), "prepUs", tPrep.Sub(tFrames).Microseconds(),
+			"gasUs", tGas.Sub(tPrep).Microseconds(), "gasFast", gasFast, "laggedUs", tResult.Sub(tGas).Microseconds(),
+			"enqueueUs", time.Since(tResult).Microseconds(),
 			"totalUs", time.Since(t0).Microseconds())
 	}
 	return false, nil
