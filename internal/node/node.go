@@ -2979,10 +2979,13 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 		fileName = path.Join(n.config.NodeCfg.DataDir, datadirJWTKey)
 	}
 	// try reading from file
-	if data, err := os.ReadFile(fileName); err == nil {
+	data, err := os.ReadFile(fileName)
+	if err == nil {
 		jwtSecret, err := hexutil.Decode(strings.TrimSpace(string(data)))
 		if err != nil {
-			return nil, pkgerrors.Wrap(err, fmt.Sprintf("failed to decode hex (%s) string", strings.TrimSpace(string(data))))
+			// The file may hold a real secret in another format, so name the
+			// path and never its contents.
+			return nil, pkgerrors.Wrap(err, fmt.Sprintf("failed to decode hex in JWT secret file %s", fileName))
 		}
 		if len(jwtSecret) == 32 {
 			log.Info("Loaded JWT secret file", "path", fileName, "crc32", fmt.Sprintf("%#x", crc32.ChecksumIEEE(jwtSecret)))
@@ -2990,6 +2993,11 @@ func (n *Node) obtainJWTSecret(cliParam string) ([]byte, error) {
 		}
 		log.Error("Invalid JWT secret", "path", fileName, "length", len(jwtSecret))
 		return nil, errors.New("invalid JWT secret")
+	}
+	// Only a missing file means a first run. Any other failure leaves the
+	// existing secret in place for the operator to repair.
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read JWT secret: %w", err)
 	}
 	// Need to generate one
 	jwtSecret := make([]byte, 32)
