@@ -163,3 +163,83 @@ func TestLagGateZeroParentResumes(t *testing.T) {
 		t.Fatalf("zero-parent view did not resume: %v", producer.parents)
 	}
 }
+
+// TestLagGateTriggerIsNotRetried (r60a): under the lag gate a leader view
+// that already handed its build to the producer must not be built again
+// when an applied import wakes the production retry. The view and the lock
+// do not change between the seal and the QC, so a retained retry request
+// still looks current and re-built a same-height sibling on the stale parent
+// (bench run 21: two lag builds per proposal). The next view's trigger, on
+// the new lock, is a real build and still goes through.
+func TestLagGateTriggerIsNotRetried(t *testing.T) {
+	s, producer, _ := newLeaderService(t)
+	e := s.engine.Engine()
+	parent := types.Hash{0x41}
+	leadLaterView(t, e)
+	e.roundState.UpdateLockedQC(&QuorumCertificate{View: e.CurrentView() - 1, BlockHash: parent})
+	s.SetLagGate(func(types.Hash) (bool, types.Hash, error) { return true, types.Hash{}, nil })
+
+	view := e.CurrentView()
+	s.triggerBlockProduction(view, parent)
+	if producer.count() != 1 {
+		t.Fatalf("ready lag gate must trigger once: %v", producer.parents)
+	}
+	// The leader's own sealed block applies: the import wakes the retry
+	// while the view and the lock are unchanged.
+	s.retryBlockProduction()
+	if producer.count() != 1 || s.pendingProduction != nil {
+		t.Fatalf("stale-parent retry started a duplicate build: %v", producer.parents)
+	}
+
+	// The sealed block gets its QC: the lock moves to it and the next
+	// trigger builds on it.
+	sealed := types.Hash{0x42}
+	e.roundState.UpdateLockedQC(&QuorumCertificate{View: view, BlockHash: sealed})
+	s.triggerBlockProduction(view, sealed)
+	if producer.count() != 2 || producer.parents[1] != sealed {
+		t.Fatalf("build on the new lock suppressed: %v", producer.parents)
+	}
+}
+
+// TestLagGateParkedViewResumesOnce (r60a): a view parked on the lag gate is
+// resumed by the lagged import alone. A production-retry wakeup in between
+// must not trigger it too, or the resume builds the same parent twice.
+func TestLagGateParkedViewResumesOnce(t *testing.T) {
+	s, producer, _ := newLeaderService(t)
+	e := s.engine.Engine()
+	parent := types.Hash{0x51}
+	leadLaterView(t, e)
+	e.roundState.UpdateLockedQC(&QuorumCertificate{View: e.CurrentView() - 1, BlockHash: parent})
+	target := hsTWriteHeader(t, s, &block.Header{Number: uint256.NewInt(23), Difficulty: uint256.NewInt(0)})
+	var executed atomic.Bool
+	s.SetLagGate(func(types.Hash) (bool, types.Hash, error) { return executed.Load(), target, nil })
+
+	s.triggerBlockProduction(e.CurrentView(), parent)
+	if producer.count() != 0 {
+		t.Fatal("produced before the lagged block executed")
+	}
+	executed.Store(true)
+	s.retryBlockProduction()
+	s.NotifyBlockImported(target, types.Hash{})
+	deadline := time.Now().Add(2 * time.Second)
+	for producer.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if producer.count() != 1 || producer.parents[0] != parent {
+		t.Fatalf("parked view must resume exactly once: %v", producer.parents)
+	}
+}
+
+// leadLaterView moves the engine to a later view it leads, so a lock below
+// that view can be installed (UpdateLockedQC only raises the lock).
+func leadLaterView(t *testing.T, e *ConsensusEngine) {
+	t.Helper()
+	for v := e.CurrentView() + 2; v < e.CurrentView()+64; v++ {
+		if e.isLeader(e.myIndex, v, e.validatorSet()) {
+			e.roundState.AdvanceView(v)
+			return
+		}
+	}
+	t.Fatal("engine leads no later view")
+}
