@@ -13,6 +13,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
@@ -43,7 +44,24 @@ func BenchmarkPrepareStateWrite(b *testing.B) {
 	}
 }
 
+// BenchmarkPrepareStateWriteParLoad: the fold=true block with its
+// recipients seeded in a prefetch layer (as an import's are), the pending
+// loads serial or across N42_STATE_WRITE_PREP_LOAD_PAR workers.
+func BenchmarkPrepareStateWriteParLoad(b *testing.B) {
+	defer SetFoldNoJournalForTest(true)()
+	for _, par := range []int{0, 8} {
+		b.Run(fmt.Sprintf("par=%d", par), func(b *testing.B) {
+			defer SetPrepLoadParForTest(par)()
+			benchPrepareStateWriteOn(b, true, true)
+		})
+	}
+}
+
 func benchPrepareStateWrite(b *testing.B, detached bool) {
+	benchPrepareStateWriteOn(b, detached, false)
+}
+
+func benchPrepareStateWriteOn(b *testing.B, detached, prefetch bool) {
 	defer SetHistoryIndexDeferredForTest(true)()
 	const senders, recipients = 8000, 22857
 	db := memdb.NewTestDB(b)
@@ -63,6 +81,18 @@ func benchPrepareStateWrite(b *testing.B, detached bool) {
 		var ibs *IntraBlockState
 		_ = db.View(context.Background(), func(tx kv.Tx) error {
 			ibs = New(NewPlainStateReader(tx))
+			if prefetch {
+				pf := NewAccountPrefetch(NewPlainStateReader(tx))
+				seed := make(map[types.Address]*account.StateAccount, recipients)
+				for r := 0; r < recipients; r++ {
+					a := account.NewAccount()
+					a.Balance.SetUint64(uint64(r))
+					seed[benchAddr(2, r)] = &a
+				}
+				pf.Seed(seed)
+				ibs = New(pf)
+				ibs.SetAccountPrefetch(pf)
+			}
 			ibs.SetDetachedPendingCredits(detached)
 			for s := 0; s < senders; s++ {
 				a := benchAddr(1, s)
