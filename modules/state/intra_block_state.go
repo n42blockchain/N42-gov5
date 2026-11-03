@@ -201,6 +201,10 @@ type IntraBlockState struct {
 	foldTouched   []types.Address
 	foldTouchedBI []*BalanceIncrease
 
+	// hoist: the block's hoisted pending/detach preparation
+	// (finalize_hoist.go); nil unless N42_FINALIZE_HOIST_DETACH armed it.
+	hoist *detachHoist
+
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
 	// the EVM's CanTransfer). It deliberately does NOT fire for the
@@ -610,6 +614,7 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.balanceInc = reuseMap(sdb.balanceInc)
 	sdb.biSlab = nil
 	sdb.foldNoJournal = false
+	sdb.hoist = nil
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -1018,6 +1023,9 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 				bi = &BalanceIncrease{}
 			}
 			sdb.balanceInc[addr] = bi
+			if sdb.hoist != nil {
+				sdb.noteHoistInsert(addr)
+			}
 		}
 		bi.increase.Add(&bi.increase, amount)
 		bi.count++
@@ -1762,15 +1770,28 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 
 	rp := &s.rootPrep
 	*rp = RootPrepPhases{Enter: time.Now()}
-	pending := s.pendingIncreaseAddrs()
-	tStep := time.Now()
-	rp.Pending = tStep.Sub(rp.Enter)
+	var pending []types.Address
 	var detached pendingCredits
-	if !ltEnabled {
-		detached, pending = s.detachPendingCredits(pending)
+	var tStep time.Time
+	if s.hoist != nil {
+		// N42_FINALIZE_HOIST_DETACH (finalize_hoist.go): the same split,
+		// prepared beside the fold; Pending is then the merge with the late
+		// credits and Detach the checking pass.
+		detached, pending, rp.Hoisted = s.takeDetachHoist(ltEnabled)
+	}
+	if rp.Hoisted {
+		tStep = time.Now()
+		rp.Detach = tStep.Sub(rp.Enter)
+	} else {
+		pending = s.pendingIncreaseAddrs()
+		tStep = time.Now()
+		rp.Pending = tStep.Sub(rp.Enter)
+		if !ltEnabled {
+			detached, pending = s.detachPendingCredits(pending)
+		}
+		rp.Detach, tStep = stepSince(tStep)
 	}
 	lastRootCredits.Store(int64(len(detached.addrs))<<32 | int64(len(pending)))
-	rp.Detach, tStep = stepSince(tStep)
 	for _, addr := range pending {
 		s.getStateObject(addr)
 		s.stateObjectsDirty[addr] = struct{}{}
