@@ -43,6 +43,8 @@ type ParallelStateReader struct {
 	// next call (see ReuseAccountBuffer).
 	reuseAccount bool
 	accBuf       account.StateAccount
+	// dst, while set, is the account a read decodes into (ReadAccountDataInto).
+	dst *account.StateAccount
 	// slab, when set, holds the encodings the reader records (SetSlab).
 	slab *ValueSlab
 	// ents, when set, remembers the store entries ReadAccountData found
@@ -107,6 +109,10 @@ func (r *ParallelStateReader) ReuseAccountBuffer() { r.reuseAccount = true }
 
 // newAccount returns the account a read decodes into.
 func (r *ParallelStateReader) newAccount() *account.StateAccount {
+	if r.dst != nil {
+		*r.dst = account.StateAccount{}
+		return r.dst
+	}
 	if r.reuseAccount {
 		r.accBuf = account.StateAccount{}
 		return &r.accBuf
@@ -184,7 +190,8 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 
 	var deltaBuf uint256.Int
 	e := r.accountEntry(&key)
-	full, fullTx, fullInc, found, hasDelta := e.readAccount(r.txIndex, &deltaBuf)
+	full, fullTx, fullInc, found, hasDelta, pos := e.readAccountAt(r.txIndex, &deltaBuf, -1)
+	hint := readHint(pos)
 	var delta *uint256.Int
 	if hasDelta {
 		delta = &deltaBuf
@@ -192,12 +199,12 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	if found {
 		if full == nil && delta == nil {
 			// Account was deleted by a preceding tx.
-			r.recordAccountRead(e, key, fullTx, fullInc, false, nil, nil, false)
+			r.recordAccountRead(e, key, fullTx, fullInc, false, nil, nil, false, hint)
 			return nil, nil
 		}
 		acc := r.newAccount()
 		if delta == nil {
-			r.recordAccountRead(e, key, fullTx, fullInc, false, full, nil, false)
+			r.recordAccountRead(e, key, fullTx, fullInc, false, full, nil, false, hint)
 			if err := acc.DecodeForStorageV2(full); err != nil {
 				return nil, err
 			}
@@ -208,14 +215,14 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		if full != nil {
 			if err := acc.DecodeForStorageV2(full); err != nil {
 				val := composeAccount(full, delta)
-				r.recordAccountRead(e, key, fullTx, fullInc, false, val, nil, true)
+				r.recordAccountRead(e, key, fullTx, fullInc, false, val, nil, true, hint)
 				return DecodeAccount(val)
 			}
 		} else {
 			acc.Reset()
 		}
 		acc.Balance.Add(&acc.Balance, delta)
-		r.recordAccountRead(e, key, fullTx, fullInc, false, r.slab.encodeAccount(acc), nil, true)
+		r.recordAccountRead(e, key, fullTx, fullInc, false, r.slab.encodeAccount(acc), nil, true, hint)
 		return acc, nil
 	}
 
@@ -230,7 +237,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		return nil, err
 	}
 	if delta == nil {
-		r.recordAccountRead(e, key, -1, 0, true, enc, enc, false)
+		r.recordAccountRead(e, key, -1, 0, true, enc, enc, false, hint)
 		if base == nil {
 			return nil, nil
 		}
@@ -249,8 +256,29 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		acc.Reset()
 	}
 	acc.Balance.Add(&acc.Balance, delta)
-	r.recordAccountRead(e, key, -1, 0, true, r.slab.encodeAccount(acc), enc, true)
+	r.recordAccountRead(e, key, -1, 0, true, r.slab.encodeAccount(acc), enc, true, hint)
 	return acc, nil
+}
+
+// ReadAccountDataInto is ReadAccountData decoding into dst instead of a new
+// account or the reader's buffer, for a caller that keeps the account in
+// dst anyway: it skips that copy. The account returned is dst, nil when the
+// account is absent, or another account on a rare composing path; dst's
+// contents are unspecified unless it is returned.
+func (r *ParallelStateReader) ReadAccountDataInto(address types.Address, dst *account.StateAccount) (*account.StateAccount, error) {
+	r.dst = dst
+	acc, err := r.ReadAccountData(address)
+	r.dst = nil
+	return acc, err
+}
+
+// ReadAccountIgnoringBalanceInto is ReadAccountIgnoringBalance decoding
+// into dst, as ReadAccountDataInto.
+func (r *ParallelStateReader) ReadAccountIgnoringBalanceInto(address types.Address, dst *account.StateAccount) (*account.StateAccount, error) {
+	r.dst = dst
+	acc, err := r.ReadAccountIgnoringBalance(address)
+	r.dst = nil
+	return acc, err
 }
 
 // ReadAccountIgnoringBalance is ReadAccountData for a caller whose outputs
@@ -273,7 +301,7 @@ func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) 
 		// An account absent from the base exists once a delta credits it:
 		// that takes the composing read below.
 		if base != nil {
-			r.recordAccountRead(e, key, -1, 0, true, enc, enc, false)
+			r.recordAccountRead(e, key, -1, 0, true, enc, enc, false, 0)
 			r.rw.Reads[len(r.rw.Reads)-1].IgnoreBalance = true
 			acc := r.newAccount()
 			*acc = *base
@@ -290,9 +318,22 @@ func (r *ParallelStateReader) ReadAccountIgnoringBalance(address types.Address) 
 // recordAccountRead records an account read with the store entry it was
 // served from (nil when the location had none yet): validation and the
 // transaction's own write to the account then skip the lookup.
-func (r *ParallelStateReader) recordAccountRead(e *mvEntry, key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value, base []byte, hadDelta bool) {
+// hint is the read's validation hint (readHint).
+func (r *ParallelStateReader) recordAccountRead(e *mvEntry, key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value, base []byte, hadDelta bool, hint uint32) {
 	r.rw.RecordAccountRead(key, writerTx, writerIncarnation, fromBase, value, base, hadDelta)
-	r.rw.Reads[len(r.rw.Reads)-1].entry = e
+	rd := &r.rw.Reads[len(r.rw.Reads)-1]
+	rd.entry = e
+	rd.setHint(hint)
+}
+
+// readHint is the ReadDescriptor hint of a read at place pos of its
+// version list: pos+1 under execLean, 0 (none) otherwise or past the
+// hint's range.
+func readHint(pos int) uint32 {
+	if !execLean.Load() || pos >= maxReadHint {
+		return 0
+	}
+	return uint32(pos + 1)
 }
 
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {

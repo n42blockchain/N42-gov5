@@ -18,6 +18,8 @@ package transaction
 
 import (
 	"time"
+
+	"github.com/holiman/uint256"
 )
 
 // EthBatchDecoder decodes the Ethereum-encoded transactions of one
@@ -47,6 +49,18 @@ type EthBatchDecoder struct {
 	leg  []legacyEntry
 	nDyn int
 	nLeg int
+
+	// N42_ALLOC_LEAN (alloc_lean.go), fixed per batch at Reset.
+	lean bool
+	ll   []leanLegacyEntry
+	u    []uint256.Int
+	nLL  int
+	nU   int
+	last leanLast
+	// uUsed: u slots taken in the batch's earlier u slabs; nLeanTx: lean
+	// legacy transactions decoded in the batch (u slab sizing).
+	uUsed   int
+	nLeanTx int
 }
 
 type dynamicFeeEntry struct {
@@ -72,7 +86,12 @@ func NewEthBatchDecoder(n int) *EthBatchDecoder {
 func (d *EthBatchDecoder) Reset(n int) {
 	clear(d.dyn[:d.nDyn])
 	clear(d.leg[:d.nLeg])
-	d.nDyn, d.nLeg = 0, 0
+	clear(d.ll[:d.nLL])
+	clear(d.u[:d.nU])
+	d.nDyn, d.nLeg, d.nLL, d.nU = 0, 0, 0, 0
+	d.last = leanLast{}
+	d.uUsed, d.nLeanTx = 0, 0
+	d.lean = AllocLean()
 	d.left = n
 	d.now = time.Now()
 }
@@ -84,6 +103,13 @@ func (d *EthBatchDecoder) DecodeAliased(data []byte) (*Transaction, error) {
 	d.left--
 	if len(data) > 0 && !reflectDecodeOnly {
 		switch {
+		case data[0] >= 0xc0 && d.lean:
+			e := d.nextLeanLegacy()
+			if d.decodeLeanLegacy(&e.t, data) {
+				d.nLL++
+				return d.publish(&e.tx, &e.t, data), nil
+			}
+			e.t = LegacyTx{}
 		case data[0] >= 0xc0:
 			e := d.nextLegacy()
 			if fastDecodeLegacyInto(&e.a, data) {

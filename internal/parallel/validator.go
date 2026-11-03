@@ -87,7 +87,7 @@ func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
 	if rd.IgnoreBalance && rd.FromBase && rd.Base != nil && e.noFullWrites() {
 		return true
 	}
-	full, fullTx, fullInc, found, hasDelta := e.readAccount(txIndex, &deltaBuf)
+	full, fullTx, fullInc, found, hasDelta, _ := e.readAccountAt(txIndex, &deltaBuf, rd.hintPos())
 	var delta *uint256.Int
 	if hasDelta {
 		delta = &deltaBuf
