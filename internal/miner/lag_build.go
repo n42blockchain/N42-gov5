@@ -201,10 +201,12 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 	}
 	bc.MarkFramesInFlight(hashes, number)
 	w.markLocalFramesInFlight(local.hashes, number)
+	heldN, heldFilled := countHeldBuild(gw)
 	log.Info("miner: lag build", "n", number, "parent", parent.Hash().Hex()[:12], "frames", len(hashes),
 		"localFrames", len(local.hashes), "txs", local.txs+gw.txs, "gasEst", local.gas+gw.gas,
 		"reports", number-uint64(block.DeferredDepthAt(number)), "fill", dFill, "total", time.Since(start),
-		"storeFrames", st.Len(), "heldGateways", gw.held, "tMs", time.Now().UnixMilli())
+		"storeFrames", st.Len(), "heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready,
+		"capped", gw.capped, "hurried", gw.hurried, "heldBuilds", heldN, "heldFilled", heldFilled, "tMs", time.Now().UnixMilli())
 
 	select {
 	case w.taskCh <- &task{block: iblock, createdAt: time.Now(), lagged: true, buildBeginAt: start, triggerAt: triggerAt}:
@@ -234,12 +236,21 @@ func (w *worker) finishLaggedSeal(blk block.IBlock, sealhash types.Hash, task *t
 	if bsn, ok := w.engine.(blockSealNotifier); ok {
 		bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
 	}
+	// The leader's own block reaches its lag executor in process: no
+	// network round trip and no availability check (handoff=local);
+	// handoffLag runs from the build's start to the enqueue.
 	bc.EnqueueLagImport(concrete)
+	tEnq := time.Now()
 	w.mu.Lock()
 	delete(w.pendingTasks, sealhash)
 	w.mu.Unlock()
+	var handoffLag time.Duration
+	if !task.buildBeginAt.IsZero() {
+		handoffLag = tEnq.Sub(task.buildBeginAt)
+	}
 	log.Info("miner: lag block sealed and proposed", "n", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12],
-		"push", dPush, "total", time.Since(task.createdAt), "tMs", time.Now().UnixMilli())
+		"push", dPush, "total", time.Since(task.createdAt), "handoff", "local", "handoffLag", handoffLag,
+		"sealToEnqueue", tEnq.Sub(task.createdAt), "tMs", time.Now().UnixMilli())
 }
 
 // markLocalFramesInFlight records the pool transactions of local frames a
