@@ -2838,6 +2838,10 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 					"fEngine", procPhases.FinEngine, "fPending", rp.Pending, "fDetach", rp.Detach, "fMat", rp.Mat,
 					"fMerge", rp.Merge, "fSort", rp.Sort, "fLoop", rp.Loop, "fTail", rp.Tail, "fDirty", rp.Dirty,
 					"fHook", rp.Hook, "fCompute", rp.Compute, "fAfter", procPhases.FinAfter)
+				if state.FinalizeHoistOn() {
+					_, fb := state.FinalizeHoistStats()
+					fields = append(fields, "fHoist", rp.Hoisted, "fHoistFb", fb)
+				}
 			}
 			if det, mat := state.LastRootCredits(); det+mat > 0 {
 				fields = append(fields, "creditsDetached", det, "creditsMaterialised", mat)
