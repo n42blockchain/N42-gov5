@@ -207,30 +207,39 @@ func ForPrefix(db kv.Tx, bucket string, startkey []byte, walker func(blockN uint
 	})
 }
 
-// Truncate removes all changeset entries at or after the given block number.
-func Truncate(tx kv.RwTx, from uint64) error {
+// Truncate removes all changeset entries at or after the given block number and
+// reports whether any existed. The strictly forward path finds none, so a true
+// result means changesets were replaced rather than extended.
+func Truncate(tx kv.RwTx, from uint64) (bool, error) {
 	keyStart := modules.EncodeBlockNumber(from)
-	if err := truncateBucket(tx, modules.AccountChangeSet, keyStart); err != nil {
-		return err
+	accounts, err := truncateBucket(tx, modules.AccountChangeSet, keyStart)
+	if err != nil {
+		return false, err
 	}
-	return truncateBucket(tx, modules.StorageChangeSet, keyStart)
+	storage, err := truncateBucket(tx, modules.StorageChangeSet, keyStart)
+	if err != nil {
+		return false, err
+	}
+	return accounts || storage, nil
 }
 
-func truncateBucket(tx kv.RwTx, bucket string, keyStart []byte) error {
+func truncateBucket(tx kv.RwTx, bucket string, keyStart []byte) (bool, error) {
 	c, err := tx.RwCursorDupSort(bucket)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer c.Close()
+	removed := false
 	for k, _, err := c.Seek(keyStart); k != nil; k, _, err = c.NextNoDup() {
 		if err != nil {
-			return err
+			return removed, err
 		}
 		if err = c.DeleteCurrentDuplicates(); err != nil {
-			return err
+			return removed, err
 		}
+		removed = true
 	}
-	return nil
+	return removed, nil
 }
 
 var Mapper = map[string]struct {

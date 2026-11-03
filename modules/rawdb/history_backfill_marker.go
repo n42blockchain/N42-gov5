@@ -43,3 +43,42 @@ func ReadHistoryIndexedThrough(tx kv.Getter) (uint64, bool, error) {
 	}
 	return binary.BigEndian.Uint64(v), true, nil
 }
+
+// historyUnwindGenerationKey counts changeset unwinds. A fold reads changesets
+// outside its write transaction, so it compares this counter to detect that
+// the rows it prepared were replaced. An absent key reads as zero.
+var historyUnwindGenerationKey = []byte("historyUnwindGeneration")
+
+// ReadHistoryUnwindGeneration returns the number of changeset unwinds recorded
+// so far.
+func ReadHistoryUnwindGeneration(tx kv.Getter) (uint64, error) {
+	v, err := tx.GetOne(modules.DatabaseInfo, historyUnwindGenerationKey)
+	if err != nil || len(v) != 8 {
+		return 0, err
+	}
+	return binary.BigEndian.Uint64(v), nil
+}
+
+// NoteHistoryUnwind records, in the unwinding transaction, that block n's
+// changesets are being removed. A marker at or above n would claim a block the
+// index has not seen once a replacement lands there, so it moves to n-1 and the
+// backfiller folds the replacement. The generation invalidates any fold in
+// flight, including one that started below n.
+func NoteHistoryUnwind(tx kv.RwTx, n uint64) error {
+	marker, ok, err := ReadHistoryIndexedThrough(tx)
+	if err != nil {
+		return err
+	}
+	if ok && n > 0 && marker >= n {
+		if err := WriteHistoryIndexedThrough(tx, n-1); err != nil {
+			return err
+		}
+	}
+	generation, err := ReadHistoryUnwindGeneration(tx)
+	if err != nil {
+		return err
+	}
+	var v [8]byte
+	binary.BigEndian.PutUint64(v[:], generation+1)
+	return tx.Put(modules.DatabaseInfo, historyUnwindGenerationKey, v[:])
+}

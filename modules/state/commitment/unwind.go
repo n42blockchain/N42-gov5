@@ -34,6 +34,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/changeset"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 // UnwindHashedCanonical reverts hashed-canonical state from block `from` down to
@@ -146,6 +147,9 @@ func readBlockChangeset(tx kv.Tx, n uint64) (
 // StorageChangeSet is keyed by blockNum+addr, so all keys with the blockNum
 // prefix are deleted.
 func deleteBlockChangeset(tx kv.RwTx, n uint64) error {
+	if err := rawdb.NoteHistoryUnwind(tx, n); err != nil {
+		return err
+	}
 	bn := modules.EncodeBlockNumber(n)
 	if err := tx.Delete(modules.AccountChangeSet, bn); err != nil {
 		return err

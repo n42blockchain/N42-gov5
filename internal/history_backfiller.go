@@ -57,6 +57,9 @@ type HistoryBackfiller struct {
 	// tests paid 10 s each until this existed.
 	started bool
 	mu      sync.Mutex
+	// beforeApply runs between preparing a fold and writing it. Tests use it to
+	// land a concurrent unwind in that gap; it is nil in production.
+	beforeApply func()
 }
 
 // NewHistoryBackfiller builds a backfiller. head must return the current chain
@@ -243,7 +246,13 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 
 	agg := state.NewHistoryAggregator()
 	var prepared *state.PreparedHistory
+	var generation uint64
 	if err := b.db.View(b.ctx, func(tx kv.Tx) error {
+		// In this snapshot, so a later unwind of what is read here is detected.
+		var err error
+		if generation, err = rawdb.ReadHistoryUnwindGeneration(tx); err != nil {
+			return err
+		}
 		for _, spec := range []struct{ cs, hist string }{
 			{modules.AccountChangeSet, modules.AccountsHistory},
 			{modules.StorageChangeSet, modules.StorageHistory},
@@ -264,25 +273,33 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 				return err
 			}
 		}
-		var err error
 		prepared, err = agg.Prepare(tx)
 		return err
 	}); err != nil {
 		return false, err
 	}
 
+	if b.beforeApply != nil {
+		b.beforeApply()
+	}
+
 	// Index rows and the marker go in ONE transaction. A crash may lose both
 	// (the range is simply rebuilt) but can never leave the marker ahead of the
 	// rows, which is the case that would let a query read a gap as untouched.
-	// Rows prepared against a marker that has since moved describe an index
-	// that no longer exists; they are dropped and the next tick starts over.
+	// Rows prepared against a marker that has since moved, or from changesets
+	// an unwind has since replaced, describe an index that no longer exists;
+	// they are dropped and the next tick starts over.
 	stale := false
 	if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
 		cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
 		if err != nil {
 			return err
 		}
-		if cur != from || ok != seeded {
+		gen, err := rawdb.ReadHistoryUnwindGeneration(tx)
+		if err != nil {
+			return err
+		}
+		if cur != from || ok != seeded || gen != generation {
 			stale = true
 			return nil
 		}

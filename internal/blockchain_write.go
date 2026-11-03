@@ -358,7 +358,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// wedges. Clear any rows ≥ this height first — a no-op on the
 			// strictly-forward happy path, and safe (same tx as the re-append).
 			tSub := time.Now()
-			if err := changeset.Truncate(tx, blockNumber.Uint64()); err != nil {
+			if err := truncateStaleChangesets(tx, blockNumber.Uint64()); err != nil {
 				return fmt.Errorf("truncating stale changesets for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			dChgTruncate = time.Since(tSub)
@@ -848,4 +848,14 @@ func (bc *BlockChain) writeKnownBlock(tx kv.RwTx, blk block.IBlock) error {
 		}
 	}
 	return nil
+}
+
+// truncateStaleChangesets clears rows left at or above block n by an earlier
+// attempt at that height.
+func truncateStaleChangesets(tx kv.RwTx, n uint64) error {
+	removed, err := changeset.Truncate(tx, n)
+	if err != nil || !removed {
+		return err
+	}
+	return rawdb.NoteHistoryUnwind(tx, n)
 }
