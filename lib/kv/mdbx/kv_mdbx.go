@@ -41,6 +41,7 @@ type MdbxKV struct {
 	log          log.Logger
 	env          *mdbx.Env
 	buckets      kv.TableCfg
+	rwHolders    rwHolderLog
 	roTxsLimiter *semaphore.Weighted // does limit amount of concurrent Ro transactions - in most casess runtime.NumCPU() is good value for this channel capacity - this channel can be shared with other components (like Decompressor)
 	opts         MdbxOpts
 	txSize       uint64
@@ -105,6 +106,9 @@ type MdbxTx struct {
 	// a leg, with no writer named).
 	beganAt   time.Time
 	waitedFor time.Duration
+	// rwTag is the holder diagnostics' name for this write transaction's
+	// caller (rw_holder_diag.go), "" while they are off.
+	rwTag string
 }
 
 func (db *MdbxKV) Path() string     { return db.opts.path }
@@ -386,14 +390,18 @@ func (db *MdbxKV) beginRw(ctx context.Context, flags uint) (txn kv.RwTx, err err
 	}
 	began := time.Now()
 
-	return &MdbxTx{
+	t := &MdbxTx{
 		db:        db,
 		tx:        tx,
 		ctx:       ctx,
 		id:        db.leakDetector.Add(),
 		beganAt:   began,
 		waitedFor: began.Sub(tWait),
-	}, nil
+	}
+	if rwHolderDiag {
+		t.rwTag = rwCallerTag()
+	}
+	return t, nil
 }
 
 func (db *MdbxKV) View(ctx context.Context, f func(tx kv.Tx) error) (err error) {

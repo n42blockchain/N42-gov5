@@ -36,6 +36,9 @@ func (tx *MdbxTx) cleanup() {
 			tx.db.roTxsLimiter.Release(1)
 		}
 	} else {
+		if tx.rwTag != "" {
+			tx.db.rwHolders.release(tx.rwTag, tx.beganAt)
+		}
 		runtime.UnlockOSThread()
 	}
 	tx.db.leakDetector.Del(tx.id)
