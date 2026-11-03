@@ -349,9 +349,14 @@ type workerStat struct {
 	// (P10): a sender's account gets one version per transaction of its
 	// chain, and its version list is sized for all of them at the first.
 	keyCount map[uint64]int32
+	// N42_WAVE_CPU_DIAG only: thread CPU time over the worker's wall window,
+	// and the CPU it started and ended on (-1 if unavailable). Taken out of
+	// the padding, so the off path keeps its layout.
+	cpuNs      int64
+	cpu0, cpu1 int32
 	// Pad to two cache lines: neighbouring workers write their slots on
 	// every transaction.
-	_ [40]byte
+	_ [24]byte
 }
 
 // WorkerStatsSummary aggregates the per-worker S82 timings from the most
@@ -369,6 +374,15 @@ type WorkerStatsSummary struct {
 	SlowestWorker int
 	Keys          int // S83: distinct affinity keys (LPT mode only)
 	TopChain      int // S83: longest per-key chain (LPT mode only)
+
+	// N42_WAVE_CPU_DIAG only; see summarizeCPU and CPUFields.
+	CPUDiag    bool
+	CPUSlowMs  float64 // CPU of the worker with WallMaxMs
+	CPUFastMs  float64 // CPU of the worker with WallMinMs
+	CPUMeanMs  float64
+	CPUMoved   int // workers that ended on another CPU
+	CCXMoved   int // workers that ended on another CCX
+	CoreShared int // workers on a physical core with another worker
 }
 
 // WorkerStats summarizes the per-worker timings recorded during the last
@@ -410,6 +424,9 @@ func (e *Executor) WorkerStats() WorkerStatsSummary {
 	s.MvsWriteMs = mvsWriteNs / 1e6
 	s.MvsWriteNs = mvsWriteNs
 	s.MvsDeleteMs = mvsDeleteNs / 1e6
+	if waveCPUDiag {
+		e.summarizeCPU(&s)
+	}
 	return s
 }
 
@@ -752,6 +769,12 @@ func (e *Executor) executeParallel(txIndices []int) {
 			tWallStart := time.Now()
 			ws := &e.workerStats[workerID]
 			defer wg.Done()
+			if waveCPUDiag {
+				// Deferred before the wall sample so it runs right after it,
+				// and covers the same window (setup and teardown included).
+				ws.cpuDiagStart()
+				defer ws.cpuDiagStop()
+			}
 			defer func() {
 				ws.wallNs = int64(time.Since(tWallStart))
 				if r := recover(); r != nil {
