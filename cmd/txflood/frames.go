@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/ingest"
 )
@@ -42,6 +45,10 @@ type frameRun struct {
 	// corpus, when set, replaces building: pre-encoded frames are streamed
 	// from it in order (see -presign / -replay).
 	corpus *corpusReader
+	// fingerprint identifies the corpus writeCorpus produces (see
+	// corpusFingerprint); it is stored in the header so -presign-reuse can
+	// tell a corpus for this exact run from a stale one.
+	fingerprint [32]byte
 
 	presigned, streamed                                  atomic.Int64
 	frames, txs, busy, failed, conns, rejected, timeouts atomic.Int64
@@ -386,8 +393,13 @@ func (fr *frameRun) produce(nFrames int64) <-chan builtFrame {
 	return out
 }
 
-// Corpus file: header, then per frame u32 rawLen, u32 txCount, raw bytes.
-const corpusMagic = "TXFC0001"
+// Corpus file: magic, header, then (v2) a 32-byte fingerprint, then per
+// frame u32 rawLen, u32 txCount, raw bytes. v1 files have no fingerprint and
+// are still readable by -replay, but never reused by -presign-reuse.
+const (
+	corpusMagicV1 = "TXFC0001"
+	corpusMagic   = "TXFC0002"
+)
 
 type corpusHeader struct {
 	Peers     uint32
@@ -396,11 +408,69 @@ type corpusHeader struct {
 	Frames    uint64
 }
 
-// writeCorpus builds every frame (fr.workers goroutines) into path.
+// corpusSamples is how many transactions, spread evenly over the run, the
+// fingerprint hashes in full.
+const corpusSamples = 64
+
+// corpusFingerprint hashes everything that decides the corpus bytes: the
+// frame shape (frame.MaxTxs, peers, broadcast, total), the gateway address,
+// the senders' probed start nonces, and the signed bytes of corpusSamples+1
+// transactions spread over the run. The samples carry the chain id, fees,
+// sender keys, recipients and the index-to-(sender, nonce) mapping, so a
+// change to any flag that alters the transactions changes the fingerprint.
+// Signing is deterministic (RFC 6979), so the same inputs give the same
+// bytes. Cost: corpusSamples+1 signatures.
+func (fr *frameRun) corpusFingerprint(startNonces []uint64) [32]byte {
+	h := sha256.New()
+	var b [8]byte
+	put := func(v uint64) {
+		binary.LittleEndian.PutUint64(b[:], v)
+		h.Write(b[:])
+	}
+	h.Write([]byte("txflood corpus v2"))
+	put(uint64(frame.MaxTxs))
+	put(uint64(len(fr.peers)))
+	if fr.broadcast {
+		put(1)
+	} else {
+		put(0)
+	}
+	put(uint64(fr.total))
+	if fr.key != nil {
+		h.Write(crypto.PubkeyToAddress(fr.key.PublicKey).Bytes())
+	}
+	put(uint64(len(startNonces)))
+	for _, n := range startNonces {
+		put(n)
+	}
+	if fr.total > 0 {
+		for k := int64(0); k <= corpusSamples; k++ {
+			i := k * (fr.total - 1) / corpusSamples
+			raw := fr.rawAt(i)
+			put(uint64(i))
+			put(uint64(len(raw)))
+			h.Write(raw)
+		}
+	}
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+// writeCorpus builds every frame (fr.workers goroutines) into path. It
+// writes path+".tmp" and renames it on success, so a corpus at path is
+// always complete (a killed presign cannot leave a short file that a later
+// -presign-reuse would take).
 func (fr *frameRun) writeCorpus(path string) error {
 	nFrames := (fr.total + frame.MaxTxs - 1) / frame.MaxTxs
-	f, err := os.Create(path)
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	w := bufio.NewWriterSize(f, 1<<20)
@@ -410,10 +480,16 @@ func (fr *frameRun) writeCorpus(path string) error {
 	}
 	_, _ = w.WriteString(corpusMagic)
 	_ = binary.Write(w, binary.LittleEndian, h)
-	for bf := range fr.produce(nFrames) {
+	_, _ = w.Write(fr.fingerprint[:])
+	frames := fr.produce(nFrames)
+	for bf := range frames {
 		if bf.err != nil {
-			f.Close()
-			return fmt.Errorf("frame %d: %w", bf.k, bf.err)
+			// Drain so the producer goroutines can finish.
+			go func() {
+				for range frames {
+				}
+			}()
+			return fail(fmt.Errorf("frame %d: %w", bf.k, bf.err))
 		}
 		var hd [8]byte
 		binary.LittleEndian.PutUint32(hd[0:], uint32(len(bf.raw)))
@@ -423,10 +499,33 @@ func (fr *frameRun) writeCorpus(path string) error {
 		fr.presigned.Add(int64(bf.ntx))
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	return f.Close()
+	return os.Rename(tmp, path)
+}
+
+// reusableCorpus reports whether path holds a complete v2 corpus for this
+// run (same shape and fingerprint), and why not when it does not.
+func (fr *frameRun) reusableCorpus(path string) (bool, string) {
+	c, err := openCorpus(path)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer c.f.Close()
+	if c.fp == nil {
+		return false, "v1 corpus has no fingerprint"
+	}
+	if err := c.check(len(fr.peers), fr.broadcast, fr.total); err != nil {
+		return false, err.Error()
+	}
+	if !bytes.Equal(c.fp[:], fr.fingerprint[:]) {
+		return false, fmt.Sprintf("fingerprint %x, run has %x", c.fp[:6], fr.fingerprint[:6])
+	}
+	return true, ""
 }
 
 // corpusReader streams a corpus file's frames in order.
@@ -434,6 +533,8 @@ type corpusReader struct {
 	f *os.File
 	r *bufio.Reader
 	h corpusHeader
+	// fp is the v2 fingerprint; nil for a v1 corpus.
+	fp *[32]byte
 	// free holds frame buffers every peer has finished with. Streaming
 	// allocated (and zeroed) a fresh ~56 KB buffer per frame only to
 	// overwrite it, which with the GC it drove was a fifth of a replaying
@@ -464,7 +565,7 @@ func openCorpus(path string) (*corpusReader, error) {
 	}
 	r := bufio.NewReaderSize(f, 4<<20)
 	var m [len(corpusMagic)]byte
-	if _, err := io.ReadFull(r, m[:]); err != nil || string(m[:]) != corpusMagic {
+	if _, err := io.ReadFull(r, m[:]); err != nil || (string(m[:]) != corpusMagic && string(m[:]) != corpusMagicV1) {
 		f.Close()
 		return nil, fmt.Errorf("%s: not a txflood corpus", path)
 	}
@@ -472,6 +573,13 @@ func openCorpus(path string) (*corpusReader, error) {
 	if err := binary.Read(r, binary.LittleEndian, &c.h); err != nil {
 		f.Close()
 		return nil, err
+	}
+	if string(m[:]) == corpusMagic {
+		c.fp = new([32]byte)
+		if _, err := io.ReadFull(r, c.fp[:]); err != nil {
+			f.Close()
+			return nil, err
+		}
 	}
 	return c, nil
 }

@@ -714,6 +714,7 @@ func main() {
 	frameBroadcast := flag.Bool("frame-broadcast", false, "with -frames: send every frame to every -frame-peers endpoint (each connection worker holds one connection per peer); needed with N42_FRAME_BLOCKS=1 so every rotating leader holds every frame")
 	signWorkers := flag.Int("sign-workers", 1, "with -frames: goroutines that sign and encode frames ahead of the in-order per-peer senders (frame content depends only on its index, so this keeps delivery order). One worker is the historical single producer, which caps a generator near 37k tx/s")
 	presignFile := flag.String("presign", "", "with -frames: after funding and the nonce probe, sign and encode every frame into this corpus file (-sign-workers goroutines), then stream the run from it. Opt-in; takes the signing off the flood's critical path")
+	presignReuse := flag.Bool("presign-reuse", false, "with -presign: if the file already holds a complete corpus for this exact run (same frame shape, gateway, start nonces and sampled signed transactions: see corpusFingerprint), stream it instead of signing again. Legs that reseed the same chain state and flood the same senders produce byte-identical corpora, so a harness that keeps the file across legs signs once per round")
 	replayFile := flag.String("replay", "", "with -frames: stream a corpus written by -presign (same -senders/-pertx/-frame-peers/-frame-broadcast/-sender-offset, nonces unchanged) and sign nothing; combine with -skip-funding. Depth-by-nonce pacing needs the same process to have probed nonces, so prefer -presign for that")
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile of the whole run to this file")
 	flag.Parse()
@@ -1078,11 +1079,24 @@ func main() {
 			workers:   *signWorkers,
 		}
 		t0 := time.Now()
-		if err := pre.writeCorpus(*presignFile); err != nil {
-			fmt.Fprintf(os.Stderr, "FATAL: presign: %v\n", err)
-			os.Exit(1)
+		pre.fingerprint = pre.corpusFingerprint(senderBase)
+		reused := false
+		if *presignReuse {
+			ok, why := pre.reusableCorpus(*presignFile)
+			if ok {
+				reused = true
+				fmt.Printf("presign: reusing %s (%d txs, fingerprint %x, checked in %s)\n", *presignFile, totalTxs, pre.fingerprint[:6], time.Since(t0).Round(time.Millisecond))
+			} else {
+				fmt.Printf("presign: not reusing %s: %s\n", *presignFile, why)
+			}
 		}
-		fmt.Printf("presigned %d txs into %s in %s\n", pre.presigned.Load(), *presignFile, time.Since(t0).Round(time.Millisecond))
+		if !reused {
+			if err := pre.writeCorpus(*presignFile); err != nil {
+				fmt.Fprintf(os.Stderr, "FATAL: presign: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("presigned %d txs into %s in %s (fingerprint %x)\n", pre.presigned.Load(), *presignFile, time.Since(t0).Round(time.Millisecond), pre.fingerprint[:6])
+		}
 	}
 	// Funding barrier (S49, docs/QS_BLOCK_TIME_BUDGET.md 6f1/6f2): funding is
 	// done and this generator is about to start flooding. If -wait-for-file is
