@@ -46,6 +46,10 @@ type Follower struct {
 	// backlog is processed without sleeping. Default DefaultPoll, floor
 	// MinPoll. It bounds how late a packet lands after its block.
 	Poll time.Duration
+	// Wake, when set, ends an idle or back-off wait early: a HeadSubscriber
+	// sends on it for every newHeads notification. The poll stays the
+	// fallback, so a missed wake costs at most one Poll.
+	Wake <-chan struct{}
 
 	// Built, when set, is called for every packet handed off (tests).
 	Built func(n uint64, b *Block, built *Built, ingest *IngestResult)
@@ -127,6 +131,7 @@ func (f *Follower) Run(ctx context.Context, from uint64) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(f.Poll):
+		case <-f.Wake:
 		}
 	}
 }

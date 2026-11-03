@@ -21,10 +21,18 @@
 // The interval bounds how late a packet lands after its block: a phone
 // reading /mobileverify/latest can see packet:false for up to that long.
 //
+// With -ws <url> (opt-in) it also subscribes to the node's newHeads over
+// WebSocket (eth_subscribe) and wakes on every head, so a packet is built as
+// soon as its block is announced. The poll stays on as the fallback and the
+// catch-up path: a dropped subscription is redialled every second and blocks
+// are still taken in order from eth_blockNumber, so a missed notification
+// costs at most one poll.
+//
 // Usage:
 //
 //	mobileverify-packetd -rpc http://127.0.0.1:18545 -mv http://127.0.0.1:21010 \
-//	  -genesis crates/chainspec/res/genesis/n42_devnet.json [-from N] [-out DIR] [-poll 250ms]
+//	  -genesis crates/chainspec/res/genesis/n42_devnet.json [-from N] [-out DIR] [-poll 250ms] \
+//	  [-ws ws://127.0.0.1:18546]
 package main
 
 import (
@@ -50,6 +58,7 @@ func main() {
 	genesis := flag.String("genesis", "", "genesis JSON whose chain config the blocks follow (overrides -chain)")
 	chain := flag.String("chain", "", "gov5 params chain name (when no -genesis)")
 	from := flag.Uint64("from", 0, "first block (0 = the node's current head)")
+	ws := flag.String("ws", "", "WebSocket URL of the node (e.g. ws://127.0.0.1:18546): subscribe to newHeads and build each block's packet as soon as it is announced; the -poll keeps running as fallback; empty = poll only")
 	poll := flag.Duration("poll", packetd.DefaultPoll, "head poll interval (eth_blockNumber) while idle, minimum 50ms; a backlog is processed without sleeping")
 	conc := flag.Int("conc", 8, "concurrent JSON-RPC requests for the state prefetch")
 	byNumber := flag.Bool("state-by-number", false, "read the parent state by block number instead of by hash (EIP-1898)")
@@ -99,6 +108,12 @@ func main() {
 		StateAtNumber: *byNumber,
 		Concurrency:   *conc,
 		Poll:          *poll,
+	}
+	if *ws != "" {
+		wake := make(chan struct{}, 1)
+		f.Wake = wake
+		sub := &packetd.HeadSubscriber{URL: *ws}
+		go sub.Run(ctx, wake)
 	}
 	if err := f.Run(ctx, *from); err != nil && ctx.Err() == nil {
 		fatal("%v", err)
