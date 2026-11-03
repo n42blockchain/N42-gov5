@@ -465,6 +465,12 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 		}
 	}
 	if s.lagGate != nil {
+		// The lag gate resumes a parked view through deferProductionUntil,
+		// never through the import-driven retry: the retry request set above
+		// stays "current" (same view, same lock) from the seal until the QC,
+		// so the leader's own applied block would rebuild the same parent --
+		// a same-height sibling per proposal (r60a, bench run 21).
+		s.pendingProduction = nil
 		// P2a, deferred depth k > 1: the leader builds without executing,
 		// so the parent need not be applied; it needs this node's result of
 		// the block k-1 above the parent (N-k for height N), which its
