@@ -24,7 +24,9 @@
 package state
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 
 	"github.com/holiman/uint256"
 
@@ -358,10 +360,61 @@ func appendDupRows(tx kv.RwTx, table string, rows []ChangeSetRow) error {
 		return err
 	}
 	defer c.Close()
+	if chgSetAppend {
+		ok, err := chgSetAppendable(c, rows)
+		if err != nil {
+			return err
+		}
+		if ok {
+			for _, r := range rows {
+				if err := c.Append(r.K, r.V); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
 	for _, r := range rows {
 		if err := c.AppendDup(r.K, r.V); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// chgSetAppend is N42_CHGSET_APPEND (default off, r58a). With it on,
+// appendDupRows puts rows with the cursor's Append -- MDBX_APPEND |
+// MDBX_APPENDDUP on a DupSort table -- instead of AppendDup (MDBX_APPENDDUP
+// alone): the key goes in after the table's last key without a seek from
+// the root. Measured on an MDBX changeset table, an account changeset's
+// ~24k dups under one block key: ~560 vs ~650 ns a row. It is taken only
+// when that is provably the same insert: the rows strictly ascending as
+// (key, value) pairs, and the first key above every key already in the
+// table. Anything else takes the AppendDup path, which is what ran before.
+var chgSetAppend = os.Getenv("N42_CHGSET_APPEND") == "1"
+
+// SetChgSetAppendForTest switches chgSetAppend and returns the restore.
+func SetChgSetAppendForTest(on bool) func() {
+	prev := chgSetAppend
+	chgSetAppend = on
+	return func() { chgSetAppend = prev }
+}
+
+// chgSetAppendable reports whether rows can be put with MDBX_APPEND into
+// c's table: strictly ascending (key, value) pairs, keys non-decreasing,
+// and the first key greater than the table's last key.
+func chgSetAppendable(c kv.RwCursorDupSort, rows []ChangeSetRow) (bool, error) {
+	for i := 1; i < len(rows); i++ {
+		switch cmp := bytes.Compare(rows[i-1].K, rows[i].K); {
+		case cmp > 0:
+			return false, nil
+		case cmp == 0 && bytes.Compare(rows[i-1].V, rows[i].V) >= 0:
+			return false, nil
+		}
+	}
+	last, _, err := c.Last()
+	if err != nil {
+		return false, err
+	}
+	return last == nil || bytes.Compare(last, rows[0].K) < 0, nil
 }
