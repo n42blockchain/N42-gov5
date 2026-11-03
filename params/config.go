@@ -466,6 +466,16 @@ func (c *ChainConfig) UsesEIP7928AccessList(time uint64) bool {
 	return c != nil && c.IsGlamsterdam(time) && !c.IsN42Native()
 }
 
+// UsesEIP8282BuilderRequests reports whether a block at time dequeues the
+// Ethereum (Amsterdam) EIP-8282 builder deposit and exit request queues at
+// its end: Glamsterdam on a chain that is not N42 native. N42 native chains
+// have no builder market and deploy no builder request contracts, so, like
+// the EIP-7928 access list, the calls are skipped there; the rest of the
+// Amsterdam execution rules still apply.
+func (c *ChainConfig) UsesEIP8282BuilderRequests(time uint64) bool {
+	return c != nil && c.IsGlamsterdam(time) && !c.IsN42Native()
+}
+
 // IsN42Native reports whether this is an N42 native chain (HotStuff or APoS
 // consensus). Validity rules Ethereum added after these chains started
 // producing blocks are only enforced elsewhere, so their history replays
