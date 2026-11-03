@@ -129,8 +129,15 @@ func TestG35Truncate(t *testing.T) {
 	writeAccountChange(t, tx, 1, addr1, []byte("v1"))
 	writeAccountChange(t, tx, 10, addr1, []byte("v10"))
 
-	if err := Truncate(tx, 5); err != nil {
+	removed, err := Truncate(tx, 5)
+	if err != nil {
 		t.Fatalf("Truncate: %v", err)
+	}
+	if !removed {
+		t.Fatal("Truncate reported no rows removed")
+	}
+	if removed, err = Truncate(tx, 5); err != nil || removed {
+		t.Fatalf("second Truncate = %v, %v; want no rows removed", removed, err)
 	}
 
 	var remaining []uint64
