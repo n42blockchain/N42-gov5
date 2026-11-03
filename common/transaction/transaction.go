@@ -598,6 +598,10 @@ func (tx *Transaction) Cost() *uint256.Int {
 	return total.Add(total, tx.Value())
 }
 
+// HashMemoised reports whether the transaction's hash is already
+// memoised, i.e. whether Hash would return without computing it.
+func (tx *Transaction) HashMemoised() bool { return tx.hashState.Load() == hashReady }
+
 func (tx *Transaction) Hash() types.Hash {
 	if tx.hashState.Load() == hashReady {
 		return tx.hashVal

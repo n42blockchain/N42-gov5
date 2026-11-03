@@ -1498,7 +1498,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 				// per transaction here held the MDBX writer for 5-27 s on a
 				// 163,000-tx block while a lagging node re-committed it. The write
 				// is timed as txlookup, not folded into the body phase.
-				if bc.txIndexer == nil {
+				if bc.txIndexer == nil && !bc.skipTxIndex() {
 					tLookup := time.Now()
 					rawdb.WriteTxLookupEntries(tx, blk)
 					dLookup = time.Since(tLookup)
@@ -1589,10 +1589,14 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		// sealed into RecSplit segments, and nothing is written here: one row
 		// per transaction keyed by transaction hash dirtied thousands of
 		// scattered pages and made mdbx_txn_commit 94.6% of this phase.
+		// A light node keeping no lookups (N42_E1_LIGHT_NO_TXINDEX) writes
+		// none and feeds nothing to the indexer.
 		tLookup := time.Now()
-		if bc.txIndexer == nil {
+		switch {
+		case bc.skipTxIndex():
+		case bc.txIndexer == nil:
 			rawdb.WriteTxLookupEntries(tx, blk)
-		} else {
+		default:
 			indexed = blk
 		}
 		dLookup = time.Since(tLookup)
