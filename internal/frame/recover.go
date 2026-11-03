@@ -69,12 +69,15 @@ type SenderRecoverer struct {
 	st     *store.Store
 	signer func() transaction.Signer
 	jobs   chan recoverJob
+	// prio is the priority lane (Hurry): frames a block builder is held
+	// on, taken by the workers before jobs.
+	prio chan recoverJob
 
 	pending                 atomic.Int64
 	frames, txs, failed     atomic.Uint64
 	dropped, gone, decodeKO atomic.Uint64
 	skipped, deferred       atomic.Uint64
-	attested                atomic.Uint64
+	attested, hurried       atomic.Uint64
 
 	// src (optional) answers frames from another source (P8b: senders a
 	// committee attests) and is told every frame recovered here.
@@ -107,8 +110,13 @@ func NewSenderRecoverer(st *store.Store, signer func() transaction.Signer, worke
 	if workers <= 0 {
 		workers = DefaultRecoverWorkers
 	}
-	return &SenderRecoverer{st: st, signer: signer, jobs: make(chan recoverJob, recoverQueueCap), workers: workers}
+	return &SenderRecoverer{st: st, signer: signer, jobs: make(chan recoverJob, recoverQueueCap),
+		prio: make(chan recoverJob, recoverPrioCap), workers: workers}
 }
+
+// recoverPrioCap bounds the priority lane; a hurried frame that does not fit
+// keeps its place in the ordinary queue.
+const recoverPrioCap = 1 << 10
 
 // SenderSource supplies frame senders from somewhere other than a local
 // recovery (P8b attestations). Safe for concurrent use.
@@ -159,6 +167,25 @@ func (r *SenderRecoverer) Submit(h types.Hash, raw []byte) {
 	}
 }
 
+// Hurry queues frame h on the priority lane, ahead of the ordinary queue
+// (store.Hurrier). It never blocks and reports whether h was queued. The
+// frame's ordinary job, still queued, is skipped when its turn comes
+// (BeginRecover finds the senders cached or the recovery running).
+func (r *SenderRecoverer) Hurry(h types.Hash, raw []byte) bool {
+	r.pending.Add(1)
+	select {
+	case r.prio <- recoverJob{h: h, raw: raw}:
+		r.hurried.Add(1)
+		return true
+	default:
+		r.pending.Add(-1)
+		return false
+	}
+}
+
+// Hurried returns the frames queued on the priority lane since start.
+func (r *SenderRecoverer) Hurried() uint64 { return r.hurried.Load() }
+
 // Pending returns the frames queued or being recovered.
 func (r *SenderRecoverer) Pending() int64 { return r.pending.Load() }
 
@@ -174,13 +201,30 @@ func (r *SenderRecoverer) Stats() RecoverStats {
 func (r *SenderRecoverer) run(ctx context.Context) {
 	defer r.wg.Done()
 	for {
-		select {
-		case <-ctx.Done():
+		j, ok := r.next(ctx)
+		if !ok {
 			return
-		case j := <-r.jobs:
-			r.recoverOne(j)
-			r.pending.Add(-1)
 		}
+		r.recoverOne(j)
+		r.pending.Add(-1)
+	}
+}
+
+// next returns the next frame to recover: the priority lane first, then
+// the ordinary queue. It reports false once ctx is done.
+func (r *SenderRecoverer) next(ctx context.Context) (recoverJob, bool) {
+	select {
+	case j := <-r.prio:
+		return j, true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return recoverJob{}, false
+	case j := <-r.prio:
+		return j, true
+	case j := <-r.jobs:
+		return j, true
 	}
 }
 
