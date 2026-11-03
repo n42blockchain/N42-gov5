@@ -214,3 +214,52 @@ func TestSenderRecovererSkipsClaimedFrames(t *testing.T) {
 		t.Fatal("claimed frame recovered, or an unclaimed one skipped")
 	}
 }
+
+// TestSenderRecovererHurry (N42_FRAME_FILL_HELD): a hurried frame is
+// recovered before the frames queued ahead of it; its own queued job is
+// skipped when its turn comes; a frame already cached or not stored is not
+// hurried; the pending count drains to zero.
+func TestSenderRecovererHurry(t *testing.T) {
+	keys := frametest.Keys(t, 3, 17)
+	fb := frametest.NewBuilder(keys[0], recoverChainID, keys[1:])
+	raws, hashes, _ := fb.Frames(t, 4, 3)
+	signer := transaction.LatestSignerForChainID(recoverChainID)
+	st := store.New(1 << 24)
+	rec := frame.NewSenderRecoverer(st, func() transaction.Signer { return signer }, 1)
+	rec.AttachForTest()
+	for i := range raws {
+		if st.Admit(hashes[i], store.Entry{Raw: raws[i]}, false) != store.Stored {
+			t.Fatalf("frame %d not stored", i)
+		}
+	}
+	if got := st.Hurry([]types.Hash{hashes[3], {0x01}}); got != 1 {
+		t.Fatalf("hurried %d, want 1 (the unknown hash is not stored)", got)
+	}
+	h, ok := rec.StepForTest()
+	if !ok || h != hashes[3] || st.Senders(hashes[3]) == nil {
+		t.Fatal("the hurried frame was not recovered first")
+	}
+	if st.Senders(hashes[0]) != nil {
+		t.Fatal("an older frame recovered before the hurried one")
+	}
+	// Cached now: hurrying it again is a no-op.
+	if got := st.Hurry(hashes[3:]); got != 0 {
+		t.Fatalf("re-hurried a cached frame (%d)", got)
+	}
+	for i := 0; i < 4; i++ {
+		if h, ok := rec.StepForTest(); !ok || h != hashes[i] {
+			t.Fatalf("step %d: got %x ok %v", i, h[:4], ok)
+		}
+	}
+	if _, ok := rec.StepForTest(); ok {
+		t.Fatal("queue not drained")
+	}
+	for i, h := range hashes {
+		if st.Senders(h) == nil {
+			t.Fatalf("frame %d not recovered", i)
+		}
+	}
+	if s := rec.Stats(); s.Pending != 0 || s.Frames != 4 || s.Skipped != 1 || rec.Hurried() != 1 {
+		t.Fatalf("stats %+v hurried %d", s, rec.Hurried())
+	}
+}

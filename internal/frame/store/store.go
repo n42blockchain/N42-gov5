@@ -369,6 +369,46 @@ func (s *Store) NeedsSenders(h types.Hash) bool {
 	return ok && sl.senders == nil && !sl.claimed && sl.recov == recNone
 }
 
+// Hurrier is a Recoverer that can recover a frame ahead of the frames
+// queued before it. Hurry must not block; it reports whether it took h.
+type Hurrier interface {
+	Hurry(h types.Hash, raw []byte) bool
+}
+
+// Hurry hands the stored frames among hs that have no cached senders, are
+// not being recovered and are not claimed by a block to the recoverer's
+// priority lane (when it is a Hurrier), and returns how many it took. The
+// frames' queued jobs stay queued and are skipped once these finish.
+func (s *Store) Hurry(hs []types.Hash) int {
+	box := s.recoverer.Load()
+	if box == nil || len(hs) == 0 {
+		return 0
+	}
+	hr, ok := box.r.(Hurrier)
+	if !ok {
+		return 0
+	}
+	type job struct {
+		h   types.Hash
+		raw []byte
+	}
+	jobs := make([]job, 0, len(hs))
+	s.mu.RLock()
+	for _, h := range hs {
+		if sl, ok := s.m[h]; ok && sl.senders == nil && sl.recov == recNone && !sl.claimed {
+			jobs = append(jobs, job{h, sl.Raw})
+		}
+	}
+	s.mu.RUnlock()
+	n := 0
+	for _, j := range jobs {
+		if hr.Hurry(j.h, j.raw) {
+			n++
+		}
+	}
+	return n
+}
+
 // Senders returns the cached senders of frame h, or nil.
 func (s *Store) Senders(h types.Hash) *Senders {
 	s.mu.RLock()
