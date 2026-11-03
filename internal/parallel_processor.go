@@ -1053,8 +1053,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// (state/fold_nojournal.go).
 	foldNJ := state.FoldNoJournalOn() && !lenient && ibs.DetachedPendingCredits()
 	ibs.SetFoldNoJournal(foldNJ)
+	if foldNJ {
+		// N42_FINALIZE_HOIST_DETACH: the root's pending list and detach
+		// reads prepared beside the rest of the run (no-op when off).
+		ibs.PrepareDetachHoist()
+	}
 	applySplit, err := applyMVSToIBSTimed(executor.MVS(), numTxs, ibs)
 	ibs.SetFoldNoJournal(false)
+	if foldNJ && err == nil {
+		ibs.ArmDetachHoist()
+	}
 	if err != nil {
 		joinRcpt()
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
