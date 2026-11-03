@@ -407,13 +407,18 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	if fs.store != nil {
 		applied = make([]frameSenders, len(hashes))
 	}
+	// A light node keeping no lookups (N42_E1_LIGHT_NO_TXINDEX) has no use
+	// for the hashes; anything that still asks computes its own on demand.
+	hashTxs := !bc.skipTxIndex()
 	per, dropped, err := frame.DecodeFramesEachWith(raws, 0, func(i int, txs []*transaction.Transaction) {
 		if applied != nil {
 			ss := fs.store.Senders(hashes[i])
 			n, d := frame.ApplySendersDeclared(txs, ss)
 			applied[i] = frameSenders{ss: ss, n: n, declared: d}
 		}
-		frame.HashTxs(txs)
+		if hashTxs {
+			frame.HashTxs(txs)
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("frame body: block %d: %w", b.Number64().Uint64(), err)

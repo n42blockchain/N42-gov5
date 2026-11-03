@@ -69,6 +69,23 @@ func (bc *BlockChain) e1Source() string {
 // SetE1SourceForTest makes this chain light, taking results from url.
 func (bc *BlockChain) SetE1SourceForTest(url string) { bc.e1Src.Store(&url) }
 
+// EnvE1LightNoTxIndex (N42_E1_LIGHT_NO_TXINDEX=1, default off) makes an
+// E=1 light node keep no transaction lookups: its frame-body resolve does
+// not hash the transactions and its commit neither writes TxLookup rows
+// nor feeds the tail indexer. A light node executes nothing and checks no
+// transaction root, so those hashes only served its own index (run 23 B2
+// node6: hashing 6.3%, the index seal 4.3% and the commit's lookups ~1% of
+// its CPU). eth_getTransactionByHash and receipts by hash then have to be
+// asked of the executor or an archive node. An executor (no
+// N42_E1_SOURCE) and any non-E=1 node ignore the flag.
+const EnvE1LightNoTxIndex = "N42_E1_LIGHT_NO_TXINDEX"
+
+var e1LightNoTxIndex = os.Getenv(EnvE1LightNoTxIndex) == "1"
+
+// skipTxIndex reports whether this node keeps no transaction lookups
+// (EnvE1LightNoTxIndex on a light node).
+func (bc *BlockChain) skipTxIndex() bool { return e1LightNoTxIndex && bc.E1Light() }
+
 var e1Client = &http.Client{Timeout: e1FetchWait + 2*time.Second}
 
 // e1Stats counts a light node's imports and the time it waited for results.
