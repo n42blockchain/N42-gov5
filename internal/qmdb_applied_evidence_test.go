@@ -168,3 +168,39 @@ func TestKnownBlockNeedsAuthorizedReplayBelowAppliedHead(t *testing.T) {
 		})
 	}
 }
+
+// TestHasAppliedBlock_E1LightFollowerUsesStoredHeader pins the r62a merge
+// regression. An E=1 light follower runs a QMDB chain but never executes, so
+// it never writes an applied marker; it stores each committed block with the
+// executor's result. Main's QMDB-only marker rule made every commit on such a
+// follower read as "not executed locally" and fire a catch-up range fetch.
+// The follower must accept a stored header (no catch-up) but still report a
+// missing block (real gap -> catch-up). A normal QMDB node keeps main's rule.
+func TestHasAppliedBlock_E1LightFollowerUsesStoredHeader(t *testing.T) {
+	db := newRealignTestDB(t)
+	h := &block.Header{Number: uint256.NewInt(5), Difficulty: uint256.NewInt(1)}
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		rawdb.WriteHeader(tx, h)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	missing := types.Hash{0xAB}
+
+	light := &BlockChain{ChainDB: db, ctx: context.Background(), qmdbEnabled: true}
+	light.SetE1SourceForTest("http://127.0.0.1:1")
+	if !light.HasAppliedBlock(h.Hash(), 5) {
+		t.Error("E=1 light follower: stored block without a marker must count as handled (no catch-up)")
+	}
+	if light.HasAppliedBlock(missing, 5) {
+		t.Error("E=1 light follower: missing block must not count as applied (catch-up)")
+	}
+
+	normal := &BlockChain{ChainDB: db, ctx: context.Background(), qmdbEnabled: true}
+	if normal.E1Light() {
+		t.Skip("N42_E1_SOURCE set in the test environment")
+	}
+	if normal.HasAppliedBlock(h.Hash(), 5) {
+		t.Error("normal QMDB node: stored header without a marker must not count as applied")
+	}
+}

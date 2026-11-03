@@ -3669,7 +3669,11 @@ func (bc *BlockChain) AppliedHeadIsExactly(hash types.Hash, number uint64) bool 
 // block). Canonical membership is deliberately insufficient: commit can
 // rewrite canonical rows before a lagging QMDB state has switched off a losing
 // speculative branch. QMDB chains require an applied marker; only non-QMDB
-// chains retain the stored-header fallback.
+// chains and E=1 light followers retain the stored-header fallback. A light
+// follower (N42_E1_SOURCE, bench only) never executes and never writes a
+// marker: it stores each block with the executor's result, so a stored header
+// is its only, and sufficient, evidence. Without the fallback every commit on
+// a follower reads as unexecuted and fires a catch-up range fetch.
 func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 	applied := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
@@ -3678,7 +3682,7 @@ func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 			return nil
 		}
 		if !ok {
-			applied = !bc.qmdbEnabled && rawdb.ReadHeader(tx, hash, number) != nil
+			applied = (!bc.qmdbEnabled || bc.E1Light()) && rawdb.ReadHeader(tx, hash, number) != nil
 			return nil
 		}
 		if number > an {
