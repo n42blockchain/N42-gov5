@@ -35,6 +35,9 @@ type AccountPrefetch struct {
 	// caller already holds (P10: the parallel run's base-read cache), so
 	// the block-end fold reads neither the store nor a seeded copy.
 	known KnownAccounts
+	// gen counts Seed and SetKnown calls: a hoisted lookup
+	// (finalize_hoist.go) holds only while it is unchanged.
+	gen uint64
 }
 
 // KnownAccounts is a cache of a reader's base state, safe for concurrent
@@ -56,6 +59,7 @@ func NewAccountPrefetch(base StateReader) *AccountPrefetch {
 func (p *AccountPrefetch) Seed(accts map[types.Address]*account.StateAccount) {
 	p.accts = accts
 	p.hits = 0
+	p.gen++
 }
 
 // SetKnown installs a lookup into a cache of this layer's base state,
@@ -63,6 +67,7 @@ func (p *AccountPrefetch) Seed(accts map[types.Address]*account.StateAccount) {
 // it. It must answer exactly what base would.
 func (p *AccountPrefetch) SetKnown(k KnownAccounts) {
 	p.known = k
+	p.gen++
 }
 
 // HasKnown reports whether a known-accounts cache is installed.

@@ -24,6 +24,9 @@ type RootPrepPhases struct {
 	Pending, Detach, Mat, Merge, Sort, Loop time.Duration
 	Tail, Hook, Compute                     time.Duration
 	Dirty                                   int // dirty objects walked
+	// Hoisted: Pending and Detach came from the hoisted preparation
+	// (N42_FINALIZE_HOIST_DETACH); Detach is then the whole step.
+	Hoisted bool
 }
 
 // LastRootPrepPhases returns the split of this state's most recent root
