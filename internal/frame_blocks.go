@@ -308,26 +308,13 @@ func framePullTimeout() time.Duration {
 	return 2 * time.Second
 }
 
-// ResolveFrames fills a frame body's transactions from its frames: the
-// frame store first, then the Frames table, then a pull from peers. A body
-// that is not a frame body, or is already resolved, is left alone. When a
-// frame cannot be found the block stays unresolved and the error is
-// ErrFramesUnavailable; nothing is logged twice for one block.
-func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
-	body, ok := b.Body().(*block.Body)
-	if !ok || !body.IsFrameBody() {
-		return nil
-	}
+// collectFrames looks up the frames hashes names for block b, in order: the
+// frame store first, then the Frames table, then a pull from peers. When a
+// frame cannot be found it logs once per block and returns
+// ErrFramesUnavailable.
+func (bc *BlockChain) collectFrames(b block.IBlock, hashes []types.Hash) (raws [][]byte, fromDB, pulled int, err error) {
 	fs := &bc.frames
-	mu := &fs.resolveMu[b.Hash()[0]%byte(len(fs.resolveMu))]
-	mu.Lock()
-	defer mu.Unlock()
-	if body.Txs != nil {
-		return nil
-	}
-	t0 := time.Now()
-	hashes := body.FrameHashes
-	raws := make([][]byte, len(hashes))
+	raws = make([][]byte, len(hashes))
 	var missing []int
 	for i, h := range hashes {
 		if fs.store != nil {
@@ -338,7 +325,6 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		}
 		missing = append(missing, i)
 	}
-	fromDB := 0
 	if len(missing) > 0 && bc.ChainDB != nil {
 		if tx, err := bc.ChainDB.BeginRo(context.Background()); err == nil {
 			still := missing[:0]
@@ -355,7 +341,6 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 			tx.Rollback()
 		}
 	}
-	pulled := 0
 	if len(missing) > 0 && fs.puller != nil {
 		want := make([]types.Hash, len(missing))
 		for j, i := range missing {
@@ -387,7 +372,40 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 			log.Warn("frame body: frames unavailable, not importing (no vote)", "number", b.Number64().Uint64(),
 				"hash", b.Hash(), "frames", len(hashes), "missing", len(missing), "first", hashes[missing[0]])
 		}
-		return fmt.Errorf("%w: block %d misses %d of %d frames", ErrFramesUnavailable, b.Number64().Uint64(), len(missing), len(hashes))
+		return nil, 0, 0, fmt.Errorf("%w: block %d misses %d of %d frames", ErrFramesUnavailable, b.Number64().Uint64(), len(missing), len(hashes))
+	}
+	return raws, fromDB, pulled, nil
+}
+
+// ResolveFrames fills a frame body's transactions from its frames: the
+// frame store first, then the Frames table, then a pull from peers. A body
+// that is not a frame body, or is already resolved, is left alone. When a
+// frame cannot be found the block stays unresolved and the error is
+// ErrFramesUnavailable; nothing is logged twice for one block.
+func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
+	body, ok := b.Body().(*block.Body)
+	if !ok || !body.IsFrameBody() {
+		return nil
+	}
+	fs := &bc.frames
+	mu := &fs.resolveMu[b.Hash()[0]%byte(len(fs.resolveMu))]
+	mu.Lock()
+	defer mu.Unlock()
+	if body.Txs != nil {
+		return nil
+	}
+	t0 := time.Now()
+	hashes := body.FrameHashes
+	var (
+		raws           [][]byte
+		fromDB, pulled int
+		held           bool
+	)
+	if raws, held = body.HeldFrames(); !held {
+		var err error
+		if raws, fromDB, pulled, err = bc.collectFrames(b, hashes); err != nil {
+			return err
+		}
 	}
 	// Senders recovered at admission (P2a): attach what the store cached;
 	// the import's recovery step recovers only the rest. They are attached
@@ -478,6 +496,6 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		senderFramesOwned.Add(uint64(owned))
 	}
 	log.Debug("frame body resolved", "number", b.Number64().Uint64(), "frames", len(hashes), "txs", len(txs),
-		"dropped", dropped, "cachedSenders", cached, "fromDB", fromDB, "pulled", pulled, "ms", time.Since(t0).Milliseconds())
+		"dropped", dropped, "cachedSenders", cached, "fromDB", fromDB, "pulled", pulled, "held", held, "ms", time.Since(t0).Milliseconds())
 	return nil
 }

@@ -178,3 +178,45 @@ func TestFrameBlockWireSize(t *testing.T) {
 		t.Fatalf("400-frame block is %d bytes", len(small))
 	}
 }
+
+// TestBodyHeldFrames: held frames are reported only once recorded, while
+// they line up with the frame hashes and none is empty; FrameData set by
+// other paths (the builder) is not reported as held, and the marker never
+// reaches the encodings.
+func TestBodyHeldFrames(t *testing.T) {
+	hashes := []types.Hash{{1}, {2}}
+	b := &Body{FrameHashes: hashes, FrameData: [][]byte{{1}, {2}}}
+	if _, ok := b.HeldFrames(); ok {
+		t.Fatal("builder FrameData reported as held")
+	}
+	var nilBody *Body
+	if _, ok := nilBody.HeldFrames(); ok {
+		t.Fatal("nil body holds frames")
+	}
+	b.SetHeldFrames([][]byte{{1}, {2}})
+	raws, ok := b.HeldFrames()
+	if !ok || len(raws) != 2 || raws[1][0] != 2 {
+		t.Fatalf("held frames: %v %v", raws, ok)
+	}
+	b.SetHeldFrames([][]byte{{1}, nil})
+	if _, ok := b.HeldFrames(); ok {
+		t.Fatal("an empty held frame reported")
+	}
+	b.SetHeldFrames([][]byte{{1}})
+	if _, ok := b.HeldFrames(); ok {
+		t.Fatal("held frames not lining up with the hashes reported")
+	}
+	b.SetHeldFrames([][]byte{{1}, {2}})
+	enc, err := b.MarshalCompact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := &Body{FrameHashes: hashes}
+	want, err := plain.MarshalCompact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(enc) != string(want) {
+		t.Fatal("held frames changed the compact encoding")
+	}
+}

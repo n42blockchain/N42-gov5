@@ -30,16 +30,30 @@ import (
 // stored results equal the executor's, its leader gate opens on them and
 // its availability check of the next header passes against them.
 func TestE1LightFollowsExecutor(t *testing.T) {
-	for _, mode := range []string{"stored", "early", "prefetch"} {
+	for _, mode := range []string{"stored", "early", "prefetch", "lazy", "lazycheck"} {
 		t.Run(mode, func(t *testing.T) {
 			defer SetE1EarlyForTest(mode != "stored")()
 			defer SetE1PrefetchForTest(mode == "prefetch")()
-			testE1LightFollowsExecutor(t)
+			lazy := "off"
+			switch mode {
+			case "lazy":
+				lazy = "on"
+			case "lazycheck":
+				lazy = "check"
+			}
+			defer SetE1LightLazyResolveForTest(lazy)()
+			testE1LightFollowsExecutor(t, lazy)
 		})
 	}
 }
 
-func testE1LightFollowsExecutor(t *testing.T) {
+// testE1LightFollowsExecutor runs the scenario with N42_E1_LIGHT_LAZY_RESOLVE
+// set to lazy ("off", "on" or "check"). With "on" the light node's
+// availability check passes without decoding (the checked block holds its
+// frames, no transactions, and its frames are claimed and in flight), and
+// the lag executor's import decodes them: every block it stores carries
+// exactly the transactions of its frames.
+func testE1LightFollowsExecutor(t *testing.T, lazy string) {
 	const (
 		blocks   = 6
 		frames   = 2
@@ -74,8 +88,9 @@ func testE1LightFollowsExecutor(t *testing.T) {
 	require.False(t, ex.bc.E1Light())
 
 	fb := frametest.NewBuilder(keys[0], ex.cfg.ChainID, keys[1:])
+	wantTxs := make(map[types.Hash][]types.Hash)
 	build := func(parent *block.Header) *block.Block {
-		raws, hashes, _ := fb.Frames(t, frames, perFrame)
+		raws, hashes, txs := fb.Frames(t, frames, perFrame)
 		for i := range raws {
 			require.True(t, exStore.Put(hashes[i], raws[i]))
 			require.True(t, lightStore.Put(hashes[i], raws[i]))
@@ -98,13 +113,48 @@ func testE1LightFollowsExecutor(t *testing.T) {
 		}, 30*time.Second, time.Millisecond)
 		hdr.Root, hdr.ReceiptHash, hdr.Bloom, hdr.GasUsed = res.Root, res.ReceiptHash, res.Bloom, res.GasUsed
 		hdr.SetFrameTxRoot(block.FrameTxRoot(hashes))
-		return block.NewLaggedBlock(hdr, hashes, raws)
+		b := block.NewLaggedBlock(hdr, hashes, raws)
+		for _, tx := range txs {
+			wantTxs[b.Hash()] = append(wantTxs[b.Hash()], tx.Hash())
+		}
+		return b
 	}
-	check := func(bc *BlockChain, b *block.Block) {
-		checked, retry, err := bc.CheckDeferredBlock(overWire(t, b))
+	checkAs := func(bc *BlockChain, b *block.Block) {
+		checked, retry, err := bc.CheckDeferredBlock(b)
 		require.NoError(t, err)
 		require.False(t, retry)
 		require.True(t, checked)
+	}
+	check := func(bc *BlockChain, b *block.Block) { checkAs(bc, overWire(t, b)) }
+
+	lazy0, fallback0, mismatch0 := E1LazyResolveStats()
+	// checkLight is the light node's check; the block it checked (and
+	// queued) is kept to read its transactions after the import.
+	var lightChecked []*block.Block
+	checkLight := func(b *block.Block) {
+		w := overWire(t, b)
+		if lazy != "on" {
+			checkAs(light.bc, w)
+			lightChecked = append(lightChecked, w)
+			return
+		}
+		// The executor imports nothing until the check's state is read.
+		lagStepPausedForTest.Store(true)
+		checkAs(light.bc, w)
+		body := w.Body().(*block.Body)
+		require.Nil(t, body.Txs, "the lazy check decoded the frames")
+		raws, held := body.HeldFrames()
+		require.True(t, held)
+		require.Len(t, raws, frames)
+		inFlight := light.bc.FramesInFlight()
+		for _, h := range body.FrameHashes {
+			require.True(t, inFlight(h), "frame not in flight after the lazy check")
+			require.False(t, lightStore.NeedsSenders(h), "frame not claimed by the lazy check")
+		}
+		require.True(t, light.bc.LagImportQueued(w.Hash()))
+		require.NotNil(t, light.bc.AvailableBlock(w.Hash()))
+		lagStepPausedForTest.Store(false)
+		lightChecked = append(lightChecked, w)
 	}
 
 	var chain []*block.Block
@@ -125,7 +175,7 @@ func testE1LightFollowsExecutor(t *testing.T) {
 			_, err := light.bc.InsertChain([]block.IBlock{overWire(t, b)})
 			require.NoError(t, err)
 		} else {
-			check(light.bc, b)
+			checkLight(b)
 		}
 		chain = append(chain, b)
 		parent = b.Header().(*block.Header)
@@ -164,6 +214,26 @@ func testE1LightFollowsExecutor(t *testing.T) {
 		require.False(t, applied && num != 0, "the light node applied state (marker at %d)", num)
 		return err
 	}))
+	// Every block the light node checked was stored with exactly its
+	// frames' transactions, decoded by the import when the check was lazy.
+	for i, w := range lightChecked {
+		body := w.Body().(*block.Body)
+		got := make([]types.Hash, 0, len(body.Txs))
+		for _, tx := range body.Txs {
+			got = append(got, tx.Hash())
+		}
+		require.Equal(t, wantTxs[w.Hash()], got, "transactions of checked block %d", i+1)
+	}
+	lazyN, fallbackN, mismatchN := E1LazyResolveStats()
+	require.Equal(t, mismatch0, mismatchN, "lazy gas walk disagreed with the decode")
+	require.Equal(t, fallback0, fallbackN, "lazy check fell back")
+	switch lazy {
+	case "on":
+		require.Equal(t, uint64(blocks-1), lazyN-lazy0, "lazy checks")
+	default:
+		require.Equal(t, lazy0, lazyN, "a lazy check with the switch %s", lazy)
+	}
+
 	imported, _, _, _ := E1LightStats()
 	require.GreaterOrEqual(t, imported, uint64(blocks))
 	light.bc.e1Early.Range(func(k, _ any) bool {

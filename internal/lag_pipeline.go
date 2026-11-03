@@ -335,8 +335,22 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 		return false, fmt.Errorf("availability: block %d transactions root %x is not its body's %x", number, got[:8], want[:8])
 	}
 	tRoot = time.Now()
-	if err := bc.ResolveFrames(blk); err != nil {
-		return true, err
+	// N42_E1_LIGHT_LAZY_RESOLVE (e1_lazy_resolve.go): a light node holds the
+	// frames and walks their gas instead of decoding them; the import
+	// decodes. lazy is false whenever the decoded path decides.
+	lazy, lazyTxs := false, 0
+	if bc.e1LazyApplies(body) && e1LazyMode == e1LazyOn {
+		if lazy, lazyTxs, err = bc.holdFramesLazy(blk, body, hdr.GasLimit); err != nil {
+			return true, err
+		}
+	}
+	if !lazy {
+		if err := bc.ResolveFrames(blk); err != nil {
+			return true, err
+		}
+		if bc.e1LazyApplies(body) && e1LazyMode == e1LazyCheck {
+			e1LazyCompare(body, number, hdr.GasLimit)
+		}
 	}
 	tFrames = time.Now()
 	// The preparation starts now (N42_AVAIL_EARLY_PREP); every refusal from
@@ -349,7 +363,11 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 		}()
 	}
 	tPrep = time.Now()
-	within, gasFast := availGasWithin(body, hdr.GasLimit)
+	// Lazy: the walked sum is within the limit, so the decoded one is too.
+	within, gasFast := true, false
+	if !lazy {
+		within, gasFast = availGasWithin(body, hdr.GasLimit)
+	}
 	if !within {
 		return false, fmt.Errorf("availability: frame block %d exceeds its gas limit", number)
 	}
@@ -370,8 +388,12 @@ func (bc *BlockChain) checkAvailability(blk block.IBlock, hdr *block.Header, bod
 		bc.RememberAvailable(b)
 		bc.enqueueLagImportTimed(b, true, time.Since(t0))
 	}
-	if len(body.Txs) >= 1000 {
-		log.Info("availability check phases", "n", number, "txs", len(body.Txs), "startTMs", t0.UnixMilli(),
+	txCount := len(body.Txs)
+	if lazy {
+		txCount = lazyTxs
+	}
+	if txCount >= 1000 {
+		log.Info("availability check phases", "n", number, "txs", txCount, "lazy", lazy, "startTMs", t0.UnixMilli(),
 			"parentUs", tParent.Sub(t0).Microseconds(), "staticUs", tStatic.Sub(tParent).Microseconds(),
 			"txRootUs", tRoot.Sub(tStatic).Microseconds(), "framesUs", tFrames.Sub(tRoot).Microseconds(),
 			"resultUs", tResult.Sub(tFrames).Microseconds(), "prepUs", tPrep.Sub(tFrames).Microseconds(),

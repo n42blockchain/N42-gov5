@@ -234,8 +234,18 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 			defer bc.e1Early.Delete(b.Hash())
 		}
 	}
+	// N42_E1_LIGHT_LAZY_RESOLVE: the availability check left the frames
+	// undecoded (held on the body); they are decoded here, off the vote path.
+	body, _ := b.Body().(*block.Body)
+	_, lazyHeld := body.HeldFrames()
+	lazyHeld = lazyHeld && body.Txs == nil
+	tDecode := time.Now()
 	if err := bc.ResolveFrames(b); err != nil {
 		return false, err
+	}
+	if lazyHeld && len(body.Txs) >= 1000 {
+		log.Info("e1 light: frames decoded at import (lazy)", "n", n, "txs", len(body.Txs),
+			"frames", len(body.FrameHashes), "decodeUs", time.Since(tDecode).Microseconds())
 	}
 	stored := bc.blockStored(b.Hash(), n)
 	var td *uint256.Int

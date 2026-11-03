@@ -18,6 +18,7 @@ package frame
 
 import (
 	"errors"
+	"math"
 	"os"
 	"runtime"
 	"sync"
@@ -273,4 +274,106 @@ func ethGasLimit(b []byte) (uint64, bool) {
 		return 0, false
 	}
 	return g, true
+}
+
+// GasWalk is the saturating sum of the gas limits of the transactions one
+// encoded frame decodes to, read without decoding them (N42_E1_LIGHT_LAZY_
+// RESOLVE: a light node's availability check). The frame's envelope and
+// payload layout are checked exactly as DecodeTxs checks them: a frame
+// DecodeTxs refuses is refused here with the same error. txCount is the
+// header's transaction count, undecodable entries included.
+//
+// Per entry it adds the gas field of the Ethereum RLP when the walk can read
+// it, and otherwise the gas of a full decode (zero when the entry does not
+// decode, as DecodeTxs drops it). A blob transaction is always decoded: its
+// network form wraps the transaction in an outer list, where the gas field
+// is not at the walk's index. So:
+//   - every entry DecodeTxs keeps adds exactly its decoded Gas(): the walk
+//     reads the same canonical field the decoder reads, and anything the
+//     walk cannot read is decoded;
+//   - an entry DecodeTxs drops adds zero or the gas field the walk read.
+//
+// The sum therefore equals the decoded transactions' saturating gas sum when
+// no entry is dropped, and is never below it: a walked sum within a limit
+// proves the decoded sum is within it too.
+func GasWalk(raw []byte) (gas uint64, txCount int, err error) {
+	var f Frame
+	if err := decodeEnvelope(raw, &f); err != nil {
+		return 0, 0, err
+	}
+	err = walkPayload(f.Payload, int(f.TxCount), func(_ int, b []byte) {
+		gas = saturatingAdd(gas, entryGasExact(f.TxType, b))
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return gas, int(f.TxCount), nil
+}
+
+// GasWalkFrames is GasWalk over frames across up to workers goroutines
+// (<= 0 means GOMAXPROCS): the saturating sum over all frames and the
+// header transaction counts' total. The error is that of the lowest-index
+// frame GasWalk refuses.
+func GasWalkFrames(frames [][]byte, workers int) (gas uint64, txCount int, err error) {
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if workers > len(frames) {
+		workers = len(frames)
+	}
+	gs := make([]uint64, len(frames))
+	ns := make([]int, len(frames))
+	errs := make([]error, len(frames))
+	one := func(i int) { gs[i], ns[i], errs[i] = GasWalk(frames[i]) }
+	if workers <= 1 {
+		for i := range frames {
+			one(i)
+		}
+	} else {
+		var wg sync.WaitGroup
+		var next atomic.Int64
+		n := int64(len(frames))
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					i := next.Add(1) - 1
+					if i >= n {
+						return
+					}
+					one(int(i))
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	for i := range frames {
+		if errs[i] != nil {
+			return 0, 0, errs[i]
+		}
+		gas = saturatingAdd(gas, gs[i])
+		txCount += ns[i]
+	}
+	return gas, txCount, nil
+}
+
+// entryGasExact is one entry's share of GasWalk.
+func entryGasExact(txType uint8, b []byte) uint64 {
+	if txType == TxTypeEthereum && len(b) > 0 && b[0] != transaction.BlobTxType {
+		if g, ok := ethGasLimit(b); ok {
+			return g
+		}
+	}
+	if tx, err := decodeTx(txType, b, nil); err == nil {
+		return tx.Gas()
+	}
+	return 0
+}
+
+func saturatingAdd(a, b uint64) uint64 {
+	if s := a + b; s >= a {
+		return s
+	}
+	return math.MaxUint64
 }

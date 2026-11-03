@@ -61,6 +61,13 @@ type Body struct {
 	resolvedGas    uint64
 	resolvedGasTxs int
 	resolvedGasOK  bool
+
+	// framesHeld says FrameData was filled, index for index, by the
+	// availability check of a light E=1 node from the frames it looked up
+	// (store, Frames table, peer pull) without decoding them
+	// (N42_E1_LIGHT_LAZY_RESOLVE). The resolver then decodes those bytes
+	// instead of looking the frames up again. Never encoded.
+	framesHeld bool
 }
 
 // IsFrameBody reports whether the body references frames instead of
@@ -80,6 +87,27 @@ func (b *Body) ResolvedGas() (uint64, bool) {
 		return 0, false
 	}
 	return b.resolvedGas, true
+}
+
+// SetHeldFrames records raws, the encoded frames named by FrameHashes in
+// order, as looked up by the availability check and not yet decoded.
+func (b *Body) SetHeldFrames(raws [][]byte) {
+	b.FrameData = raws
+	b.framesHeld = true
+}
+
+// HeldFrames returns the frames SetHeldFrames recorded; false when none
+// were recorded or they no longer line up with FrameHashes.
+func (b *Body) HeldFrames() ([][]byte, bool) {
+	if b == nil || !b.framesHeld || len(b.FrameData) != len(b.FrameHashes) {
+		return nil, false
+	}
+	for _, raw := range b.FrameData {
+		if len(raw) == 0 {
+			return nil, false
+		}
+	}
+	return b.FrameData, true
 }
 
 func (b *Body) ToProtoMessage() proto.Message {
