@@ -154,6 +154,8 @@ func TestGuestInput_AllForkFlags(t *testing.T) {
 		{"IsEip1559FeeCollector", func(f *ForkConfig) { f.IsEip1559FeeCollector = true }, func(f *ForkConfig) bool { return f.IsEip1559FeeCollector }},
 		{"IsParlia", func(f *ForkConfig) { f.IsParlia = true }, func(f *ForkConfig) bool { return f.IsParlia }},
 		{"IsAura", func(f *ForkConfig) { f.IsAura = true }, func(f *ForkConfig) bool { return f.IsAura }},
+		{"IsPQPrecompiles", func(f *ForkConfig) { f.IsPQPrecompiles = true }, func(f *ForkConfig) bool { return f.IsPQPrecompiles }},
+		{"IsGlamsterdam", func(f *ForkConfig) { f.IsGlamsterdam = true }, func(f *ForkConfig) bool { return f.IsGlamsterdam }},
 	}
 
 	for _, flag := range flags {

@@ -30,6 +30,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
 	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
+	"github.com/n42blockchain/N42/params"
 )
 
 func TestExtractBaseFeePerGasUint64_Roundtrip(t *testing.T) {
@@ -486,5 +487,44 @@ func TestEthELBackend_ExecutePayload_ExecProviderMissing(t *testing.T) {
 	b := newEthELBackend(nil) // no exec provider
 	if err := b.initAPIs(); err == nil {
 		t.Fatalf("expected error when execution provider missing; got nil")
+	}
+}
+
+// A Gloas payload hands its encoded access list and slot number to the
+// import once the chain is in Amsterdam; earlier payloads hand nothing.
+func TestEth1BlockAmsterdamFields(t *testing.T) {
+	glamsterdam := uint64(100)
+	cfg := &params.ChainConfig{ChainID: big.NewInt(1), GlamsterdamTime: new(big.Int).SetUint64(glamsterdam)}
+	blk := cltypes.NewEth1Block(clparams.GloasVersion, &clparams.MainnetBeaconConfig)
+	if err := blk.BlockAccessList.SetBytes([]byte{0xc1, 0xc0}); err != nil {
+		t.Fatalf("SetBytes: %v", err)
+	}
+	blk.SlotNumber = 7
+
+	blk.Time = glamsterdam - 1
+	if got := eth1BlockAmsterdamFields(blk, cfg); got != nil {
+		t.Fatalf("before Amsterdam: got %+v, want nil", got)
+	}
+	blk.Time = glamsterdam
+	got := eth1BlockAmsterdamFields(blk, cfg)
+	if got == nil || !bytes.Equal(got.BlockAccessList, []byte{0xc1, 0xc0}) || got.BlockAccessListHash != nil || got.SlotNumber != 7 {
+		t.Fatalf("Amsterdam: got %+v", got)
+	}
+	if got := eth1BlockAmsterdamFields(blk, nil); got != nil {
+		t.Fatalf("no chain config: got %+v, want nil", got)
+	}
+}
+
+// A historical block carries only the header's hash of its access list,
+// which the import checks against the list it builds.
+func TestDepBlockAmsterdamFields(t *testing.T) {
+	if got := depBlockAmsterdamFields(deptypes.NewBlock(&deptypes.Header{Number: *big.NewInt(1)}, nil, nil, nil)); got != nil {
+		t.Fatalf("pre-Amsterdam header: got %+v, want nil", got)
+	}
+	balHash := depcommon.Hash{0xba}
+	slot := uint64(9)
+	got := depBlockAmsterdamFields(deptypes.NewBlock(&deptypes.Header{Number: *big.NewInt(1), BlockAccessListHash: &balHash, SlotNumber: &slot}, nil, nil, nil))
+	if got == nil || got.BlockAccessList != nil || got.BlockAccessListHash == nil || *got.BlockAccessListHash != types.Hash(balHash) || got.SlotNumber != 9 {
+		t.Fatalf("Amsterdam header: got %+v", got)
 	}
 }

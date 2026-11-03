@@ -41,9 +41,11 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/tracing"
+	"github.com/n42blockchain/N42/lib/common/fixedgas"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
+	"github.com/n42blockchain/N42/params"
 )
 
 // NewTxsPool creates a new transaction pool to gather, sort and filter inbound
@@ -167,6 +169,12 @@ func (pool *TxsPool) Has(hash types.Hash) bool {
 // GetTx returns a specific transaction from the pool.
 func (pool *TxsPool) GetTx(hash types.Hash) *transaction.Transaction {
 	return pool.all.Get(hash)
+}
+
+// GetTxs resolves a batch of hashes into dst. Missing entries are nil. The
+// references remain valid after eviction; no sender assertion is implied.
+func (pool *TxsPool) GetTxs(hashes []types.Hash, dst []*transaction.Transaction) {
+	pool.all.GetBatch(hashes, dst)
 }
 
 // GetTransaction retrieves all pending transactions as a flat list.
@@ -667,6 +675,20 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
 	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
+	isOsaka := pool.chainconfig != nil && current != nil && pool.chainconfig.IsOsaka(current.Time())
+	// Per-transaction gas cap, as the state transition enforces it: EIP-7825
+	// from Osaka, EIP-8037's TX_MAX_TOTAL_GAS_LIMIT from Glamsterdam. A
+	// transaction above it would fail every block build while it sat here.
+	if isGlamsterdam {
+		if tx.Gas() > params.MaxTxTotalGasEIP8037 {
+			return internal.ErrGasLimitTooHigh
+		}
+	} else if isOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
+		return internal.ErrGasLimitTooHigh
+	}
+	if sc := tx.BlobTxSidecar(); isOsaka && sc != nil && sc.Version == transaction.BlobSidecarVersion0 {
+		return ErrLegacyBlobSidecar
+	}
 	hasValue := tx.Value() != nil && !tx.Value().IsZero()
 	isSelfTransfer := tx.To() != nil && fromPtr != nil && *tx.To() == *fromPtr
 	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam, hasValue, isSelfTransfer)
@@ -1058,6 +1080,10 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	nQueue, nPending = len(pool.queue), len(pool.pending)
 	pool.changesSinceReorg = 0
 	pool.mu.Unlock()
+
+	if reset != nil && reset.newBlock != nil {
+		pool.maybeConvertLegacySidecars(reset.newBlock)
+	}
 
 	// Info only when the reorg is slow enough to explain a missed block, Debug
 	// otherwise: it runs on every new head and the interesting case is the

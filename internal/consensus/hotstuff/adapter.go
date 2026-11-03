@@ -260,6 +260,14 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		h.config.MaxTimeout,
 		h.outputCh,
 	)
+	// The chainspec's tenure when it sets one; otherwise the process-wide
+	// N42_HOTSTUFF_LEADER_TENURE (default 1), which the qs fleet's
+	// benchmark runs set on every validator.
+	if h.config.LeaderTenure > 0 {
+		h.engine.leaderTenure = h.config.LeaderTenure
+	} else {
+		h.engine.leaderTenure = LeaderTenure()
+	}
 	// Record own address so the engine can find itself in a new set at an epoch
 	// boundary even while an observer (myIndex==NonMemberIndex can't index the set).
 	h.engine.SetSelfAddress(h.signer)
@@ -1004,6 +1012,20 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	}()
 
 	return nil
+}
+
+// NotifyBlockPersisted records a fresh local block only after WriteBlockWithState
+// succeeds. The miner does not invoke it for body-only or sibling re-proposals.
+// Besides enabling build-ahead, the parent evidence lets onBlockReady reject a
+// seal whose requested parent became stale while it was being built.
+func (h *HotStuff) NotifyBlockPersisted(hash, txHash, parentHash types.Hash) {
+	if ce := h.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{
+			Type: EventBlockImported, Hash: hash, TxRootHash: txHash, ParentHash: parentHash,
+		}); err != nil {
+			log.Debug("hotstuff: persisted block event ignored", "err", err)
+		}
+	}
 }
 
 // NotifyBlockSealed feeds a just-sealed-and-pushed block into the consensus

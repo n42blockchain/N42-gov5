@@ -554,3 +554,20 @@ func BenchmarkBorTransfer(b *testing.B) {
 		BorTransfer(db, sender, recipient, amount, false)
 	}
 }
+
+// EIP-7843: on an Amsterdam block SLOTNUM reads the header's slot number;
+// before Amsterdam the context slot stays zero.
+func TestNewEVMBlockContextSlotNumber(t *testing.T) {
+	author := types.Address{0x42}
+	slot := uint64(0xc0ffee)
+	header := &block.Header{Time: 1000, SlotNumber: &slot}
+
+	amsterdam := &params.ChainConfig{GlamsterdamTime: big.NewInt(0)}
+	if got := NewEVMBlockContext(header, nil, nil, amsterdam, &author).Slot; got != slot {
+		t.Fatalf("Amsterdam Slot = %d, want %d", got, slot)
+	}
+	osaka := &params.ChainConfig{}
+	if got := NewEVMBlockContext(header, nil, nil, osaka, &author).Slot; got != 0 {
+		t.Fatalf("pre-Amsterdam Slot = %d, want 0", got)
+	}
+}

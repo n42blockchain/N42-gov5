@@ -87,6 +87,8 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/cs"
+	ddngateway "github.com/n42blockchain/N42/internal/ddn/gateway"
+	ddnreceipt "github.com/n42blockchain/N42/internal/ddn/receipt"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
 	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
@@ -213,6 +215,8 @@ type Node struct {
 	frameDB            kv.RwDB                     // frame store (nil unless N42_FRAME_DB)
 	bundlerService     *bundler.BundlerService     // ERC-4337 bundler service (nil if disabled)
 	peerdasService     *peerdas.Service            // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	ddnSigner          *ddnreceipt.Signer
+	ddnGateway         *ddngateway.Gateway
 	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
 	deferredPipeline   *deferred.Pipeline          // Deferred execution pipeline (nil if disabled)
 	grpcServer         *grpc.Server                // gRPC KV server for RPCDaemon (nil if disabled)
@@ -442,7 +446,7 @@ func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescrip
 		cfg.AICfg.Training.Enabled ||
 		cfg.AICfg.Attestation.Enabled ||
 		cfg.AICfg.Inference.Enabled
-	distributedConfigured := cfg.CoprocessorCfg.Enabled ||
+	distributedConfigured := cfg.AICfg.DDN.Enabled || cfg.CoprocessorCfg.Enabled ||
 		cfg.MessagingCfg.Enabled ||
 		cfg.StorageCfg.Enabled ||
 		cfg.NotifyCfg.Enabled
@@ -1489,6 +1493,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	node.api = api.NewAPI(bc, chainKv, engine, pool, node.AccountManager(), cfg.ChainCfg)
+	node.api.SetRPCMaxGasPrice(cfg.NodeCfg.RPCMaxGasPrice)
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
 	node.api.SetP2P(&p2pAdminAdapter{svc: p2p, node: &node})
 	node.api.SetMiner(&minerAdminAdapter{m: miner})
@@ -1829,6 +1834,7 @@ func (n *Node) Start() error {
 	// follows — it only reads n.config and (for messaging) the already-ready
 	// n.p2p, exactly like startMobileVerify just above.
 	n.startDistributedRuntime()
+	n.startDDNRuntime()
 
 	if n.config.NodeCfg.Miner {
 		eb, err := n.Etherbase()
@@ -1895,6 +1901,10 @@ func (n *Node) Start() error {
 				return fmt.Errorf("enable hotstuff H2-v4: %w", err)
 			}
 			svc.SetH2V4Identity(identity)
+		}
+		if err := svc.ConfigureVoteStore(filepath.Join(n.config.NodeCfg.DataDir, "hotstuff-votes"),
+			n.p2pGenesisHash, os.Getenv("N42_SEPARATE_VOTE_DB") == "1"); err != nil {
+			return fmt.Errorf("configure hotstuff vote store: %w", err)
 		}
 		svc.SetBlockProducer(n.miner)
 		// Committed-block vote floor: the engine never votes for, or locally
@@ -2181,7 +2191,7 @@ func (n *Node) Start() error {
 	// competing for the same MDBX write lock -- is what this mode measures.
 	if state.HistoryIndexDeferred() {
 		log.Warn("history index DEFERRED — rebuilt off the commit path from changesets; " +
-			"historical queries above the backfill marker are refused until it catches up")
+			"historical queries are refused until the backfill marker reaches the snapshot head")
 		n.historyBackfiller = internal.NewHistoryBackfiller(n.db,
 			func() uint64 {
 				if bc := n.blockChain; bc != nil {
@@ -2329,16 +2339,17 @@ func (n *Node) startMCPServer() {
 	}
 	mcpBackend := &mcpNodeBackend{node: n}
 	n.mcpServer = mcp.NewServer(mcpBackend, n.config.MCPCfg.AllowedTools)
+	if n.ddnGateway != nil {
+		ddngateway.RegisterMCPTools(n.mcpServer, n.ddnGateway)
+	}
 	host := n.config.MCPCfg.Host
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	addr := fmt.Sprintf("%s:%d", host, n.config.MCPCfg.Port)
-	go func() {
-		if err := n.mcpServer.Start(addr); err != nil {
-			log.Error("MCP server failed to start", "err", err)
-		}
-	}()
+	if err := n.mcpServer.Start(addr); err != nil {
+		log.Error("MCP server failed to start", "err", err)
+	}
 }
 
 func (n *Node) startWeb3Gateway() {
@@ -2968,6 +2979,13 @@ func (n *Node) startMobileVerify() error {
 	if addr := n.config.MobileVerifyCfg.HTTPAddr; addr != "" {
 		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileCohort, n.mobileCertStore)
 		httpSrv.SetAlarms(n.mobileAlarms)
+		httpSrv.SetHead(func() (uint64, types.Hash, bool) {
+			head := n.blockChain.CurrentBlock()
+			if head == nil || head.Number64() == nil {
+				return 0, types.Hash{}, false
+			}
+			return head.Number64().Uint64(), head.Hash(), true
+		})
 		// Sybil gate (design §7 item 2): registration proof-of-work. A device
 		// attestor (Play Integrity / DeviceCheck adapter) can be wired here
 		// once an operator supplies one; the HTTP gate is already in place.
@@ -3553,6 +3571,12 @@ func (n *Node) stopServices() []error {
 		}},
 		// 2e. Distributed infrastructure
 		{"Distributed services", func() error {
+			if n.ddnGateway != nil {
+				n.ddnGateway.Stop()
+			}
+			if n.ddnSigner != nil {
+				n.ddnSigner.Close()
+			}
 			// Before the database closes: the sealer may be mid-write.
 			if n.txIndexer != nil {
 				n.txIndexer.Stop()
@@ -3670,7 +3694,8 @@ func (n *Node) stopServices() []error {
 		// 5. Checkpoint sync + Snap sync + Initial sync
 		// Note: checkpointSync relies on node context cancellation (done above).
 		{"Checkpoint sync", func() error {
-			n.checkpointSync = nil
+			// Cancellation owns checkpoint shutdown; keep the pointer immutable
+			// while the sync-startup goroutine observes it.
 			return nil
 		}},
 		{"Snap sync", func() error { return n.snapSync.Stop() }},
@@ -3777,6 +3802,10 @@ func (n *Node) stopServices() []error {
 			errs = append(errs, err)
 			log.PrintSubItem(fmt.Sprintf("%s stopped with error: %v", svc.name, err))
 		}
+	}
+	if commitment.QMDBStateReadMode() == commitment.QMDBReadVerify {
+		accounts, storage, compared := commitment.QMDBVerifyTotals()
+		log.Info("qmdb verify final", "compared", compared, "accountMismatch", accounts, "storageMismatch", storage)
 	}
 
 	return errs

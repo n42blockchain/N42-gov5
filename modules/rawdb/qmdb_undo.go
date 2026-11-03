@@ -64,12 +64,15 @@ func WriteQMDBApplied(tx kv.Putter, blockNum uint64, hash [32]byte) error {
 	return tx.Put(modules.DatabaseInfo, qmdbAppliedKey, v)
 }
 
-// ReadQMDBApplied returns the applied-chain head. ok=false when the marker was
-// never written (fresh replay data) — callers fall back to the stored head.
+// ReadQMDBApplied returns the applied-chain head. An absent marker has ok=false;
+// a nonempty malformed marker is an error, never evidence of a fresh database.
 func ReadQMDBApplied(tx kv.Getter) (blockNum uint64, hash [32]byte, ok bool, err error) {
 	v, err := tx.GetOne(modules.DatabaseInfo, qmdbAppliedKey)
-	if err != nil || len(v) < 8+32 {
+	if err != nil || len(v) == 0 {
 		return 0, hash, false, err
+	}
+	if len(v) != 8+32 {
+		return 0, hash, false, fmt.Errorf("invalid QMDB applied marker length %d, want 40", len(v))
 	}
 	copy(hash[:], v[8:40])
 	return binary.BigEndian.Uint64(v[:8]), hash, true, nil

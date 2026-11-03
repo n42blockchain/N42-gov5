@@ -69,6 +69,10 @@ var networkFlags = []cli.Flag{
 }
 
 var nodeFlg = []cli.Flag{
+	&cli.IntFlag{
+		Name: "ingest.hardcap", Usage: "二进制入口暂停接收时的 pending 交易数", Category: "NODE",
+		Value: conf.DefaultIngestCfg().HardCap, Destination: &DefaultConfig.IngestCfg.HardCap,
+	},
 	&cli.StringFlag{
 		Name:        "node.key",
 		Usage:       "节点私钥",
@@ -126,6 +130,12 @@ var rpcFlags = []cli.Flag{
 		Category:    "HTTP-RPC",
 		Value:       "eth,web3,net",
 		Destination: &DefaultConfig.NodeCfg.HTTPApi,
+	},
+	&cli.Uint64Flag{
+		Name:        "rpc.maxgasprice",
+		Usage:       "Native transaction RPC gas price ceiling in wei (0 retains the 1000 gwei default)",
+		Category:    "HTTP-RPC",
+		Destination: &DefaultConfig.NodeCfg.RPCMaxGasPrice,
 	},
 	&cli.StringFlag{
 		Name:        "http.corsdomain",
@@ -419,6 +429,12 @@ var loggerFlag = []cli.Flag{
 	},
 }
 var (
+	P2PTxGossip = &cli.BoolFlag{
+		Name:        "p2p.tx-gossip",
+		Usage:       "Enable transaction gossip; disable only when transactions are supplied directly to each node.",
+		Value:       true,
+		Destination: &DefaultConfig.P2PCfg.TxGossipEnabled,
+	}
 	P2PNoDiscovery = &cli.BoolFlag{
 		Name:        "p2p.no-discovery",
 		Usage:       "Enable only local network p2p and do not connect to cloud bootstrap nodes.",
@@ -722,6 +738,7 @@ var (
 	}
 
 	p2pFlags = []cli.Flag{
+		P2PTxGossip,
 		P2PNoDiscovery,
 		P2PAllowList,
 		P2PBootstrapNode,
@@ -759,6 +776,7 @@ var (
 var (
 	IngestFlag = &cli.BoolFlag{
 		Name:        "ingest",
+		Aliases:     []string{"ingest.enabled"},
 		Usage:       "启用二进制 TCP 交易注入端点 (基准测试用)",
 		Category:    "DEVELOPMENT",
 		Value:       false,
@@ -768,7 +786,7 @@ var (
 		Name:        "ingest.addr",
 		Usage:       "注入端点监听地址",
 		Category:    "DEVELOPMENT",
-		Value:       ":9100",
+		Value:       conf.DefaultIngestCfg().Addr,
 		Destination: &DefaultConfig.IngestCfg.Addr,
 	}
 	IngestHintOnlyFlag = &cli.BoolFlag{

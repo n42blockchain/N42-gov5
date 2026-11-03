@@ -419,10 +419,10 @@ func enable7951(jt *JumpTable) {
 // Fusaka = Osaka + Fusaka EIPs + Amsterdam EIPs
 func newFusakaInstructionSet() JumpTable {
 	instructionSet := newOsakaInstructionSet()
-	enable7907(&instructionSet) // EIP-7907: Code size limit increase
-	enable7951(&instructionSet) // EIP-7951: P-256 precompile
-	enable7939(&instructionSet) // EIP-7939: CLZ instruction
-	enable7843(&instructionSet) // EIP-7843: SLOTNUM opcode
+	enable7907(&instructionSet)       // EIP-7907: Code size limit increase
+	enable7951(&instructionSet)       // EIP-7951: P-256 precompile
+	enable7939(&instructionSet)       // EIP-7939: CLZ instruction
+	enable7843Fusaka(&instructionSet) // EIP-7843: SLOTNUM opcode, N42 Fusaka semantics
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

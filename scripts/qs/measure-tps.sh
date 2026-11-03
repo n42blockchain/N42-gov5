@@ -7,9 +7,21 @@
 # the limiter, and the TPS number is not a chain result.
 #
 #   ./measure-tps.sh [--windows 3] [--window-sec 60] [--port 20012]
+#
+# Any other option (--nodes, --urls, --expected-gas-limit, --min-tps,
+# --json-out, --convergence-sec) runs the strict fleet-verifying measurement
+# in measure-tps.py instead (bench-run.sh uses it); its window lines keep the
+# same "winN: blocks=... TPS=... occupancy=..." prefix.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./qs-env.sh
+
+for arg in "$@"; do
+  case $arg in
+    --windows|--window-sec|--port|-h|--help) ;;
+    --*) exec python3 ./measure-tps.py --port "$QS_HTTP_BASE" "$@" ;;
+  esac
+done
 
 WINDOWS=3; WINDOW_SEC=60; PORT=$QS_HTTP_BASE
 while (( $# )); do
@@ -17,7 +29,7 @@ while (( $# )); do
     --windows)    WINDOWS=$2; shift 2 ;;
     --window-sec) WINDOW_SEC=$2; shift 2 ;;
     --port)       PORT=$2; shift 2 ;;
-    -h|--help)    sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

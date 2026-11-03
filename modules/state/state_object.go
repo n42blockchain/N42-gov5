@@ -236,12 +236,10 @@ var stateObjectPool = sync.Pool{
 // struct that differed between them would make the pooling experiment measure
 // the switch instead of the hypothesis.
 //
-// No size hint: most accounts touch 0 slots, so lazy bucket alloc avoids
-// ~600B/object of empty-map overhead retained in the pool.
+// Most accounts touch no slots. Defer even the map header allocation until
+// the first cached storage read or write.
 func freshStateObject() *stateObject {
-	return &stateObject{
-		storage: make(map[types.Hash]slotEntry),
-	}
+	return &stateObject{}
 }
 
 // putStateObject returns so to the pool. Must be called only when
@@ -283,9 +281,6 @@ func newObject(db *IntraBlockState, address types.Address, data, original *accou
 		so = stateObjectPool.Get().(*stateObject)
 	} else {
 		so = freshStateObject()
-	}
-	if so.storage == nil {
-		so.storage = make(map[types.Hash]slotEntry)
 	}
 	so.dirtyKeys = so.dirtyKeys[:0]
 	so.db = db
@@ -433,6 +428,9 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 // in this block. blockOriginStorage is a second copy used only when producing
 // the final block write set/root, so validation-only callers can omit it.
 func (so *stateObject) cacheCommittedState(key *types.Hash, value *uint256.Int) {
+	if so.storage == nil {
+		so.storage = make(map[types.Hash]slotEntry)
+	}
 	e := so.storage[*key]
 	if e.epoch == so.currentEpoch() && e.epoch != 0 {
 		// Written this tx before its committed value was read (only the
@@ -502,6 +500,9 @@ func (so *stateObject) SetStorage(storage Storage) {
 }
 
 func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
+	if so.storage == nil {
+		so.storage = make(map[types.Hash]slotEntry)
+	}
 	e := so.storage[*key]
 	epoch := so.currentEpoch()
 	if e.epoch == 0 {

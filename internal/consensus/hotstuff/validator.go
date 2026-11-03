@@ -170,12 +170,21 @@ var leaderTenure = func() uint64 {
 func LeaderTenure() uint64 { return leaderTenure }
 
 // LeaderForView returns the leader's validator index for the given view:
-// round-robin over the set, each validator holding leaderTenure views.
+// round-robin over the set, each validator holding leaderTenure views (the
+// process-wide N42_HOTSTUFF_LEADER_TENURE). An engine resolves leaders with
+// its own tenure (ConsensusEngine.LeaderForView), which a chainspec's
+// LeaderTenure overrides.
 func LeaderForView(view ViewNumber, vs *ValidatorSet) ValidatorIndex {
+	return LeaderForViewWithTenure(view, vs, leaderTenure)
+}
+
+// LeaderForViewWithTenure matches n42-rs: (view / max(tenure, 1)) % n.
+// Tenure is a chainspec rule, independent of validator-set epoch changes.
+func LeaderForViewWithTenure(view ViewNumber, vs *ValidatorSet, tenure uint64) ValidatorIndex {
 	if vs.IsEmpty() {
 		return 0
 	}
-	return ValidatorIndex((uint64(view) / leaderTenure) % uint64(vs.Len()))
+	return ValidatorIndex((view / max(tenure, 1)) % uint64(vs.Len()))
 }
 
 // IsLeader checks if the given validator is the leader for the given view.

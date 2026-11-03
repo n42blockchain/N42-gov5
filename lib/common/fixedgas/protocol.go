@@ -49,6 +49,9 @@ const (
 	// EIP-7825: Transaction Gas Limit Cap
 	// Maximum gas limit per transaction = 2^24 = 16,777,216
 	MaxTxnGasLimit uint64 = 16_777_216
+	// EIP-8037 (Glamsterdam) replaces it with a cap on a transaction's
+	// execution plus state gas.
+	MaxTxnGasLimitEIP8037 uint64 = 1<<32 - 1
 
 	MaxCodeSize = 24576 // Maximum bytecode to permit for a contract
 

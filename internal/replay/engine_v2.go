@@ -1208,6 +1208,16 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			if lastHash, err := rawdb.ReadCanonicalHash(dstTx, lastVersion); err == nil && lastHash != (types.Hash{}) {
 				rawdb.WriteHeadBlockHash(dstTx, lastHash)
 				rawdb.WriteHeadHeaderHash(dstTx, lastHash)
+				// Genesis init leaves the QMDB applied marker at block 0. A node
+				// that boots from this target sees PlainState at the head but the
+				// marker at 0, takes it for a half-healed discontinuity and rolls
+				// the canonical head back to genesis. Advance it with the head, in
+				// the same transaction as the state it describes.
+				if useQMDB {
+					if err := rawdb.WriteQMDBApplied(dstTx, lastVersion, lastHash); err != nil {
+						return fmt.Errorf("write qmdb applied marker: %w", err)
+					}
+				}
 			}
 
 			// Write target chain head for all modes (critical for gap-fill + AppendDup).

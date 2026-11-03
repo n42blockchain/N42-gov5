@@ -62,6 +62,7 @@ import (
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
@@ -1477,9 +1478,8 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		// An E=1 light node applies nothing; the executor's result stands
 		// for the execution (e1.go).
 		if bc.qmdbEnabled && !bc.E1Light() {
-			if an, _, ok, aerr := rawdb.ReadQMDBApplied(tx); aerr == nil && ok && blk.Number64().Uint64() > an {
-				return fmt.Errorf("commit-to-canonical %d ahead of applied head %d (block stored but not executed)",
-					blk.Number64().Uint64(), an)
+			if err := requireAppliedCommitLineage(bc.ctx, tx, hash, committedNumber); err != nil {
+				return err
 			}
 		}
 		// Monotonicity guard: a commit for a height at or below the current
@@ -1673,6 +1673,10 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	// import-time canonical callback is intentionally bypassed on this path.
 	if notify {
 		bc.notifyBlockCommitted(committedNumber)
+		// Every validator must retire executed pool transactions and refresh
+		// head subscribers. A local seal is only a speculative candidate on
+		// HotStuff; followers never emit that miner event at all.
+		event.GlobalEvent.Send(common.ChainHighestBlock{Block: *committedBlk, Inserted: true})
 	}
 	return nil
 }
@@ -2323,7 +2327,15 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			// here, on the live tree, as for any block.
 			ibs, stateReader = ahead.ibs, ahead.reader
 		} else {
-			stateReader = state.NewPlainStateReader(tx)
+			plainReader := state.NewPlainStateReader(tx)
+			stateReader = plainReader
+			// The optional batch reader is limited to a single MDBX database and the
+			// serial plain-state path; wrapper caches and the experimental shared-reader
+			// parallel executor retain their existing behavior.
+			if _, directMDBX := db.(*mdbx.MdbxKV); directMDBX && accountPrefetchWorkers > 0 &&
+				!bc.parallelEVM && !bc.prefetchEnabled && commitment.QMDBStateReadMode() == commitment.QMDBReadOff {
+				stateReader = &blockAccountPrefetchReader{PlainStateReader: plainReader, ctx: ctx, db: db, viewID: tx.ViewID(), workers: accountPrefetchWorkers}
+			}
 			if cache := layered.ExtractCache(db); cache != nil {
 				stateReader = state.NewCachedStateReader(stateReader, cache)
 			}
@@ -2787,7 +2799,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			fields := []interface{}{
 				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()), "gas", usedGas,
 				"hdr", dHdr, "body", dBody, "align", dAlign,
-				"recov", procPhases.Recover, "prep", procPhases.Prep,
+				"recov", procPhases.Recover, "prefetch", procPhases.Prefetch, "prep", procPhases.Prep,
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
 				"setup", procPhases.Setup, "collect", procPhases.Collect,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
@@ -3615,28 +3627,6 @@ func (bc *BlockChain) clearReadThroughCache() {
 	}
 }
 
-// HasAppliedBlock reports whether the block's state has actually been
-// EXECUTED onto the world state — it sits on the applied-marker lineage —
-// as opposed to merely having its body stored, future-queued, or named by a
-// proposal. This is the evidence level consensus voting needs: an import-
-// gated vote certified by body presence let a quorum commit a block whose
-// state no honest node could ever reach (observed live: a forked leader's
-// block was "already imported" on six nodes that had only stored it, got its
-// QC, and wedged the whole network's committed head on an inexecutable
-// block). Canonical membership is deliberately insufficient: commit can
-// rewrite canonical rows before a lagging QMDB state has switched off a losing
-// speculative branch. Chains without an applied marker fall back to body
-// presence — the pre-gate behavior.
-// AppliedHeadIs reports whether the QMDB applied marker names exactly this
-// block -- the state is at it, nothing above it has been applied, so a
-// branch-switch unwind would have nothing to do. One read transaction, no
-// chain lock: the point is to skip AlignAppliedBranch, which takes bc.lock
-// and therefore queues behind the write of the very block being asked about.
-// Round 35za measured that queueing at 230 ms of a leader's 512 ms align on
-// a chain with no sibling to unwind at all.
-//
-// A false answer only costs the align that would have run anyway, so a race
-// against a concurrent write is harmless in the safe direction.
 // appliedHeadNumber reports the QMDB applied marker's block number.
 func (bc *BlockChain) appliedHeadNumber() (uint64, bool) {
 	var num uint64
@@ -3664,6 +3654,18 @@ func (bc *BlockChain) AppliedHeadIsExactly(hash types.Hash, number uint64) bool 
 	return at
 }
 
+// HasAppliedBlock reports whether the block's state has actually been
+// EXECUTED onto the world state — it sits on the applied-marker lineage —
+// as opposed to merely having its body stored, future-queued, or named by a
+// proposal. This is the evidence level consensus voting needs: an import-
+// gated vote certified by body presence let a quorum commit a block whose
+// state no honest node could ever reach (observed live: a forked leader's
+// block was "already imported" on six nodes that had only stored it, got its
+// QC, and wedged the whole network's committed head on an inexecutable
+// block). Canonical membership is deliberately insufficient: commit can
+// rewrite canonical rows before a lagging QMDB state has switched off a losing
+// speculative branch. QMDB chains require an applied marker; only non-QMDB
+// chains retain the stored-header fallback.
 func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 	applied := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
@@ -3672,7 +3674,7 @@ func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 			return nil
 		}
 		if !ok {
-			applied = rawdb.ReadHeader(tx, hash, number) != nil
+			applied = !bc.qmdbEnabled && rawdb.ReadHeader(tx, hash, number) != nil
 			return nil
 		}
 		if number > an {
@@ -3686,7 +3688,7 @@ func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 		cur, curN := ah, an
 		for curN > number && an-curN < 256 {
 			hdr := rawdb.ReadHeader(tx, cur, curN)
-			if hdr == nil {
+			if hdr == nil || hdr.Number == nil || hdr.Number.BitLen() > 64 || hdr.Number.Uint64() != curN || hdr.Hash() != cur {
 				return nil
 			}
 			cur = hdr.ParentHash

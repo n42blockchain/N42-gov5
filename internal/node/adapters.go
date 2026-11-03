@@ -272,5 +272,8 @@ func (a *ingestPoolAdapter) AddLocals(txs []*transaction.Transaction) []error {
 }
 
 func (a *ingestPoolAdapter) Stats() (pending, pendingAddrs, queued, queuedAddrs int) {
-	return a.pool.Stats()
+	// The node pool returns addresses before transactions; ingest's hard
+	// cap is a transaction count, not the number of sender nonce sequences.
+	pendingAddrs, pending, queuedAddrs, queued = a.pool.Stats()
+	return
 }

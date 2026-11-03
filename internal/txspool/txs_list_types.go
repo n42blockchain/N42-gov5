@@ -152,6 +152,22 @@ func (t *txLookup) Get(hash types.Hash) *transaction.Transaction {
 	return t.remotes[hash]
 }
 
+// GetBatch fills dst under one read lock. Callers bound the batch so pool
+// admission and eviction can proceed between snapshots.
+func (t *txLookup) GetBatch(hashes []types.Hash, dst []*transaction.Transaction) {
+	if len(dst) != len(hashes) {
+		panic("transaction lookup batch length mismatch")
+	}
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	for i, hash := range hashes {
+		dst[i] = t.locals[hash]
+		if dst[i] == nil {
+			dst[i] = t.remotes[hash]
+		}
+	}
+}
+
 func (t *txLookup) GetLocal(hash types.Hash) *transaction.Transaction {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
@@ -348,6 +364,10 @@ type txsSortedMap struct {
 	items map[uint64]*transaction.Transaction
 	index *nonceHeap
 	cache []*transaction.Transaction
+	// Cap leaves the index in ascending order, which is also a valid min-heap.
+	// Keep that order across repeated fairness evictions instead of sorting
+	// and rebuilding the whole account queue for every single removed tx.
+	indexSorted bool
 }
 
 func newTxSortedMap() *txsSortedMap {
@@ -366,6 +386,7 @@ func (m *txsSortedMap) Put(tx *transaction.Transaction) {
 	fresh := m.items[nonce] == nil
 	if fresh {
 		heap.Push(m.index, nonce)
+		m.indexSorted = false
 	}
 	m.items[nonce] = tx
 	// Keep the flattened cache when the new transaction extends the tail --
@@ -387,6 +408,7 @@ func (m *txsSortedMap) Forward(threshold uint64) []*transaction.Transaction {
 	var removed []*transaction.Transaction
 	for m.index.Len() > 0 && (*m.index)[0] < threshold {
 		nonce := heap.Pop(m.index).(uint64)
+		m.indexSorted = false
 		removed = append(removed, m.items[nonce])
 		delete(m.items, nonce)
 	}
@@ -410,6 +432,7 @@ func (m *txsSortedMap) reheap() {
 		*m.index = append(*m.index, nonce)
 	}
 	heap.Init(m.index)
+	m.indexSorted = false
 	m.cache = nil
 }
 
@@ -433,13 +456,15 @@ func (m *txsSortedMap) Cap(threshold int) []*transaction.Transaction {
 	}
 	var drops []*transaction.Transaction
 
-	sort.Sort(*m.index)
+	if !m.indexSorted {
+		sort.Sort(*m.index)
+		m.indexSorted = true
+	}
 	for size := len(m.items); size > threshold; size-- {
 		drops = append(drops, m.items[(*m.index)[size-1]])
 		delete(m.items, (*m.index)[size-1])
 	}
 	*m.index = (*m.index)[:threshold]
-	heap.Init(m.index)
 
 	if m.cache != nil {
 		m.cache = m.cache[:len(m.cache)-len(drops)]
@@ -454,6 +479,7 @@ func (m *txsSortedMap) Remove(nonce uint64) bool {
 	}
 	delete(m.items, nonce)
 	m.cache = nil
+	m.indexSorted = false
 
 	// For large heaps, rebuild is more efficient than linear search.
 	if m.index.Len() > 256 {
@@ -477,6 +503,7 @@ func (m *txsSortedMap) Ready(start uint64) []*transaction.Transaction {
 		return nil
 	}
 	var ready []*transaction.Transaction
+	m.indexSorted = false
 	for next := (*m.index)[0]; m.index.Len() > 0 && (*m.index)[0] == next; next++ {
 		ready = append(ready, m.items[next])
 		delete(m.items, next)

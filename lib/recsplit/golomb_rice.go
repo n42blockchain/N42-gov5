@@ -165,8 +165,7 @@ func (g *GolombRice) Write(w io.Writer) error {
 	if _, e := w.Write(numBuf[:]); e != nil {
 		return e
 	}
-	p := (*[maxDataSize]byte)(unsafe.Pointer(&g.data[0]))
-	b := (*p)[:]
+	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(g.data))), len(g.data)*8)
 	if _, e := w.Write(b[:len(g.data)*8]); e != nil {
 		return e
 	}

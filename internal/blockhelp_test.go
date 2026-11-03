@@ -33,7 +33,7 @@ func TestCollectDepositExecutionRequestsIgnoresNonDepositLogs(t *testing.T) {
 		},
 	}
 
-	requests, err := CollectDepositExecutionRequests(receipts)
+	requests, err := CollectDepositExecutionRequests(receipts, vm.DepositContractAddress)
 	require.NoError(t, err)
 	require.Nil(t, requests)
 }
@@ -63,7 +63,7 @@ func TestCollectDepositExecutionRequestsExtractsDepositEventsAmongExtraLogs(t *t
 		},
 	}
 
-	requests, err := CollectDepositExecutionRequests(receipts)
+	requests, err := CollectDepositExecutionRequests(receipts, vm.DepositContractAddress)
 	require.NoError(t, err)
 	require.Len(t, requests, 1)
 	require.Len(t, requests[0], 1+vm.DepositRequestSize)
@@ -129,6 +129,95 @@ func testPragueConfig() *params.ChainConfig {
 		CancunBlock:           big.NewInt(0),
 		PragueTime:            big.NewInt(0),
 	}
+}
+
+// EIP-6110 deposits come from the deposit contract the chain config names, as in
+// geth's ParseDepositLogs: on Sepolia a DepositEvent at the mainnet address is
+// not a deposit, and one at the Sepolia contract is.
+func TestProcessExecutionBlockEndUsesConfiguredDepositContract(t *testing.T) {
+	t.Parallel()
+
+	sepoliaDeposit := *params.EthereumSepoliaChainConfig.DepositContractAddress
+	require.Equal(t, types.HexToAddress("0x7f02C3E3c98b133055B8B348B2Ac625669Ed295D"), sepoliaDeposit)
+	require.Equal(t, params.MainnetDepositContractAddress, params.EthereumMainnetChainConfig.DepositContract())
+	require.Equal(t, params.MainnetDepositContractAddress, testPragueConfig().DepositContract())
+
+	for _, tc := range []struct {
+		name    string
+		emitter types.Address
+		want    int
+	}{
+		{"configured-contract", sepoliaDeposit, 1},
+		{"mainnet-contract", params.MainnetDepositContractAddress, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testPragueConfig()
+			cfg.DepositContractAddress = &sepoliaDeposit
+			header := &block.Header{
+				Number:     uint256.NewInt(1),
+				Time:       1,
+				GasLimit:   30_000_000,
+				BaseFee:    uint256.NewInt(7),
+				Difficulty: uint256.NewInt(0),
+			}
+			db := memdb.NewTestDB(t)
+			txDb := memdb.BeginRw(t, db)
+			ibs := state.New(state.NewPlainState(txDb, 1))
+			ibs.CreateAccount(vm.WithdrawalRequestsAddress, true)
+			ibs.SetCode(vm.WithdrawalRequestsAddress, []byte{byte(vm.STOP)})
+			ibs.CreateAccount(vm.ConsolidationRequestsAddress, true)
+			ibs.SetCode(vm.ConsolidationRequestsAddress, []byte{byte(vm.STOP)})
+
+			receipts := block.Receipts{&block.Receipt{Logs: []*block.Log{{
+				Address: tc.emitter,
+				Topics:  []types.Hash{vm.DepositEventSignature},
+				Data:    makeValidDepositLogData(),
+			}}}}
+			requests, err := ProcessExecutionBlockEnd(receipts, cfg, ibs, header, nil)
+			require.NoError(t, err)
+			require.Len(t, requests, tc.want)
+			if tc.want == 1 {
+				require.Equal(t, byte(vm.DepositRequestType), requests[0][0])
+			}
+		})
+	}
+}
+
+// An Amsterdam system call makes no value transfer, so the system address is
+// not touched and stays out of the EIP-7928 block access list; the called
+// contract is in it.
+func TestAmsterdamSysCallContractLeavesSystemAddressUntouched(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	cfg.OsakaTime = big.NewInt(0)
+	cfg.GlamsterdamTime = big.NewInt(0)
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	txDb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txDb, 1))
+	contract := vm.WithdrawalRequestsAddress
+	ibs.CreateAccount(contract, true)
+	ibs.SetCode(contract, []byte{byte(vm.STOP)})
+	rules := cfg.RulesWithTimestamp(1, 1)
+	require.NoError(t, ibs.FinalizeTx(rules, state.NewNoopWriter()))
+
+	ibs.EnableBlockAccessList()
+	_, err := SysCallContract(contract, nil, *cfg, ibs, header, nil)
+	require.NoError(t, err)
+	require.NoError(t, ibs.FinalizeTx(rules, state.NewNoopWriter()))
+
+	var addrs []types.Address
+	for _, acc := range ibs.BlockAccessList() {
+		addrs = append(addrs, acc.Address)
+	}
+	require.Equal(t, []types.Address{contract}, addrs)
 }
 
 func TestProcessPragueSystemCallsRejectsUndeployedExecutionRequestContracts(t *testing.T) {

@@ -152,7 +152,7 @@ var (
 	MainnetChainConfig              = readChainSpec("chainspecs/mainnet.json")
 	MainnetCompatChainConfig        = readChainSpec("chainspecs/mainnet_compat.json")         // backward-compatible (no Shanghai+), matches legacy genesis hash
 	MainnetV2ChainConfig            = readChainSpec("chainspecs/mainnet_v2.json")             // all forks from genesis (replay-v2)
-	MainnetV2StaggeredChainConfig   = readChainSpec("chainspecs/mainnet_v2_staggered.json")   // forks staggered at N42-block heights/times calendar-matched to real Ethereum mainnet activation dates (Shanghai/Cancun by block; Pectra/Osaka/Fusaka/Glamsterdam by real-world Unix time, since N42 block timestamps are real wall-clock)
+	MainnetV2StaggeredChainConfig   = readChainSpec("chainspecs/mainnet_v2_staggered.json")   // forks staggered at N42-block heights/times calendar-matched to real Ethereum mainnet activation dates (Shanghai/Cancun by block; Pectra/Osaka/Fusaka by real-world Unix time, since N42 block timestamps are real wall-clock; Glamsterdam stays unscheduled until Ethereum mainnet sets a date)
 	MainnetMPTChainConfig           = readChainSpec("chainspecs/mainnet_mpt.json")            // replay-v2 with ethereum-mpt state roots
 	MainnetQMDBChainConfig          = readChainSpec("chainspecs/mainnet_qmdb.json")           // replay-v2 qmdb state roots + hotstuff live production
 	MainnetQMDBStaggeredChainConfig = readChainSpec("chainspecs/mainnet_qmdb_staggered.json") // qmdb + hotstuff live production with the staggered (calendar-parity) fork schedule — 7-node live network base
@@ -243,6 +243,13 @@ type ChainConfig struct {
 	BPO5Time        *big.Int `json:"bpo5Time,omitempty"`
 	FusakaTime      *big.Int `json:"fusakaTime,omitempty"`
 	GlamsterdamTime *big.Int `json:"glamsterdamTime,omitempty"` // EIP-7904 gas repricing
+
+	// DepositContractAddress is the beacon deposit contract whose DepositEvent
+	// logs become EIP-6110 deposit requests. Nil means the Ethereum mainnet
+	// contract: chain configs written before this field existed (chainspecs,
+	// configs stored in datadirs) keep the address they always used. An
+	// explicit zero address matches no log, as an unset geth config does.
+	DepositContractAddress *types.Address `json:"depositContractAddress,omitempty"`
 
 	// N42 extension: post-quantum precompile activation (independent of standard forks).
 	// When set, PQ precompiles (Falcon 0x14, Dilithium2 0x15, Dilithium3 0x16, SQIsign 0x17)
@@ -394,6 +401,18 @@ func NormalizeConsensus(cfg *ChainConfig) *ChainConfig {
 	return cfg
 }
 
+// MainnetDepositContractAddress is the Ethereum mainnet beacon deposit contract.
+var MainnetDepositContractAddress = types.HexToAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa")
+
+// DepositContract returns the address whose deposit logs are parsed into
+// EIP-6110 requests (geth: ChainConfig.DepositContractAddress).
+func (c *ChainConfig) DepositContract() types.Address {
+	if c == nil || c.DepositContractAddress == nil {
+		return MainnetDepositContractAddress
+	}
+	return *c.DepositContractAddress
+}
+
 // String implements the fmt.Stringer interface.
 func (c *ChainConfig) String() string {
 	return fmt.Sprintf("{ChainID: %v, Homestead: %v, DAO: %v, DAO Support: %v, Tangerine Whistle: %v, Spurious Dragon: %v, Byzantium: %v, Constantinople: %v, Petersburg: %v, Istanbul: %v, Muir Glacier: %v, Berlin: %v, London: %v, Arrow Glacier: %v, Gray Glacier: %v, Terminal Total Difficulty: %v, Merge Netsplit: %v, Shanghai: %v, Cancun: %v}",
@@ -426,6 +445,36 @@ func (c *ChainConfig) IsHeaderWithSeal() bool {
 
 func (c *ChainConfig) UsesBorSystemCallContext() bool {
 	return c != nil && c.Bor != nil
+}
+
+// UsesDirectBeaconRootWrites reports whether EIP-4788 is applied by writing the
+// beacon-roots ring buffer slots directly instead of making the system call
+// into the beacon-roots contract. N42 native chains (HotStuff, APoS consensus)
+// were produced with the direct write: their state roots, the replay engine and
+// the mobile verifier's positional read log all depend on it, so they keep it.
+// Every other chain follows Ethereum (geth ProcessBeaconBlockRoot) and calls
+// the contract, so a chain without contract code gets no writes.
+func (c *ChainConfig) UsesDirectBeaconRootWrites() bool {
+	return c.IsN42Native()
+}
+
+// UsesEIP7928AccessList reports whether a block at time commits to the
+// Ethereum (Amsterdam) EIP-7928 block access list: Glamsterdam on a chain
+// that is not N42 native. N42 native chains keep their own access list
+// behind BALTime.
+func (c *ChainConfig) UsesEIP7928AccessList(time uint64) bool {
+	return c != nil && c.IsGlamsterdam(time) && !c.IsN42Native()
+}
+
+// IsN42Native reports whether this is an N42 native chain (HotStuff or APoS
+// consensus). Validity rules Ethereum added after these chains started
+// producing blocks are only enforced elsewhere, so their history replays
+// unchanged.
+func (c *ChainConfig) IsN42Native() bool {
+	if c == nil {
+		return false
+	}
+	return c.Consensus == HotStuffConsensus || c.Consensus == AposConsensu || c.HotStuff != nil || c.Apos != nil
 }
 
 func (c *ChainConfig) UsesParliaRules() bool {
@@ -535,6 +584,10 @@ type HotStuffConfig struct {
 	BaseTimeout uint64 `json:"baseTimeout"` // Base timeout in milliseconds (default 60000)
 	MaxTimeout  uint64 `json:"maxTimeout"`  // Max timeout in milliseconds (default 120000)
 	EpochLength uint64 `json:"epochLength"` // Epoch length in blocks for validator set rotation
+	// LeaderTenure is the number of consecutive views assigned to one leader.
+	// Zero/absent means one, preserving the existing round-robin schedule.
+	// Consensus-critical: all members must use the same genesis setting.
+	LeaderTenure uint64 `json:"leaderTenure,omitempty"`
 
 	// FastPropose skips slot boundary wait, reducing consensus latency by ~72%.
 	// When enabled, the leader proposes immediately after receiving ViewChanged,

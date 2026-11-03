@@ -163,8 +163,8 @@ type ConsensusEngine struct {
 	// without executing them (the header carries this node's result of the
 	// parent; the transactions are includable). Such a block is voted for
 	// once its parent is imported. Bounded like importedBlocks.
-	checkedBlocks    map[types.Hash]bool
-	checkedFIFO      []types.Hash
+	checkedBlocks map[types.Hash]bool
+	checkedFIFO   []types.Hash
 	// headerKnownFIFO (S31): bounded eviction for importedParents entries
 	// populated ONLY by EventBlockHeaderKnown (the block has neither been
 	// checked nor imported yet) -- see onBlockHeaderKnown.
@@ -188,12 +188,16 @@ type ConsensusEngine struct {
 	// from execution latency; the CommitVote is what waits for the local
 	// import, so a CommitQC still proves 2f+1 validators executed the block
 	// before it can commit. Off (default) = classic import-gated Round 1.
-	twoPhaseVote    bool
+	twoPhaseVote bool
 	// voteOnAvailability (P2a, N42_VOTE_ON_AVAILABILITY=1): a block checked
 	// for availability (static header fields, frame list, every frame held)
 	// is attested without its parent's import; votes attest ordering and
 	// availability, execution runs behind.
 	voteOnAvailability bool
+	// Set once by the adapter before the engine is published or started.
+	// Kept outside epoch snapshots so restart and validator changes retain
+	// the chain's schedule without changing validator-set commitments.
+	leaderTenure    uint64
 	pendingCommitQC *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
 	// pendingCommitJournaled: the held commitment (lock + commit vote) is
 	// already durable (commitJournalEarly); the release only signs and sends.
@@ -243,7 +247,8 @@ type ConsensusEngine struct {
 	// voteJournal durably records a vote commitment before the vote is released
 	// to the network. Nil disables journalling (unit tests, embedded harnesses)
 	// and restores the pre-journal behaviour.
-	voteJournal VoteJournal
+	voteJournal      VoteJournal
+	captureVoteEpoch bool
 
 	// S19 (docs/QS_BLOCK_TIME_BUDGET.md 6co, write_latch.go): selfProposalHash
 	// is the block THIS node most recently proposed as leader, tracked so
@@ -292,7 +297,7 @@ func (e *ConsensusEngine) SetVoteJournal(j VoteJournal) {
 // Caller must hold e.mu.
 func (e *ConsensusEngine) snapshotState() *ConsensusState {
 	votedView, votedHash, commitVotedView, commitVotedHash := e.roundState.VoteCommitments()
-	return &ConsensusState{
+	state := &ConsensusState{
 		View:                e.roundState.CurrentView(),
 		ConsecutiveTimeouts: e.roundState.ConsecutiveTimeouts(),
 		LockedQC:            e.roundState.LockedQC().Clone(),
@@ -302,6 +307,10 @@ func (e *ConsensusEngine) snapshotState() *ConsensusState {
 		LastCommitVotedView: commitVotedView,
 		LastCommitVotedHash: commitVotedHash,
 	}
+	if e.captureVoteEpoch {
+		state.VoteEpoch = e.snapshotVoteEpoch()
+	}
+	return state
 }
 
 // SnapshotState returns the persistable consensus state under the engine lock,
@@ -689,13 +698,28 @@ func (e *ConsensusEngine) PreStageFromScheduleSafe(schedule *EpochSchedule) bool
 func (e *ConsensusEngine) IsCurrentLeader() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return IsLeader(e.myIndex, e.roundState.CurrentView(), e.validatorSet())
+	return e.isLeader(e.myIndex, e.roundState.CurrentView(), e.validatorSet())
+}
+
+// LeaderForView resolves a leader under this engine's immutable chain rule.
+// The supplied validator set may be current or historical.
+func (e *ConsensusEngine) LeaderForView(view ViewNumber, vs *ValidatorSet) ValidatorIndex {
+	tenure := e.leaderTenure
+	if tenure == 0 {
+		// An engine built without the adapter: the process-wide tenure.
+		tenure = leaderTenure
+	}
+	return LeaderForViewWithTenure(view, vs, tenure)
+}
+
+func (e *ConsensusEngine) isLeader(index ValidatorIndex, view ViewNumber, vs *ValidatorSet) bool {
+	return e.LeaderForView(view, vs) == index
 }
 
 func (e *ConsensusEngine) CurrentLeaderIndex() ValidatorIndex {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return LeaderForView(e.roundState.CurrentView(), e.validatorSet())
+	return e.LeaderForView(e.roundState.CurrentView(), e.validatorSet())
 }
 
 func (e *ConsensusEngine) LockedQC() QuorumCertificate {
@@ -1111,6 +1135,17 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 		}
 	}
 
+	// Feed completed local views into the pacemaker before resetting its next
+	// deadline. Without this observation, its adaptive timeout never receives
+	// a sample and every successful heavy block resets back to the short
+	// configured base, causing repeated rebuilds when load rises abruptly.
+	// Catch-up/missing or non-monotonic timestamps are not latency samples.
+	if e.viewTiming.View == e.roundState.CurrentView() &&
+		!e.viewTiming.ViewStart.IsZero() && e.viewTiming.CommitQCFormed != nil {
+		if latency := e.viewTiming.CommitQCFormed.Sub(e.viewTiming.ViewStart); latency > 0 {
+			e.pacemaker.ObserveCommitLatency(latency)
+		}
+	}
 	e.roundState.AdvanceView(newView)
 	e.pacemaker.ResetForView(newView, e.roundState.ConsecutiveTimeouts())
 	e.voteCollector = nil

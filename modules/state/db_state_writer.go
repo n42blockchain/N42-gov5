@@ -22,8 +22,10 @@ package state
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 
@@ -34,21 +36,100 @@ import (
 )
 
 func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {
+	if changes.Len() == 0 {
+		return nil
+	}
+	// GetAccountChanges/GetStorageChanges materialize maps afresh, so the
+	// sorting done by WriteChangeSets does not carry over here. Visit the
+	// history B-tree in key order and reuse one cursor for the reads and writes of this whole block.
+	sort.Sort(changes)
+	cursor, err := changeDb.RwCursor(bucket)
+	if err != nil {
+		return err
+	}
+	defer cursor.Close()
+	// Keep transaction counters and write-probe attribution when reusing an
+	// MDBX cursor; other backends retain their transaction Put behavior.
+	put := func(key, value []byte) error { return changeDb.Put(bucket, key, value) }
+	if recorded, ok := changeDb.(interface {
+		PutWithCursor(kv.RwCursor, []byte, []byte) error
+	}); ok {
+		put = func(key, value []byte) error { return recorded.PutWithCursor(cursor, key, value) }
+	}
+	tailKey := make([]byte, changes.KeySize()+8)
+	binary.BigEndian.PutUint64(tailKey[changes.KeySize():], math.MaxUint64)
+	seekKey := make([]byte, changes.KeySize()+8)
+	binary.BigEndian.PutUint64(seekKey[changes.KeySize():], math.MaxUint32)
+	var singleton []byte
 	buf := bytes.NewBuffer(nil)
+	// Accounts touched together commonly have identical history tails. Their
+	// merge with this block number is identical too. Keep a bounded, per-call
+	// memo of small tails, avoiding repeated roaring decode/normalize/encode
+	// work without caching any database lookup or changing chunk selection.
+	const maxMergedTails = 128
+	mergedTails := make(map[string][]byte)
 	for _, change := range changes.Changes {
 		k := change.Key
-
-		index, err := bitmapdb.Get64(changeDb, bucket, k, math.MaxUint32, math.MaxUint32)
+		copy(seekKey, k)
+		copy(tailKey, k)
+		found, value, err := cursor.Seek(seekKey)
 		if err != nil {
 			return fmt.Errorf("find chunk failed: %w", err)
 		}
+		// Preserve Get64(from=to=MaxUint32)'s single-chunk selection. A new
+		// key has the same singleton bitmap as every other new key this block;
+		// encode it once instead of allocating a roaring tree per recipient.
+		if !bytes.HasPrefix(found, k) {
+			if singleton == nil {
+				index := roaring64.BitmapOf(blocknum)
+				index.RunOptimize()
+				singleton, err = index.ToBytes()
+				if err != nil {
+					return err
+				}
+			}
+			if err := put(tailKey, singleton); err != nil {
+				return err
+			}
+			continue
+		}
+		if merged, ok := mergedTails[string(value)]; ok {
+			if err := put(tailKey, merged); err != nil {
+				return err
+			}
+			continue
+		}
+		index := roaring64.New()
+		if _, err := index.ReadFrom(bytes.NewReader(value)); err != nil {
+			return fmt.Errorf("read chunk failed: %w", err)
+		}
 		index.Add(blocknum)
+		if index.GetSerializedSizeInBytes() <= bitmapdb.ChunkLimit {
+			// This is already one complete tail chunk. The general splitter
+			// constructs a range bitmap and intersects it with a copy just to
+			// return these same entries. Normalize and encode the owned bitmap
+			// directly; use the pre-normalization size like CutLeft64 does.
+			index.RunOptimize()
+			buf.Reset()
+			if _, err := index.WriteTo(buf); err != nil {
+				return err
+			}
+			encoded := types.CopyBytes(buf.Bytes())
+			if len(mergedTails) < maxMergedTails && uint64(len(value)) <= bitmapdb.ChunkLimit {
+				// Copy the original MDBX bytes before Put can invalidate them.
+				mergedTails[string(value)] = encoded
+			}
+			if err := put(tailKey, encoded); err != nil {
+				return err
+			}
+			continue
+		}
 		if err = bitmapdb.WalkChunkWithKeys64(k, index, bitmapdb.ChunkLimit, func(chunkKey []byte, chunk *roaring64.Bitmap) error {
 			buf.Reset()
 			if _, err = chunk.WriteTo(buf); err != nil {
 				return err
 			}
-			return changeDb.Put(bucket, chunkKey, types.CopyBytes(buf.Bytes()))
+			return put(chunkKey, types.CopyBytes(buf.Bytes()))
 		}); err != nil {
 			return err
 		}

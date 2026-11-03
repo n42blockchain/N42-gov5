@@ -20,6 +20,7 @@ import (
 	"os"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
@@ -56,6 +57,11 @@ func resetOne(dir string) error {
 	}
 	defer db.Close()
 	return db.Update(context.Background(), func(tx kv.RwTx) error {
+		if marked, err := hotstuff.HasIndependentVoteStore(tx); err != nil {
+			return err
+		} else if marked {
+			return fmt.Errorf("independent vote store enabled: refusing a reset of only the main checkpoint")
+		}
 		c, err := tx.RwCursor(modules.HotStuffState)
 		if err != nil {
 			return err

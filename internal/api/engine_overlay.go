@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
-	"sort"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -17,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/params"
 )
@@ -29,6 +29,10 @@ type engineBuiltPayload struct {
 	blockValue        *big.Int
 	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
+	// blockAccessList and slotNumber are the fields an Amsterdam payload
+	// adds to v4; both are nil before Amsterdam.
+	blockAccessList hexutil.Bytes
+	slotNumber      *hexutil.Uint64
 }
 
 type engineOverlayTxLookup struct {
@@ -107,6 +111,9 @@ type ethRPCHeader struct {
 	ExcessBlobGas    *uint64          `json:"excessBlobGas" rlp:"optional"`
 	ParentBeaconRoot *types.Hash      `json:"parentBeaconBlockRoot" rlp:"optional"`
 	RequestsHash     *types.Hash      `json:"requestsHash" rlp:"optional"`
+	// Amsterdam: EIP-7928 block access list hash and EIP-7843 slot number.
+	BlockAccessListHash *types.Hash `json:"blockAccessListHash" rlp:"optional"`
+	SlotNumber          *uint64     `json:"slotNumber" rlp:"optional"`
 }
 
 func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.Hash {
@@ -161,28 +168,44 @@ func ethCompatibleHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.
 		}
 		requestsHash = &root
 	}
+	var (
+		balHash *types.Hash
+		slot    *uint64
+	)
+	if cfg != nil && cfg.IsGlamsterdam(header.Time) {
+		balHash = new(types.Hash)
+		if header.BlockAccessListHash != nil {
+			*balHash = *header.BlockAccessListHash
+		}
+		slot = new(uint64)
+		if header.SlotNumber != nil {
+			*slot = *header.SlotNumber
+		}
+	}
 	return hash.RlpHash(&ethRPCHeader{
-		ParentHash:       header.ParentHash,
-		UncleHash:        hash.EmptyUncleHash,
-		Coinbase:         header.Coinbase,
-		Root:             header.Root,
-		TxHash:           header.TxHash,
-		ReceiptHash:      header.ReceiptHash,
-		Bloom:            block.BytesToBloom(header.Bloom.Bytes()),
-		Difficulty:       uint256ToBigOrZero(header.Difficulty),
-		Number:           uint256ToBigOrZero(header.Number),
-		GasLimit:         header.GasLimit,
-		GasUsed:          header.GasUsed,
-		Time:             header.Time,
-		Extra:            header.Extra,
-		MixDigest:        header.MixDigest,
-		Nonce:            block.EncodeNonce(header.Nonce.Uint64()),
-		BaseFee:          baseFee,
-		WithdrawalsHash:  withdrawals,
-		BlobGasUsed:      blobGasUsed,
-		ExcessBlobGas:    excessBlobGas,
-		ParentBeaconRoot: beaconRoot,
-		RequestsHash:     requestsHash,
+		ParentHash:          header.ParentHash,
+		UncleHash:           hash.EmptyUncleHash,
+		Coinbase:            header.Coinbase,
+		Root:                header.Root,
+		TxHash:              header.TxHash,
+		ReceiptHash:         header.ReceiptHash,
+		Bloom:               block.BytesToBloom(header.Bloom.Bytes()),
+		Difficulty:          uint256ToBigOrZero(header.Difficulty),
+		Number:              uint256ToBigOrZero(header.Number),
+		GasLimit:            header.GasLimit,
+		GasUsed:             header.GasUsed,
+		Time:                header.Time,
+		Extra:               header.Extra,
+		MixDigest:           header.MixDigest,
+		Nonce:               block.EncodeNonce(header.Nonce.Uint64()),
+		BaseFee:             baseFee,
+		WithdrawalsHash:     withdrawals,
+		BlobGasUsed:         blobGasUsed,
+		ExcessBlobGas:       excessBlobGas,
+		ParentBeaconRoot:    beaconRoot,
+		RequestsHash:        requestsHash,
+		BlockAccessListHash: balHash,
+		SlotNumber:          slot,
 	})
 }
 
@@ -263,6 +286,22 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 		root := executionRequestsHash(nil)
 		requestsHash = &root
 	}
+	// Amsterdam headers carry the block access list hash and the slot
+	// number, as ethCompatibleHeaderHash encodes them.
+	var (
+		balHash *types.Hash
+		slot    *uint64
+	)
+	if cfg != nil && cfg.IsGlamsterdam(header.Time) {
+		balHash = new(types.Hash)
+		if header.BlockAccessListHash != nil {
+			*balHash = *header.BlockAccessListHash
+		}
+		slot = new(uint64)
+		if header.SlotNumber != nil {
+			*slot = *header.SlotNumber
+		}
+	}
 	return hash.RlpHash(&ethRPCHeader{
 		ParentHash:       header.ParentHash,
 		UncleHash:        hash.EmptyUncleHash,
@@ -285,6 +324,9 @@ func ethCompatibleEngineBlockHash(blk block.IBlock, cfg *params.ChainConfig, opt
 		ExcessBlobGas:    excessBlobGas,
 		ParentBeaconRoot: opts.parentBeaconRoot,
 		RequestsHash:     requestsHash,
+
+		BlockAccessListHash: balHash,
+		SlotNumber:          slot,
 	})
 }
 
@@ -762,27 +804,7 @@ func withdrawalsRoot(withdrawals []*Withdrawal) types.Hash {
 }
 
 func executionRequestsHash(requests []hexutil.Bytes) types.Hash {
-	sorted := cloneHexutilBytesList(requests)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if len(sorted[i]) == 0 {
-			return false
-		}
-		if len(sorted[j]) == 0 {
-			return true
-		}
-		return sorted[i][0] < sorted[j][0]
-	})
-	aggregate := sha256.New()
-	for _, request := range sorted {
-		if len(request) <= 1 {
-			continue
-		}
-		sum := sha256.Sum256(request)
-		_, _ = aggregate.Write(sum[:])
-	}
-	var out types.Hash
-	_ = out.SetBytes(aggregate.Sum(nil))
-	return out
+	return internalcore.ExecutionRequestsHash(requests)
 }
 
 func cloneHexutilBytesList(values []hexutil.Bytes) []hexutil.Bytes {

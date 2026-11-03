@@ -214,9 +214,8 @@ func TestCL_ExchangeCapabilities(t *testing.T) {
 	// the critical ones.
 	required := []string{
 		"engine_newPayloadV4",
-		"engine_forkchoiceUpdatedV4",
+		"engine_forkchoiceUpdatedV3",
 		"engine_getPayloadV4",
-		"engine_exchangeCapabilities",
 	}
 	have := make(map[string]bool, len(methods))
 	for _, m := range methods {
@@ -226,6 +225,10 @@ func TestCL_ExchangeCapabilities(t *testing.T) {
 		if !have[m] {
 			t.Errorf("exchangeCapabilities: missing %q", m)
 		}
+	}
+	// The spec forbids listing exchangeCapabilities itself.
+	if have["engine_exchangeCapabilities"] {
+		t.Errorf("exchangeCapabilities: must not list %q", "engine_exchangeCapabilities")
 	}
 }
 

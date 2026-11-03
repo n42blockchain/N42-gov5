@@ -193,7 +193,7 @@ func TestEngineAPIBlobRejectsMissingPostCancunBlobFieldsAsInvalidParams(t *testi
 func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEngineCancunPayloadTestAPI()
 	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x99}
 	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
@@ -249,7 +249,7 @@ func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 func TestEngineAPIBlobRejectsBlobTxBelowBlockBlobFee(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEngineCancunPayloadTestAPI()
 	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x99}
 
@@ -306,7 +306,7 @@ func TestEngineAPIBlobRejectsBlobTxBelowBlockBlobFee(t *testing.T) {
 func TestEngineAPIBlobRejectsInvalidExcessBlobGasBeforeBlobFeeValidation(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEngineCancunPayloadTestAPI()
 	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x99}
 
@@ -565,7 +565,7 @@ func TestEngineAPIv4RejectsWrappedNegativeExcessBlobGasWithoutHanging(t *testing
 func TestEngineAPIBlobRejectsGasLimitBelowMinimum(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEngineCancunPayloadTestAPI()
 	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x99}
 
@@ -675,14 +675,13 @@ func TestEngineAPIBlobRejectsOsakaPayloadAboveBlobGasAllowance(t *testing.T) {
 
 	api, _ := newEnginePayloadTestAPI()
 	api.chainConfig.OsakaTime = big.NewInt(0)
-	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x99}
 	hashes := make([]types.Hash, 10)
 	for i := range hashes {
 		hashes[i] = testVersionedHash(byte(i + 1))
 	}
 
-	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+	resp, err := newPayloadV3ShapeViaV4(t, api, &ExecutionPayloadV3{
 		Timestamp:     hexutil.Uint64(2),
 		Transactions:  []hexutil.Bytes{testBlobTxBytes(t, hashes)},
 		BlobGasUsed:   hexUint64Ptr(uint64(len(hashes)) * transaction.BlobTxBlobGasPerBlob),
@@ -698,7 +697,7 @@ func TestEngineAPIBlobRejectsOsakaPayloadAboveBlobGasAllowance(t *testing.T) {
 func TestEngineAPIBlobReturnsParentForBlobGasMismatch(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEngineCancunPayloadTestAPI()
 	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x99}
 	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
@@ -748,7 +747,6 @@ func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *te
 		engineOverlay: newEngineOverlay(),
 	}
 	engineV1 := NewEngineAPIV1(NewBlockChainAPI(api))
-	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	headHash := engineV1.currentHeadHash()
 	beaconRoot := types.Hash{0x99}
 	expected := testVersionedHash(1)
@@ -779,7 +777,7 @@ func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *te
 		parentBeaconRoot:   &beaconRoot,
 	})
 
-	resp, err := engine.NewPayloadV3(context.Background(), payload, []types.Hash{expected}, &beaconRoot)
+	resp, err := newPayloadV3ShapeViaV4(t, api, payload, []types.Hash{expected}, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.NotNil(t, resp.ValidationError)
@@ -818,7 +816,6 @@ func TestEngineAPIBlobAcceptsOsakaReservePriceBoundaryPayload(t *testing.T) {
 		engineOverlay: newEngineOverlay(),
 	}
 	engineV1 := NewEngineAPIV1(NewBlockChainAPI(api))
-	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	headHash := engineV1.currentHeadHash()
 	beaconRoot := types.Hash{0x99}
 	expected := testVersionedHash(1)
@@ -866,7 +863,7 @@ func TestEngineAPIBlobAcceptsOsakaReservePriceBoundaryPayload(t *testing.T) {
 		parentBeaconRoot:   &beaconRoot,
 	})
 
-	resp, err := engine.NewPayloadV3(context.Background(), payload, []types.Hash{expected}, &beaconRoot)
+	resp, err := newPayloadV3ShapeViaV4(t, api, payload, []types.Hash{expected}, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, resp.Status)
 }
@@ -1027,7 +1024,7 @@ func TestEngineAPIv4RejectsMissingBlobFieldsAsInvalidParams(t *testing.T) {
 func TestEngineAPIBlobBuildsAndImportsMinimalPayloadV3(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEngineCancunPayloadTestAPI()
 	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x44}
 
@@ -1069,20 +1066,19 @@ func TestEngineAPIBlobBuildsAndImportsMinimalPayloadV3(t *testing.T) {
 func TestEngineAPIv4BuildsAndImportsMinimalPayloadV4(t *testing.T) {
 	t.Parallel()
 
-	api, headHash := newEnginePayloadTestAPI()
+	api, headHash := newEnginePraguePayloadTestAPI()
 	engine := NewEngineAPIv4(NewBlockChainAPI(api))
+	builder := NewEngineAPIBlob(NewBlockChainAPI(api))
 	beaconRoot := types.Hash{0x55}
-	targetBlobs := hexutil.Uint64(1)
 
-	forkchoiceResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+	forkchoiceResp, err := builder.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash: headHash,
-	}, &PayloadAttributesV4{
+	}, &PayloadAttributesV3{
 		Timestamp:             2,
 		PrevRandao:            typesHashFromHexByte(0x33),
 		SuggestedFeeRecipient: types.Address{0x66},
 		Withdrawals:           []*Withdrawal{},
 		ParentBeaconBlockRoot: &beaconRoot,
-		TargetBlobsPerBlock:   &targetBlobs,
 	})
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
@@ -1094,29 +1090,27 @@ func TestEngineAPIv4BuildsAndImportsMinimalPayloadV4(t *testing.T) {
 	require.Empty(t, payloadResp.ExecutionRequests)
 
 	otherBeaconRoot := types.Hash{0x77}
-	secondResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+	secondResp, err := builder.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash: headHash,
-	}, &PayloadAttributesV4{
+	}, &PayloadAttributesV3{
 		Timestamp:             2,
 		PrevRandao:            typesHashFromHexByte(0x33),
 		SuggestedFeeRecipient: types.Address{0x66},
 		Withdrawals:           []*Withdrawal{},
 		ParentBeaconBlockRoot: &otherBeaconRoot,
-		TargetBlobsPerBlock:   &targetBlobs,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, secondResp.PayloadID)
 	require.NotEqual(t, *forkchoiceResp.PayloadID, *secondResp.PayloadID)
 
-	thirdResp, err := engine.ForkchoiceUpdatedV4(context.Background(), &ForkchoiceStateV1{
+	thirdResp, err := builder.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash: headHash,
-	}, &PayloadAttributesV4{
+	}, &PayloadAttributesV3{
 		Timestamp:             2,
 		PrevRandao:            typesHashFromHexByte(0x34),
 		SuggestedFeeRecipient: types.Address{0x66},
 		Withdrawals:           []*Withdrawal{},
 		ParentBeaconBlockRoot: &beaconRoot,
-		TargetBlobsPerBlock:   &targetBlobs,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, thirdResp.PayloadID)
@@ -1127,7 +1121,28 @@ func TestEngineAPIv4BuildsAndImportsMinimalPayloadV4(t *testing.T) {
 	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)
 }
 
+// newEngineCancunPayloadTestAPI is newEnginePayloadTestAPI on a Cancun-only
+// chain, for the V3 methods that the Engine API limits to Cancun.
+func newEngineCancunPayloadTestAPI() (*API, types.Hash) {
+	return newEnginePayloadTestAPIWith(func(cfg *params.ChainConfig) {
+		cfg.PragueTime = nil
+		cfg.OsakaTime = nil
+	})
+}
+
+// newEnginePraguePayloadTestAPI is newEnginePayloadTestAPI on a chain that
+// stops at Prague, for getPayloadV4.
+func newEnginePraguePayloadTestAPI() (*API, types.Hash) {
+	return newEnginePayloadTestAPIWith(func(cfg *params.ChainConfig) {
+		cfg.OsakaTime = nil
+	})
+}
+
 func newEnginePayloadTestAPI() (*API, types.Hash) {
+	return newEnginePayloadTestAPIWith(nil)
+}
+
+func newEnginePayloadTestAPIWith(mutate func(*params.ChainConfig)) (*API, types.Hash) {
 	genesisHeader := &block.Header{
 		Number:        uint256.NewInt(0),
 		Difficulty:    uint256.NewInt(0),
@@ -1151,6 +1166,9 @@ func newEnginePayloadTestAPI() (*API, types.Hash) {
 		PragueTime:    big.NewInt(0),
 		OsakaTime:     big.NewInt(0),
 	}
+	if mutate != nil {
+		mutate(cfg)
+	}
 	api := &API{
 		bc:            chain,
 		chainConfig:   cfg,
@@ -1158,4 +1176,46 @@ func newEnginePayloadTestAPI() (*API, types.Hash) {
 	}
 	engine := NewEngineAPIV1(NewBlockChainAPI(api))
 	return api, engine.currentHeadHash()
+}
+
+// newPayloadV3ShapeViaV4 submits a Cancun-shaped payload through
+// newPayloadV4 with no execution requests, the method the Engine API assigns
+// to Prague and Osaka timestamps. A non-zero BlockHash is recomputed to cover
+// the empty requests hash, so tests that hash the payload keep a valid hash.
+func newPayloadV3ShapeViaV4(t *testing.T, api *API, payload *ExecutionPayloadV3, hashes []types.Hash, beaconRoot *types.Hash) (*PayloadStatusV1, error) {
+	t.Helper()
+	requests := []hexutil.Bytes{}
+	v4 := &ExecutionPayloadV4{
+		ParentHash:    payload.ParentHash,
+		FeeRecipient:  payload.FeeRecipient,
+		StateRoot:     payload.StateRoot,
+		ReceiptsRoot:  payload.ReceiptsRoot,
+		LogsBloom:     payload.LogsBloom,
+		PrevRandao:    payload.PrevRandao,
+		BlockNumber:   payload.BlockNumber,
+		GasLimit:      payload.GasLimit,
+		GasUsed:       payload.GasUsed,
+		Timestamp:     payload.Timestamp,
+		ExtraData:     payload.ExtraData,
+		BaseFeePerGas: payload.BaseFeePerGas,
+		BlockHash:     payload.BlockHash,
+		Transactions:  payload.Transactions,
+		Withdrawals:   payload.Withdrawals,
+		BlobGasUsed:   payload.BlobGasUsed,
+		ExcessBlobGas: payload.ExcessBlobGas,
+	}
+	if v4.BlockHash != (types.Hash{}) {
+		blk, err := executionPayloadV4ToBlock(v4)
+		require.NoError(t, err)
+		blk = applyExecutionPayloadForkFields(blk, nil, nil, nil, beaconRoot, requests)
+		requestsHash := executionRequestsHash(requests)
+		v4.BlockHash = ethCompatibleEngineBlockHash(blk, api.chainConfig, enginePayloadHashOptions{
+			includeWithdrawals: true,
+			withdrawals:        v4.Withdrawals,
+			includeBlobFields:  true,
+			parentBeaconRoot:   beaconRoot,
+			requestsHash:       &requestsHash,
+		})
+	}
+	return NewEngineAPIv4(NewBlockChainAPI(api)).NewPayloadV4(context.Background(), v4, hashes, beaconRoot, requests)
 }

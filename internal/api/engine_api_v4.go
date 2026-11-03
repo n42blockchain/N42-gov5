@@ -28,6 +28,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/bal"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
@@ -90,7 +91,8 @@ type ConsolidationRequest struct {
 	TargetPubkey  hexutil.Bytes `json:"targetPubkey"`  // Target validator BLS public key
 }
 
-// PayloadAttributesV4 extends PayloadAttributesV3 with Pectra fields
+// PayloadAttributesV4 extends PayloadAttributesV3 with the Amsterdam slot
+// number, and with an N42 Pectra field.
 type PayloadAttributesV4 struct {
 	Timestamp             hexutil.Uint64 `json:"timestamp"`
 	PrevRandao            types.Hash     `json:"prevRandao"`
@@ -100,6 +102,13 @@ type PayloadAttributesV4 struct {
 
 	// Pectra additions
 	TargetBlobsPerBlock *hexutil.Uint64 `json:"targetBlobsPerBlock,omitempty"` // EIP-7840
+
+	// Amsterdam additions
+	SlotNumber *hexutil.Uint64 `json:"slotNumber,omitempty"` // EIP-7843
+	// TargetGasLimit is the gas limit the consensus client wants the chain
+	// to move towards, which with ePBS (EIP-7732) it passes in the
+	// attributes; optional, as in geth.
+	TargetGasLimit *hexutil.Uint64 `json:"targetGasLimit,omitempty"`
 }
 
 // GetPayloadResponseV4 is the response for engine_getPayloadV4
@@ -173,12 +182,77 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
 
-	// Engine API spec: newPayloadV4 must only be used for Pectra+ payloads.
-	// Only enforce when PectraTime is explicitly configured (nil = not activated yet).
-	if cfg := e.v1.chainConfig(); cfg != nil && cfg.PectraTime != nil && !cfg.IsPectra(uint64(payload.Timestamp)) {
-		return nil, &engineUnsupportedForkError{msg: "newPayloadV4 called for pre-Pectra timestamp, use newPayloadV3"}
+	// Engine API spec: newPayloadV4 is for Prague and Osaka payloads.
+	if !engineForkIn(e.v1.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), engineForkPrague, engineForkOsaka) {
+		return nil, &engineUnsupportedForkError{msg: "newPayloadV4 called for a timestamp outside Prague/Osaka"}
 	}
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, nil)
+}
 
+// AmsterdamPayloadFields are the header inputs an Amsterdam payload adds, for
+// in-process callers of NewPayloadV4AnyFork. BlockAccessList is the RLP-encoded
+// EIP-7928 list; a caller that has only the header's hash of it sets
+// BlockAccessListHash instead.
+type AmsterdamPayloadFields struct {
+	BlockAccessList     []byte
+	BlockAccessListHash *types.Hash
+	SlotNumber          uint64
+}
+
+// NewPayloadV4AnyFork runs the newPayloadV4 validation and import without
+// the fork-range check. It is for in-process callers (the embedded consensus
+// client in cmd/eth-el) that import historical blocks of every fork through
+// the V4 shape. A package function, not a method, so the RPC server does not
+// expose it.
+//
+// amsterdam is required for a payload whose block carries the EIP-7928 access
+// list and slot number, and refused for any other.
+func NewPayloadV4AnyFork(
+	e *EngineAPIv4,
+	payload *ExecutionPayloadV4,
+	expectedBlobVersionedHashes []types.Hash,
+	parentBeaconBlockRoot *types.Hash,
+	executionRequests []hexutil.Bytes,
+	amsterdam *AmsterdamPayloadFields,
+) (*PayloadStatusV1, error) {
+	if payload == nil {
+		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	wantAmsterdam := false
+	if cfg := e.v1.chainConfig(); cfg != nil {
+		wantAmsterdam = cfg.UsesEIP7928AccessList(uint64(payload.Timestamp))
+	}
+	switch {
+	case wantAmsterdam && amsterdam == nil:
+		return nil, &engineInvalidParamsError{msg: "missing block access list and slot number post-amsterdam"}
+	case !wantAmsterdam && amsterdam != nil:
+		return nil, &engineInvalidParamsError{msg: "block access list and slot number before amsterdam"}
+	case amsterdam != nil && amsterdam.BlockAccessList == nil && amsterdam.BlockAccessListHash == nil:
+		return nil, &engineInvalidParamsError{msg: "missing block access list post-amsterdam"}
+	}
+	var fields *amsterdamPayloadFields
+	if amsterdam != nil {
+		fields = &amsterdamPayloadFields{
+			blockAccessList:     amsterdam.BlockAccessList,
+			blockAccessListHash: amsterdam.BlockAccessListHash,
+			slotNumber:          amsterdam.SlotNumber,
+		}
+		if amsterdam.BlockAccessList != nil {
+			fields.blockAccessListHash = nil
+		}
+	}
+	return e.newPayloadV4(payload, expectedBlobVersionedHashes, parentBeaconBlockRoot, executionRequests, fields)
+}
+
+// newPayloadV4 validates and imports a Prague+ payload. amsterdam carries the
+// fields an Amsterdam payload (newPayloadV5) adds; it is nil before Amsterdam.
+func (e *EngineAPIv4) newPayloadV4(
+	payload *ExecutionPayloadV4,
+	expectedBlobVersionedHashes []types.Hash,
+	parentBeaconBlockRoot *types.Hash,
+	executionRequests []hexutil.Bytes,
+	amsterdam *amsterdamPayloadFields,
+) (*PayloadStatusV1, error) {
 	if parentBeaconBlockRoot == nil {
 		return invalidPayloadResponse("missing parent beacon block root"), nil
 	}
@@ -221,6 +295,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return nil, &engineInvalidParamsError{msg: err.Error()}
 	}
 	blk = applyExecutionPayloadForkFields(blk, nil, nil, nil, parentBeaconBlockRoot, executionRequests)
+	if amsterdam != nil {
+		blk = amsterdam.apply(blk)
+	}
 	requestsHash := executionRequestsHash(executionRequests)
 	blockHash := ethCompatibleEngineBlockHash(blk, e.v1.chainConfig(), enginePayloadHashOptions{
 		includeWithdrawals: true,
@@ -240,6 +317,11 @@ func (e *EngineAPIv4) NewPayloadV4(
 	parent := e.v1.parentHeader(payload.ParentHash)
 	if latestValidHash, ok := e.v1.rejectedAncestorLatestValidHash(payload.ParentHash); ok {
 		return e.v1.invalidPayloadStatus(engineRejectedAncestorReason, blk, blockHash, latestValidHash, body), nil
+	}
+	if amsterdam != nil && amsterdam.blockAccessListHash == nil {
+		if _, err := bal.Decode(amsterdam.blockAccessList); err != nil {
+			return e.v1.invalidPayloadStatus("invalid block access list: "+err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
+		}
 	}
 	if err := validateExecutionPayloadBlobHeader(blockHeader(blk), parent, e.v1.chainConfig()); err != nil {
 		return e.v1.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
@@ -299,6 +381,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 // engine_getPayloadV4
 func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV4, error) {
 	if built := e.v1.builtPayload(payloadID); built != nil && built.v4 != nil {
+		if !builtPayloadForkIn(e.v1.chainConfig(), built, engineForkPrague) {
+			return nil, &engineUnsupportedForkError{msg: "getPayloadV4 called for a payload outside Prague"}
+		}
 		return &GetPayloadResponseV4{
 			ExecutionPayload:      built.v4,
 			BlockValue:            enginePayloadBlockValue(built.blockValue),
@@ -310,8 +395,12 @@ func (e *EngineAPIv4) GetPayloadV4(ctx context.Context, payloadID PayloadID) (*G
 	return nil, errPayloadNotFound
 }
 
-// ForkchoiceUpdatedV4 updates the fork choice with Pectra support
-// engine_forkchoiceUpdatedV4
+// ForkchoiceUpdatedV4 updates the fork choice and starts Amsterdam builds,
+// whose attributes carry the slot number; the payload is fetched with
+// getPayloadV6. engine_forkchoiceUpdatedV4
+//
+// Attributes for an earlier fork are refused with unsupported fork, as the
+// spec requires: Prague and Osaka builds start with forkchoiceUpdatedV3.
 func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	ctx context.Context,
 	state *ForkchoiceStateV1,
@@ -346,7 +435,33 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload, executionRequests, blockValue, blobsBundle := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	nextNumber := uint64(0)
+	if head != nil && head.Number64() != nil {
+		nextNumber = head.Number64().Uint64() + 1
+	}
+	if cfg := e.v1.chainConfig(); cfg == nil || engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) < engineForkAmsterdam {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV4 called for pre-Amsterdam timestamp, use forkchoiceUpdatedV3"}
+	}
+	if attrs.SlotNumber == nil {
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing slot number"}
+	}
+	return e.buildAndStorePayloadV4(head, headHash, attrs), nil
+}
+
+// buildAndStorePayloadV4 builds a Prague+ payload on head, stores every
+// payload representation under its id and returns the forkchoice response.
+// An Amsterdam payload also keeps its block access list and slot number.
+func (e *EngineAPIv4) buildAndStorePayloadV4(head block.IBlock, headHash types.Hash, attrs *PayloadAttributesV4) *ForkchoiceUpdatedResponseV3 {
+	payload, executionRequests, blockValue, blobsBundle, accessList := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	amsterdam := false
+	if cfg := e.v1.chainConfig(); cfg != nil {
+		amsterdam = cfg.UsesEIP7928AccessList(uint64(attrs.Timestamp))
+	}
+	if amsterdam && (payload == nil || accessList == nil || attrs.SlotNumber == nil) {
+		// An Amsterdam payload commits to the access list its execution
+		// builds; there is no stateless fallback.
+		return invalidForkchoiceResponse("failed to build payload")
+	}
 	if payload == nil {
 		payload = buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
 		executionRequests = []hexutil.Bytes{}
@@ -354,24 +469,38 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 		blobsBundle = emptyBlobsBundle()
 	}
 	if payload == nil {
-		return invalidForkchoiceResponse("failed to build payload"), nil
+		return invalidForkchoiceResponse("failed to build payload")
 	}
 	withdrawalsRoot := withdrawalsRoot(attrs.Withdrawals)
 	var targetBlobBytes [8]byte
 	if attrs.TargetBlobsPerBlock != nil {
 		binary.BigEndian.PutUint64(targetBlobBytes[:], uint64(*attrs.TargetBlobsPerBlock))
 	}
+	extras := [][]byte{withdrawalsRoot[:], attrs.ParentBeaconBlockRoot[:], targetBlobBytes[:]}
+	var slotNumber *hexutil.Uint64
+	if amsterdam {
+		var slotBytes [8]byte
+		binary.BigEndian.PutUint64(slotBytes[:], uint64(*attrs.SlotNumber))
+		extras = append(extras, slotBytes[:])
+		if attrs.TargetGasLimit != nil {
+			var targetBytes [8]byte
+			binary.BigEndian.PutUint64(targetBytes[:], uint64(*attrs.TargetGasLimit))
+			extras = append(extras, targetBytes[:])
+		}
+		slot := *attrs.SlotNumber
+		slotNumber = &slot
+	}
 	payloadID := makePayloadIDWithExtras(
 		headHash,
 		uint64(attrs.Timestamp),
 		attrs.SuggestedFeeRecipient,
 		attrs.PrevRandao,
-		withdrawalsRoot[:],
-		attrs.ParentBeaconBlockRoot[:],
-		targetBlobBytes[:],
+		extras...,
 	)
 	if overlay := e.v1.overlay(); overlay != nil {
 		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			blockAccessList:   append(hexutil.Bytes(nil), accessList...),
+			slotNumber:        slotNumber,
 			blockValue:        blockValue,
 			v4:                payload,
 			v3:                &ExecutionPayloadV3{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions), Withdrawals: cloneWithdrawals(payload.Withdrawals), BlobGasUsed: payload.BlobGasUsed, ExcessBlobGas: payload.ExcessBlobGas},
@@ -381,7 +510,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 			executionRequests: cloneHexutilBytesList(executionRequests),
 		})
 	}
-	return validForkchoiceResponse(headHash, &payloadID), nil
+	return validForkchoiceResponse(headHash, &payloadID)
 }
 
 // GetBlobsV1 retrieves blob sidecars by versioned hashes.
@@ -393,6 +522,12 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Hash) ([]*BlobAndProofV1, error) {
 	if len(versionedHashes) > 128 {
 		return nil, &engineTooLargeRequestError{msg: fmt.Sprintf("requested blob count too large: %d", len(versionedHashes))}
+	}
+	// Osaka replaces the V1 proofs with cell proofs (getBlobsV2), so V1 is
+	// served for Cancun and Prague heads only, as in geth.
+	if head := blockHeader(e.v1.currentHead()); head != nil && head.Number64() != nil &&
+		!engineForkIn(e.v1.chainConfig(), head.Number64().Uint64(), head.Time, engineForkCancun, engineForkPrague) {
+		return nil, &engineUnsupportedForkError{msg: "getBlobsV1 is only available at Cancun/Prague"}
 	}
 	if len(versionedHashes) == 0 {
 		return []*BlobAndProofV1{}, nil
@@ -555,22 +690,33 @@ func payloadBodyFromBlock(blk block.IBlock, withdrawals []*Withdrawal) *Executio
 	}
 }
 
-func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes, *big.Int, *BlobsBundleV1) {
+// buildExecutionPayloadV4Stateful builds a Prague+ payload on parent's state.
+// It also returns the encoded block access list of an Amsterdam payload.
+func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes, *big.Int, *BlobsBundleV1, []byte) {
 	if attrs == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
-	result := e.v1.buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
+	var slotNumber, targetGasLimit *uint64
+	if attrs.SlotNumber != nil {
+		slot := uint64(*attrs.SlotNumber)
+		slotNumber = &slot
+	}
+	if attrs.TargetGasLimit != nil {
+		target := uint64(*attrs.TargetGasLimit)
+		targetGasLimit = &target
+	}
+	result := e.v1.buildExecutionPayloadStatefulWithSlot(parent, parentHash, &PayloadAttributesV1{
 		Timestamp:             attrs.Timestamp,
 		PrevRandao:            attrs.PrevRandao,
 		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
-	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
+	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot, slotNumber, targetGasLimit)
 	if result == nil || result.block == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	v1 := blockToExecutionPayloadV1(result.block, e.v1.chainConfig())
 	header := blockHeader(result.block)
 	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	payload := &ExecutionPayloadV4{
 		ParentHash:            v1.ParentHash,
@@ -602,7 +748,7 @@ func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, paren
 		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
 		requestsHash:       &requestsHash,
 	})
-	return payload, cloneHexutilBytesList(result.executionRequests), result.blockValue, result.blobsBundle
+	return payload, cloneHexutilBytesList(result.executionRequests), result.blockValue, result.blobsBundle, result.blockAccessList
 }
 
 // =============================================================================
@@ -767,7 +913,7 @@ type ClientCapabilities struct {
 func (e *EngineAPIv4) GetClientCapabilitiesV1(ctx context.Context) (*ClientCapabilities, error) {
 	return &ClientCapabilities{
 		SupportedForks:   supportedEngineForks(),
-		SupportedMethods: supportedEngineMethods(),
+		SupportedMethods: clientCapabilityMethods(),
 		ProtocolVersion:  "4.0.0",
 		CanCancelFork:    true,
 	}, nil

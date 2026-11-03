@@ -60,6 +60,9 @@ type Genesis struct {
 	BaseFee       *uint256.Int `json:"baseFeePerGas"`
 	BlobGasUsed   uint64       `json:"blobGasUsed"`
 	ExcessBlobGas uint64       `json:"excessBlobGas"`
+	// SlotNumber is the genesis header's EIP-7843 slot number; it is only
+	// written into the header when Amsterdam is active at genesis.
+	SlotNumber uint64 `json:"slotNumber,omitempty"`
 }
 
 type GenesisAlloc map[types.Address]GenesisAccount
@@ -92,6 +95,7 @@ type genesisJSON struct {
 	BaseFee       json.RawMessage     `json:"baseFeePerGas"`
 	BlobGasUsed   json.RawMessage     `json:"blobGasUsed"`
 	ExcessBlobGas json.RawMessage     `json:"excessBlobGas"`
+	SlotNumber    json.RawMessage     `json:"slotNumber"`
 }
 
 type genesisAccountJSON struct {
@@ -153,6 +157,10 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 	if err != nil {
 		return err
 	}
+	slotNumber, err := decodeGenesisUint64("slotNumber", dec.SlotNumber)
+	if err != nil {
+		return err
+	}
 
 	*g = Genesis{
 		Config:        params.NormalizeConsensus(dec.Config),
@@ -175,6 +183,7 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 		BaseFee:       baseFee,
 		BlobGasUsed:   blobGasUsed,
 		ExcessBlobGas: excessBlobGas,
+		SlotNumber:    slotNumber,
 	}
 	return nil
 }

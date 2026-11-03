@@ -60,6 +60,10 @@ type ConsensusState struct {
 	// this node last released. Zero view = never commit-voted.
 	LastCommitVotedView ViewNumber
 	LastCommitVotedHash types.Hash
+
+	// Captured under the engine lock for the independent vote store. These
+	// fields use the existing epoch records, not the consensus-state wire codec.
+	VoteEpoch *voteEpochSnapshot
 }
 
 // SaveConsensusState persists the current consensus state to the database.
@@ -152,10 +156,13 @@ func MergeConsensusStates(state, prev *ConsensusState) (*ConsensusState, error) 
 }
 
 // mergeConsensusStates folds prev into state with the rules of
-// mergeMonotonic. A nil prev returns state unchanged.
+// mergeMonotonic. A nil prev returns state unchanged; a nil state, prev.
 func mergeConsensusStates(state, prev *ConsensusState) (*ConsensusState, error) {
 	if prev == nil {
 		return state, nil
+	}
+	if state == nil {
+		return prev, nil
 	}
 
 	merged := *state
@@ -231,17 +238,35 @@ func mergeQCMonotonic(dst *QuorumCertificate, prev QuorumCertificate, name strin
 // reading: the node treats every view as un-voted and re-derives its position
 // from the network.
 func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
-	val, err := tx.GetOne(modules.HotStuffState, hotstuffStateKey)
+	val, err := readRecoveryRecord(tx, hotstuffStateKey, "hotstuff state")
 	if err != nil {
 		return nil, fmt.Errorf("read hotstuff state: %w", err)
 	}
-	if val == nil || len(val) < 16 {
+	if val == nil {
 		return nil, nil // no persisted state
 	}
 	if len(val) >= len(consensusStateMagicV2) && bytes.Equal(val[:len(consensusStateMagicV2)], consensusStateMagicV2) {
 		return decodeConsensusStateV2(val)
 	}
 	return decodeConsensusStateV1(val)
+}
+
+// A short or empty stored record is corruption, not a fresh node. Some KV
+// implementations return nil for both an empty value and a missing key, so
+// check presence before deciding that recovery has nothing to restore.
+func readRecoveryRecord(tx kv.Tx, key []byte, name string) ([]byte, error) {
+	val, err := tx.GetOne(modules.HotStuffState, key)
+	if err != nil || len(val) >= 16 {
+		return val, err
+	}
+	present, err := tx.Has(modules.HotStuffState, key)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("%s record truncated: %d bytes", name, len(val))
 }
 
 func decodeConsensusStateV2(val []byte) (*ConsensusState, error) {
@@ -318,15 +343,15 @@ func decodeConsensusStateV1(val []byte) (*ConsensusState, error) {
 // readLenPrefixed reads a uint32 length prefix at pos and returns the payload
 // plus the offset just past it.
 func readLenPrefixed(val []byte, pos int, field string) ([]byte, int, error) {
-	if pos+4 > len(val) {
+	if pos < 0 || len(val) < 4 || pos > len(val)-4 {
 		return nil, 0, fmt.Errorf("hotstuff state corrupted: missing %s length", field)
 	}
-	n := int(binary.LittleEndian.Uint32(val[pos:]))
+	n := uint64(binary.LittleEndian.Uint32(val[pos:]))
 	pos += 4
-	if n < 0 || pos+n > len(val) {
+	if n > uint64(len(val)-pos) {
 		return nil, 0, fmt.Errorf("hotstuff state corrupted: buffer too short for %s", field)
 	}
-	return val[pos : pos+n], pos + n, nil
+	return val[pos : pos+int(n)], pos + int(n), nil
 }
 
 // Staged epoch persistence key
@@ -364,17 +389,20 @@ func SaveStagedEpoch(tx kv.RwTx, epoch uint64, validators []ValidatorInfo, f uin
 
 // LoadStagedEpoch loads a previously staged epoch. Returns nil if none exists.
 func LoadStagedEpoch(tx kv.Tx) (epoch uint64, validators []ValidatorInfo, f uint32, err error) {
-	val, err := tx.GetOne(modules.HotStuffState, stagedEpochKey)
+	val, err := readRecoveryRecord(tx, stagedEpochKey, "staged epoch")
 	if err != nil {
 		return 0, nil, 0, fmt.Errorf("read staged epoch: %w", err)
 	}
-	if val == nil || len(val) < 16 {
+	if val == nil {
 		return 0, nil, 0, nil // no staged epoch
 	}
 
 	epoch = binary.LittleEndian.Uint64(val[0:8])
 	f = binary.LittleEndian.Uint32(val[8:12])
 	count := binary.LittleEndian.Uint32(val[12:16])
+	if uint64(count) > uint64(len(val)-16)/24 {
+		return 0, nil, 0, fmt.Errorf("staged epoch validator count exceeds record length")
+	}
 	validators = make([]ValidatorInfo, 0, count)
 
 	offset := 16
@@ -387,7 +415,7 @@ func LoadStagedEpoch(tx kv.Tx) (epoch uint64, validators []ValidatorInfo, f uint
 		offset += 20
 		pkLen := binary.LittleEndian.Uint32(val[offset : offset+4])
 		offset += 4
-		if offset+int(pkLen) > len(val) {
+		if uint64(pkLen) > uint64(len(val)-offset) {
 			return 0, nil, 0, fmt.Errorf("staged epoch data truncated at validator %d pubkey", i)
 		}
 		pk, pErr := bls.PublicKeyFromBytes(val[offset : offset+int(pkLen)])
@@ -453,16 +481,19 @@ func SaveActiveEpoch(tx kv.RwTx, epoch uint64, validators []ValidatorInfo, f uin
 // LoadActiveEpoch loads the persisted active validator set. Returns ok=false when
 // none has been recorded (no reconfiguration has ever applied on this node).
 func LoadActiveEpoch(tx kv.Tx) (epoch uint64, validators []ValidatorInfo, f uint32, ok bool, err error) {
-	val, gErr := tx.GetOne(modules.HotStuffState, activeEpochKey)
+	val, gErr := readRecoveryRecord(tx, activeEpochKey, "active epoch")
 	if gErr != nil {
 		return 0, nil, 0, false, fmt.Errorf("read active epoch: %w", gErr)
 	}
-	if val == nil || len(val) < 16 {
+	if val == nil {
 		return 0, nil, 0, false, nil
 	}
 	epoch = binary.LittleEndian.Uint64(val[0:8])
 	f = binary.LittleEndian.Uint32(val[8:12])
 	count := binary.LittleEndian.Uint32(val[12:16])
+	if uint64(count) > uint64(len(val)-16)/24 {
+		return 0, nil, 0, false, fmt.Errorf("active epoch validator count exceeds record length")
+	}
 	validators = make([]ValidatorInfo, 0, count)
 	offset := 16
 	for i := uint32(0); i < count; i++ {
@@ -474,7 +505,7 @@ func LoadActiveEpoch(tx kv.Tx) (epoch uint64, validators []ValidatorInfo, f uint
 		offset += 20
 		pkLen := binary.LittleEndian.Uint32(val[offset : offset+4])
 		offset += 4
-		if offset+int(pkLen) > len(val) {
+		if uint64(pkLen) > uint64(len(val)-offset) {
 			return 0, nil, 0, false, fmt.Errorf("active epoch data truncated at validator %d pubkey", i)
 		}
 		pk, pErr := bls.PublicKeyFromBytes(val[offset : offset+int(pkLen)])
@@ -543,41 +574,53 @@ func SavePendingVotes(tx kv.RwTx, pv *PendingVotesState) error {
 
 // LoadPendingVotes loads persisted pending votes.
 func LoadPendingVotes(tx kv.Tx) (*PendingVotesState, error) {
-	data, err := tx.GetOne(modules.HotStuffState, pendingVotesKey)
-	if err != nil || len(data) < 44 {
+	data, err := readRecoveryRecord(tx, pendingVotesKey, "pending votes")
+	if err != nil || data == nil {
 		return nil, err
 	}
-	pv := &PendingVotesState{
-		PrepareVotes: make(map[ValidatorIndex][]byte),
-		CommitVotes:  make(map[ValidatorIndex][]byte),
+	if len(data) < 48 {
+		return nil, fmt.Errorf("pending votes record truncated: %d bytes", len(data))
 	}
-	pos := 0
-	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:]))
-	pos += 8
-	copy(pv.BlockHash[:], data[pos:])
-	pos += 32
-
-	readVotes := func() (map[ValidatorIndex][]byte, int) {
-		count := int(binary.LittleEndian.Uint32(data[pos:]))
+	pv := &PendingVotesState{View: binary.LittleEndian.Uint64(data), BlockHash: types.BytesToHash(data[8:40])}
+	pos := 40
+	readVotes := func() (map[ValidatorIndex][]byte, error) {
+		if len(data)-pos < 4 {
+			return nil, fmt.Errorf("pending votes missing count")
+		}
+		count := uint64(binary.LittleEndian.Uint32(data[pos:]))
 		pos += 4
-		m := make(map[ValidatorIndex][]byte, count)
-		for i := 0; i < count && pos+8 <= len(data); i++ {
+		if count > uint64(len(data)-pos)/8 {
+			return nil, fmt.Errorf("pending votes impossible count")
+		}
+		m := make(map[ValidatorIndex][]byte, int(count))
+		for i := uint64(0); i < count; i++ {
+			if len(data)-pos < 8 {
+				return nil, fmt.Errorf("pending votes truncated entry")
+			}
 			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			sLen := int(binary.LittleEndian.Uint32(data[pos:]))
+			size := uint64(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if pos+sLen > len(data) {
-				break
+			if size == 0 || size > uint64(len(data)-pos) {
+				return nil, fmt.Errorf("pending votes invalid signature length")
 			}
-			sig := make([]byte, sLen)
-			copy(sig, data[pos:pos+sLen])
-			pos += sLen
-			m[idx] = sig
+			if _, ok := m[idx]; ok {
+				return nil, fmt.Errorf("pending votes duplicate validator %d", idx)
+			}
+			m[idx] = append([]byte(nil), data[pos:pos+int(size)]...)
+			pos += int(size)
 		}
-		return m, pos
+		return m, nil
 	}
-	pv.PrepareVotes, pos = readVotes()
-	pv.CommitVotes, _ = readVotes()
+	if pv.PrepareVotes, err = readVotes(); err != nil {
+		return nil, err
+	}
+	if pv.CommitVotes, err = readVotes(); err != nil {
+		return nil, err
+	}
+	if pos != len(data) {
+		return nil, fmt.Errorf("pending votes trailing bytes")
+	}
 	return pv, nil
 }
 

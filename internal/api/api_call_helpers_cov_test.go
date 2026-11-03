@@ -63,19 +63,19 @@ func TestRevertError_CodeAndData(t *testing.T) {
 
 func TestCheckTxFee(t *testing.T) {
 	// Zero gas price is always accepted.
-	if err := checkTxFee(uint256.Int{}, 21000, 1); err != nil {
+	if err := checkTxFee(uint256.Int{}, 0); err != nil {
 		t.Fatalf("checkTxFee(zero) error = %v, want nil", err)
 	}
 
 	// A gas price below the hard ceiling is accepted.
 	low := *uint256.NewInt(1_000_000_000) // 1 Gwei
-	if err := checkTxFee(low, 21000, 1); err != nil {
+	if err := checkTxFee(low, 0); err != nil {
 		t.Fatalf("checkTxFee(low) error = %v, want nil", err)
 	}
 
 	// A gas price above the hard ceiling (1000 Gwei) is rejected.
 	high := *uint256.NewInt(2_000_000_000_000) // 2000 Gwei
-	if err := checkTxFee(high, 21000, 1); err == nil {
+	if err := checkTxFee(high, 0); err == nil {
 		t.Fatal("checkTxFee(high) error = nil, want error")
 	}
 }

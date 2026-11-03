@@ -44,7 +44,7 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 		return &ViewMismatchError{Current: view, Received: vote.View}
 	}
 
-	if !IsLeader(e.myIndex, view, e.validatorSet()) {
+	if !e.isLeader(e.myIndex, view, e.validatorSet()) {
 		return nil
 	}
 
@@ -326,7 +326,7 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote, mt msgTiming) error 
 		return &ViewMismatchError{Current: view, Received: cv.View}
 	}
 
-	if !IsLeader(e.myIndex, view, e.validatorSet()) {
+	if !e.isLeader(e.myIndex, view, e.validatorSet()) {
 		return nil
 	}
 

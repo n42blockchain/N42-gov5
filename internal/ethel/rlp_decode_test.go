@@ -66,10 +66,10 @@ func TestDecodeHeaderFieldsRejectsUnsupportedFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for len(fields) <= 22 {
+	for len(fields) <= 23 {
 		fields = append(fields, zero)
 	}
-	if _, err := decodeHeaderFields(fields); err == nil || !strings.Contains(err.Error(), "maximum supported is 22") {
+	if _, err := decodeHeaderFields(fields); err == nil || !strings.Contains(err.Error(), "maximum supported is 23") {
 		t.Fatalf("decodeHeaderFields() error = %v, want unsupported-field rejection", err)
 	}
 }
@@ -428,5 +428,40 @@ func TestDecodeRawBlockRejectsBlobNetworkWrapper(t *testing.T) {
 	}
 	if _, _, err := DecodeRawBlock(raw); err == nil || !strings.Contains(err.Error(), "blob sidecar in block body") {
 		t.Fatalf("DecodeRawBlock() error = %v, want blob sidecar rejection", err)
+	}
+}
+
+// An Amsterdam freezer header carries slotNumber (EIP-7843) at position 22;
+// dropping it changes the block hash.
+func TestDecodeGethHeaderKeepsAmsterdamSlotNumber(t *testing.T) {
+	wh, pbr, rh, bal := types.Hash{7}, types.Hash{8}, types.Hash{9}, types.Hash{10}
+	blobUsed, excess, slot := uint64(131072), uint64(393216), uint64(13_456_789)
+	want := &block.Header{
+		Difficulty:          uint256.NewInt(0),
+		Number:              uint256.NewInt(24_000_000),
+		GasLimit:            60_000_000,
+		Time:                1_800_000_000,
+		BaseFee:             uint256.NewInt(7),
+		WithdrawalsHash:     &wh,
+		BlobGasUsed:         &blobUsed,
+		ExcessBlobGas:       &excess,
+		ParentBeaconRoot:    &pbr,
+		RequestsHash:        &rh,
+		BlockAccessListHash: &bal,
+		SlotNumber:          &slot,
+	}
+	raw, err := rlp.EncodeToBytes(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeGethHeader(snappy.Encode(nil, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SlotNumber == nil || *got.SlotNumber != slot {
+		t.Fatalf("SlotNumber = %v, want %d", got.SlotNumber, slot)
+	}
+	if got.Hash() != want.Hash() {
+		t.Fatalf("hash %s, want %s", got.Hash().Hex(), want.Hash().Hex())
 	}
 }

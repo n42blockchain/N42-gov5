@@ -107,7 +107,7 @@ func EncodeStreamPacket(pkt *StreamPacket) ([]byte, error) {
 // DecodeStreamPacket deserializes a V2 stream packet from wire format.
 func DecodeStreamPacket(data []byte) (*StreamPacket, error) {
 	// Decode and validate wire header.
-	hdr, payload, err := DecodeWireHeader(data)
+	hdr, payload, err := decodeWireHeader(data)
 	if err != nil {
 		return nil, fmt.Errorf("stream_packet: %w", err)
 	}

@@ -141,7 +141,7 @@ func TestBuildExecutionPayloadV4StatefulFromHead(t *testing.T) {
 		ParentBeaconBlockRoot: &beaconRoot,
 	}
 
-	payload, requests, value, bundle := eng.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	payload, requests, value, bundle, _ := eng.buildExecutionPayloadV4Stateful(head, headHash, attrs)
 	require.NotNil(t, payload)
 	require.Equal(t, headHash, payload.ParentHash)
 	require.NotNil(t, value)

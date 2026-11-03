@@ -66,7 +66,7 @@ type P2PConfig struct {
 	GossipSubQueueSize   int `json:"gossip_queue_size" yaml:"gossip_queue_size"`     // default 1024
 	GossipSubHeartbeatMs int `json:"gossip_heartbeat_ms" yaml:"gossip_heartbeat_ms"` // default 500
 
-	// Transaction gossip via GossipSub (default false; falls back to bloom pull).
+	// Transaction gossip via GossipSub (enabled in the node's default config).
 	TxGossipEnabled  bool `json:"tx_gossip_enabled" yaml:"tx_gossip_enabled"`
 	TxGossipBatchSize int  `json:"tx_gossip_batch_size" yaml:"tx_gossip_batch_size"` // default 50
 	TxGossipFlushMs   int  `json:"tx_gossip_flush_ms" yaml:"tx_gossip_flush_ms"`     // default 100

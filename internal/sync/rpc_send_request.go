@@ -8,12 +8,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 // ErrInvalidFetchedData is thrown if stream fails to provide requested blocks.
@@ -25,11 +25,14 @@ type BlockProcessor func(block *types.Block) error
 
 // SendBodiesByRangeRequest sends BeaconBlocksByRange and returns fetched blocks, if any.
 func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor) ([]*types.Block, error) {
-	if req.Step == 0 {
-		return nil, errors.New("request step cannot be zero")
+	if req == nil || req.Step == 0 || req.Step > rangeLimit || req.Count == 0 || req.Count > maxRequestBlocks {
+		return nil, errors.New("invalid range count or step")
 	}
-	if req.Count == 0 {
-		return nil, errors.New("request count cannot be zero")
+	blockStart := utils.ConvertH256ToUint256Int(req.StartBlockNumber)
+	span := req.Step * (req.Count - 1)
+	blockEnd, overflow := new(uint256.Int).AddOverflow(blockStart, uint256.NewInt(span))
+	if overflow || span > rangeLimit {
+		return nil, errors.New("requested range exceeds bounds")
 	}
 
 	topic, err := p2p.TopicFromMessage(p2p.BodiesByRangeMessageName)
@@ -56,8 +59,6 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 	}
 
 	var prevBlockNr *uint256.Int
-	blockStart := utils.ConvertH256ToUint256Int(req.StartBlockNumber)
-	blockEnd := new(uint256.Int).AddUint64(blockStart, req.Count*req.Step)
 
 	for i := uint64(0); ; i++ {
 		isFirstChunk := i == 0
@@ -78,8 +79,13 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 
 		blockNr := blk.Number64()
 
-		// Returned blocks MUST be in the slot range [start_slot, start_slot + count * step).
-		if blockNr.Cmp(blockStart) < 0 || blockNr.Cmp(blockEnd) >= 0 {
+		// Returned blocks must belong to the requested arithmetic progression.
+		if blockNr.Cmp(blockStart) < 0 || blockNr.Cmp(blockEnd) > 0 {
+			return nil, ErrInvalidFetchedData
+		}
+
+		offsetFromStart := new(uint256.Int).Sub(blockNr, blockStart)
+		if new(uint256.Int).Mod(offsetFromStart, uint256.NewInt(req.Step)).Sign() != 0 {
 			return nil, ErrInvalidFetchedData
 		}
 

@@ -30,6 +30,7 @@ import (
 //	GET  /mobileverify/packet/{blockHash}                                  -> raw StreamPacket bytes
 //	POST /mobileverify/receipt   {receipt JSON, hex fields}                -> {"index":N}
 //	GET  /mobileverify/cert/{blockHash}                                    -> JSON cert list
+//	GET  /mobileverify/latest                                              -> {"number":N,"hash":"0x..","packet":bool}
 //	GET  /mobileverify/health                                              -> {"registry":N,...}
 type HTTPServer struct {
 	reg     *Registry
@@ -37,6 +38,11 @@ type HTTPServer struct {
 	windows WindowSubmitter
 	certs   *CertStore
 	alarms  *AlarmBuffer
+
+	// head reports the node's canonical head (number, hash), the block a
+	// phone verifies next. Optional; GET /mobileverify/latest answers 503
+	// until it is wired.
+	head func() (uint64, types.Hash, bool)
 
 	srv     *http.Server
 	regRate *ipRateLimiter
@@ -51,6 +57,10 @@ type HTTPServer struct {
 // SetAlarms wires the divergence alarm buffer so GET /mobileverify/alarms
 // can serve it. Optional; nil alarms just report empty.
 func (s *HTTPServer) SetAlarms(a *AlarmBuffer) { s.alarms = a }
+
+// SetHead wires the canonical head GET /mobileverify/latest reports. fn
+// returns false while the node has no head yet.
+func (s *HTTPServer) SetHead(fn func() (uint64, types.Hash, bool)) { s.head = fn }
 
 // SetRegisterPoWBits enables the registration proof-of-work gate at the given
 // difficulty (leading zero bits, capped at MaxRegisterPoWBits). 0 disables.
@@ -82,6 +92,7 @@ func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows W
 	mux.HandleFunc("/mobileverify/alarms", s.handleAlarms)
 	mux.HandleFunc("/mobileverify/snapshot", s.handleSnapshot)
 	mux.HandleFunc("/mobileverify/health", s.handleHealth)
+	mux.HandleFunc("/mobileverify/latest", s.handleLatest)
 	s.srv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -335,6 +346,28 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"certBlocks":  s.certs.Len(),
 		"alarms":      alarmCount,
 	})
+}
+
+// handleLatest reports the canonical head, so a phone talks to the
+// mobileverify surface only and needs no JSON-RPC. packet says whether
+// this node already holds the head's packet; until it does, a phone asks
+// again rather than fetching a 404.
+func (s *HTTPServer) handleLatest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.head == nil {
+		httpError(w, http.StatusServiceUnavailable, "head not available")
+		return
+	}
+	number, hash, ok := s.head()
+	if !ok {
+		httpError(w, http.StatusServiceUnavailable, "head not available")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]any{"number": number, "hash": hash.Hex(), "packet": s.packets.Has(hash)})
 }
 
 func encodeCerts(certs []*MobileAttestationCert, registryCount int) []certJSON {

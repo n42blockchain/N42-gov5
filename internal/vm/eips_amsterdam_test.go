@@ -21,6 +21,7 @@
 package vm
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -33,9 +34,9 @@ import (
 func TestEIP8024DupNSwapNDecoding(t *testing.T) {
 	// decode_single(x) = (x+145) % 256; valid 0..90 and 128..255 -> n in 17..235.
 	cases := []struct {
-		imm  byte
-		n    int
-		ok   bool
+		imm byte
+		n   int
+		ok  bool
 	}{
 		{0, 145, true},
 		{90, 235, true},
@@ -180,5 +181,110 @@ func TestAmsterdamConstants(t *testing.T) {
 	// EIP-7954.
 	if params.MaxCodeSizeEIP7954 != 65536 || params.MaxInitCodeSizeEIP7954 != 131072 {
 		t.Fatal("EIP-7954 size limits wrong")
+	}
+}
+
+// --- EIP-7843: SLOTNUM ---
+
+// The N42 Fusaka table keeps the SLOTNUM it has executed since FusakaTime:
+// the slot overwrites the stack top and the stack does not grow. Only the
+// Amsterdam table pushes.
+func TestFusakaSlotNumKeepsN42Semantics(t *testing.T) {
+	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
+	evm.context.Slot = 0x1234
+	interp := &EVMInterpreter{VM: &VM{evm: evm}}
+	scope := createTestScope([]byte{byte(SLOTNUM)})
+	scope.Stack.Push(uint256.NewInt(7))
+	pc := uint64(0)
+	jt := newFusakaInstructionSet()
+	if _, err := jt[SLOTNUM].execute(&pc, interp, scope); err != nil {
+		t.Fatalf("SLOTNUM: %v", err)
+	}
+	if scope.Stack.Len() != 1 || scope.Stack.Peek().Uint64() != 0x1234 {
+		t.Fatalf("Fusaka SLOTNUM: stack len %d top %d, want 1 and %d", scope.Stack.Len(), scope.Stack.Peek().Uint64(), 0x1234)
+	}
+	if got := newGlamsterdamInstructionSet()[SLOTNUM].execute; got == nil {
+		t.Fatal("Amsterdam table has no SLOTNUM")
+	}
+}
+
+// SLOTNUM pops nothing and pushes the slot: on an empty stack it must leave
+// exactly one item holding BlockContext.Slot.
+func TestEIP7843SlotNumPushes(t *testing.T) {
+	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
+	evm.context.Slot = 0x1234
+	interp := &EVMInterpreter{VM: &VM{evm: evm}}
+	scope := createTestScope([]byte{byte(SLOTNUM)})
+	pc := uint64(0)
+	if _, err := opSlotNum(&pc, interp, scope); err != nil {
+		t.Fatalf("SLOTNUM: %v", err)
+	}
+	if scope.Stack.Len() != 1 {
+		t.Fatalf("stack len = %d, want 1", scope.Stack.Len())
+	}
+	if got := scope.Stack.Peek().Uint64(); got != 0x1234 {
+		t.Fatalf("SLOTNUM pushed %d, want %d", got, 0x1234)
+	}
+}
+
+// A DUPN/SWAPN/EXCHANGE that is the last byte of the code has no immediate;
+// it reads as 0x00 like missing PUSH data instead of halting.
+func TestEIP8024MissingImmediateReadsZero(t *testing.T) {
+	// DUPN imm 0 -> n = 145: duplicate the deepest of 145 items.
+	scope := createTestScope([]byte{byte(DUPN)})
+	for i := 0; i < 145; i++ {
+		scope.Stack.Push(uint256.NewInt(uint64(1000 + i)))
+	}
+	pc := uint64(0)
+	if _, err := opDupN(&pc, nil, scope); err != nil {
+		t.Fatalf("DUPN without immediate: %v", err)
+	}
+	if got := scope.Stack.Peek().Uint64(); got != 1000 {
+		t.Fatalf("DUPN without immediate pushed %d, want 1000", got)
+	}
+
+	// SWAPN imm 0 -> n = 145: swap the top with the 146th item.
+	scope = createTestScope([]byte{byte(SWAPN)})
+	for i := 0; i < 146; i++ {
+		scope.Stack.Push(uint256.NewInt(uint64(1000 + i)))
+	}
+	pc = 0
+	if _, err := opSwapN(&pc, nil, scope); err != nil {
+		t.Fatalf("SWAPN without immediate: %v", err)
+	}
+	if got := scope.Stack.Peek().Uint64(); got != 1000 {
+		t.Fatalf("SWAPN without immediate: top %d, want 1000", got)
+	}
+
+	// EXCHANGE imm 0 -> k = 143, q = 8, r = 15 -> (n, m) = (9, 16).
+	scope = createTestScope([]byte{byte(EXCHANGE)})
+	for i := 0; i < 17; i++ {
+		scope.Stack.Push(uint256.NewInt(uint64(i)))
+	}
+	pc = 0
+	if _, err := opExchange(&pc, nil, scope); err != nil {
+		t.Fatalf("EXCHANGE without immediate: %v", err)
+	}
+	if a, b := scope.Stack.Back(9).Uint64(), scope.Stack.Back(16).Uint64(); a != 0 || b != 7 {
+		t.Fatalf("EXCHANGE without immediate: items 9,16 = %d,%d, want 0,7", a, b)
+	}
+}
+
+// N42 Fusaka SLOTNUM on an empty stack is a stack underflow, not a nil
+// dereference: a lone 0x4b used to panic every node executing it.
+func TestFusakaSlotNumEmptyStackUnderflows(t *testing.T) {
+	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
+	evm.context.Slot = 0x1234
+	interp := &EVMInterpreter{VM: &VM{evm: evm}}
+	scope := createTestScope([]byte{byte(SLOTNUM)})
+	pc := uint64(0)
+	jt := newFusakaInstructionSet()
+	_, err := jt[SLOTNUM].execute(&pc, interp, scope)
+	var underflow *ErrStackUnderflow
+	if !errors.As(err, &underflow) {
+		t.Fatalf("SLOTNUM on empty stack: err = %v, want ErrStackUnderflow", err)
+	}
+	if scope.Stack.Len() != 0 {
+		t.Fatalf("stack len = %d, want 0", scope.Stack.Len())
 	}
 }

@@ -203,13 +203,13 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	}
 	blockNumber := uint64(payload.BlockNumber)
 	timestamp := uint64(payload.Timestamp)
-	// Engine API spec: newPayloadV3 must not be used for Pectra+ payloads.
-	if cfg := e.v1().chainConfig(); cfg != nil && cfg.PectraTime != nil && cfg.IsPectra(timestamp) {
-		return nil, &engineUnsupportedForkError{msg: "newPayloadV3 called for Pectra+ timestamp, use newPayloadV4"}
-	}
+	// Engine API spec: newPayloadV3 is for Cancun payloads only.
 	if cfg := e.v1().chainConfig(); cfg != nil {
-		if !cfg.IsCancunAt(blockNumber, timestamp) {
+		switch fork := engineLatestFork(cfg, blockNumber, timestamp); {
+		case fork < engineForkCancun:
 			return nil, &engineUnsupportedForkError{msg: "newPayloadV3 called for pre-Cancun timestamp, use newPayloadV2"}
+		case fork > engineForkCancun:
+			return nil, &engineUnsupportedForkError{msg: "newPayloadV3 called for Prague+ timestamp, use newPayloadV4"}
 		}
 	}
 	if payload.Withdrawals == nil {
@@ -324,6 +324,17 @@ func setBlobGasValidationLatestValidHash(resp *PayloadStatusV1, parentHash types
 // GetPayloadV3 retrieves a payload with blob bundle
 // engine_getPayloadV3
 func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV3, error) {
+	if built := e.v1().builtPayload(payloadID); built != nil && built.v3 != nil &&
+		!builtPayloadForkIn(e.v1().chainConfig(), built, engineForkCancun) {
+		return nil, &engineUnsupportedForkError{msg: "getPayloadV3 called for Prague+ payload, use getPayloadV4"}
+	}
+	return GetPayloadV3AnyFork(e, payloadID)
+}
+
+// GetPayloadV3AnyFork returns a built payload in the V3 shape without the
+// fork-range check, for the in-process consensus client in cmd/eth-el. A
+// package function, not a method, so the RPC server does not expose it.
+func GetPayloadV3AnyFork(e *EngineAPIBlob, payloadID PayloadID) (*GetPayloadResponseV3, error) {
 	if built := e.v1().builtPayload(payloadID); built != nil {
 		if built.v3 == nil {
 			return nil, &engineUnsupportedForkError{msg: "getPayloadV3 called for pre-Cancun payload, use getPayloadV2"}
@@ -364,8 +375,24 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	if cfg := e.v1().chainConfig(); cfg != nil && !cfg.IsCancunAt(nextNumber, uint64(attrs.Timestamp)) {
 		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV3 called for pre-Cancun timestamp, use forkchoiceUpdatedV2"}
 	}
+	if cfg := e.v1().chainConfig(); cfg != nil && engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) >= engineForkAmsterdam {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV3 called for Amsterdam timestamp, use forkchoiceUpdatedV4"}
+	}
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
+	}
+	// forkchoiceUpdatedV3 starts Prague and Osaka builds too. Those payloads
+	// carry execution requests and are fetched with getPayloadV4, so build
+	// them with the V4 builder.
+	if cfg := e.v1().chainConfig(); cfg != nil && engineLatestFork(cfg, nextNumber, uint64(attrs.Timestamp)) >= engineForkPrague {
+		v4 := &EngineAPIv4{api: e.api, blob: e, v1: e.v1()}
+		return v4.buildAndStorePayloadV4(head, headHash, &PayloadAttributesV4{
+			Timestamp:             attrs.Timestamp,
+			PrevRandao:            attrs.PrevRandao,
+			SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
+			Withdrawals:           attrs.Withdrawals,
+			ParentBeaconBlockRoot: attrs.ParentBeaconBlockRoot,
+		}), nil
 	}
 	payload, blockValue, blobsBundle := e.buildExecutionPayloadV3StatefulWithValue(head, headHash, attrs)
 	if payload == nil {
@@ -717,6 +744,20 @@ func (e *engineInvalidPayloadAttributesError) ErrorCode() int {
 // engineUnsupportedForkError is returned when Engine API is called with a
 // payload version that does not match the fork active at the given timestamp.
 // Error code -38005 per Engine API specification.
+// engineTooDeepReorgError refuses a forkchoice update that would move the
+// head back further than maxForkchoiceReorgDepth blocks.
+type engineTooDeepReorgError struct {
+	msg string
+}
+
+func (e *engineTooDeepReorgError) Error() string {
+	return e.msg
+}
+
+func (e *engineTooDeepReorgError) ErrorCode() int {
+	return -38006
+}
+
 type engineUnsupportedForkError struct {
 	msg string
 }

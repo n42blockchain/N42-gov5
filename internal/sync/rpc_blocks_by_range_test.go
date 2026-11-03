@@ -5,10 +5,12 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/test"
 
 	block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
@@ -173,4 +175,33 @@ func connectedStreamServer(t *testing.T, fp *fakeP2P) (client, server *fakeStrea
 	fp.addConnectedPeer(t, remote, 1)
 	client, server = newFakeStreamPair(remote, fp.self)
 	return client, server
+}
+
+func TestBodiesByRangePreservesStepWithDefaultLimits(t *testing.T) {
+	svc, fp := newRangeTestService(t, 100)
+	chain := newRangeChainStub(100)
+	for _, n := range []uint64{1, 3, 5} {
+		chain.byNumber[n] = syncTSmallBlock(n)
+	}
+	svc.cfg.chain = chain
+	client, server := connectedStreamServer(t, fp)
+	defer client.Close()
+	defer server.Close()
+	if err := server.SetProtocol(protocol.ID(p2p.RPCBodiesDataTopicV1 + fp.Encoding().ProtocolSuffix())); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- svc.bodiesByRangeRPCHandler(context.Background(), rangeReq(1, 3, 2), server) }()
+	for i, want := range []uint64{1, 3, 5} {
+		b, err := ReadChunkedBlock(client, fp, i == 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Number64().Uint64() != want {
+			t.Fatalf("got %d want %d", b.Number64().Uint64(), want)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }

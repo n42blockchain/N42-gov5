@@ -26,7 +26,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./qs-env.sh
 
 POOL_SLOTS=300000; POOL_QUEUE=100000; INTERVAL_MS=1000
-OFFSET=900000; WINDOWS=3; SENDERS=3000; PERTX=3000
+OFFSET=900000; WINDOWS=3; WINDOW_SEC=60; SENDERS=3000; PERTX=3000
+GASPRICE=10000000000
+RPC_MAX_GAS_PRICE=1000000000000
+CHAIN_ID=94
+CPU_PROFILE_SEC=0
 # Supply knobs. Defaults are the historical rig settings, so a round that does
 # not pass them stays comparable with every recorded round. Raise them when the
 # CHAIN outruns the load generator -- the signature is occupancy falling while
@@ -43,6 +47,10 @@ FLOODS=1
 # still healthy. Pace it slightly above what the chain consumes and the supply
 # lasts the whole round.
 RATE=0
+TARGET_DEPTH=0
+TX_GOSSIP=1
+STREAM=0
+INGEST_BASE=0
 BROADCAST=0; TAG=run; PROFILING=0; DECAY_SEC=0
 # Spread the flood over N recipients instead of the single 0x..dEaD sink. This
 # decides WHAT the round measures: at 0 a full block writes ~1,201 accounts (the
@@ -54,7 +62,7 @@ RECIPIENTS=0
 # transfer, 480M gas is 22,857 transactions and the block fills before the
 # interval expires. Vary this to separate a real per-block cost from one that
 # only looks large because it is divided by a small block (rule 20).
-GASCEIL=0
+GASCEIL=480000000
 # 5% over the 1.0 gwei floor: the floor itself reads back a few wei high.
 DECAY_FLOOR_WEI=1050000000
 BIN=$QS_BIN
@@ -66,12 +74,21 @@ while (( $# )); do
     --gasceil)     GASCEIL=$2; shift 2 ;;
     --offset)      OFFSET=$2; shift 2 ;;
     --windows)     WINDOWS=$2; shift 2 ;;
+    --window-sec)  WINDOW_SEC=$2; shift 2 ;;
+    --gasprice)    GASPRICE=$2; shift 2 ;;
+    --rpc-maxgasprice) RPC_MAX_GAS_PRICE=$2; shift 2 ;;
+    --chainid)     CHAIN_ID=$2; shift 2 ;;
+    --cpu-profile-sec) CPU_PROFILE_SEC=$2; shift 2 ;;
     --senders)     SENDERS=$2; shift 2 ;;
     --pertx)       PERTX=$2; shift 2 ;;
     --conc)        CONC=$2; shift 2 ;;
     --rpcbatch)    RPCBATCH=$2; shift 2 ;;
     --floods)      FLOODS=$2; shift 2 ;;
     --rate)        RATE=$2; shift 2 ;;
+    --target-depth) TARGET_DEPTH=$2; shift 2 ;;
+    --no-tx-gossip) TX_GOSSIP=0; shift ;;
+    --stream)      STREAM=1; shift ;;
+    --ingest-base) INGEST_BASE=$2; shift 2 ;;
     --recipients)  RECIPIENTS=$2; shift 2 ;;
     --decay-sec)   DECAY_SEC=$2; shift 2 ;;
     --tag)         TAG=$2; shift 2 ;;
@@ -83,6 +100,25 @@ while (( $# )); do
   esac
 done
 
+[[ $INGEST_BASE =~ ^(0|[1-9][0-9]*)$ && ${#INGEST_BASE} -le 5 ]] && (( INGEST_BASE == 0 || (INGEST_BASE > 1024 && INGEST_BASE <= 65529) )) || {
+  echo "invalid --ingest-base (0=off, otherwise 1025..65529)" >&2; exit 2;
+}
+export QS_INGEST_BASE=$INGEST_BASE
+
+for value in "$POOL_SLOTS" "$POOL_QUEUE" "$INTERVAL_MS" "$GASCEIL" "$WINDOWS" "$WINDOW_SEC" "$SENDERS" "$PERTX" "$CONC" "$RPCBATCH" "$FLOODS" "$GASPRICE" "$CHAIN_ID" "$RPC_MAX_GAS_PRICE"; do
+  [[ $value =~ ^[1-9][0-9]*$ && ${#value} -le 18 ]] || { echo "invalid positive benchmark parameter: $value" >&2; exit 2; }
+done
+for value in "$OFFSET" "$RATE" "$TARGET_DEPTH" "$RECIPIENTS" "$DECAY_SEC" "$CPU_PROFILE_SEC"; do
+  [[ $value =~ ^(0|[1-9][0-9]*)$ && ${#value} -le 12 ]] || { echo "invalid nonnegative benchmark parameter: $value" >&2; exit 2; }
+done
+if (( INGEST_BASE && RPCBATCH < 2 )); then echo "binary ingest requires --rpcbatch >= 2" >&2; exit 2; fi
+(( RPCBATCH <= 200 )) || { echo "--rpcbatch exceeds eth_batchRawTransaction's 200-tx limit" >&2; exit 2; }
+(( GASPRICE <= RPC_MAX_GAS_PRICE )) || { echo "--gasprice exceeds --rpc-maxgasprice" >&2; exit 2; }
+(( CPU_PROFILE_SEC <= 60 )) || { echo "--cpu-profile-sec must be at most 60" >&2; exit 2; }
+(( TARGET_DEPTH == 0 || FLOODS == 1 )) || { echo "--target-depth requires one coordinated flood process" >&2; exit 2; }
+(( SENDERS <= 1000000 )) || { echo "sender ranges would overlap across flood processes" >&2; exit 2; }
+[[ $TAG =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "invalid --tag" >&2; exit 2; }
+
 TXFLOOD=$QS_TOOLS/txflood
 [[ -x $TXFLOOD ]] || { echo "txflood not found at $TXFLOOD" >&2; exit 1; }
 JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
@@ -93,6 +129,62 @@ JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
 }
 OUT=$QS_ROOT/bench-flood-$TAG.out
 ERR=$QS_ROOT/bench-flood-$TAG.err
+RESULT=$QS_ROOT/bench-result-$TAG.json
+
+# Fail before stopping a fleet or opening any journals if this execution
+# environment cannot run a networked benchmark or write the target directories.
+python3 ./bench-preflight.py --root "$QS_ROOT" --node-root "$QS_NODE_ROOT" --seed "$QS_SEED" --bin "$BIN"
+
+# Record only explicit benchmark settings, never validator/faucet key material.
+python3 - "$QS_ROOT/bench-config-$TAG.json" "$BIN" \
+  tag "$TAG" chain "$QS_CHAIN" chain_id "$CHAIN_ID" node_root "$QS_NODE_ROOT" \
+  txflood_binary "$QS_TOOLS/txflood" \
+  gas_limit "$GASCEIL" gas_price "$GASPRICE" rpc_max_gas_price "$RPC_MAX_GAS_PRICE" interval_ms "$INTERVAL_MS" \
+  windows "$WINDOWS" window_seconds "$WINDOW_SEC" senders "$SENDERS" \
+  per_sender "$PERTX" recipients "$RECIPIENTS" offset "$OFFSET" \
+  concurrency "$CONC" rpc_batch "$RPCBATCH" floods "$FLOODS" rate "$RATE" target_depth "$TARGET_DEPTH" \
+  broadcast "$BROADCAST" tx_gossip "$TX_GOSSIP" stream "$STREAM" ingest_base "$INGEST_BASE" pool_slots "$POOL_SLOTS" pool_queue "$POOL_QUEUE" \
+  profiling "$PROFILING" cpu_profile_seconds "$CPU_PROFILE_SEC" <<'PY'
+import hashlib, json, os, platform, sys
+from pathlib import Path
+output, binary = Path(sys.argv[1]), Path(sys.argv[2])
+pairs = iter(sys.argv[3:])
+record = dict(zip(pairs, pairs))
+with binary.open('rb') as stream:
+    record['binary_sha256'] = hashlib.file_digest(stream, 'sha256').hexdigest()
+record['binary'] = str(binary.resolve())
+with Path(record['txflood_binary']).open('rb') as stream:
+    record['txflood_sha256'] = hashlib.file_digest(stream, 'sha256').hexdigest()
+record['harness_sha256'] = {}
+for name in ('bench-run.sh', 'bench-7node.sh', 'qs-env.sh', 'stop-fleet.sh',
+             'measure-tps.sh', 'measure-tps.py', 'bench-preflight.py'):
+    with Path(name).open('rb') as stream:
+        record['harness_sha256'][name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+record['cpu_affinity'] = sorted(os.sched_getaffinity(0))
+record['requested_node_cpu_sets'] = {str(i): os.environ[f'QS_CPUSET_{i}'] for i in range(7)
+                                     if os.environ.get(f'QS_CPUSET_{i}')}
+record['requested_flood_cpu_set'] = os.environ.get('QS_FLOOD_CPUSET', '')
+record['kernel'] = platform.release()
+record['environment'] = {key: os.environ.get(key) for key in (
+    'WRITE_MAP', 'NO_SYNC', 'N42_MDBX_SYNC', 'N42_MDBX_DIRTY_GB', 'MDBX_READAHEAD', 'N42_MDBX_COMMIT_TRACE', 'N42_MDBX_EARLY_WRITEBACK',
+    'QS_MAXCPU', 'N42_MAX_GOSSIP_MB', 'N42_MDBX_MAPSIZE_GB', 'N42_TXINDEX_TAIL',
+    'N42_BLOCK_CACHE_BLOCKS', 'N42_PUSH_BEFORE_WRITE', 'N42_JOURNAL_TRACE',
+    'N42_SENDER_CACHE_SLOTS', 'N42_SEPARATE_VOTE_DB', 'N42_STATE_READ_QMDB', 'N42_ACCOUNT_PREFETCH_WORKERS', 'N42_QMDB_RETAIN_ENTRIES', 'GOGC', 'GOMEMLIMIT')}
+output.write_text(json.dumps(record, indent=2) + '\n')
+PY
+
+FLOOD_PIDS=(); FLOOD_OUTS=(); LAUNCH_ATTEMPTED=0
+kill_floods() { for pid in "${FLOOD_PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done; }
+cleanup() {
+  local result=$?
+  trap - EXIT INT TERM
+  kill_floods
+  if (( LAUNCH_ATTEMPTED )); then ./stop-fleet.sh --no-inspect || result=1; fi
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms gasceil=${GASCEIL:-default} offset=$OFFSET broadcast=$BROADCAST recipients=${RECIPIENTS} supply=${FLOODS}x${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH}/rate${RATE} ==="
 
@@ -117,6 +209,7 @@ fi
 # file cleanup for node generations created before the MDBX journal migration.
 for i in {0..6}; do
   d="$QS_NODE_ROOT$i"
+  [[ -d $d/chaindata ]] || continue  # launcher seeds a fresh node below
   if ! "$JOURNAL_RESET" -datadir "$d/chaindata" -apply; then
     echo "failed to clear persisted txpool journal for node $i" >&2
     exit 1
@@ -125,8 +218,13 @@ for i in {0..6}; do
 done
 
 bench_args=(--bin "$BIN" --pool-slots "$POOL_SLOTS" --pool-queue "$POOL_QUEUE" --interval-ms "$INTERVAL_MS")
-if (( GASCEIL )); then bench_args+=(--gasceil "$GASCEIL"); fi
+bench_args+=(--gasceil "$GASCEIL")
+bench_args+=(--rpc-maxgasprice "$RPC_MAX_GAS_PRICE")
+if (( TARGET_DEPTH )); then bench_args+=(--txpool-rpc); fi
+if (( ! TX_GOSSIP )); then bench_args+=(--no-tx-gossip); fi
+if (( INGEST_BASE )); then bench_args+=(--ingest-base "$INGEST_BASE"); fi
 if (( PROFILING )); then bench_args+=(--profiling); fi
+LAUNCH_ATTEMPTED=1
 ./bench-7node.sh "${bench_args[@]}" >/dev/null
 
 sleep 2
@@ -135,7 +233,7 @@ for i in {0..6}; do
   pid=$(qs_node_pid "$i") || { echo "benchmark node $i failed to start" >&2; launch_ok=0; continue; }
   args=$(tr '\0' ' ' <"/proc/$pid/cmdline")
   [[ $args == *"--block-interval-ms $INTERVAL_MS"* &&
-     $args == *"--miner.gasceil 480000000"* &&
+     $args == *"--miner.gasceil $GASCEIL "* &&
      $args == *"--txpool.globalslots $POOL_SLOTS"* ]] || {
     echo "node $i is not running the requested benchmark profile" >&2
     launch_ok=0
@@ -161,6 +259,33 @@ while (( SECONDS < deadline )); do
 done
 if (( ! ready )); then echo "RPC not ready on all 7 nodes - aborting round" >&2; exit 1; fi
 echo "all 7 RPC ready"
+if (( INGEST_BASE )); then
+  python3 - "$INGEST_BASE" <<'PY'
+import socket, sys
+for port in range(int(sys.argv[1]), int(sys.argv[1]) + 7):
+    with socket.create_connection(('127.0.0.1', port), timeout=5) as conn:
+        conn.sendall(bytes(4))  # Empty frame: verify protocol without submitting a transaction.
+        response = b''
+        while len(response) < 4:
+            chunk = conn.recv(4 - len(response))
+            if not chunk:
+                raise SystemExit(f'ingest port {port}: premature EOF')
+            response += chunk
+        if response != bytes(4):
+            raise SystemExit(f'ingest port {port}: invalid empty-frame acknowledgement')
+print('all 7 binary ingest endpoints ready')
+PY
+fi
+python3 - "$QS_HTTP_BASE" "$CHAIN_ID" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('measure', 'measure-tps.py')
+measure = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(measure)
+for port in range(int(sys.argv[1]), int(sys.argv[1]) + 7):
+    chain = measure.quantity(measure.rpc(f'http://127.0.0.1:{port}', 'eth_chainId', []))
+    if chain != int(sys.argv[2]):
+        raise SystemExit(f'port {port}: chain ID {chain} differs from requested {sys.argv[2]}')
+PY
 
 if (( DECAY_SEC > 0 )); then
   # The decay is only real if the chain is PRODUCING. After a heavy round the
@@ -197,16 +322,24 @@ for (( p = QS_HTTP_BASE; p <= QS_HTTP_BASE + 6; p++ )); do rpcs="$rpcs""http://1
 # a million apart rather than by SENDERS: an overlap silently reuses accounts
 # that the other generator has already advanced the nonce on, which is rule 1's
 # demote spiral with a harder-to-see cause.
-FLOOD_PIDS=(); FLOOD_OUTS=()
 for (( f = 0; f < FLOODS; f++ )); do
   fout=$OUT; ferr=$ERR
   if (( FLOODS > 1 )); then fout=$OUT.$f; ferr=$ERR.$f; fi
-  flood=(-rpc "${rpcs%,}" -senders "$SENDERS" -pertx "$PERTX" -gasprice 10000000000
+  flood=(-rpc "${rpcs%,}" -chainid "$CHAIN_ID" -senders "$SENDERS" -pertx "$PERTX" -gasprice "$GASPRICE"
          -rpcbatch "$RPCBATCH" -conc "$CONC" -sender-offset "$(( OFFSET + f * 1000000 ))")
   if (( RATE > 0 )); then flood+=(-rate "$RATE"); fi
+  if (( TARGET_DEPTH > 0 )); then flood+=(-target-depth "$TARGET_DEPTH"); fi
+  if (( STREAM )); then flood+=(-stream); fi
+  if (( INGEST_BASE )); then
+    ingest_addrs=""
+    for (( p=INGEST_BASE; p<INGEST_BASE+7; p++ )); do ingest_addrs+="127.0.0.1:$p,"; done
+    flood+=(-ingest "${ingest_addrs%,}")
+  fi
   if (( RECIPIENTS > 0 )); then flood+=(-recipients "$RECIPIENTS"); fi
   if (( BROADCAST )); then flood+=(-broadcast); else flood+=(-shard-senders); fi
-  setsid "$TXFLOOD" "${flood[@]}" >"$fout" 2>"$ferr" </dev/null &
+  flood_pin=()
+  if [[ -n ${QS_FLOOD_CPUSET:-} ]]; then flood_pin=(taskset -c "$QS_FLOOD_CPUSET"); fi
+  setsid "${flood_pin[@]}" "$TXFLOOD" "${flood[@]}" >"$fout" 2>"$ferr" </dev/null &
   FLOOD_PIDS+=($!)
   FLOOD_OUTS+=("$fout")
 
@@ -225,8 +358,6 @@ for (( f = 0; f < FLOODS; f++ )); do
     done
   fi
 done
-
-kill_floods() { for pid in "${FLOOD_PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done; }
 
 # Funding and pre-signing must finish before the measured windows open — for
 # EVERY generator. Opening the windows while one is still funding measures a
@@ -255,8 +386,16 @@ else
   exit 1
 fi
 
-./measure-tps.sh --windows "$WINDOWS" --window-sec 60
+./measure-tps.sh --windows "$WINDOWS" --window-sec "$WINDOW_SEC" --expected-gas-limit "$GASCEIL" --json-out "$RESULT"
+
+if (( CPU_PROFILE_SEC > 0 )); then
+  echo "measurement complete; collecting node 0 CPU profile outside measured windows"
+  curl -fsS --max-time "$((CPU_PROFILE_SEC + 30))" \
+    "http://127.0.0.1:$QS_PPROF_BASE/debug/pprof/profile?seconds=$CPU_PROFILE_SEC" \
+    -o "$QS_ROOT/bench-cpu-$TAG.pprof"
+fi
 
 kill_floods
 ./stop-fleet.sh --no-inspect
+LAUNCH_ATTEMPTED=0
 echo "=== $TAG done ==="

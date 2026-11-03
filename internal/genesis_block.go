@@ -293,6 +293,13 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 			root := emptyExecutionRequestsHash()
 			head.RequestsHash = &root
 		}
+		if cfg.IsGlamsterdam(uint64(g.GenesisConfig.Timestamp)) {
+			// EIP-7928: the genesis block's access list is empty; EIP-7843:
+			// its slot number comes from the genesis spec (0 by default).
+			balHash := hash.EmptyUncleHash // keccak256(rlp([]))
+			head.BlockAccessListHash = &balHash
+			head.SlotNumber = uint64Ptr(g.GenesisConfig.SlotNumber)
+		}
 	}
 
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
@@ -404,6 +411,14 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 		if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != qroot {
 			return nil, statedb, fmt.Errorf("qmdb genesis root mismatch: header=%s computed=%s", block.StateRoot(), qroot)
 		}
+		// The alloc and forest have been written in this same transaction.
+		// Record explicit execution evidence only for the verified root; a
+		// caller-supplied root override is not proof of the seeded state.
+		if block.StateRoot() == qroot {
+			if err := rawdb.WriteQMDBApplied(tx, 0, block.Hash()); err != nil {
+				return nil, statedb, fmt.Errorf("cannot record qmdb genesis applied head: %w", err)
+			}
+		}
 	} else if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
 		if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
 			return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)
@@ -483,7 +498,7 @@ func mainnetV2GenesisBlock() *conf.Genesis {
 // mainnetV2StaggeredGenesisBlock is identical to mainnetV2GenesisBlock (same
 // timestamp/miners, i.e. the same real chain data) but selects
 // MainnetV2StaggeredChainConfig, which activates Shanghai/Cancun/Pectra/
-// Osaka/Fusaka/Glamsterdam at N42-block heights/times calendar-matched to
+// Osaka/Fusaka at N42-block heights/times calendar-matched to
 // their real Ethereum mainnet activation dates instead of all-at-genesis.
 //
 // Alloc uses allocs/mainnet_v2_staggered.json, a copy of allocs/mainnet.json

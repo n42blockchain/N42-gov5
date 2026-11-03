@@ -103,6 +103,10 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 		BaseFee:     &baseFee,
 		GasLimit:    header.GasLimit,
 	}
+	// EIP-7843: SLOTNUM reads the header's slot number on Amsterdam blocks.
+	if fork.IsGlamsterdam && header.SlotNumber != nil {
+		blockCtx.Slot = *header.SlotNumber
+	}
 
 	txCtx := evmtypes.TxContext{
 		Origin:   msg.From(),
@@ -135,10 +139,8 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 	}
 
 	return &TxResult{
-		GasUsed: result.UsedGas,
-		// EIP-7778 (Glamsterdam): the receipt trie accumulates the
-		// block-level figure, not the sender's post-refund bill.
-		CumulativeGas:   cumulativeGas + result.BlockGasUsed,
+		GasUsed:         result.UsedGas,
+		CumulativeGas:   cumulativeGas + result.UsedGas,
 		Failed:          result.Err != nil,
 		ContractAddress: contractAddr,
 		Logs:            logs,
@@ -222,6 +224,9 @@ func forkToChainConfig(f ForkConfig, chainID uint64, blockNum *big.Int, blockTim
 	if f.IsPQPrecompiles {
 		cfg.PQPrecompilesTime = new(big.Int).SetUint64(blockTime)
 	}
+	if f.IsGlamsterdam {
+		cfg.GlamsterdamTime = new(big.Int).SetUint64(blockTime)
+	}
 	return cfg
 }
 
@@ -245,6 +250,7 @@ func forkToChainRules(f ForkConfig) params.Rules {
 		IsPectra:              f.IsPectra,
 		IsOsaka:               f.IsOsaka,
 		IsFusaka:              f.IsFusaka,
+		IsGlamsterdam:         f.IsGlamsterdam,
 		IsNano:                f.IsNano,
 		IsMoran:               f.IsMoran,
 		IsEip1559FeeCollector: f.IsEip1559FeeCollector,

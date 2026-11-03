@@ -23,6 +23,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -45,6 +46,9 @@ type BlockResult struct {
 	// BAL fork is active. The executor stores it (keyed by block hash) so the
 	// out-of-band BAL service can serve it. nil when the fork is off.
 	BALRaw []byte
+	// Requests are the EIP-7685 execution requests the block emitted (Prague
+	// on), checked against header.RequestsHash by ValidateBlockOutputs.
+	Requests []hexutil.Bytes
 }
 
 // Trace-mode env vars resolved once at process startup. Reading
@@ -76,7 +80,13 @@ func applyEthelWithdrawals(chainCfg *params.ChainConfig, header *block.Header, i
 	}
 	gwei := uint256.NewInt(params.GWei)
 	for _, withdrawal := range withdrawals {
-		if withdrawal == nil || withdrawal.Amount == 0 {
+		if withdrawal == nil {
+			continue
+		}
+		if withdrawal.Amount == 0 {
+			// Credits nothing, but EIP-7928 still lists the recipient; a
+			// no-op unless the block access list is recorded.
+			ibs.RecordAccountAccess(withdrawal.Address)
 			continue
 		}
 		amount := new(uint256.Int).Mul(uint256.NewInt(withdrawal.Amount), gwei)
@@ -115,6 +125,17 @@ func ProcessBlock(
 	precomputedSenders []types.Address,
 	stateWriter ...state.StateWriter,
 ) (*BlockResult, error) {
+	// EIP-7934: from Osaka the block's RLP encoding is capped, checked before
+	// execution as geth's ValidateBody does.
+	if err := validateBlockRLPSize(chainCfg, header, txs, uncles, withdrawals); err != nil {
+		return nil, err
+	}
+	// A Cancun block without a parent beacon root is invalid (geth header
+	// verification); without this the EIP-4788 call would be skipped silently.
+	if err := misc.VerifyEIP4788Header(chainCfg, header); err != nil {
+		return nil, err
+	}
+
 	usedGas := new(uint64)
 	gp := new(common.GasPool)
 	gp.AddGas(header.GasLimit)
@@ -125,6 +146,17 @@ func ProcessBlock(
 	if chainCfg.DAOForkSupport && chainCfg.DAOForkBlock != nil &&
 		chainCfg.DAOForkBlock.Cmp(header.Number.ToBig()) == 0 {
 		misc.ApplyDAOHardFork(ibs)
+	}
+
+	// EIP-7928 (Amsterdam): record the block access list from index 0, the
+	// pre-execution system calls, and check it against the header as the
+	// engine import does. The recorder's own reads go through the block's
+	// state reader like every other read, so a witness stream recorded by the
+	// executor replays here in the same order. Before Amsterdam nothing
+	// changes, so existing witness streams are unaffected.
+	specBAL := chainCfg.UsesEIP7928AccessList(header.Time)
+	if specBAL {
+		ibs.EnableBlockAccessList()
 	}
 
 	// Pre-block system calls (beacon root, Prague system contracts, etc.).
@@ -155,7 +187,9 @@ func ProcessBlock(
 	// observer (delegates to noop); nil and zero-overhead when the fork is off.
 	writer := state.StateWriter(noop)
 	var balCap *iinternal.BALCapture
-	if chainCfg.IsBAL(header.Time) {
+	// N42's own BAL commits to the same header field, so it gives way to the
+	// spec list.
+	if chainCfg.IsBAL(header.Time) && !specBAL {
 		balCap = iinternal.NewBALCapture(noop)
 		writer = balCap
 	}
@@ -186,6 +220,7 @@ func ProcessBlock(
 				continue
 			}
 		}
+		ibs.SetBlockAccessIndex(uint64(i) + 1)
 		ibs.Prepare(txn.Hash(), blockHash, i)
 		if balCap != nil {
 			balCap.BeginTx(txn.Hash())
@@ -332,14 +367,33 @@ func ProcessBlock(
 
 	}
 
+	// The withdrawals and end-of-block system calls are the last block
+	// access index.
+	ibs.SetBlockAccessIndex(uint64(len(txs)) + 1)
+
 	// EIP-4895 validator withdrawals (Shanghai+). Apply before the end-of-block
 	// system calls so Prague-era deposit/request processing sees the updated
 	// balances if a future fork ever couples the two.
 	applyEthelWithdrawals(chainCfg, header, ibs, withdrawals)
 
 	// Post-block system calls depend on the receipts emitted by executed transactions.
-	if _, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine); err != nil {
+	requests, err := iinternal.ProcessExecutionBlockEnd(receipts, chainCfg, ibs, header, engine)
+	if err != nil {
 		return nil, err
+	}
+
+	if specBAL {
+		list := ibs.BlockAccessList()
+		if err := list.ValidateSize(header.GasLimit); err != nil {
+			return nil, err
+		}
+		got, err := list.Hash()
+		if err != nil {
+			return nil, fmt.Errorf("compute block access list hash: %w", err)
+		}
+		if want := header.BlockAccessListHash; want == nil || *want != got {
+			return nil, fmt.Errorf("block access list hash mismatch: header %v, computed %s", want, got.Hex())
+		}
 	}
 
 	// Finalize (block rewards + uncle rewards).
@@ -370,5 +424,43 @@ func ProcessBlock(
 		}
 	}
 
-	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders, BALRaw: balRaw}, nil
+	return &BlockResult{GasUsed: iinternal.HeaderGasUsed(chainCfg, header, gp, *usedGas), Receipts: receipts, Senders: senders, BALRaw: balRaw, Requests: requests}, nil
+}
+
+// ValidateBlockOutputs checks a replayed block's outputs against the header
+// commitments geth's ValidateState checks besides gas used: the logs bloom,
+// the receipts root and, from Prague, the requests hash.
+//
+// The receipts root is checked from Byzantium only: earlier receipts carried
+// an intermediate state root instead of a status, which replay does not
+// compute. A zero header bloom is not compared because the columnar header
+// store (headerc) strips the bloom; the receipts root still commits to every
+// receipt bloom and log.
+func ValidateBlockOutputs(chainCfg *params.ChainConfig, header *block.Header, result *BlockResult) error {
+	if header.Bloom != (block.Bloom{}) {
+		// The block bloom is the union of the receipt blooms execution already
+		// computed, so no log is hashed again.
+		var bloom block.Bloom
+		for _, r := range result.Receipts {
+			rb := r.GetBloom()
+			for i := range bloom {
+				bloom[i] |= rb[i]
+			}
+		}
+		if bloom != header.Bloom {
+			return errors.New("logs bloom mismatch")
+		}
+	}
+	if chainCfg.IsByzantium(header.Number.Uint64()) {
+		if got := EthReceiptHash(result.Receipts); got != header.ReceiptHash {
+			return fmt.Errorf("receipts root mismatch: got %s, want %s", got.Hex(), header.ReceiptHash.Hex())
+		}
+	}
+	if chainCfg.IsPrague(header.Time) {
+		got := iinternal.ExecutionRequestsHash(result.Requests)
+		if header.RequestsHash == nil || *header.RequestsHash != got {
+			return fmt.Errorf("requests hash mismatch: got %s, want %v", got.Hex(), header.RequestsHash)
+		}
+	}
+	return nil
 }

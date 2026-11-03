@@ -161,7 +161,8 @@ func validateExecutionPayloadBlockRLPSize(blk block.IBlock, rawTxs []hexutil.Byt
 		return nil
 	}
 	rules := cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
-	if rules == nil || (!rules.IsOsaka && !rules.IsFusaka) {
+	// EIP-7934 is an Ethereum Osaka rule; Fusaka and Glamsterdam imply IsOsaka.
+	if rules == nil || !rules.IsOsaka {
 		return nil
 	}
 	size, err := executionPayloadBlockRLPSize(blk, rawTxs, cfg, opts)
@@ -251,6 +252,22 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 		root := executionRequestsHash(nil)
 		requestsHash = &root
 	}
+	// Amsterdam headers carry the block access list hash and the slot
+	// number, as ethCompatibleHeaderHash encodes them.
+	var (
+		balHash *types.Hash
+		slot    *uint64
+	)
+	if cfg != nil && cfg.IsGlamsterdam(header.Time) {
+		balHash = new(types.Hash)
+		if header.BlockAccessListHash != nil {
+			*balHash = *header.BlockAccessListHash
+		}
+		slot = new(uint64)
+		if header.SlotNumber != nil {
+			*slot = *header.SlotNumber
+		}
+	}
 	return &ethRPCHeader{
 		ParentHash:       header.ParentHash,
 		UncleHash:        hash.EmptyUncleHash,
@@ -273,6 +290,9 @@ func enginePayloadRLPHeader(header *block.Header, cfg *params.ChainConfig, opts 
 		ExcessBlobGas:    excessBlobGas,
 		ParentBeaconRoot: opts.parentBeaconRoot,
 		RequestsHash:     requestsHash,
+
+		BlockAccessListHash: balHash,
+		SlotNumber:          slot,
 	}
 }
 
@@ -284,7 +304,13 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		return err
 	}
 	isContractCreation := tx.To() == nil
-	if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
+	// EIP-7825 caps the gas limit from Osaka; Amsterdam (EIP-8037) moves the
+	// cap to TX_MAX_TOTAL_GAS_LIMIT, the excess feeding the state reservoir.
+	if rules.IsGlamsterdam {
+		if tx.Gas() > params.MaxTxTotalGasEIP8037 {
+			return errTxGasLimitTooHigh
+		}
+	} else if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
 		return errTxGasLimitTooHigh
 	}
 
@@ -340,6 +366,13 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		}
 	}
 
+	// Amsterdam's intrinsic cost and calldata floor (EIP-2780/7976/7981)
+	// depend on the sender, the value and the recipient; the state
+	// transition checks them exactly, so this stateless pre-check stops at
+	// Osaka.
+	if rules.IsGlamsterdam {
+		return nil
+	}
 	accessListLen, storageKeysLen := accessListStats(tx.AccessList())
 	intrinsicGas, floorGas, reason := txpoolcfg.CalcIntrinsicGas(
 		uint64(len(tx.Data())),
@@ -366,6 +399,86 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 	if rules.IsPrague && floorGas > intrinsicGas {
 		if tx.Gas() < floorGas {
 			return errFloorDataGasTooLow
+		}
+	}
+	return nil
+}
+
+// validateWireBlockBody applies to a block that arrived as wire RLP (devp2p,
+// RLP import) the body checks engine_newPayload runs before execution: every
+// transaction's shape for the active fork (validateExecutionPayloadTransaction)
+// and, from Cancun, the header's blobGasUsed against the blobs the body
+// carries. The shared execution core does not repeat these, so without this a
+// wire block with an oversized creation initcode, a malformed EIP-7702 or
+// blob transaction, or a wrong blobGasUsed would be accepted.
+func validateWireBlockBody(blk *block.Block, cfg *params.ChainConfig) error {
+	if blk == nil || cfg == nil {
+		return nil
+	}
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil || header.Number == nil {
+		return nil
+	}
+	number := header.Number.Uint64()
+	rules := cfg.RulesWithTimestamp(number, header.Time)
+	baseFee := new(uint256.Int)
+	if header.BaseFee != nil {
+		baseFee.Set(header.BaseFee)
+	}
+	var excessBlobGas uint64
+	if header.ExcessBlobGas != nil {
+		excessBlobGas = *header.ExcessBlobGas
+	}
+	var blobBaseFee *uint256.Int
+	if rules.IsCancun {
+		blobBaseFee = cfg.CalcBlobFee(excessBlobGas, header.Time)
+	}
+	var blobs uint64
+	for i, tx := range blk.Transactions() {
+		if err := validateExecutionPayloadTransaction(tx, rules, baseFee, blobBaseFee, header.GasLimit); err != nil {
+			return fmt.Errorf("invalid transaction %d: %w", i, err)
+		}
+		blobs += uint64(len(tx.BlobHashes()))
+	}
+	if !rules.IsCancun {
+		return nil
+	}
+	if blobs > cfg.BlobMaxBlobsPerBlock(header.Time) {
+		return fmt.Errorf("too many blobs in block: have %d, max %d", blobs, cfg.BlobMaxBlobsPerBlock(header.Time))
+	}
+	want := blobs * cfg.BlobGasPerBlob(header.Time)
+	if header.BlobGasUsed == nil || *header.BlobGasUsed != want {
+		var have uint64
+		if header.BlobGasUsed != nil {
+			have = *header.BlobGasUsed
+		}
+		return fmt.Errorf("blob gas used mismatch (header %d, calculated %d)", have, want)
+	}
+	return nil
+}
+
+// validateWireBlockForkFields checks what a wire block body must agree with
+// in its header, which a payload gets from its versioned shape instead: no
+// blob fields before Cancun, and from Shanghai a withdrawalsRoot that commits
+// to the withdrawals the body carries.
+func validateWireBlockForkFields(blk *block.Block, withdrawals []*Withdrawal, cfg *params.ChainConfig) error {
+	if blk == nil || cfg == nil {
+		return nil
+	}
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil || header.Number == nil {
+		return nil
+	}
+	number := header.Number.Uint64()
+	if !cfg.IsCancunAt(number, header.Time) && (header.BlobGasUsed != nil || header.ExcessBlobGas != nil || header.ParentBeaconRoot != nil) {
+		return errors.New("blob header fields present before Cancun")
+	}
+	if cfg.IsShanghaiAt(number, header.Time) {
+		if header.WithdrawalsHash == nil {
+			return errors.New("missing withdrawalsRoot")
+		}
+		if got := withdrawalsRoot(withdrawals); got != *header.WithdrawalsHash {
+			return fmt.Errorf("invalid withdrawalsRoot: have %s, want %s", header.WithdrawalsHash.Hex(), got.Hex())
 		}
 	}
 	return nil

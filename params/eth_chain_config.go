@@ -15,6 +15,11 @@ func ethBigInt(value string) *big.Int {
 	return n
 }
 
+func ethAddress(hex string) *types.Address {
+	addr := types.HexToAddress(hex)
+	return &addr
+}
+
 var (
 	EthereumMainnetGenesisHash = types.HexToHash("0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3")
 	EthereumSepoliaGenesisHash = types.HexToHash("0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9")
@@ -46,6 +51,7 @@ var (
 		OsakaTime:               big.NewInt(1764798551),
 		BPO1Time:                big.NewInt(1765290071),
 		BPO2Time:                big.NewInt(1767747671),
+		DepositContractAddress:  ethAddress("0x00000000219ab540356cBB839Cbe05303d7705Fa"),
 		Ethash:                  new(EthashConfig),
 	}
 
@@ -73,6 +79,7 @@ var (
 		OsakaTime:               big.NewInt(1760427360),
 		BPO1Time:                big.NewInt(1761017184),
 		BPO2Time:                big.NewInt(1761607008),
+		DepositContractAddress:  ethAddress("0x7f02C3E3c98b133055B8B348B2Ac625669Ed295D"),
 		Ethash:                  new(EthashConfig),
 	}
 
@@ -99,6 +106,7 @@ var (
 		ShanghaiTime:                  big.NewInt(1696000704),
 		CancunTime:                    big.NewInt(1707305664),
 		PragueTime:                    big.NewInt(1742224320),
+		DepositContractAddress:        ethAddress("0x4242424242424242424242424242424242424242"),
 		Ethash:                        new(EthashConfig),
 	}
 )

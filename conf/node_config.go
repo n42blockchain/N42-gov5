@@ -35,8 +35,11 @@ type NodeConfig struct {
 	HTTP        bool   `json:"http" yaml:"http" `
 	HTTPHost    string `json:"http_host" yaml:"http_host" `
 	HTTPPort    string `json:"http_port" yaml:"http_port"`
-	HTTPApi     string `json:"http_api" yaml:"http_api"`
-	HTTPCors    string `json:"http_cors" yaml:"http_cors"`
+	// RPCMaxGasPrice is the native transaction RPC price ceiling in wei.
+	// Zero retains the default 1000 gwei ceiling.
+	RPCMaxGasPrice uint64 `json:"rpc_max_gas_price" yaml:"rpc_max_gas_price"`
+	HTTPApi        string `json:"http_api" yaml:"http_api"`
+	HTTPCors       string `json:"http_cors" yaml:"http_cors"`
 
 	WS               bool   `json:"ws" yaml:"ws" `
 	WSHost           string `json:"ws_host" yaml:"ws_host" `

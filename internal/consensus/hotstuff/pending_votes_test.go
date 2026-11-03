@@ -157,3 +157,63 @@ func TestSaveEquivocationEvidence(t *testing.T) {
 		t.Fatalf("read back: %v", err)
 	}
 }
+
+func TestLoadPendingVotesRejectsTruncation(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error { return tx.Put(modules.HotStuffState, pendingVotesKey, make([]byte, 44)) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		_, err := LoadPendingVotes(tx)
+		if err == nil {
+			t.Fatal("accepted incomplete commit count")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadPendingVotesRejectsMalformedRecords(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	var valid []byte
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		if err := SavePendingVotes(tx, &PendingVotesState{View: 1, PrepareVotes: map[ValidatorIndex][]byte{0: {1, 2}}, CommitVotes: map[ValidatorIndex][]byte{1: {3}}}); err != nil {
+			return err
+		}
+		data, err := tx.GetOne(modules.HotStuffState, pendingVotesKey)
+		valid = append([]byte(nil), data...)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cases := [][]byte{}
+	for n := 0; n < len(valid); n++ {
+		cases = append(cases, append([]byte(nil), valid[:n]...))
+	}
+	cases = append(cases, append(append([]byte(nil), valid...), 0))
+	huge := append([]byte(nil), valid...)
+	for i := 40; i < 44; i++ {
+		huge[i] = 255
+	}
+	cases = append(cases, huge)
+	huge = append([]byte(nil), valid...)
+	for i := 48; i < 52; i++ {
+		huge[i] = 255
+	}
+	cases = append(cases, huge)
+	for i, data := range cases {
+		if err := db.Update(context.Background(), func(tx kv.RwTx) error { return tx.Put(modules.HotStuffState, pendingVotesKey, data) }); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.View(context.Background(), func(tx kv.Tx) error {
+			pv, err := LoadPendingVotes(tx)
+			if err == nil || pv != nil {
+				t.Fatalf("case %d accepted malformed record", i)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

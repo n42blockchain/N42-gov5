@@ -214,6 +214,95 @@ func touchesAnyRange(txs []*transaction.Transaction, addrs []types.Address) bool
 	return false
 }
 
+// canDeferParallelFees runs after sender recovery and block-start processing.
+// One executable transaction makes deferral unsafe for the entire block.
+func canDeferParallelFees(txs []*transaction.Transaction, recipients []types.Address, ibs *state.IntraBlockState, precompiles []types.Address) (bool, error) {
+	if !canDeferParallelFeesStatic(txs, recipients, precompiles, nil) {
+		return false, nil
+	}
+	seen := make(map[types.Address]bool)
+	for _, tx := range txs {
+		to := tx.To()
+		if seen[*to] {
+			continue
+		}
+		seen[*to] = true
+		if len(ibs.GetCode(*to)) != 0 {
+			return false, ibs.Error()
+		}
+		if err := ibs.Error(); err != nil {
+			return false, fmt.Errorf("parallel fee eligibility: %w", err)
+		}
+	}
+	return true, nil
+}
+
+// canDeferParallelFeesStatic is canDeferParallelFees without the state
+// reads: every transaction a value transfer (no creation, no calldata, no
+// authorization, no precompile) by a known sender, none from or to a fee
+// recipient. A sender is known when declared (From) or recovered under
+// signer (memoised by the run's sender recovery). Whether a recipient carries code is
+// left to the caller: the Block-STM run checks it on its workers
+// (runParallelMode, feeCodeSeen), so a block of plain transfers neither
+// reads its recipients serially nor materialises them in the block's state
+// before the wave. Large lists are scanned across goroutines, as touchesAny.
+func canDeferParallelFeesStatic(txs []*transaction.Transaction, recipients []types.Address, precompiles []types.Address, signer transaction.Signer) bool {
+	check := func(part []*transaction.Transaction) bool {
+		for _, tx := range part {
+			to := tx.To()
+			if to == nil || len(tx.Data()) != 0 || len(tx.AuthList()) != 0 {
+				return false
+			}
+			from := tx.From()
+			if from == nil && signer != nil {
+				// The run's sender recovery memoised it: an atomic load.
+				if a, err := transaction.Sender(signer, tx); err == nil {
+					from = &a
+				}
+			}
+			if from == nil {
+				return false
+			}
+			for _, address := range precompiles {
+				if *to == address {
+					return false
+				}
+			}
+			for _, a := range recipients {
+				if *from == a || *to == a {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	workers := len(txs) / touchesAnyParallelMin
+	if p := runtime.GOMAXPROCS(0); workers > p {
+		workers = p
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	if workers < 2 {
+		return check(txs)
+	}
+	per := (len(txs) + workers - 1) / workers
+	var fail atomic.Bool
+	var wg sync.WaitGroup
+	for lo := 0; lo < len(txs); lo += per {
+		hi := min(lo+per, len(txs))
+		wg.Add(1)
+		go func(part []*transaction.Transaction) {
+			defer wg.Done()
+			if !check(part) {
+				fail.Store(true)
+			}
+		}(txs[lo:hi])
+	}
+	wg.Wait()
+	return !fail.Load()
+}
+
 // ProcessParallel executes all transactions in the block using Block-STM
 // wave-based parallel execution. It falls back to sequential execution
 // when the block has too few transactions or when parallel execution
@@ -264,6 +353,13 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if !ok {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: invalid header type assertion for block %v", b.Number64())
 	}
+	// The executor meters each transaction with its own gas pool and sums
+	// the receipts; a Glamsterdam header carries the EIP-8037 block figure,
+	// max(cumulative execution, cumulative state), which only the serial
+	// path keeps.
+	if p.config.IsGlamsterdam(concreteHeader.Time) {
+		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
+	}
 	if touchesAny(txs, deferredFeeRecipients(p.config, concreteHeader)) {
 		// A block that sends from or to a fee recipient cannot defer the
 		// credit (see runParallel) and runs sequentially.
@@ -285,7 +381,8 @@ func (p *StateProcessor) ParallelApplicable(b *block.Block) bool {
 		return false
 	}
 	hdr, ok := b.Header().(*block.Header)
-	return ok && !touchesAny(txs, deferredFeeRecipients(p.config, hdr))
+	// Glamsterdam blocks stay serial (see ProcessParallel).
+	return ok && !p.config.IsGlamsterdam(hdr.Time) && !touchesAny(txs, deferredFeeRecipients(p.config, hdr))
 }
 
 // ExecuteParallelAhead is the first half of ProcessParallel for the lag
@@ -392,6 +489,9 @@ func (ph *ProcessPhases) noteFinalizeSpan(t0 time.Time, ibs *state.IntraBlockSta
 // does that. ErrParallelNotApplicable when a candidate touches a fee
 // recipient.
 func (p *StateProcessor) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if p.config.IsGlamsterdam(header.Time) {
+		return nil, ErrParallelNotApplicable // see ProcessParallel
+	}
 	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
 		return nil, ErrParallelNotApplicable
 	}
@@ -411,6 +511,9 @@ var ErrFrameTxNotSkippable = errors.New("frame build: transaction failure outsid
 // spans (optional) name the frames txs decode from, so their senders are
 // recovered under the frame store's claims (P8a).
 func (p *StateProcessor) BuildParallelFrames(header *block.Header, txs []*transaction.Transaction, spans []FrameSpan, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if p.config.IsGlamsterdam(header.Time) {
+		return nil, ErrParallelNotApplicable // see ProcessParallel
+	}
 	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
 		return nil, ErrParallelNotApplicable
 	}
@@ -532,15 +635,18 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	chainConfig := p.config
 	cfg := vm2.Config{}
 
-	// The fee credit is the one write every transaction shares. Deferred to
-	// the end of the block it leaves Block-STM only the real conflicts; a
-	// block that sends from or to a fee recipient cannot defer (the credit
-	// would be visible to those transactions in serial order) and runs
-	// sequentially. Contract calls that read the coinbase balance (COINBASE +
-	// BALANCE) are not covered by the address scan; the benchmark workload is
-	// plain transfers, and an EVM-visible difference shows as a BAD BLOCK.
 	feeRecipients := deferredFeeRecipients(chainConfig, concreteHeader)
 
+	// Only bytecode-free transfers can hide fee credits until block end.
+	// Contract execution, creation and authorization can observe or modify any
+	// recipient dynamically; keep their credits in the validated MVS instead.
+	// The state-free part is decided here (the block-start system calls run
+	// later, overlapping the preparation); a recipient with code is detected
+	// by the workers (feeCodeSeen), and the run is then executed again with
+	// deferFees off.
+	deferFees := canDeferParallelFeesStatic(txs, feeRecipients,
+		vm2.ActivePrecompiles(chainConfig.RulesWithTimestamp(concreteHeader.Number.Uint64(), concreteHeader.Time)), signer)
+	var feeCodeSeen atomic.Bool
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
 
@@ -682,12 +788,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		wc.ibs.SetBalanceReadHook(func(a types.Address) { wc.observed[a] = struct{}{} })
 		wc.writer.SetDeltaEligible(func(a types.Address) bool { _, seen := wc.observed[a]; return !seen })
 		wc.evm = vm2.NewEVM(blockContext, evmtypes.TxContext{}, wc.ibs, chainConfig, cfg)
-		wc.sink = func(recipient types.Address, amount *uint256.Int) {
-			wc.fees = append(wc.fees, deferredFee{recipient: recipient, amount: *amount})
+		if deferFees {
+			wc.sink = func(recipient types.Address, amount *uint256.Int) {
+				wc.fees = append(wc.fees, deferredFee{recipient: recipient, amount: *amount})
+			}
 		}
 		return wc, func() { wc.scratch.fast.flush(); tx.Rollback() }, nil
 	}
-	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
+	runTx := func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
 		tx := txs[txIndex]
 		wc, ok := ctx.(*workerCtx)
 		if !ok || wc == nil || wc.base == nil {
@@ -754,11 +862,19 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 
 		// Each tx gets its own gas pool (block-level gas validation happens after).
 		gp := &wc.gp
-		*gp = 0
+		*gp = common.GasPool{}
 		gp.AddGas(concreteHeader.GasLimit)
 
 		vmenv := wc.evm
 
+		if wc.sink != nil {
+			// A deferred fee credit is invisible to the EVM until block end:
+			// a recipient with code could observe it (BALANCE of a fee
+			// recipient), so the run is executed again without deferral.
+			if to := tx.To(); to != nil && len(txIBS.GetCode(*to)) != 0 {
+				feeCodeSeen.Store(true)
+			}
+		}
 		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, wc.sink, signer, &wc.scratch)
 		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
@@ -767,7 +883,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		r.setFees(wc.fees)
 
 		return err
-	})
+	}
+	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, runTx)
 
 	// Pin each sender's transactions to one worker, in index order: the
 	// nonce chain of a sender is then executed by the worker that already
@@ -777,9 +894,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// The executor computes the keys in parallel, in index order, before
 	// the wave starts; the key function also prepares each transaction's
 	// message and hash there (prepared, above).
-	executor.SetAffinity(func(txIndex int) uint64 {
+	defer func() { executor.Release() }()
+	affinity := func(txIndex int) uint64 {
 		return p.txAffinityKey(txs, prepared, txIndex, signer, concreteHeader.BaseFee, cfg.StatelessExec)
-	})
+	}
+	executor.SetAffinity(affinity)
 	// The keys, messages and hashes need no state: they are prepared before
 	// the block-start system calls, whose reads of the tree wait while the
 	// parent's root holds it (an ahead run starts at the parent's snapshot,
@@ -842,12 +961,36 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		waveCPU0 = waveCPUMeter()
 	}
 	results := executor.Run()
-	if waveCPUMeter != nil {
-		waveCPUNs.Add(int64(waveCPUMeter() - waveCPU0))
-	}
 	if span != nil {
 		span.End()
 		span = nil
+	}
+	if deferFees && feeCodeSeen.Load() {
+		// A recipient carries code: run the block again with every fee
+		// credit in the validated MVS (canDeferParallelFees). The workers
+		// read only the parent's state and the MVS, so nothing of the
+		// first run reached ibs; the base cache and the prepared messages
+		// are state-free or parent-state values and stay valid.
+		parallelFeeReruns.Add(1)
+		executor.Release()
+		deferFees = false
+		executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, runTx)
+		executor.SetAffinity(affinity)
+		executor.PrepareAffinity()
+		if useQMDB && !ahead {
+			var err error
+			if span, err = p.bc.qmdbRootComputer.BeginReadSpan(context.Background(), p.bc.ChainDB); err != nil {
+				return nil, fmt.Errorf("ProcessParallel: read span: %w", err)
+			}
+		}
+		results = executor.Run()
+		if span != nil {
+			span.End()
+			span = nil
+		}
+	}
+	if waveCPUMeter != nil {
+		waveCPUNs.Add(int64(waveCPUMeter() - waveCPU0))
 	}
 	tRunEnd := time.Now()
 	var waveReads, waveColdReads uint64
@@ -1218,6 +1361,10 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 	}
 	return state.LayerPostStates(postLayers, base)
 }
+
+// parallelFeeReruns counts Block-STM runs executed a second time because a
+// recipient carried code while fee credits were deferred.
+var parallelFeeReruns atomic.Int64
 
 // waveWorkNs sums, over every parallel run of the process, the wall time
 // the workers spent inside transaction bodies and their store writes

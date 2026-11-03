@@ -31,15 +31,11 @@
 package vm
 
 import (
-	"errors"
-
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
-	"github.com/n42blockchain/N42/internal/vm/stack"
-	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -56,9 +52,31 @@ import (
 // execution block. Returns 0 when the slot is not available (e.g., pre-Merge
 // or when BlockContext.Slot has not been populated by the block producer).
 func opSlotNum(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	scope.Stack.Push(new(uint256.Int).SetUint64(interpreter.evm.Context().Slot))
+	return nil, nil
+}
+
+// opSlotNumFusaka is SLOTNUM as the N42 Fusaka fork has executed it since
+// activation: it writes the slot into the current stack top instead of
+// pushing it. It is kept, frozen, so blocks of N42 chains past FusakaTime
+// replay unchanged; the Ethereum Amsterdam table uses opSlotNum.
+//
+// On an empty stack it used to dereference nil and panic the node, so no
+// committed block can have executed that case; it is a stack underflow now.
+func opSlotNumFusaka(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	if scope.Stack.Len() == 0 {
+		return nil, &ErrStackUnderflow{stackLen: 0, required: 1}
+	}
 	v := scope.Stack.Peek()
 	v.SetUint64(interpreter.evm.Context().Slot)
 	return nil, nil
+}
+
+// enable7843Fusaka installs SLOTNUM with its N42 Fusaka semantics
+// (opSlotNumFusaka).
+func enable7843Fusaka(jt *JumpTable) {
+	enable7843(jt)
+	jt[SLOTNUM].execute = opSlotNumFusaka
 }
 
 // enable7843 applies EIP-7843 "SLOTNUM opcode".
@@ -86,14 +104,20 @@ func enable7843(jt *JumpTable) {
 // (n,m) = (q+1, r+1) if q < r else (r+1, 29-q).
 // =============================================================================
 
+// immediateByte returns the immediate operand of the instruction at pc. A
+// missing immediate (the instruction is the last byte of the code) reads as
+// 0x00, the same convention as PUSHn data.
+func immediateByte(code []byte, pc uint64) byte {
+	if pc+1 < uint64(len(code)) {
+		return code[pc+1]
+	}
+	return 0
+}
+
 // opDupN implements DUPN (0xe6): duplicates the n'th stack item (1-based) onto
 // the top, n decoded from the immediate byte.
 func opDupN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	code := scope.Contract.Code
-	if *pc+1 >= uint64(len(code)) {
-		return nil, &ErrInvalidOpCode{opcode: DUPN}
-	}
-	x := code[*pc+1]
+	x := immediateByte(scope.Contract.Code, *pc)
 	if x > 90 && x < 128 {
 		return nil, &ErrInvalidOpCode{opcode: DUPN}
 	}
@@ -109,11 +133,7 @@ func opDupN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 // opSwapN implements SWAPN (0xe7): swaps the (n+1)'th stack item with the top,
 // n decoded from the immediate byte.
 func opSwapN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	code := scope.Contract.Code
-	if *pc+1 >= uint64(len(code)) {
-		return nil, &ErrInvalidOpCode{opcode: SWAPN}
-	}
-	x := code[*pc+1]
+	x := immediateByte(scope.Contract.Code, *pc)
 	if x > 90 && x < 128 {
 		return nil, &ErrInvalidOpCode{opcode: SWAPN}
 	}
@@ -129,11 +149,7 @@ func opSwapN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 // opExchange implements EXCHANGE (0xe8): swaps the (n+1)'th and (m+1)'th stack
 // items (both below the top), (n,m) decoded from the immediate byte.
 func opExchange(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	code := scope.Contract.Code
-	if *pc+1 >= uint64(len(code)) {
-		return nil, &ErrInvalidOpCode{opcode: EXCHANGE}
-	}
-	x := code[*pc+1]
+	x := immediateByte(scope.Contract.Code, *pc)
 	if x > 81 && x < 128 {
 		return nil, &ErrInvalidOpCode{opcode: EXCHANGE}
 	}
@@ -174,80 +190,6 @@ func enable8024(jt *JumpTable) {
 		numPop:      0,
 		numPush:     0,
 	}
-}
-
-// =============================================================================
-// EIP-8037 + EIP-8038: Amsterdam state-gas SSTORE schedule
-//
-// EIP-8038 replaces the composite SSTORE write costs with an explicit
-// STORAGE_WRITE (10000) surcharge and raises the clear refund to 11616.
-// EIP-8037 charges CPSB (1530) gas per byte of newly created state: a fresh
-// storage slot is 64 bytes -> 97920 gas on top of the write cost.
-//
-// NOTE: 8037 specifies a two-pool "state-gas reservoir" drawn from the gas
-// above TX_MAX_GAS_LIMIT. Until the reservoir parameters freeze on devnet,
-// N42 charges state gas directly from execution gas (strict upper bound on
-// the reservoir semantics; same total for txs within the execution budget).
-// =============================================================================
-
-// gasSStoreAmsterdam mirrors the EIP-2929/2200 SSTORE schedule with the
-// Amsterdam constants: STORAGE_WRITE for every real write, CPSB state gas for
-// slot creation, and the raised clear refund.
-func gasSStoreAmsterdam(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
-	if contract.Gas <= params.SstoreSentryGasEIP2200 {
-		return 0, errors.New("not enough gas for reentrancy sentry")
-	}
-	var (
-		y, x    = stack.Back(1), stack.Peek()
-		slot    = types.Hash(x.Bytes32())
-		current uint256.Int
-		cost    = uint64(0)
-	)
-	const (
-		writeGas   = params.StorageWriteEIP8038                                  // 10000
-		newSlotGas = params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037 // 97920
-		clearRef   = params.StorageClearRefundEIP8038                            // 11616
-	)
-	evm.IntraBlockState().GetState(contract.Address(), &slot, &current)
-	if addrPresent, slotPresent := evm.IntraBlockState().SlotInAccessList(contract.Address(), slot); !slotPresent {
-		cost = params.ColdSloadCostEIP2929
-		evm.IntraBlockState().AddSlotToAccessList(contract.Address(), slot)
-		if !addrPresent {
-			return 0, errors.New("impossible case: address was not present in access list during sstore op")
-		}
-	}
-	var value uint256.Int
-	value.Set(y)
-
-	if current.Eq(&value) { // noop
-		return cost + params.WarmStorageReadCostEIP2929, nil
-	}
-	var original uint256.Int
-	evm.IntraBlockState().GetCommittedState(contract.Address(), &slot, &original)
-	if original.Eq(&current) {
-		if original.IsZero() { // create slot: write surcharge + state gas
-			return cost + writeGas + newSlotGas, nil
-		}
-		if value.IsZero() { // delete slot
-			evm.IntraBlockState().AddRefund(clearRef)
-		}
-		return cost + writeGas, nil // write existing slot
-	}
-	if !original.IsZero() {
-		if current.IsZero() { // recreate slot
-			evm.IntraBlockState().SubRefund(clearRef)
-		} else if value.IsZero() { // delete slot
-			evm.IntraBlockState().AddRefund(clearRef)
-		}
-	}
-	if original.Eq(&value) {
-		if original.IsZero() { // reset to original inexistent slot
-			evm.IntraBlockState().AddRefund(writeGas + newSlotGas - params.WarmStorageReadCostEIP2929)
-		} else { // reset to original existing slot
-			evm.IntraBlockState().AddRefund(writeGas - params.WarmStorageReadCostEIP2929)
-		}
-	}
-	return cost + params.WarmStorageReadCostEIP2929, nil // dirty update
 }
 
 // =============================================================================

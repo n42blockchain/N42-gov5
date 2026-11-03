@@ -53,6 +53,7 @@ import (
 	"github.com/n42blockchain/N42/internal/miner/builder"
 	"github.com/n42blockchain/N42/internal/streamverify"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
@@ -82,6 +83,12 @@ func usesTimerDrivenSealing(engine consensus.Engine) bool {
 // block (required by import-gated voting).
 type blockSealNotifier interface {
 	NotifyBlockSealed(hash, txHash types.Hash)
+}
+
+// blockPersistenceNotifier records execution evidence for a fresh local seal.
+// Merely finding an existing body or a sibling is not evidence of applied state.
+type blockPersistenceNotifier interface {
+	NotifyBlockPersisted(hash, txHash, parentHash types.Hash)
 }
 
 // siblingLookup is implemented by the blockchain so the leader can converge on a
@@ -132,6 +139,9 @@ type task struct {
 	// lag_build.go): no state, no receipts; it is pushed, proposed and
 	// handed to the chain's lag executor instead of written.
 	lagged bool
+	// mobilePacket is what the mobile-verification packet is built from once
+	// this block is sealed (nil when no packet sink is wired).
+	mobilePacket *mobilePacketJob
 
 	// Seal-path phase timings — OBSERVABILITY ONLY. The leader's
 	// ViewStart→ProposalSent window spans three goroutines (commit → taskLoop →
@@ -237,6 +247,12 @@ type environment struct {
 	// transactions are txs, in order, and their encodings.
 	frameHashes []types.Hash
 	frameData   [][]byte
+
+	// untracedReader is the build's state reader below the mobile read-log
+	// recorder and the witness tracer. Reads the block does not make (the
+	// stale-nonce trim) go through it; logged, they would sit in the read
+	// log the verifiers consume by position and shift every read after them.
+	untracedReader state.StateReader
 }
 
 func (env *environment) copy() *environment {
@@ -311,17 +327,13 @@ type worker struct {
 
 	// Cross-view speculative build state. specTask holds the parked result of
 	// a speculative commitWork (guarded by specMu); specParent is the parent
-	// the parked block extends. activeSpecInterrupt points at the interrupt of
-	// a speculative build in flight, so a real production trigger can abort it
-	// instead of queueing behind it.
-	specMu              sync.Mutex
-	specTask            *task
-	specParent          types.Hash
-	activeSpecInterrupt atomic.Pointer[atomic.Int32]
-	// activeSpecParent is the parent of the speculative build currently
-	// running, so a real trigger can tell "the guess in flight IS this block"
-	// from "the guess is for another parent".
-	activeSpecParent atomic.Pointer[types.Hash]
+	// the parked block extends. activeSpecWork publishes the immutable parent
+	// and interrupt together, so real work can preserve a matching build and
+	// interrupt a stale one without racing the worker's next build.
+	specMu         sync.Mutex
+	specTask       *task
+	specParent     types.Hash
+	activeSpecWork atomic.Pointer[newWorkReq]
 
 	// sealedOnParent records the FIRST block this node sealed on a given parent
 	// (keyed by parentHash). A leader re-elected across several views at the same
@@ -1029,6 +1041,9 @@ func (w *worker) writeAndFinish(job *writeJob) bool {
 	w.mu.Lock()
 	delete(w.pendingTasks, sealhash)
 	w.mu.Unlock()
+	// The sealed block is stored: build its mobile-verification packet from the
+	// sealed header so it is keyed by, and carries, the hash a verifier knows.
+	task.mobilePacket.launch(blk, w.mobilePacketSink)
 	blocksMinedCounter.Inc()
 	blockMiningTimer.UpdateDuration(task.createdAt)
 
@@ -1118,6 +1133,9 @@ func (w *worker) writeAndFinish(job *writeJob) bool {
 	// receive and import. Doing this here (not in Seal) binds propose↔push to
 	// the same block, which import-gated voting requires.
 	tNotify := time.Now()
+	if bpn, ok := w.engine.(blockPersistenceNotifier); ok {
+		bpn.NotifyBlockPersisted(blk.Hash(), blk.TxHash(), blk.ParentHash())
+	}
 	if !proposedEarly {
 		if bsn, ok := w.engine.(blockSealNotifier); ok {
 			bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
@@ -1611,13 +1629,11 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	if speculative {
-		// Publish our interrupt so a real production trigger can abort us, and
-		// make sure only one speculative build runs at a time. The parent goes
-		// with it: a trigger for the SAME parent lets us finish instead.
-		w.activeSpecInterrupt.Store(interrupt)
-		p := parentHash
-		w.activeSpecParent.Store(&p)
-		defer func() { w.activeSpecInterrupt.Store(nil); w.activeSpecParent.Store(nil) }()
+		// commitWork is serialized by runLoop. A confirmed matching parent
+		// can wait for this build, then consume its parked task through the
+		// usual applied-head and pacing checks above.
+		w.activeSpecWork.Store(&newWorkReq{parentHash: parentHash, interrupt: interrupt})
+		defer w.activeSpecWork.Store(nil)
 	}
 
 	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE
@@ -1828,6 +1844,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// -- become map hits.
 	prefetch := state.NewAccountPrefetch(stateReader)
 	stateReader = prefetch
+	current.untracedReader = prefetch
 
 	// Wrap state reader with TracingReader when JMT is enabled to record
 	// all state accesses for witness generation.
@@ -2140,6 +2157,31 @@ func (w *worker) workLoop(recommit time.Duration) error {
 // parallelFillEnabled gates the builder's Block-STM fill (N42_MINER_PARALLEL_FILL=1).
 func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") == "1" }
 
+// markReadLogDiverged flags the build's mobile read log (the recorder is the
+// IntraBlockState's own reader when a packet sink is wired) as no longer a
+// replay of the included transactions. A candidate that read state and was
+// then reverted and left out keeps its reads in the log, and the objects it
+// loaded stay cached in the IntraBlockState, so a later included transaction
+// touching them reads nothing; verifiers, which consume the log by position
+// and never run the candidate, would read every later entry shifted. The
+// packet job rebuilds a flagged log from the recorded values (mobilePacketJob
+// .readLog), off the critical path. Execution is not touched: forgetting the
+// cached objects instead would put consensus state behind a read-log fix.
+func markReadLogDiverged(ibs *state.IntraBlockState) {
+	if rec, ok := ibs.GetStateReader().(*streamverify.ReadLogRecorder); ok {
+		rec.MarkDiverged()
+	}
+}
+
+// staleTrimReader is the reader the stale-nonce trim reads accounts through:
+// the build's untraced reader when it has one, else the state's own reader.
+func staleTrimReader(env *environment, ibs *state.IntraBlockState) state.StateReader {
+	if env != nil && env.untracedReader != nil {
+		return env.untracedReader
+	}
+	return ibs.GetStateReader()
+}
+
 // pf and wd are S11's diagnostic pre-fill timer/watchdog (both nil unless
 // N42_BUILD_STALL_DIAG=1; docs/QS_BLOCK_TIME_BUDGET.md 6by). This function
 // is where the pre-fill total completes (pending-pool snapshot + stale
@@ -2233,6 +2275,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
+	coinbase := env.coinbase
+	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, getHeader), w.engine, w.chainConfig, &coinbase)
+	vmenv := vm2.NewEVM(blockContext, evmtypes.TxContext{}, ibs, w.chainConfig, vmConfig)
 
 	// EIP-7928: when the BAL fork is active, harvest each committed tx's post-value
 	// writes via the shared BALCapture (a pure observer wrapping noop) so the block
@@ -2261,10 +2306,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			retErr = err
 		}
 	}()
+	// From Amsterdam the header carries the EIP-8037 block figure,
+	// max(cumulative execution gas, cumulative state gas), not the receipts'
+	// cumulative gas; import checks it that way.
+	defer func() {
+		header.GasUsed = internal.HeaderGasUsed(w.chainConfig, header, env.gasPool, header.GasUsed)
+	}()
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, env.tcount)
-		gasSnap := env.gasPool.Gas()
+		// A struct copy: the Amsterdam block counters must survive a revert.
+		gasSnap := *env.gasPool
 		gasUsedSnap := header.GasUsed
 		snap := ibs.Snapshot()
 		log.Debug("addTransactionsToMiningBlock", "txn hash", txn.Hash())
@@ -2272,14 +2324,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		if balCap != nil {
 			balCap.BeginTx(txn.Hash())
 		}
-		coinbase := env.coinbase
-		receipt, _, err := internal.ApplyTransaction(w.chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, env.gasPool, ibs, writer, env.header, txn, &header.GasUsed, vmConfig)
+		receipt, _, err := internal.ApplyTransactionWithEVM(vmenv, w.chainConfig, w.engine, env.gasPool, ibs, writer, env.header, txn, &header.GasUsed, vmConfig)
 		if err != nil {
 			if balCap != nil {
 				balCap.DiscardTx()
 			}
+			// Whatever the failure, the candidate may have read state that
+			// stays logged and cached after the revert (see
+			// markReadLogDiverged).
+			markReadLogDiverged(ibs)
 			ibs.RevertToSnapshot(snap)
-			env.gasPool = new(common.GasPool).AddGas(gasSnap)
+			*env.gasPool = gasSnap
 			header.GasUsed = gasUsedSnap
 			return err
 		}
@@ -2326,7 +2381,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			}
 			// Try to commit entire bundle atomically.
 			snap := ibs.Snapshot()
-			gasSnap := env.gasPool.Gas()
+			gasSnap := *env.gasPool
 			gasUsedSnap := header.GasUsed
 			startTxCount := len(env.txs)
 			startReceiptCount := len(env.receipts)
@@ -2353,8 +2408,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				sizeLimiter.add(bundleSize)
 			} else {
 				// Revert entire bundle.
+				markReadLogDiverged(ibs)
 				ibs.RevertToSnapshot(snap)
-				env.gasPool = new(common.GasPool).AddGas(gasSnap)
+				*env.gasPool = gasSnap
 				header.GasUsed = gasUsedSnap
 				env.txs = env.txs[:startTxCount]
 				env.receipts = env.receipts[:startReceiptCount]
@@ -2391,10 +2447,11 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// Read through the state READER, never the IntraBlockState: a read there
 	// creates a state object, and a touched-but-unchanged object is one more
 	// no-op entry in an append-only commitment -- a root the followers, who
-	// never touched it, cannot reproduce.
+	// never touched it, cannot reproduce. And read below the mobile read-log
+	// recorder (env.untracedReader): these reads are not part of the block.
 	wd.SetStep("staleTrim")
 	tTrim := time.Now()
-	staleTrimmed := trimStalePending(ibs.GetStateReader(), pending)
+	staleTrimmed := trimStalePending(staleTrimReader(env, ibs), pending)
 	dTrim := time.Since(tTrim)
 	if len(pending) == 0 {
 		pf.logIfSlow(blockNumber, dPending, dTrim)
@@ -2420,7 +2477,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// their pre-check (they wrote nothing; a dropped nonce fails its sender's
 	// later candidates the same way), and hand the survivors to assemble.
 	// Bundles, BAL capture and fee-recipient candidates keep the serial path.
-	if parallelFillEnabled() && balCap == nil && env.tcount == 0 && !w.chainConfig.IsBAL(env.header.Time) {
+	if parallelFillEnabled() && balCap == nil && env.tcount == 0 && !w.chainConfig.IsBAL(env.header.Time) && !w.chainConfig.IsGlamsterdam(env.header.Time) {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
 			tPickP := time.Now()
 			budget := env.gasPool.Gas()
@@ -2451,6 +2508,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				txSet.Shift()
 			}
 			dPickP := time.Since(tPickP)
+			// The workers read through their own readers, around the
+			// recorder, and drop candidates that fail their pre-check.
+			markReadLogDiverged(ibs)
 			tRun := time.Now()
 			included, receipts, usedGas, failed, perr := bc.BuildParallel(header, candidates, ibs, internal.GetHashFn(header, getHeader))
 			if perr == nil {
@@ -2805,33 +2865,16 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	tFinalizeDoneAt := time.Now()
 	tRootDoneAt := tFinalizeDoneAt
 
-	// Mobile-verification packet: the recorder captured this block's read
-	// log during the build; pair it with the FINAL header (receipts root,
-	// state root, gas used are set by FinalizeAndAssemble) and hand off to
-	// the sink. Best-effort by design — packet production must never fail
-	// a block.
+	// Mobile-verification packet: the recorder captured this block's read log
+	// during the build. The packet is NOT built here: its header must be the
+	// SEALED one (the BLS seal fills the reserved tail of Extra afterwards and
+	// changes the block hash), so the job rides on the task and resultLoop
+	// builds the packet once the sealed block arrives. Best-effort by design;
+	// packet production must never fail a block.
 	tPacket := time.Now()
-	if w.mobilePacketSink != nil && readLogRecorder != nil {
-		if finalHeader, ok := iblock.Header().(*block.Header); ok {
-			// Built off the critical path: packet construction walked the whole
-			// read log (~35-75ms on a full block) inside assemble. The header is
-			// COPIED first — the sealer appends the BLS signature to this
-			// block's Extra concurrently — while the tx slice and the recorder
-			// are immutable once the build is done. Delivery was already
-			// best-effort; asynchrony only moves where the effort is spent.
-			hdrCopy := block.CopyHeader(finalHeader)
-			num, nerr := requireBlockNumber(iblock, "sealed block number unavailable")
-			if nerr == nil {
-				txs, rec, sink := envCopy.txs, readLogRecorder, w.mobilePacketSink
-				go func() {
-					if pkt, perr := streamverify.BuildStreamPacket(hdrCopy, txs, rec); perr != nil {
-						log.Warn("mobileverify: packet build failed", "number", hdrCopy.Number.Uint64(), "err", perr)
-					} else {
-						sink(pkt, num.Uint64())
-					}
-				}()
-			}
-		}
+	var pktJob *mobilePacketJob
+	if w.mobilePacketSink != nil {
+		pktJob = w.mobilePacketJobFor(envCopy, readLogRecorder)
 	}
 	dPacket := time.Since(tPacket)
 
@@ -2961,7 +3004,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		tSealedAt := time.Now()
 		w.specMu.Lock()
 		w.specTask = &task{
-			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
+			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec, mobilePacket: pktJob,
 			finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 			buildBeginAt: start, specParkedAt: tParked, triggerAt: triggerAt,
 		}
@@ -2986,7 +3029,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	}
 	select {
 	case w.taskCh <- &task{
-		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
+		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec, mobilePacket: pktJob,
 		finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 		buildBeginAt: start, triggerAt: triggerAt, paceEnterAt: tPaceEnter, paceDur: dPace, taskChSentAt: tTaskSent,
 	}:

@@ -36,13 +36,14 @@ import (
 
 // QMDBRootComputer maintains a qmdb.Tree across blocks.
 type QMDBRootComputer struct {
-	t              *qmdb.Tree
-	flushedThrough uint64         // entry-log slots already persisted (for incremental flush)
-	stagedFlushed  uint64         // FlushTo's advanced cursor, adopted only by CommitFlushed
-	stagedValid    bool           // stagedFlushed holds a not-yet-committed FlushTo
-	mdbxIdx        *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
-	indexTrusted   uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
-	indexDelta     int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
+	t               *qmdb.Tree
+	retainedEntries uint64         // optional bounded hot window; does not change persistence
+	flushedThrough  uint64         // entry-log slots already persisted (for incremental flush)
+	stagedFlushed   uint64         // FlushTo's advanced cursor, adopted only by CommitFlushed
+	stagedValid     bool           // stagedFlushed holds a not-yet-committed FlushTo
+	mdbxIdx         *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
+	indexTrusted    uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
+	indexDelta      int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
 
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
@@ -109,6 +110,11 @@ func (r *QMDBRootComputer) SetEvictLag(k int) {
 // evictLaggedLocked evicts through `through` per the residency lag
 // (qmdb.EvictLag). Caller holds readers exclusively.
 func (r *QMDBRootComputer) evictLaggedLocked(through uint64) {
+	if through > r.retainedEntries {
+		through -= r.retainedEntries
+	} else {
+		through = 0
+	}
 	r.evictLag.Evict(r.t, through, r.flushedThrough)
 }
 
@@ -375,9 +381,27 @@ func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
 	return u
 }
 
+// Keep the memory tradeoff opt-in and bounded even for an accidental large
+// environment setting. Four million slots cost several hundred MB, depending
+// on values, plus their twig heaps; this is a slot limit, not a byte limit.
+const maxQMDBRetainedEntries = uint64(4 * 1024 * 1024)
+
+var qmdbRetainedEntries = parseQMDBRetainedEntries(os.Getenv("N42_QMDB_RETAIN_ENTRIES"))
+
+func parseQMDBRetainedEntries(value string) uint64 {
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	if n > maxQMDBRetainedEntries {
+		return maxQMDBRetainedEntries
+	}
+	return n
+}
+
 // NewQMDBRootComputer creates an empty in-memory QMDB root computer.
 func NewQMDBRootComputer() *QMDBRootComputer {
-	return &QMDBRootComputer{t: qmdb.New(), evictLag: qmdb.EvictLag{K: evictLagFromEnv()}}
+	return &QMDBRootComputer{t: qmdb.New(), retainedEntries: qmdbRetainedEntries, evictLag: qmdb.EvictLag{K: evictLagFromEnv()}}
 }
 
 // VoidIndexTrust marks the in-RAM index untrusted, forcing the next

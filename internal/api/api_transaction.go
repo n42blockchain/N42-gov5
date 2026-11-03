@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -74,6 +75,9 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	}
 	header := currentBlock.Header()
 	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
+		return avmcommon.Hash{}, err
+	}
+	if err := validatePooledBlobTransaction(tx, rules); err != nil {
 		return avmcommon.Hash{}, err
 	}
 	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
@@ -159,6 +163,9 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
 			return nil, err
 		}
+		if err := validatePooledBlobTransaction(metaTx, rules); err != nil {
+			return nil, err
+		}
 		// S59 (6fa): the batch path already has its own worker pool
 		// (N42_INGEST_WORKERS, S53) it may be dispatched onto, so this uses
 		// the dedup guarantee alone (RecoverSenderDeduped), not a nested
@@ -170,7 +177,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 		metaTx.SetFrom(from)
 		seedRecoveredSender(metaTx, poolSigner)
-		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
+		if err := checkTxFee(*metaTx.GasPrice(), s.api.rpcMaxGasPrice); err != nil {
 			return nil, err
 		}
 		return metaTx, nil
@@ -205,6 +212,28 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 	}
 	return hs, firstErr
+}
+
+// validatePooledBlobTransaction applies blob sidecar admission (EIP-4844 /
+// EIP-7594) to a transaction entering the pool at the head described by
+// rules: the sidecar must be present, have the head fork's version (1 from
+// Osaka, 0 before) and pass KZG verification. Other types pass unchanged.
+//
+// From Osaka a version-0 sidecar is first converted to version 1, as geth
+// does on submission, so a wallet that still attaches blob proofs is not
+// refused: the cell proofs are computed from the blobs. Peers get no such
+// conversion.
+func validatePooledBlobTransaction(tx *transaction.Transaction, rules *params.Rules) error {
+	if tx == nil || tx.Type() != transaction.BlobTxType {
+		return nil
+	}
+	osaka := rules != nil && rules.IsOsaka
+	if sc := tx.BlobTxSidecar(); osaka && sc != nil && sc.Version == transaction.BlobSidecarVersion0 {
+		if err := kzg.SidecarToV1(sc); err != nil {
+			return fmt.Errorf("blob sidecar conversion failed: %w", err)
+		}
+	}
+	return kzg.ValidatePooledBlobTx(tx, osaka)
 }
 
 func (s *TransactionAPI) transactionHeadAndRules() (block.IBlock, *params.Rules, error) {
@@ -332,11 +361,8 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	// Add blob gas fields for EIP-4844 blob transactions
 	if tx.Type() == transaction.BlobTxType {
 		fields["blobGasUsed"] = hexutil.Uint64(tx.BlobGas())
-		var excessBlobGas uint64
-		if bh, ok := header.(*block.Header); ok && bh != nil && bh.ExcessBlobGas != nil {
-			excessBlobGas = *bh.ExcessBlobGas
-		}
-		fields["blobGasPrice"] = (*hexutil.Big)(transaction.CalcBlobFee(excessBlobGas).ToBig()) // real fee from excessBlobGas (matches eth_getBlockReceipts)
+		bh, _ := header.(*block.Header)
+		fields["blobGasPrice"] = (*hexutil.Big)(s.api.headerBlobFee(bh).ToBig()) // same price as eth_getBlockReceipts
 	}
 	// Assign receipt status or post state.
 	if len(receipt.PostState) > 0 {
@@ -467,7 +493,7 @@ func SubmitTransaction(ctx context.Context, api *API, tx *transaction.Transactio
 	if api == nil || api.TxsPool() == nil {
 		return avmcommon.Hash{}, errors.New("transaction pool unavailable")
 	}
-	if err := checkTxFee(*tx.GasPrice(), tx.Gas(), baseFee); err != nil {
+	if err := checkTxFee(*tx.GasPrice(), api.rpcMaxGasPrice); err != nil {
 		return avmcommon.Hash{}, err
 	}
 	if err := api.TxsPool().AddLocal(tx); err != nil {
@@ -508,15 +534,15 @@ func (s *TransactionAPI) SendTransaction(ctx context.Context, args TransactionAr
 	return SubmitTransaction(ctx, s.api, signed)
 }
 
-// checkTxFee validates the transaction fee to prevent unreasonably high gas prices.
-// maxGasPriceGwei is the maximum acceptable gas price (1000 Gwei).
-const maxGasPriceGwei = 1000_000_000_000 // 1000 Gwei in Wei
+// checkTxFee enforces the operator's RPC admission policy. This does not change
+// consensus validity or the transaction pool's base-fee/balance validation.
+const defaultRPCMaxGasPriceWei = 1000_000_000_000
 
-func checkTxFee(gasPrice uint256.Int, gas uint64, cap float64) error {
-	if gasPrice.IsZero() {
-		return nil
+func checkTxFee(gasPrice uint256.Int, ceiling uint64) error {
+	if ceiling == 0 {
+		ceiling = defaultRPCMaxGasPriceWei
 	}
-	maxGasPrice := uint256.NewInt(maxGasPriceGwei)
+	maxGasPrice := uint256.NewInt(ceiling)
 	if gasPrice.Cmp(maxGasPrice) > 0 {
 		return fmt.Errorf("gas price %s exceeds maximum allowed %s", gasPrice.String(), maxGasPrice.String())
 	}

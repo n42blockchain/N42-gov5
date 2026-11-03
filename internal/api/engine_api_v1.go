@@ -149,6 +149,19 @@ func (e *EngineAPIV1) ImportSyncedBlock(ctx context.Context, blk *block.Block, w
 	if err := validateExecutionPayloadHeader(header, parent, e.chainConfig()); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
 	}
+	if err := validateWireBlockForkFields(blk, withdrawals, e.chainConfig()); err != nil {
+		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
+	}
+	// EIP-7934: a synced block is held to the same RLP size cap as a payload.
+	if err := validateExecutionPayloadBlockRLPSize(blk, body.Transactions, e.chainConfig(), enginePayloadHashOptions{
+		includeWithdrawals: header.WithdrawalsHash != nil,
+		withdrawals:        withdrawals,
+		includeBlobFields:  header.BlobGasUsed != nil,
+		parentBeaconRoot:   header.ParentBeaconRoot,
+		requestsHash:       header.RequestsHash,
+	}); err != nil {
+		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
+	}
 	return e.executeOrValidateWithBody(
 		blk,
 		blockHash,
@@ -181,28 +194,46 @@ func EngineAPIs(api *API) []jsonrpc.API {
 	}
 }
 
+// supportedEngineMethods is the engine_exchangeCapabilities answer: every
+// method this node serves, except engine_exchangeCapabilities itself (the
+// spec forbids listing it).
+//
+// Osaka reuses newPayloadV4 and forkchoiceUpdatedV3 and adds getPayloadV5
+// and getBlobsV2 (EIP-7594 cell proofs). Amsterdam adds newPayloadV5,
+// forkchoiceUpdatedV4 and getPayloadV6.
 func supportedEngineMethods() []string {
 	return []string{
 		"engine_newPayloadV1",
 		"engine_newPayloadV2",
 		"engine_newPayloadV3",
 		"engine_newPayloadV4",
+		"engine_newPayloadV5",
 		"engine_getPayloadV1",
 		"engine_getPayloadV2",
 		"engine_getPayloadV3",
 		"engine_getPayloadV4",
+		"engine_getPayloadV5",
+		"engine_getPayloadV6",
 		"engine_forkchoiceUpdatedV1",
 		"engine_forkchoiceUpdatedV2",
 		"engine_forkchoiceUpdatedV3",
 		"engine_forkchoiceUpdatedV4",
+		"engine_getPayloadBodiesByHashV1",
+		"engine_getPayloadBodiesByRangeV1",
 		"engine_getBlobsBundleV1",
 		"engine_getBlobsV1",
+		"engine_getBlobsV2",
 		"engine_getBlobScheduleV1",
 		"engine_getClientCapabilitiesV1",
 		"engine_getForkCandidatesV1",
-		"engine_exchangeCapabilities",
 		"engine_exchangeTransitionConfigurationV1",
 	}
+}
+
+// clientCapabilityMethods is the engine_getClientCapabilitiesV1 method list:
+// the exchangeCapabilities set plus engine_exchangeCapabilities.
+func clientCapabilityMethods() []string {
+	return append(supportedEngineMethods(), "engine_exchangeCapabilities")
 }
 
 func supportedEngineForks() []string {
@@ -216,6 +247,10 @@ func supportedEngineForks() []string {
 }
 
 const engineRejectedAncestorReason = "links to previously rejected block"
+
+// maxForkchoiceReorgDepth is how many blocks a forkchoice update may move the
+// head back to a canonical ancestor, as geth's maxReorgDepth.
+const maxForkchoiceReorgDepth = 32
 
 // NewPayloadV1 processes a Paris execution payload.
 func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloadV1) (*PayloadStatusV1, error) {
@@ -253,6 +288,9 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloadV2) (*PayloadStatusV1, error) {
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	if !engineForkIn(e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), engineForkParis, engineForkShanghai) {
+		return nil, &engineUnsupportedForkError{msg: "newPayloadV2 called for Cancun+ timestamp, use newPayloadV3"}
 	}
 	shanghai := isShanghaiActive(e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp))
 	if shanghai && payload.Withdrawals == nil {
@@ -309,7 +347,7 @@ func (e *EngineAPIV1) GetPayloadV1(ctx context.Context, payloadID PayloadID) (*E
 // GetPayloadV2 retrieves a Shanghai payload.
 func (e *EngineAPIV1) GetPayloadV2(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV2, error) {
 	if built := e.builtPayload(payloadID); built != nil && built.v2 != nil {
-		if built.v3 != nil {
+		if built.v3 != nil || !builtPayloadForkIn(e.chainConfig(), built, engineForkParis, engineForkShanghai) {
 			return nil, &engineUnsupportedForkError{msg: "getPayloadV2 called for Cancun+ payload, use getPayloadV3"}
 		}
 		return &GetPayloadResponseV2{
@@ -676,12 +714,37 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 		return nil, types.Hash{}, nil, err
 	}
 	headHash := e.currentHeadHash()
+	// adoptFromChain is set for a canonical ancestor the overlay no longer
+	// holds; the overlay adopts it from chaindata once the head moved back.
+	adoptFromChain := false
 	if state.HeadBlockHash != headHash {
 		if latestValidHash, ok := e.rejectedAncestorLatestValidHash(state.HeadBlockHash); ok {
 			return nil, types.Hash{}, invalidForkchoiceResponseWithLatestValid(engineRejectedAncestorReason, latestValidHash), nil
 		}
+		// A canonical block below the head (execution-apis #786, needed once
+		// ePBS lets the consensus client move the head back to a parent whose
+		// child's payload was withheld): at or below the finalized block the
+		// update is skipped and no build starts; above it the head is moved
+		// back, unless that is maxForkchoiceReorgDepth blocks or more.
+		rewind := false
+		if e.stateAdapter != nil {
+			depth, finalized, ok, err := e.stateAdapter.canonicalAncestor(state.HeadBlockHash)
+			if err != nil {
+				return nil, types.Hash{}, nil, err
+			}
+			switch {
+			case ok && finalized:
+				return nil, types.Hash{}, validForkchoiceResponse(state.HeadBlockHash, nil), nil
+			case ok && depth >= maxForkchoiceReorgDepth:
+				return nil, types.Hash{}, nil, &engineTooDeepReorgError{msg: fmt.Sprintf("reorg depth %d exceeds limit %d", depth, maxForkchoiceReorgDepth)}
+			}
+			rewind = ok
+		}
 		if !e.adoptForkchoiceHead(state.HeadBlockHash) {
-			return nil, types.Hash{}, syncingForkchoiceResponse(), nil
+			if !rewind {
+				return nil, types.Hash{}, syncingForkchoiceResponse(), nil
+			}
+			adoptFromChain = true
 		}
 		head = e.currentHead()
 		headHash = e.currentHeadHash()
@@ -700,6 +763,10 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 			head = e.currentHead()
 			headHash = e.currentHeadHash()
 			e.removeCanonicalTransactions(head)
+			// The public eth_* methods read the overlay's head.
+			if overlay := e.overlay(); adoptFromChain && overlay != nil && head != nil && headHash == state.HeadBlockHash {
+				overlay.importBlock(head, headHash, overlay.receiptsByBlockHash(headHash))
+			}
 		}
 	}
 	return head, headHash, nil, nil

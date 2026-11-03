@@ -28,7 +28,7 @@ func TestTxfloodMainRejectsNegativeFlags(t *testing.T) {
 	if code := exitErr.ExitCode(); code != 2 {
 		t.Fatalf("exit code = %d, want 2 (output: %s)", code, out)
 	}
-	if !strings.Contains(string(out), "senders and pertx must be non-negative") {
+	if !strings.Contains(string(out), "senders must be non-negative; pertx/count must be positive") {
 		t.Fatalf("output = %q, missing validation message", out)
 	}
 }

@@ -84,13 +84,13 @@ func TestTriggerEvictsSpeculativeOnly(t *testing.T) {
 }
 
 // TestSpeculativeInterruptSignalled pins the pre-emption path: a real trigger
-// must signal the interrupt of a speculative build in flight.
+// must signal the interrupt of a speculative build on a different parent.
 func TestSpeculativeInterruptSignalled(t *testing.T) {
 	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
 	m := &Miner{worker: w}
 
 	specInt := new(atomic.Int32)
-	w.activeSpecInterrupt.Store(specInt)
+	w.activeSpecWork.Store(&newWorkReq{parentHash: types.Hash{0x03}, interrupt: specInt})
 	m.TriggerBlockProduction(types.Hash{0x04})
 	if specInt.Load() != commitInterruptNewHead {
 		t.Fatalf("active speculative build was not interrupted: %d", specInt.Load())
@@ -99,51 +99,26 @@ func TestSpeculativeInterruptSignalled(t *testing.T) {
 	<-w.newWorkCh
 }
 
-// TestSpeculativeForSameParentIsNotInterrupted: the guess in flight IS the
-// block the trigger wants. Interrupting it throws away a nearly finished build
-// and starts over -- which is where round 35zzq's 406 ms between the QC and the
-// next seal went, once deferred execution made the vote path shorter than a
-// full build.
-func TestSpeculativeForSameParentIsNotInterrupted(t *testing.T) {
+// A view confirmation must not discard execution already underway on its
+// parent. It still queues real work: speculation alone cannot seal a block.
+func TestTriggerPreservesMatchingSpeculativeBuild(t *testing.T) {
 	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
 	m := &Miner{worker: w}
-
-	parent := types.Hash{0x07}
+	parent := types.Hash{0x04}
 	specInt := new(atomic.Int32)
-	w.activeSpecInterrupt.Store(specInt)
-	p := parent
-	w.activeSpecParent.Store(&p)
-
+	w.activeSpecWork.Store(&newWorkReq{parentHash: parent, interrupt: specInt})
 	m.TriggerBlockProduction(parent)
-
-	if got := specInt.Load(); got != 0 {
-		t.Fatalf("the in-flight guess for this parent was interrupted: %d", got)
+	if specInt.Load() != commitInterruptNone {
+		t.Fatal("matching speculative execution was interrupted")
 	}
-	select {
-	case req := <-w.newWorkCh:
-		if req.parentHash != parent || req.speculative {
-			t.Fatalf("queued request = parent %x speculative %v", req.parentHash, req.speculative)
-		}
-	default:
-		t.Fatal("the real trigger was not queued")
+	req := <-w.newWorkCh
+	if req.speculative || req.parentHash != parent || req.interrupt == specInt {
+		t.Fatal("confirmation must queue independent real work for the parent")
 	}
-}
-
-// A guess for another parent is still interrupted: it is building the wrong
-// block and the worker is needed now.
-func TestSpeculativeForAnotherParentIsInterrupted(t *testing.T) {
-	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
-	m := &Miner{worker: w}
-
-	specInt := new(atomic.Int32)
-	w.activeSpecInterrupt.Store(specInt)
-	other := types.Hash{0x08}
-	w.activeSpecParent.Store(&other)
-
-	m.TriggerBlockProduction(types.Hash{0x09})
-
-	if got := specInt.Load(); got != commitInterruptNewHead {
-		t.Fatalf("a guess for another parent was not interrupted: %d", got)
+	// A later unpinned request cannot claim the old guess is confirmed.
+	m.TriggerBlockProduction(types.Hash{})
+	if specInt.Load() != commitInterruptNewHead {
+		t.Fatal("unpinned production failed to interrupt a speculative guess")
 	}
 	<-w.newWorkCh
 }

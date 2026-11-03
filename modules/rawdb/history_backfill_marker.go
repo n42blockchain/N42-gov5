@@ -13,11 +13,10 @@ import (
 // historyIndexedKey marks how far the history inverted index has been built
 // when index maintenance runs off the block-commit path.
 //
-// It is the interlock's source of truth: a historical query at a height above
-// this marker cannot be answered, because the index does not cover it yet, and
-// answering from current PlainState would return the wrong value confidently.
-// Refusing above the marker is the same rule the sealed-horizon gate uses, with
-// a different cause.
+// It is the interlock's source of truth: historical queries must wait until
+// this marker covers the snapshot head. A query below the marker can still
+// need a later change in the unindexed tail; falling back to current plain
+// state in that case would silently return the wrong value.
 var historyIndexedKey = []byte("historyIndexedThrough")
 
 // WriteHistoryIndexedThrough records the highest block whose changesets have

@@ -12,6 +12,7 @@ package commitment
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
@@ -45,6 +46,25 @@ func (x *qmdbMDBXIndex) Get(k qmdb.Hash) (uint64, bool) {
 		return 0, false
 	}
 	return binary.BigEndian.Uint64(v), true
+}
+
+// GetChecked is used by error-aware execution reads. An unreadable or malformed
+// index record cannot stand in for an absent account/storage key.
+func (x *qmdbMDBXIndex) GetChecked(k qmdb.Hash) (uint64, bool, error) {
+	v, err := x.tx.GetOne(modules.QMDBIndex, k[:])
+	if err != nil {
+		return 0, false, err
+	}
+	if len(v) == 0 {
+		present, err := x.tx.Has(modules.QMDBIndex, k[:])
+		if err != nil || !present {
+			return 0, false, err
+		}
+	}
+	if len(v) != 8 {
+		return 0, false, fmt.Errorf("invalid QMDB index record length %d", len(v))
+	}
+	return binary.BigEndian.Uint64(v), true, nil
 }
 
 func (x *qmdbMDBXIndex) Put(k qmdb.Hash, slot uint64) {

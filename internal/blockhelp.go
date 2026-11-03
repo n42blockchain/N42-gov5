@@ -18,7 +18,9 @@
 package internal
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -90,6 +93,18 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 	author, txContext := policy.systemCallContext(header, msg)
 
 	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, &chainConfig, author)
+	if chainConfig.IsGlamsterdam(header.Time) {
+		// Like the start-of-block system calls and geth's system-call
+		// mode, make no value transfer: the system address is then never
+		// touched and stays out of the EIP-7928 block access list.
+		transfer := blockContext.Transfer
+		blockContext.Transfer = func(db evmtypes.IntraBlockState, sender, recipient types.Address, amount *uint256.Int, bailout bool) {
+			if sender == state.SystemAddress {
+				return
+			}
+			transfer(db, sender, recipient, amount, bailout)
+		}
+	}
 	evm := vm.NewEVM(blockContext, txContext, ibs, &chainConfig, vmConfig)
 	if rules := evm.ChainRules(); rules.IsBerlin {
 		ibs.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), nil)
@@ -98,6 +113,7 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 		}
 	}
 
+	setSystemCallStateGasReservoir(evm)
 	ret, _, err := evm.Call(
 		vm.AccountRef(msg.From()),
 		*msg.To(),
@@ -112,6 +128,15 @@ func SysCallContract(contract types.Address, data []byte, chainConfig params.Cha
 	return ret, err
 }
 
+// setSystemCallStateGasReservoir gives an Amsterdam system call its EIP-8037
+// state-gas reservoir, sized for SYSTEM_MAX_SSTORES_PER_CALL new slots, on
+// top of its execution gas. Earlier forks have no reservoir.
+func setSystemCallStateGasReservoir(evm *vm.EVM) {
+	if evm.ChainRules().IsGlamsterdam {
+		evm.SetStateGasReservoir(params.SystemMaxSStoresPerCallEIP8037 * params.StateBytesPerStorageSet * params.CostPerStateByteEIP8037)
+	}
+}
+
 func appendExecutionRequest(requests []hexutil.Bytes, requestType byte, payload []byte) []hexutil.Bytes {
 	if len(payload) == 0 {
 		return requests
@@ -122,15 +147,16 @@ func appendExecutionRequest(requests []hexutil.Bytes, requestType byte, payload 
 	return append(requests, hexutil.Bytes(grouped))
 }
 
-// CollectDepositExecutionRequests extracts EIP-6110 deposit requests from block receipts.
-func CollectDepositExecutionRequests(receipts block.Receipts) ([]hexutil.Bytes, error) {
+// CollectDepositExecutionRequests extracts EIP-6110 deposit requests from block
+// receipts, taking DepositEvent logs from the given deposit contract only.
+func CollectDepositExecutionRequests(receipts block.Receipts, depositContract types.Address) ([]hexutil.Bytes, error) {
 	var serialized []byte
 	for _, receipt := range receipts {
 		if receipt == nil {
 			continue
 		}
 		for _, lg := range receipt.Logs {
-			if lg == nil || lg.Address != vm.DepositContractAddress {
+			if lg == nil || lg.Address != depositContract {
 				continue
 			}
 			if len(lg.Topics) == 0 || lg.Topics[0] != vm.DepositEventSignature {
@@ -151,7 +177,7 @@ func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 	// Standard block execution finalizes the system-call with a NoopWriter; the
 	// changes live in the IntraBlockState dirty set and are persisted later by
 	// the end-of-block CommitBlock/MakeWriteSet (which flushes stateObjectsDirty).
-	return processBeaconBlockRoot(beaconRoot, chainConfig, ibs, header, state.NewNoopWriter())
+	return processBeaconBlockRoot(beaconRoot, chainConfig, ibs, header, engine, state.NewNoopWriter())
 }
 
 // ProcessBeaconBlockRootWithWriter is ProcessBeaconBlockRoot but finalizes the
@@ -163,10 +189,10 @@ func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 // hashed-state root (via the still-dirty storage at IntermediateRoot) but never
 // the plain Storage table, diverging the two. The replay engine uses this.
 func ProcessBeaconBlockRootWithWriter(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, writer state.StateWriter) error {
-	return processBeaconBlockRoot(beaconRoot, chainConfig, ibs, header, writer)
+	return processBeaconBlockRoot(beaconRoot, chainConfig, ibs, header, nil, writer)
 }
 
-func processBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, writer state.StateWriter) error {
+func processBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine, writer state.StateWriter) error {
 	if beaconRoot == nil || chainConfig == nil || ibs == nil || header == nil {
 		return nil
 	}
@@ -179,6 +205,13 @@ func processBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 		return nil
 	}
 
+	if !chainConfig.UsesDirectBeaconRootWrites() {
+		beaconRootSystemCall(*beaconRoot, chainConfig, ibs, header, engine)
+		return ibs.FinalizeTx(rules, writer)
+	}
+
+	// N42 native chains: write the ring buffer slots directly, whether or not
+	// the contract has code (see params.ChainConfig.UsesDirectBeaconRootWrites).
 	timestampSlot := types.Hash{}
 	uint256.NewInt(header.Time % beaconRootsHistoryBufferLen).WriteToSlice(timestampSlot[:])
 
@@ -190,6 +223,48 @@ func processBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 	ibs.SetState(params.BeaconRootsAddress, &timestampSlot, *timestampValue)
 	ibs.SetState(params.BeaconRootsAddress, &rootSlot, *rootValue)
 	return ibs.FinalizeTx(rules, writer)
+}
+
+// beaconRootSystemCall makes the EIP-4788 system call the way geth's
+// ProcessBeaconBlockRoot does: caller SYSTEM_ADDRESS, 30M gas, zero value,
+// input = the beacon root, error ignored. Like geth's system-call mode the
+// call does no value transfer, so neither the system address nor the contract
+// is touched: the system address is never read or created, and an absent
+// contract stays absent (EIP-158 early return). It also keeps the state reads
+// identical to the direct write (contract account, then its two slots), which
+// the eth-el witness stream depends on. The caller finalizes the state.
+func beaconRootSystemCall(beaconRoot types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) {
+	contract := params.BeaconRootsAddress
+	msg := transaction.NewMessage(
+		state.SystemAddress,
+		&contract,
+		0, u256.Num0,
+		systemCallGas, u256.Num0,
+		nil, nil, nil, nil,
+		beaconRoot[:], nil, false,
+		true, // isFree
+	)
+	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), engine, chainConfig, &header.Coinbase)
+	transfer := blockContext.Transfer
+	blockContext.Transfer = func(db evmtypes.IntraBlockState, sender, recipient types.Address, amount *uint256.Int, bailout bool) {
+		if sender == state.SystemAddress {
+			return
+		}
+		transfer(db, sender, recipient, amount, bailout)
+	}
+	evm := vm.NewEVM(blockContext, NewEVMTxContext(msg), ibs, chainConfig, vm.Config{NoReceipts: true})
+	// geth resets the access list to {0x0} and adds the contract. Warmth only
+	// affects gas, which the system call does not charge to the block, but it
+	// must not leak into the first transaction: reset the list again after the
+	// call rather than relying on every caller to Prepare before it.
+	ibs.ResetAccessList()
+	if evm.ChainRules().IsBerlin {
+		ibs.AddAddressToAccessList(types.Address{})
+		ibs.AddAddressToAccessList(contract)
+	}
+	setSystemCallStateGasReservoir(evm)
+	_, _, _ = evm.Call(vm.AccountRef(state.SystemAddress), contract, beaconRoot[:], systemCallGas, u256.Num0, false)
+	ibs.ResetAccessList()
 }
 
 // ProcessExecutionBlockStart applies shared start-of-block execution hooks in
@@ -225,8 +300,48 @@ func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBl
 	if ibs.GetCodeSize(registry.historyStorage) == 0 {
 		return nil
 	}
+	if rules.IsGlamsterdam {
+		historySystemCall(registry.historyStorage, chainConfig, ibs, header)
+		return ibs.FinalizeTx(rules, state.NewNoopWriter())
+	}
 	vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
 	return ibs.FinalizeTx(rules, state.NewNoopWriter())
+}
+
+// historySystemCall makes the EIP-2935 system call the way geth's
+// ProcessParentBlockHash does: caller SYSTEM_ADDRESS, 30M gas plus the
+// EIP-8037 state-gas reservoir, zero value, input = the parent hash. Earlier
+// forks write the ring-buffer slot directly (vm.StoreParentBlockHash), which
+// matches the canonical contract; Amsterdam executes whatever code the
+// contract holds, as its state-gas accounting applies to it. A failing call
+// leaves the state as the call left it and does not invalidate the block.
+// Like beaconRootSystemCall it does no value transfer and keeps the access
+// list of the first transaction clean. The caller finalizes the state.
+func historySystemCall(contract types.Address, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header) {
+	msg := transaction.NewMessage(
+		state.SystemAddress,
+		&contract,
+		0, u256.Num0,
+		systemCallGas, u256.Num0,
+		nil, nil, nil, nil,
+		header.ParentHash[:], nil, false,
+		true, // isFree
+	)
+	blockContext := NewEVMBlockContext(header, GetHashFn(header, nil), nil, chainConfig, &header.Coinbase)
+	transfer := blockContext.Transfer
+	blockContext.Transfer = func(db evmtypes.IntraBlockState, sender, recipient types.Address, amount *uint256.Int, bailout bool) {
+		if sender == state.SystemAddress {
+			return
+		}
+		transfer(db, sender, recipient, amount, bailout)
+	}
+	evm := vm.NewEVM(blockContext, NewEVMTxContext(msg), ibs, chainConfig, vm.Config{NoReceipts: true})
+	ibs.ResetAccessList()
+	ibs.AddAddressToAccessList(types.Address{})
+	ibs.AddAddressToAccessList(contract)
+	setSystemCallStateGasReservoir(evm)
+	_, _, _ = evm.Call(vm.AccountRef(state.SystemAddress), contract, header.ParentHash[:], systemCallGas, u256.Num0, false)
+	ibs.ResetAccessList()
 }
 
 // ProcessPragueSystemCalls applies Prague/Pectra end-of-block system contract
@@ -321,7 +436,7 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 		return nil, nil
 	}
 
-	requests, err := CollectDepositExecutionRequests(receipts)
+	requests, err := CollectDepositExecutionRequests(receipts, chainConfig.DepositContract())
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +445,34 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 		return nil, err
 	}
 	return append(requests, pragueRequests...), nil
+}
+
+// ExecutionRequestsHash computes the EIP-7685 requests hash committed in the
+// header from Prague: sha256 over the sha256 of each non-empty request, in
+// request-type order. Requests carrying only a type byte are skipped.
+func ExecutionRequestsHash(requests []hexutil.Bytes) types.Hash {
+	sorted := make([]hexutil.Bytes, len(requests))
+	copy(sorted, requests)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if len(sorted[i]) == 0 {
+			return false
+		}
+		if len(sorted[j]) == 0 {
+			return true
+		}
+		return sorted[i][0] < sorted[j][0]
+	})
+	aggregate := sha256.New()
+	for _, request := range sorted {
+		if len(request) <= 1 {
+			continue
+		}
+		sum := sha256.Sum256(request)
+		_, _ = aggregate.Write(sum[:])
+	}
+	var out types.Hash
+	_ = out.SetBytes(aggregate.Sum(nil))
+	return out
 }
 
 // CollectPragueExecutionRequests assembles Prague execution requests from both

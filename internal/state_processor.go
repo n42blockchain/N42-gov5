@@ -59,10 +59,12 @@ import (
 // follower's whole Process reads as "EVM execution" and looks arbitrarily
 // slower than the leader's fillTx for the very same transactions.
 type ProcessPhases struct {
-	Recover  time.Duration // parallel sender recovery (see recoverBlockSenders)
-	Prep     time.Duration // start-of-block system calls (EIP-4788 / EIP-2935)
-	Exec     time.Duration // pure EVM: the per-transaction ApplyTransaction loop
-	Finalize time.Duration // engine.Finalize: rewards + state root #3
+	TransferComponents bool          // restricted execution was installed (diagnostic only)
+	Prefetch           time.Duration // optional account preload, including snapshot checks
+	Recover            time.Duration // parallel sender recovery (see recoverBlockSenders)
+	Prep               time.Duration // start-of-block system calls (EIP-4788 / EIP-2935)
+	Exec               time.Duration // pure EVM: the per-transaction ApplyTransaction loop
+	Finalize           time.Duration // engine.Finalize: rewards + state root #3
 	// Parallel path only (runParallel, strict mode); zero on the serial path.
 	// Setup is worker readers/IBS/EVM + block start + executor construction;
 	// Collect is the gap between the executor's last wave and applyMVSToIBS.
@@ -103,10 +105,11 @@ type ProcessPhases struct {
 
 // StateProcessor implements Processor and handles state transitions.
 type StateProcessor struct {
-	config       *params.ChainConfig
-	bc           *BlockChain
-	engine       consensus.Engine
-	slotRecorder vm2.SlotAccessRecorder
+	config          *params.ChainConfig
+	bc              *BlockChain
+	engine          consensus.Engine
+	slotRecorder    vm2.SlotAccessRecorder
+	transferWorkers int
 
 	// lastPhases holds the most recent successful Process breakdown. An atomic
 	// pointer (published once per block, never mutated in place) keeps this
@@ -131,9 +134,10 @@ func (p *StateProcessor) SetSlotRecorder(r vm2.SlotAccessRecorder) {
 // NewStateProcessor initialises a new StateProcessor.
 func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consensus.Engine) *StateProcessor {
 	return &StateProcessor{
-		config: config,
-		bc:     bc,
-		engine: engine,
+		config:          config,
+		bc:              bc,
+		engine:          engine,
+		transferWorkers: transferExecutionWorkers,
 	}
 }
 
@@ -273,6 +277,18 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		}
 	}
 	phases.Recover = time.Since(tPhase)
+	prefetchBase := stateReader
+	if pf, ok := stateReader.(*state.AccountPrefetch); ok {
+		prefetchBase = pf.Base()
+	}
+	if prefetched, ok := prefetchBase.(*blockAccountPrefetchReader); ok {
+		started := time.Now()
+		prefetched.prepare(b.Transactions())
+		phases.Prefetch = time.Since(started)
+		defer func() {
+			log.Info("account prefetch consumed", "n", blockNumber.Uint64(), "hits", prefetched.hits, "unused", len(prefetched.accounts))
+		}()
+	}
 	tPhase = time.Now()
 
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
@@ -296,62 +312,89 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	}
 
 	// Frame blocks run under the skip rule (frame_exec.go): each transaction
-	// gets a snapshot so a skipped one leaves no trace.
+	// gets a snapshot so a skipped one leaves no trace. The transfer component
+	// path has no skip rule, so frame blocks stay on the serial loop.
 	frameBlock := false
 	var frameSigner transaction.Signer
 	if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
 		frameBlock = true
 		frameSigner = transaction.MakeSignerWithTimestamp(chainConfig, concreteHeader.Number.ToBig(), concreteHeader.Time)
 	}
-	for i, tx := range b.Transactions() {
-		ibs.Prepare(tx.Hash(), b.Hash(), i)
-		if balCap != nil {
-			balCap.BeginTx(tx.Hash())
-		}
-		snap := -1
-		if frameBlock {
-			snap = ibs.Snapshot()
-		}
-		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, writer, concreteHeader, tx, usedGas, cfg)
-		if err != nil && frameBlock && IsFrameSkippable(err, tx, frameSigner) {
-			ibs.RevertToSnapshot(snap)
-			if balCap != nil {
-				balCap.DiscardTx()
-			}
-			phases.Skipped++
-			phases.SkipReasons.Add(err)
-			includedTxs = append(includedTxs, tx)
-			if !cfg.NoReceipts {
-				receipts = append(receipts, SkippedTxReceipt(tx, concreteHeader, i, *usedGas))
-			}
-			continue
-		}
+	transfersInstalled := false
+	if p.transferWorkers > 0 && !frameBlock && len(b.Transactions()) >= 2048 && balCap == nil && !chainConfig.IsDeferredExecution(concreteHeader.Time) {
+		started := time.Now()
+		candidateReceipts, installed, err := tryTransferExecution(chainConfig, p.engine, concreteHeader, b.Hash(), b.Transactions(), ibs, cfg, p.transferWorkers)
 		if err != nil {
-			if balCap != nil {
-				balCap.DiscardTx()
-			}
-			if !cfg.StatelessExec {
-				return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, b.Number64(), tx.Hash().String(), err)
-			}
-			rejectedTxs = append(rejectedTxs, &RejectedTx{i, err.Error()})
-		} else {
-			if balCap != nil {
-				balCap.CommitTx()
-			}
-			includedTxs = append(includedTxs, tx)
-			if !cfg.NoReceipts {
-				receipts = append(receipts, receipt)
-			}
+			return nil, nil, nil, 0, fmt.Errorf("transfer component execution: %w", err)
 		}
-		// Note: FinalizeTx (called inside applyTransaction) already handles
-		// per-tx state finalization including empty account deletion.
-		// No need to call SoftFinalise here.
+		if installed {
+			receipts = candidateReceipts
+			includedTxs = b.Transactions()
+			*usedGas = concreteHeader.GasUsed
+			if err := gp.SubGas(*usedGas); err != nil {
+				return nil, nil, nil, 0, err
+			}
+			transfersInstalled = true
+			phases.TransferComponents = true
+		}
+		log.Info("transfer component execution", "n", blockNumber.Uint64(), "workers", p.transferWorkers, "installed", installed, "duration", time.Since(started))
+	}
+	if !transfersInstalled {
+		// The block context and fork rules are constant throughout this loop.
+		// Reset transaction context/state for each call while retaining interpreter
+		// scratch buffers, as the witness replay path already does.
+		vmenv := vm2.NewEVM(NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil), evmtypes.TxContext{}, ibs, chainConfig, cfg)
+		for i, tx := range b.Transactions() {
+			ibs.Prepare(tx.Hash(), b.Hash(), i)
+			if balCap != nil {
+				balCap.BeginTx(tx.Hash())
+			}
+			snap := -1
+			if frameBlock {
+				snap = ibs.Snapshot()
+			}
+			receipt, _, err := ApplyTransactionWithEVM(vmenv, chainConfig, p.engine, gp, ibs, writer, concreteHeader, tx, usedGas, cfg)
+			if err != nil && frameBlock && IsFrameSkippable(err, tx, frameSigner) {
+				ibs.RevertToSnapshot(snap)
+				if balCap != nil {
+					balCap.DiscardTx()
+				}
+				phases.Skipped++
+				phases.SkipReasons.Add(err)
+				includedTxs = append(includedTxs, tx)
+				if !cfg.NoReceipts {
+					receipts = append(receipts, SkippedTxReceipt(tx, concreteHeader, i, *usedGas))
+				}
+				continue
+			}
+			if err != nil {
+				if balCap != nil {
+					balCap.DiscardTx()
+				}
+				if !cfg.StatelessExec {
+					return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, b.Number64(), tx.Hash().String(), err)
+				}
+				rejectedTxs = append(rejectedTxs, &RejectedTx{i, err.Error()})
+			} else {
+				if balCap != nil {
+					balCap.CommitTx()
+				}
+				includedTxs = append(includedTxs, tx)
+				if !cfg.NoReceipts {
+					receipts = append(receipts, receipt)
+				}
+			}
+			// Note: FinalizeTx (called inside applyTransaction) already handles
+			// per-tx state finalization including empty account deletion.
+			// No need to call SoftFinalise here.
+		}
 	}
 
 	// Under deferred execution the header's GasUsed is the parent's; this
 	// block's own is stored with its result and checked by the next header.
-	if !cfg.StatelessExec && !chainConfig.IsDeferredExecution(concreteHeader.Time) && *usedGas != concreteHeader.GasUsed {
-		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
+	// From Amsterdam the header carries the EIP-8037 block figure.
+	if headerGas := HeaderGasUsed(chainConfig, concreteHeader, gp, *usedGas); !cfg.StatelessExec && !chainConfig.IsDeferredExecution(concreteHeader.Time) && headerGas != concreteHeader.GasUsed {
+		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", headerGas, concreteHeader.GasUsed)
 	}
 
 	// EIP-7928 verification gate: the recomputed block-access-list hash must match
@@ -399,7 +442,18 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	_ = rejectedTxs
 	_ = includedTxs
 
-	return receipts, nopay, ibs.Logs(), *usedGas, nil
+	return receipts, nopay, ibs.Logs(), HeaderGasUsed(chainConfig, concreteHeader, gp, *usedGas), nil
+}
+
+// HeaderGasUsed returns the gas used a block header must carry after its
+// transactions ran through gp: under Amsterdam the EIP-8037 figure,
+// max(cumulative execution gas, cumulative state gas); before it the
+// receipts' cumulative gas.
+func HeaderGasUsed(config *params.ChainConfig, header *block.Header, gp *common.GasPool, cumulative uint64) uint64 {
+	if config != nil && config.IsGlamsterdam(header.Time) {
+		return gp.UsedAmsterdam()
+	}
+	return cumulative
 }
 
 // applyTransaction applies a single transaction and returns its receipt.
@@ -468,8 +522,8 @@ func ApplyTransaction(config *params.ChainConfig, blockHashFunc func(n uint64) t
 // ApplyTransactionWithEVM applies a transaction reusing a pre-built EVM.
 // The EVM's block context is left untouched (callers must build the EVM
 // with the correct block context for `header`); only txContext + ibs
-// are reset via EVM.Reset before execution. Used by witness-replay's
-// hot path to avoid one NewEVM + NewEVMInterpreter alloc per tx.
+// are reset via EVM.Reset before execution. Used by block execution, mining,
+// and witness replay to avoid constructing an interpreter per transaction.
 func ApplyTransactionWithEVM(evm vm2.VMInterface, config *params.ChainConfig, engine consensus.Engine, gp *common.GasPool, ibs *state.IntraBlockState, stateWriter state.StateWriter, header *block.Header, tx *transaction.Transaction, usedGas *uint64, cfg vm2.Config) (*block.Receipt, []byte, error) {
 	return applyTransaction(config, engine, gp, ibs, stateWriter, header, tx, usedGas, evm, cfg)
 }

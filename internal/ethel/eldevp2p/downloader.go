@@ -727,8 +727,17 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			if d.probeForNewTip(ctx, probeFloor) {
 				continue // tip advanced; loop to import the now-confirmed block
 			}
-			log.Info("eldevp2p: caught up", "head", local, "tip", tip, "probeFloor", probeFloor,
-				"lag", reorgLag, "peers", len(peers))
+			if tip < local {
+				// Every known peer is behind us (or, eth/68-only, advertised no
+				// head) and none served local+1. That is not "caught up": the
+				// network head is unknown. Saying so keeps an operator from
+				// taking a node held by lagging peers for one at the tip.
+				log.Info("eldevp2p: waiting for a peer ahead of the local head", "head", local,
+					"bestPeerHead", tip, "peers", len(peers))
+			} else {
+				log.Info("eldevp2p: caught up", "head", local, "tip", tip, "probeFloor", probeFloor,
+					"lag", reorgLag, "peers", len(peers))
+			}
 			time.Sleep(12 * time.Second)
 			continue
 		}
@@ -926,6 +935,11 @@ func (d *Downloader) syncMissingAncestor(ctx context.Context, target types.Hash)
 		blk, withdrawals, err := assembleBlock(hdr, bodies[i])
 		if err != nil {
 			return fmt.Errorf("assemble missing ancestor %d: %w", hdr.Number64().Uint64(), err)
+		}
+		if d.exec != nil {
+			if _, err := checkWireBlockSize(d.exec.ChainConfig(), hdr, bodies[i]); err != nil {
+				return fmt.Errorf("missing ancestor %d: %w", hdr.Number64().Uint64(), err)
+			}
 		}
 		status, latestValid, err := importer(blk, withdrawals)
 		if err != nil {
@@ -1559,6 +1573,29 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 				"block", n, "got", got.Hex(), "want", hdr.TxHash.Hex())
 			d.buffer.drop(n)
 			break
+		}
+		// Withdrawals feed execution but are only committed to by the header,
+		// so a body whose withdrawals do not match is the peer's fault:
+		// refetch it rather than executing it and rejecting a valid block.
+		if !wireWithdrawalsMatchHeader(hdr, body.Withdrawals) {
+			log.Warn("eldevp2p: body withdrawalsRoot mismatch — refetch", "block", n)
+			d.buffer.drop(n)
+			break
+		}
+		// EIP-7934: from Osaka the block's RLP encoding is capped (geth
+		// ValidateBody). A padded body is refetched; a block that is itself
+		// oversized is invalid.
+		if refetch, serr := checkWireBlockSize(d.exec.ChainConfig(), hdr, body); serr != nil {
+			if refetch {
+				log.Warn("eldevp2p: oversized body — refetch", "block", n, "err", serr)
+				d.buffer.drop(n)
+				break
+			}
+			log.Warn("eldevp2p: block invalid", "block", n, "err", serr)
+			d.reportInvalidAncestor(rejectedBranchTip(headers, headerIndex), hdr.ParentHash)
+			tx.Rollback()
+			d.adapter.DiscardReorgJournal()
+			return committed - local, committed
 		}
 		// Per-block root verification (ExecutePayloadFromWire computes the
 		// incremental root and checks it against the wire header.Root). State
@@ -2320,6 +2357,8 @@ func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string,
 // hashes from any available peer at atHeight. Public entry for the BAL
 // prefetch/verify path: the caller decodes each raw BAL (bal.DecodeBAL), verifies
 // it against the header's BlockAccessListHash, and can prewarm state from it.
+// It needs an eth/71 peer; N42 does not advertise eth/71 (its BAL format is
+// not the spec's), so this finds no peer until spec eth/71 lands.
 func (d *Downloader) FetchBlockAccessLists(ctx context.Context, atHeight uint64, hashes []types.Hash) ([][]byte, error) {
 	pp := d.pickPeerWithMinVersion(atHeight, eth69.ETH71)
 	if pp == nil {

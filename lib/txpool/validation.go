@@ -49,8 +49,7 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 	if isShanghai && txn.Creation && txn.DataLen > fixedgas.MaxInitCodeSize {
 		return txpoolcfg.InitCodeTooLarge // EIP-3860
 	}
-	// EIP-7825: Transaction Gas Limit Cap (Osaka/Fusaka)
-	if p.isOsaka() && txn.Gas > fixedgas.MaxTxnGasLimit {
+	if limit := p.maxTxnGas(); limit != 0 && txn.Gas > limit {
 		return txpoolcfg.GasLimitTooHigh
 	}
 	if txn.Type == types.BlobTxType {
@@ -268,6 +267,18 @@ func (p *TxPool) isOsaka() bool {
 
 func (p *TxPool) isGlamsterdam() bool {
 	return isTimeBasedForkActivated(&p.isPostGlamsterdam, p.glamsterdamTime)
+}
+
+// maxTxnGas returns the per-transaction gas cap in force, or 0 for none:
+// EIP-7825 from Osaka, replaced by the EIP-8037 total in Glamsterdam.
+func (p *TxPool) maxTxnGas() uint64 {
+	if p.isGlamsterdam() {
+		return fixedgas.MaxTxnGasLimitEIP8037
+	}
+	if p.isOsaka() {
+		return fixedgas.MaxTxnGasLimit
+	}
+	return 0
 }
 
 func (p *TxPool) GetMaxBlobsPerBlock() uint64 {

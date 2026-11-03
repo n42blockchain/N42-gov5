@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/log"
 )
@@ -57,6 +58,12 @@ import (
 // senderRecoveryMinTxs is the block size below which the goroutine setup is not
 // worth it; those blocks recover inline in the execution loop as before.
 const senderRecoveryMinTxs = 8
+
+const senderHintBatchSize = 256
+
+type senderHintBatchSource interface {
+	GetTxs([]types.Hash, []*transaction.Transaction)
+}
 
 // senderRecoveryWorkerOverride is N42_SENDER_RECOVER_WORKERS, 0 when unset
 // (1 disables the fan-out).
@@ -121,6 +128,9 @@ func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*
 	if signer == nil {
 		return 0
 	}
+	if batch, ok := hints.(senderHintBatchSource); ok && len(txs) >= senderRecoveryMinTxs {
+		return applySenderHintBatches(batch, signer, txs)
+	}
 	// The process-wide sender cache first, across the recovery fan-out: with
 	// a hint feed (ingest hint-only mode) it holds most of the block already,
 	// and one atomic load a transaction costs nothing. The pool lookup below
@@ -146,8 +156,9 @@ func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*
 		if hints == nil {
 			return
 		}
-		ptx := hints.GetTx(tx.Hash())
-		if ptx == nil {
+		hash := tx.Hash()
+		ptx := hints.GetTx(hash)
+		if ptx == nil || ptx.Hash() != hash {
 			return
 		}
 		if addr, err := transaction.Sender(signer, ptx); err == nil {
@@ -181,6 +192,37 @@ func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*
 		<-done
 	}
 	return int(filled.Load())
+}
+
+// Fill wire transactions in order, just like the scalar path. Only pool
+// lookup is batched: the lock is released before touching transaction memos
+// or deriving any signature. A concurrent pool eviction leaves a valid
+// reference, while a miss falls back to the normal recovery pass.
+func applySenderHintBatches(hints senderHintBatchSource, signer transaction.Signer, txs []*transaction.Transaction) int {
+	var hashes [senderHintBatchSize]types.Hash
+	var copies [senderHintBatchSize]*transaction.Transaction
+	filled := 0
+	for base := 0; base < len(txs); base += senderHintBatchSize {
+		count := min(senderHintBatchSize, len(txs)-base)
+		for j := 0; j < count; j++ {
+			hashes[j] = types.Hash{}
+			if tx := txs[base+j]; tx != nil && tx.From() == nil {
+				hashes[j] = tx.Hash()
+			}
+		}
+		hints.GetTxs(hashes[:count], copies[:count])
+		for j := 0; j < count; j++ {
+			tx, ptx := txs[base+j], copies[j]
+			if tx == nil || tx.From() != nil || ptx == nil || ptx.Hash() != hashes[j] {
+				continue
+			}
+			if addr, err := transaction.Sender(signer, ptx); err == nil {
+				tx.SetFrom(addr)
+				filled++
+			}
+		}
+	}
+	return filled
 }
 
 // recoverBlockSenders pre-populates the signature cache of every transaction in
@@ -380,7 +422,8 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 		found = append(found, mismatch{idx: i, err: err})
 		mu.Unlock()
 	}
-	check := func(i int) {
+	batchHints, hasBatchHints := hints.(senderHintBatchSource)
+	check := func(i int, poolTx *transaction.Transaction) {
 		tx := txs[i]
 		if tx == nil {
 			return
@@ -403,11 +446,6 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 			report(i, fmt.Errorf("tx %d declares sender %s but carries no signature values (V/R/S)", i, declared.Hex()))
 			return
 		}
-		// The sender cache first: with a hint feed (ingest hint-only mode)
-		// filling it ahead of the block, this is an atomic load per
-		// transaction, whereas the pool lookup below takes the pool's read
-		// lock 163,000 times against a writer admitting 60k tx/s -- round
-		// 35zj: the feed was complete and recover still read 368 ms.
 		if cached, ok := transaction.CachedSender(signer, tx); ok {
 			hintHits.Add(1)
 			if cached != *declared {
@@ -415,18 +453,19 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 			}
 			return
 		}
-		if hints != nil {
-			if ptx := hints.GetTx(tx.Hash()); ptx != nil {
-				if pooled, err := transaction.Sender(signer, ptx); err == nil {
-					hintHits.Add(1)
-					if pooled != *declared {
-						report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), pooled.Hex()))
-					}
-					return
-				}
-			}
+		var recovered types.Address
+		var err error
+		if hints != nil && !hasBatchHints {
+			poolTx = hints.GetTx(tx.Hash())
 		}
-		recovered, err := transaction.RecoverSenderFromSig(signer, tx)
+		if poolTx != nil && poolTx.Hash() == tx.Hash() {
+			recovered, err = transaction.Sender(signer, poolTx)
+			if err == nil {
+				hintHits.Add(1)
+			}
+		} else {
+			recovered, err = transaction.RecoverSenderFromSig(signer, tx)
+		}
 		if err != nil {
 			report(i, fmt.Errorf("tx %d declares sender %s but signature does not recover: %w", i, declared.Hex(), err))
 			return
@@ -455,18 +494,48 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
 		workers = 1
 	}
+	// Bound lock hold time and scratch space. Hashing and signature checks
+	// happen outside the pool lock. Snapshot references are only hints: the
+	// signed hash, signer, and declared From are checked exactly as above.
+	verifyRange := func(start, stride int, current *int) {
+		if !hasBatchHints {
+			for i := start; i < len(txs); i += stride {
+				*current = i
+				check(i, nil)
+			}
+			return
+		}
+		const batchSize = senderHintBatchSize
+		var hashes [batchSize]types.Hash
+		var copies [batchSize]*transaction.Transaction
+		for base := start * batchSize; base < len(txs); base += stride * batchSize {
+			count := min(batchSize, len(txs)-base)
+			for j := 0; j < count; j++ {
+				*current = base + j
+				hashes[j] = types.Hash{}
+				if tx := txs[base+j]; tx != nil && tx.From() != nil {
+					hashes[j] = tx.Hash()
+				}
+			}
+			*current = base
+			batchHints.GetTxs(hashes[:count], copies[:count])
+			for j := 0; j < count; j++ {
+				*current = base + j
+				check(base+j, copies[j])
+			}
+		}
+	}
 	if workers < 2 {
 		// Same panic containment as the worker branch below: a gate must be
 		// able to reject a block, never to take the process down with it.
 		func() {
+			cur := 0
 			defer func() {
 				if r := recover(); r != nil {
-					report(0, fmt.Errorf("sender verify panic: %v", r))
+					report(cur, fmt.Errorf("sender verify panic: %v", r))
 				}
 			}()
-			for i := range txs {
-				check(i)
-			}
+			verifyRange(0, 1, &cur)
 		}()
 	} else {
 		done := make(chan struct{}, workers)
@@ -481,10 +550,7 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 					}
 					done <- struct{}{}
 				}()
-				for i := start; i < len(txs); i += workers {
-					cur = i
-					check(i)
-				}
+				verifyRange(start, workers, &cur)
 			}(w)
 		}
 		for w := 0; w < workers; w++ {
@@ -502,4 +568,9 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 		}
 	}
 	return int(hintHits.Load()), best.err
+}
+
+func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) error {
+	_, err := verifyBlockSendersHinted(signer, txs, hints)
+	return err
 }

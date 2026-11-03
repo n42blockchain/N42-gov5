@@ -79,13 +79,14 @@ func BuildGuestInput(
 		ParentHeader: parentBytes,
 		Transactions: txBytes,
 		Witness:      witnessBytes,
-		ForkConfig:   buildGuestForkConfig(chainConfig, blockNum, blockTime),
+		ForkConfig:   BuildGuestForkConfig(chainConfig, blockNum, blockTime),
 	}
 
 	return EncodeGuestInput(input)
 }
 
-func buildGuestForkConfig(chainConfig *params.ChainConfig, blockNum, blockTime uint64) ForkConfig {
+// BuildGuestForkConfig returns the fork flags the guest runs a block with.
+func BuildGuestForkConfig(chainConfig *params.ChainConfig, blockNum, blockTime uint64) ForkConfig {
 	if chainConfig == nil {
 		return ForkConfig{}
 	}
@@ -113,6 +114,7 @@ func buildGuestForkConfig(chainConfig *params.ChainConfig, blockNum, blockTime u
 		IsParlia:              chainConfig.UsesParliaRules(),
 		IsAura:                chainConfig.UsesAuraRules(),
 		IsPQPrecompiles:       chainConfig.IsPQPrecompiles(blockTime),
+		IsGlamsterdam:         chainConfig.IsGlamsterdam(blockTime),
 	}
 }
 

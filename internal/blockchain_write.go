@@ -43,6 +43,7 @@ import (
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/lib/lthash"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
@@ -253,9 +254,15 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	// window (~1.5s measured live at 14k tx/block) and had no breakdown; these
 	// counters split it. Everything here is plain wall-clock arithmetic on the
 	// goroutine that already owns bc.lock, so no lock or ordering is added.
-	// The MDBX commit/fsync cost is not directly observable through
-	// ChainDB.Update, so it is derived: Update wall time minus the BeginRw wait
-	// (start of the closure) minus the time spent inside the closure.
+	// The aggregate commit cost is derived from Update wall time minus the
+	// BeginRw wait and closure time. It includes page reclamation, writes and
+	// sync, not just fsync. Optional native traces separate those stages.
+	_, directMDBX := bc.ChainDB.(*mdbx.MdbxKV)
+	traceNativeCommit := directMDBX && mdbx.CommitTraceEnabled()
+	earlyWriteback := directMDBX && mdbx.EarlyWritebackEnabled() && len(concreteBlock.Transactions()) >= 2048
+	var writeTxID uint64
+	var dEarlyWriteback time.Duration
+	var earlyWritebackRequests int
 	var (
 		tUpdateStart  = time.Now()
 		tClosureStart time.Time
@@ -333,6 +340,28 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			RwBeginBehind() (time.Duration, string)
 		}); ok {
 			_, beginBehind = d.RwBeginBehind()
+		}
+		if traceNativeCommit {
+			writeTxID = tx.ViewID()
+		}
+		startWriteback := func() error {
+			if !earlyWriteback {
+				return nil
+			}
+			native, ok := tx.(*mdbx.MdbxTx)
+			if !ok {
+				return nil
+			}
+			started := time.Now()
+			requested, err := native.StartWriteback()
+			dEarlyWriteback += time.Since(started)
+			if requested {
+				earlyWritebackRequests++
+			}
+			if err != nil {
+				return fmt.Errorf("early data writeback for block %d: %w", blockNumber.Uint64(), err)
+			}
+			return nil
 		}
 		// Reject an in-flight leader candidate before touching receipts, logs,
 		// changesets, or any other append-only table. The applied head can move
@@ -452,6 +481,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			} else {
 				nAccts, nSlots = plainWriter.ChangedCounts()
 			}
+			if err := startWriteback(); err != nil {
+				return err
+			}
 			tPhase = time.Now()
 			// A prior attempt at this height (hotstuff view-change re-production,
 			// a competing same-height proposal, or a reorg re-import) may have
@@ -486,6 +518,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			}
 			dChgHistory = time.Since(tSub)
 			dChangeset = time.Since(tPhase)
+			if err := startWriteback(); err != nil {
+				return err
+			}
 		}
 
 		// Flush JMT dirty nodes into the current MDBX transaction and persist root.
@@ -626,6 +661,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			dQMDBFlush = time.Since(tPhase)
+			if err := startWriteback(); err != nil {
+				return err
+			}
 			tPhase = time.Now()
 			// EvictFlushed / TakeUndo / CommitFlushed run AFTER this tx commits
 			// (below, outside the Update): running them here consumed the undo
@@ -759,7 +797,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		return NonStatTy, err
 	}
 	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
-	// isolates the MDBX Commit (fsync) from everything the closure did.
+	// isolates the aggregate commit path from everything the closure did.
 	dUpdate := time.Since(tUpdateStart)
 	if lagTx {
 		lagBGGate.exit()
@@ -777,7 +815,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	}
 
 	// One compact, greppable line per written block. `commit` is the derived
-	// MDBX commit (fsync) cost — see the timing block above. Demoted to Debug
+	// aggregate commit cost — see the timing block above. Demoted to Debug
 	// for sub-5ms writes so a bulk catch-up import (thousands of blocks/s)
 	// cannot flood the log; every block on a live 3s chain clears that floor.
 	//
@@ -816,6 +854,13 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		if beginBehind != "" {
 			fields = append(fields, "beginBehind", beginBehind)
+		}
+		if traceNativeCommit {
+			// Join native stage timings to this exact block and write transaction.
+			fields = append(fields, "mdbxTxID", writeTxID, "hash", blk.Hash().Hex())
+		}
+		if earlyWriteback {
+			fields = append(fields, "earlyWriteback", dEarlyWriteback, "earlyWritebackRequests", earlyWritebackRequests)
 		}
 		// Distinct accounts and slots the block changed. The commit cost is set
 		// by this COUNT, not by the byte volume: every account update is keyed

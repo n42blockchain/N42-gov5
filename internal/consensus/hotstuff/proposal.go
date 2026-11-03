@@ -21,7 +21,7 @@ import (
 func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Hash) error {
 	view := e.roundState.CurrentView()
 
-	if !IsLeader(e.myIndex, view, e.validatorSet()) {
+	if !e.isLeader(e.myIndex, view, e.validatorSet()) {
 		// The build was triggered for an earlier view we led; by seal time the
 		// view rotated. Loud, not silent: this drop means the sealed block will
 		// never be proposed and the view can only time out.
@@ -175,9 +175,16 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	// on its post-state while the followers import it (round 35l: without
 	// this, tenure views proposed in 363-528 ms like rotation views, all
 	// twenty builds "triggered (leader view)", none a speculative hit).
+	// The process-wide tenure (N42_HOTSTUFF_LEADER_TENURE), as before the
+	// chainspec tenure existed: a chainspec-only tenure takes the
+	// persisted-seal hint below (hintNextBuild) instead.
 	if LeaderForView(view+1, vs) == e.myIndex {
 		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
 	}
+
+	// A consecutive leader self-voted above instead of going through
+	// sendVote, so it needs the same advisory build hint as a follower.
+	e.hintNextBuild(view, blockHash)
 
 	// Check if quorum already reached (single-validator scenario).
 	return e.tryFormPrepareQC()
@@ -205,7 +212,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 		return &ViewMismatchError{Current: view, Received: proposal.View}
 	}
 
-	expectedLeader := LeaderForView(view, e.validatorSet())
+	expectedLeader := e.LeaderForView(view, e.validatorSet())
 	if proposal.Proposer != expectedLeader {
 		return &InvalidProposerError{View: view, Expected: expectedLeader, Actual: proposal.Proposer}
 	}
@@ -582,6 +589,16 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 		return &ViewMismatchError{Current: view, Received: pqc.View}
 	}
 
+	// The aggregate signs the inner QC, while the commit vote below signs the
+	// envelope. Bind them before verifying BLS or changing any consensus state:
+	// a valid old QC must not authorize a vote for a substituted view or block.
+	if pqc.QC.View != pqc.View {
+		return &ViewMismatchError{Current: pqc.View, Received: pqc.QC.View}
+	}
+	if pqc.QC.BlockHash != pqc.BlockHash {
+		return &BlockHashMismatchError{Expected: pqc.BlockHash, Got: pqc.QC.BlockHash}
+	}
+
 	if err := e.verifyQCWithSet(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
 		return err
 	}
@@ -657,7 +674,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 func (e *ConsensusEngine) emitCommitVote(view ViewNumber, blockHash types.Hash) error {
 	commitMsg := e.commitSigningMessage(view, blockHash)
 	commitSig := e.secretKey.Sign(commitMsg)
-	leader := LeaderForView(view, e.validatorSet())
+	leader := e.LeaderForView(view, e.validatorSet())
 
 	commitVote := &CommitVote{
 		View:      view,
@@ -685,7 +702,7 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 	if !e.isMember() {
 		return nil // observer/removed nodes do not cast votes
 	}
-	leader := LeaderForView(view, e.validatorSet())
+	leader := e.LeaderForView(view, e.validatorSet())
 	voteMsg := e.voteSigningMessage(view, blockHash)
 	voteSig := e.secretKey.Sign(voteMsg)
 
@@ -718,10 +735,14 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 	// during this view's vote rounds instead of after the view change. Gated
 	// on importedBlocks because the two-phase mode votes before import.
 	// Advisory only; see OutputSpeculativeBuild.
-	if e.importedBlocks[blockHash] && LeaderForView(view+1, e.validatorSet()) == e.myIndex {
+	e.hintNextBuild(view, blockHash)
+	return nil
+}
+
+func (e *ConsensusEngine) hintNextBuild(view ViewNumber, blockHash types.Hash) {
+	if view+1 > view && e.importedBlocks[blockHash] && e.LeaderForView(view+1, e.validatorSet()) == e.myIndex {
 		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
 	}
-	return nil
 }
 
 // rememberImported records that this block is locally imported, retained across

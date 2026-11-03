@@ -493,6 +493,17 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 			validationError: err,
 		}, nil
 	}
+	// Body checks newPayload runs before execution. Blocks read back from the
+	// local columnar freezer (allowMissingExpectedBloom) were validated when
+	// first imported and skip them.
+	if !allowMissingExpectedBloom {
+		if err := validateWireBlockBody(blk, a.chainCfg); err != nil {
+			return &enginePayloadExecutionResult{
+				stateRoot:       header.Root,
+				validationError: err,
+			}, nil
+		}
+	}
 	// Keep the staged parent's cumulative lineage for the next overlay even
 	// when execution can read this parent directly from canonical storage.
 	// Dropping it here would reduce every newly staged overlay to a one-block
@@ -699,6 +710,12 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	gasPool.AddGas(blk.GasLimit())
 	var usedGas uint64
 	receipts := make(block.Receipts, 0, len(blk.Transactions()))
+	// EIP-7928 (Amsterdam): record the block access list from index 0, the
+	// pre-execution system calls, to check it against the header.
+	specBAL := a.chainCfg.UsesEIP7928AccessList(header.Time)
+	if specBAL {
+		ibs.EnableBlockAccessList()
+	}
 	if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, a.chainCfg, ibs, header, a.engine); err != nil {
 		return nil, err
 	}
@@ -753,6 +770,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		balCap = internalcore.NewBALCapture(state.NewNoopWriter())
 	}
 	for i, txn := range blk.Transactions() {
+		ibs.SetBlockAccessIndex(uint64(i) + 1)
 		ibs.Prepare(txn.Hash(), blk.Hash(), i)
 		prevUsed := usedGas
 		var perTxWriter state.StateWriter = state.NewNoopWriter()
@@ -888,6 +906,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 				"speedup", fmt.Sprintf("%.2fx", speedup), "txFails", fails, "perr", perr)
 		}
 	}
+	usedGas = internalcore.HeaderGasUsed(a.chainCfg, header, gasPool, usedGas)
 	if usedGas != header.GasUsed {
 		if gasDiag {
 			log.Warn("GAS161 mismatch", "block", blockNum, "got", usedGas, "want", header.GasUsed, "diff", int64(header.GasUsed)-int64(usedGas))
@@ -899,10 +918,16 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	if err := finalizeExecutionStateChanges(a.chainCfg, header, ibs); err != nil {
 		return nil, err
 	}
+	ibs.SetBlockAccessIndex(uint64(len(blk.Transactions())) + 1)
 	applyExecutionWithdrawals(ibs, withdrawals)
 	var actualRequests []hexutil.Bytes
 	if actualRequests, err = internalcore.ProcessExecutionBlockEnd(receipts, a.chainCfg, ibs, header, a.engine); err != nil {
 		return nil, err
+	}
+	if specBAL {
+		if err := validateBlockAccessList(ibs.BlockAccessList(), header); err != nil {
+			return &enginePayloadExecutionResult{validationError: err}, nil
+		}
 	}
 	rules := a.chainCfg.RulesWithTimestamp(blockNum, header.Time)
 	if rules != nil && rules.IsPrague {
@@ -1233,6 +1258,40 @@ func (a *EngineStateAdapter) canonicalBlockNumber(engineHash types.Hash) (uint64
 		return 0, false, err
 	}
 	return *number, canonicalHash == storedHash, nil
+}
+
+// canonicalAncestor reports whether engineHash is a canonical block below the
+// current head, how many blocks below it is, and whether it is at or below
+// the forkchoice finalized block.
+func (a *EngineStateAdapter) canonicalAncestor(engineHash types.Hash) (depth uint64, finalized, ok bool, err error) {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return 0, false, false, err
+	}
+	defer tx.Rollback()
+
+	storedHash, err := a.resolveCanonicalStoredHash(tx, engineHash)
+	if err != nil || storedHash == (types.Hash{}) {
+		return 0, false, false, err
+	}
+	number := rawdb.ReadHeaderNumber(tx, storedHash)
+	if number == nil {
+		return 0, false, false, nil
+	}
+	canonicalHash, err := rawdb.ReadCanonicalHash(tx, *number)
+	if err != nil || canonicalHash != storedHash {
+		return 0, false, false, err
+	}
+	headNumber := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx))
+	if headNumber == nil || *number >= *headNumber {
+		return 0, false, false, nil
+	}
+	if finalizedHash := rawdb.ReadForkchoiceFinalizedHash(tx); finalizedHash != (types.Hash{}) {
+		if fin := rawdb.ReadHeaderNumber(tx, finalizedHash); fin != nil && *number <= *fin {
+			finalized = true
+		}
+	}
+	return *headNumber - *number, finalized, true, nil
 }
 
 // reorgCanonicalTo unwinds the persisted world state and canonical index to a

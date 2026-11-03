@@ -287,6 +287,10 @@ type IntraBlockState struct {
 	// leaves and a wrong state root). Only populated when a RootComputer is set
 	// and the reader supports enumeration; the legacy Keccak path is unaffected.
 	wipedStorageSlots map[types.Address]map[types.Hash]uint256.Int
+
+	// bal records the EIP-7928 block access list when enabled
+	// (EnableBlockAccessList); nil otherwise.
+	bal *balTracker
 }
 
 // New creates a new IntraBlockState with the given state reader.
@@ -329,12 +333,20 @@ func (sdb *IntraBlockState) captureWipedSlots(addr types.Address) {
 		return
 	}
 	slots := make(map[types.Hash]uint256.Int)
-	_ = enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+	err := enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
 		var v uint256.Int
 		v.SetBytes(value)
 		slots[slot] = v
 		return true
 	})
+	if err != nil {
+		// An unavailable capability retains the touched-slot fallback. A real
+		// read failure invalidates execution; never publish a partial capture.
+		if !errors.Is(err, ErrNoStorageEnumeration) {
+			sdb.setErrorUnsafe(err)
+		}
+		return
+	}
 	sdb.wipedStorageSlots[addr] = slots
 }
 
@@ -610,6 +622,7 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.balanceInc = reuseMap(sdb.balanceInc)
 	sdb.biSlab = nil
 	sdb.foldNoJournal = false
+	sdb.bal = nil
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
@@ -683,6 +696,7 @@ func (sdb *IntraBlockState) Exist(addr types.Address) bool {
 // that can escape EVM snapshot/revert boundaries.
 // Used by gas cost calculations which must be side-effect-free.
 func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
+	sdb.balAccountAccess(addr)
 	// Check live objects.
 	if obj := sdb.stateObjects[addr]; obj != nil {
 		return !obj.deleted
@@ -912,6 +926,7 @@ func (sdb *IntraBlockState) GetCodeHash(addr types.Address) types.Hash {
 
 // GetState retrieves a value from the given account's storage trie.
 func (sdb *IntraBlockState) GetState(addr types.Address, key *types.Hash, value *uint256.Int) {
+	sdb.balSlotAccess(addr, key)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		stateObject.GetState(key, value)
@@ -922,6 +937,7 @@ func (sdb *IntraBlockState) GetState(addr types.Address, key *types.Hash, value 
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
 func (sdb *IntraBlockState) GetCommittedState(addr types.Address, key *types.Hash, value *uint256.Int) {
+	sdb.balSlotAccess(addr, key)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
 		stateObject.GetCommittedState(key, value)
@@ -1005,6 +1021,7 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 		needAccount = true
 	}
 	if !needAccount {
+		sdb.balAccountAccess(addr)
 		sdb.journal.push(balanceIncrease{
 			account:  &addr,
 			increase: *amount,
@@ -1069,6 +1086,7 @@ func (sdb *IntraBlockState) SetCode(addr types.Address, code []byte) {
 
 // SetState sets a storage value for the given address.
 func (sdb *IntraBlockState) SetState(addr types.Address, key *types.Hash, value uint256.Int) {
+	sdb.balSlotAccess(addr, key)
 	stateObject := sdb.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetState(key, value)
@@ -1091,6 +1109,7 @@ func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
 }
 
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
+	sdb.balAccountAccess(addr)
 	// Prefer 'live' objects; the last one resolved is checked before the map.
 	if obj := sdb.lastObj; obj != nil && sdb.lastAddr == addr {
 		sdb.foldBalanceIncrease(addr, obj)
@@ -1390,7 +1409,13 @@ func printAccount(addr types.Address, stateObject *stateObject, isDirty bool) {
 
 // FinalizeTx should be called after every transaction.
 func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter StateWriter) error {
+	if sdb.savedErr != nil {
+		return sdb.savedErr
+	}
 	policy := newAccountWritePolicy(chainRules)
+	if chainRules.IsGlamsterdam {
+		sdb.preserveDestructedBalances()
+	}
 	_, noop := stateWriter.(*NoopWriter)
 	// A block-end system call (no-op writer) on a state whose root takes
 	// its pending credits detached (P4b) leaves them pending: materialising
@@ -1412,6 +1437,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 		for _, addr := range sdb.pendingIncreaseAddrs() {
 			sdb.getStateObject(addr)
 		}
+	}
+	if sdb.savedErr != nil {
+		return sdb.savedErr
 	}
 	// The credited accounts left pending stay dirty in the journal (the
 	// root and CommitBlock take an unloaded credit's account from there):
@@ -1522,6 +1550,9 @@ func (sdb *IntraBlockState) promoteWipes() {
 // CommitBlock finalizes the state by removing the self destructed objects
 // and clears the journal as well as the refunds.
 func (sdb *IntraBlockState) CommitBlock(chainRules *params.Rules, stateWriter StateWriter) error {
+	if sdb.savedErr != nil {
+		return sdb.savedErr
+	}
 	// Sorted iteration: see note on FinalizeTx — getStateObject can read
 	// through the block-witness recorder, so iteration order is visible
 	// in the witness stream.
@@ -1542,6 +1573,9 @@ func (sdb *IntraBlockState) BalanceIncreaseSet() map[types.Address]uint256.Int {
 }
 
 func (sdb *IntraBlockState) MakeWriteSet(chainRules *params.Rules, stateWriter StateWriter) error {
+	if sdb.savedErr != nil {
+		return sdb.savedErr
+	}
 	policy := newAccountWritePolicy(chainRules)
 	// The first loop only populates the stateObjectsDirty set and doesn't
 	// read state; iteration order here is irrelevant. The second loop
@@ -1588,6 +1622,18 @@ func (sdb *IntraBlockState) Prepare(thash, bhash types.Hash, ti int) {
 	sdb.thash = thash
 	sdb.bhash = bhash
 	sdb.txIndex = ti
+	if sdb.accessList == nil {
+		sdb.accessList = newAccessList()
+	} else {
+		sdb.accessList.Reset()
+	}
+}
+
+// ResetAccessList empties the EIP-2929 access list without touching the
+// transaction hash/index that Prepare also sets. System calls made outside a
+// transaction use it so their warm addresses and slots never leak into the
+// next transaction.
+func (sdb *IntraBlockState) ResetAccessList() {
 	if sdb.accessList == nil {
 		sdb.accessList = newAccessList()
 	} else {
@@ -2185,31 +2231,40 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 }
 
 // Selfdestruct8246 implements EIP-8246 (Amsterdam) SELFDESTRUCT with the
-// account itself as beneficiary. For a same-transaction-created account
-// the creation is destroyed (code/storage/nonce gone, as under EIP-6780)
-// but — unlike 6780 — the balance survives: the account is immediately
-// recreated as a fresh, balance-only account via the standard
-// recreate-after-selfdestruct path (journal-safe, revert-safe). For a
-// pre-existing account this is a full no-op: 6780 already preserves
-// code/storage, and with no beneficiary transfer the balance stays put.
+// account itself as beneficiary: nothing is burned. A same-transaction-
+// created account is marked for destruction with its balance kept (it keeps
+// its code until the transaction ends, like any destructed account); the
+// balance it holds then is preserved by preserveDestructedBalances when the
+// transaction is finalized. For a pre-existing account it is a no-op.
 func (sdb *IntraBlockState) Selfdestruct8246(addr types.Address) {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted || !stateObject.created {
 		return
 	}
-	balance := *stateObject.Balance()
 	sdb.journal.push(selfdestructChange{
 		account:     &addr,
 		prev:        stateObject.selfdestructed,
-		prevbalance: balance,
+		prevbalance: *stateObject.Balance(),
 	}.record())
 	stateObject.markSelfdestructed()
-	stateObject.data.Balance.Clear()
-	if balance.IsZero() {
-		return
+}
+
+// preserveDestructedBalances applies EIP-8246 (Amsterdam) at the end of a
+// transaction: an account marked for destruction that holds a balance is
+// not deleted but replaced by a fresh account with only that balance
+// (nonce 0, no code, storage wiped). One with a zero balance is deleted as
+// before.
+func (sdb *IntraBlockState) preserveDestructedBalances() {
+	for _, addr := range sortedAddresses(sdb.journal.dirties) {
+		so, exist := sdb.stateObjects[addr]
+		if !exist || !so.selfdestructed || so.data.Balance.IsZero() {
+			continue
+		}
+		// CreateAccount carries the balance over and clears the
+		// selfdestructed flag; the destructed object's storage is already
+		// queued for wiping (it was created in this transaction).
+		sdb.CreateAccount(addr, false)
 	}
-	sdb.CreateAccount(addr, false)
-	sdb.AddBalance(addr, &balance)
 }
 
 // WasCreatedInCurrentTx returns whether the account was created in the current transaction.

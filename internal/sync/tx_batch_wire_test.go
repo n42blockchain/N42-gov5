@@ -132,3 +132,61 @@ func TestTxBatchCap(t *testing.T) {
 		t.Fatal("oversized batch decoded")
 	}
 }
+
+func TestTxBatchRejectsBytesBeforeDecode(t *testing.T) {
+	to := types.Address{0xab}
+	tx := transaction.NewTransaction(0, types.Address{}, &to, uint256.NewInt(0), 50000000, uint256.NewInt(1), bytes.Repeat([]byte{1}, txBatchMaxBytes/2))
+	raw, err := transaction.EncodeEthereumTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both transactions are individually decodable. Only the combined wire
+	// payload, including signatures and framing, crosses the batch byte cap.
+	if _, err = transaction.DecodeEthereumTransaction(raw); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := encodeTxBatch([][]byte{raw, raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) <= txBatchMaxBytes {
+		t.Fatal("fixture is below byte cap")
+	}
+	if _, err = decodeTxBatch(payload); err == nil {
+		t.Fatal("oversized valid batch accepted")
+	}
+}
+
+func TestTxBatchFramingFallsBackWithoutDroppingTransactions(t *testing.T) {
+	raws := [][]byte{bytes.Repeat([]byte{1}, txBatchMaxBytes/2), bytes.Repeat([]byte{2}, txBatchMaxBytes/2)}
+	payloads, err := txBroadcastPayloads(raws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 2 || !bytes.Equal(payloads[0], raws[0]) || !bytes.Equal(payloads[1], raws[1]) {
+		t.Fatal("oversized framing lost transaction")
+	}
+	small, _ := signedRawTxs(t, 2)
+	payloads, err = txBroadcastPayloads(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 1 {
+		t.Fatal("small batch split")
+	}
+	if _, err = decodeTxBatch(payloads[0]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func FuzzDecodeTxBatch(f *testing.F) {
+	f.Add([]byte{txBatchMarker, 0xc0})
+	f.Add([]byte{txBatchMarker, 0xc2, 0x80, 0x80})
+	f.Add([]byte{txBatchMarker, 0xff, 0})
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		txs, err := decodeTxBatch(payload)
+		if err == nil && (len(txs) == 0 || len(txs) > txBatchMaxTxs || len(payload) > txBatchMaxBytes) {
+			t.Fatal("accepted out-of-bounds batch")
+		}
+	})
+}

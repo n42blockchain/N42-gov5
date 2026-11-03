@@ -63,6 +63,10 @@ var (
 	// maximum allowed value and would become invalid if incremented.
 	ErrNonceMax = errors.New("nonce has max value")
 
+	// ErrGasLimitTooHigh is returned if a transaction's gas limit exceeds the
+	// per-transaction cap (EIP-7825, from Osaka).
+	ErrGasLimitTooHigh = errors.New("transaction gas limit too high")
+
 	// ErrGasLimitReached is returned by the gas pool if the amount of gas required
 	// by a transaction is higher than what's left in the block.
 	// Alias to common.ErrGasLimitReached to avoid import cycles.
@@ -83,9 +87,30 @@ var (
 	// than required to start the invocation.
 	ErrIntrinsicGas = errors.New("intrinsic gas too low")
 
+	// ErrFloorDataGas is returned if the transaction's gas limit is below its
+	// EIP-7623 calldata floor, or (Amsterdam) the intrinsic cost or the floor
+	// exceeds the per-transaction cap.
+	ErrFloorDataGas = errors.New("insufficient gas for floor data gas cost")
+
 	// ErrTxTypeNotSupported is returned if a transaction is not supported in the
 	// current network configuration.
 	ErrTxTypeNotSupported = errors.New("transaction type not supported")
+
+	// ErrInvalidBlobHashVersion is returned if a blob transaction carries a
+	// versioned hash whose version byte is not the KZG one (EIP-4844).
+	ErrInvalidBlobHashVersion = errors.New("blob hash has invalid version")
+
+	// ErrSetCodeTxCreate is returned if a set-code (type-4) transaction has
+	// no recipient (EIP-7702).
+	ErrSetCodeTxCreate = errors.New("set code transaction must not be a create transaction")
+
+	// ErrEmptyAuthList is returned if a set-code transaction carries an empty
+	// authorization list (EIP-7702).
+	ErrEmptyAuthList = errors.New("set code transaction with empty auth list")
+
+	// ErrMaxInitCodeSizeExceeded is returned if a creation transaction's
+	// initcode is larger than the EIP-3860 cap.
+	ErrMaxInitCodeSizeExceeded = errors.New("max initcode size exceeded")
 
 	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
 	// transaction with a tip higher than the total fee cap.

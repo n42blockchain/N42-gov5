@@ -135,39 +135,48 @@ func leadingZeroBits(b []byte) int {
 // returns the same index for a known key, so calling on every app
 // launch is safe.
 func (c *MobileVerifyClient) Register(ctx context.Context) (uint32, error) {
+	idx, _, err := c.RegisterStatus(ctx)
+	return idx, err
+}
+
+// RegisterStatus is Register that also reports whether the registration
+// is committed. An uncommitted one takes effect at the next epoch: until
+// then the device's receipts do not count and the index is provisional.
+func (c *MobileVerifyClient) RegisterStatus(ctx context.Context) (uint32, bool, error) {
 	pop := c.sk.Sign(PoPSigningMessage(c.pubkey))
 	fields := map[string]string{
 		"pubkey": hex.EncodeToString(c.pubkey[:]),
 		"pop":    hex.EncodeToString(pop.Marshal()),
 	}
 	var out struct {
-		Index uint32 `json:"index"`
+		Index     uint32 `json:"index"`
+		Committed bool   `json:"committed"`
 	}
 	body, err := json.Marshal(fields)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	powBits, err := c.postRegister(ctx, body, &out)
 	if err == nil {
-		return out.Index, nil
+		return out.Index, out.Committed, nil
 	}
 	if powBits <= 0 {
-		return 0, err
+		return 0, false, err
 	}
 	// Server demands a registration proof-of-work (HTTP 428 + pow_bits):
 	// solve locally and retry once with the nonce attached.
 	nonce, serr := SolveRegistrationPoW(c.pubkey, powBits)
 	if serr != nil {
-		return 0, serr
+		return 0, false, serr
 	}
 	fields["pow_nonce"] = strconv.FormatUint(nonce, 10)
 	if body, err = json.Marshal(fields); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if _, err = c.postRegister(ctx, body, &out); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return out.Index, nil
+	return out.Index, out.Committed, nil
 }
 
 // postRegister posts a registration and, on HTTP 428, surfaces the demanded
@@ -197,6 +206,43 @@ func (c *MobileVerifyClient) postRegister(ctx context.Context, body []byte, out 
 		return 0, httpErrorFrom(resp)
 	}
 	return 0, json.NewDecoder(resp.Body).Decode(out)
+}
+
+// MobileVerifyHead is the node's canonical head as /mobileverify/latest
+// reports it. Packet says whether the node already holds its packet.
+type MobileVerifyHead struct {
+	Number uint64 `json:"number"`
+	Hash   string `json:"hash"`
+	Packet bool   `json:"packet"`
+}
+
+// Latest returns the node's canonical head, the block to verify next.
+func (c *MobileVerifyClient) Latest(ctx context.Context) (*MobileVerifyHead, error) {
+	var out MobileVerifyHead
+	if err := c.getJSON(ctx, "/mobileverify/latest", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Health returns the node's /mobileverify/health JSON as served.
+func (c *MobileVerifyClient) Health(ctx context.Context) (json.RawMessage, error) {
+	var out json.RawMessage
+	if err := c.getJSON(ctx, "/mobileverify/health", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Cert returns the certificates the node holds for a block, as served by
+// /mobileverify/cert: a JSON list. A block whose window has not closed
+// yet has none and yields an error wrapping ErrMobileVerifyNotFound.
+func (c *MobileVerifyClient) Cert(ctx context.Context, blockHashHex string) (json.RawMessage, error) {
+	var out json.RawMessage
+	if err := c.getJSON(ctx, "/mobileverify/cert/"+blockHashHex, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // FetchPacket downloads and decodes a block's StreamPacket.
@@ -308,6 +354,22 @@ func (c *MobileVerifyClient) VerifyBlock(ctx context.Context, blockHashHex strin
 	return res, nil
 }
 
+func (c *MobileVerifyClient) getJSON(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return httpErrorFrom(resp)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+}
+
 func (c *MobileVerifyClient) postJSON(ctx context.Context, path string, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -325,13 +387,21 @@ func (c *MobileVerifyClient) postJSON(ctx context.Context, path string, body []b
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// ErrMobileVerifyNotFound is wrapped by errors for HTTP 404 answers: an
+// unknown block, a packet outside the window, no certificate yet.
+var ErrMobileVerifyNotFound = errors.New("not found")
+
 func httpErrorFrom(resp *http.Response) error {
 	var e struct {
 		Error string `json:"error"`
 	}
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&e)
-	if e.Error != "" {
-		return fmt.Errorf("mobileverify client: server %d: %s", resp.StatusCode, e.Error)
+	msg := e.Error
+	if msg == "" {
+		msg = http.StatusText(resp.StatusCode)
 	}
-	return fmt.Errorf("mobileverify client: server status %d", resp.StatusCode)
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("mobileverify client: server %d: %s: %w", resp.StatusCode, msg, ErrMobileVerifyNotFound)
+	}
+	return fmt.Errorf("mobileverify client: server %d: %s", resp.StatusCode, msg)
 }

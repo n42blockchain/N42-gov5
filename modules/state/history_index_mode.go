@@ -81,10 +81,9 @@ func parseHistoryIndexDisabled(v string) bool {
 //
 // The difference that matters to a caller is the interlock. With the index
 // simply OFF, historical queries are refused outright. Deferred, they are
-// refused only ABOVE the backfill marker: below it the index is complete and
-// the answers are correct. An index known to be behind is safe; one silently
-// behind is not, because HistoricalStateReader reads a missing entry as
-// "untouched" and falls back to the current value.
+// refused while the backfill marker is below the snapshot head. Even a query
+// below the marker may need a later change in the unindexed tail; a missing
+// entry otherwise reads as "untouched" and falls back to the current value.
 func HistoryIndexDeferred() bool {
 	historyDeferredOnce.Do(func() {
 		historyDeferred = parseHistoryIndexDisabled(os.Getenv("N42_HISTORY_INDEX_DEFERRED"))

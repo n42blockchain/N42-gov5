@@ -1,8 +1,9 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// EthHandler processes eth/68 through eth/71 wire messages for the ETH EL
-// profile. BlockProvider abstracts chain access (CurrentHead, lookup
+// EthHandler processes eth/68 and eth/69 wire messages for the ETH EL
+// profile (the 0x12/0x13 BAL handlers stay for a future spec eth/71 but are
+// unreachable while it is not advertised). BlockProvider abstracts chain access (CurrentHead, lookup
 // by number and hash) so the handler can answer GetBlockHeaders and
 // related queries using the N42 chain state with the configured genesis.
 
@@ -25,6 +26,7 @@ import (
 	n42block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/kzg"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
@@ -404,7 +406,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 		if err != nil {
 			return cleanExit(err)
 		}
-		if err := h.handleMessage(peer, rw, msg); err != nil {
+		if err := h.handleMessage(peer, rw, msg, version); err != nil {
 			log.Debug("devp2p message handling error (ignored — stub never disconnects on a message)",
 				"peer", peer.ID().String()[:16], "msg", msg.Code, "err", err)
 			// keep the peer
@@ -413,7 +415,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 }
 
 // handleMessage routes an incoming message to the appropriate handler.
-func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
+func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, msg gethp2p.Msg, version uint) error {
 	defer msg.Discard()
 	peerID := peer.ID().String()
 
@@ -498,7 +500,7 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		return h.handleGetPooledTransactions(rw, msg)
 
 	case 15:
-		return nil // TODO: serve from freezer
+		return h.handleGetReceipts(rw, msg, version)
 
 	case 10:
 		var packet pooledTransactionsPacket
@@ -611,10 +613,17 @@ func (h *EthHandler) acceptPooledTransactions(rawTxs []rlp.RawValue) error {
 		return err
 	}
 	signer := transaction.MakeSignerWithTimestamp(h.chainConfig, head.Number64().ToBig(), head.Time)
+	// EIP-7594: from Osaka a blob transaction must carry a version-1 sidecar
+	// whose cell proofs verify; before Osaka a version-0 sidecar.
+	osaka := h.chainConfig != nil && h.chainConfig.IsOsaka(head.Time)
 	txs := make([]*transaction.Transaction, 0, len(rawTxs))
 	for _, raw := range rawTxs {
 		tx, err := decodePooledTransactionRaw(raw)
 		if err != nil {
+			continue
+		}
+		if err := kzg.ValidatePooledBlobTx(tx, osaka); err != nil {
+			log.Debug("eth: dropping pooled blob transaction", "hash", tx.Hash(), "err", err)
 			continue
 		}
 		from, err := transaction.Sender(signer, tx)

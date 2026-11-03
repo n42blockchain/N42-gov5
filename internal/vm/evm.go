@@ -124,7 +124,8 @@ func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, err
 // specific errors should ever be performed. The interpreter makes
 // sure that any errors generated are to be considered faulty code.
 //
-// The EVM should never be reused and is not thread safe.
+// The EVM is not thread safe. Sequential transactions in the same block may
+// reuse it through Reset after the preceding execution has returned.
 type EVM struct {
 	// Context provides auxiliary blockchain related information
 	context   evmtypes.BlockContext
@@ -159,6 +160,11 @@ type EVM struct {
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
 	callGasTemp uint64
+	// stateGasIn is the EIP-8037 reservoir the next frame entered through
+	// call/create starts with; stateGasOut is what the last such frame
+	// handed back (Glamsterdam only, see state_gas.go).
+	stateGasIn  uint64
+	stateGasOut StateGasBudget
 
 	// precompileRegistry provides precompile lookup (optional, for dependency wiring).
 	// If nil, falls back to legacy global maps.
@@ -174,8 +180,8 @@ func (evm *EVM) SetContentStoreDB(db ContentStoreDB) {
 	evm.contentStoreDB = db
 }
 
-// NewEVM returns a new EVM. The returned EVM is not thread safe and should
-// only ever be used *once*.
+// NewEVM returns an EVM for one block context. It is not thread safe; callers
+// must Reset it before executing another transaction in that block.
 // Uses legacy global precompile maps for backward compatibility.
 func NewEVM(blockCtx evmtypes.BlockContext, txCtx evmtypes.TxContext, state evmtypes.IntraBlockState, chainConfig *params.ChainConfig, vmConfig Config) *EVM {
 	return NewEVMWithPrecompiles(blockCtx, txCtx, state, chainConfig, vmConfig, nil)
@@ -294,6 +300,13 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 		metrics.EVMCallCount.Inc()
 	}
 	depth := evm.interpreter.Depth()
+	// EIP-8037: the reservoir handed to this frame. Until a frame runs, the
+	// leftover reads it back unchanged, so every early return below hands
+	// the whole reservoir back to the caller.
+	var reservoir uint64
+	if evm.chainRules.IsGlamsterdam {
+		reservoir = evm.takeStateGasIn()
+	}
 
 	if evm.config.NoRecursion && depth > 0 {
 		return nil, gas, nil
@@ -420,12 +433,16 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 				contract = evm.newContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
 			}
 			contract.SetCallCode(&addrCopy, codeHash, code)
+			contract.State.Reservoir = reservoir
 			if typ == CALL && evm.chainRules.IsNativeAsset && addrCopy == usdtAddress {
 				ret, err = evm.callNativeAsset(contract, input, value)
 			} else {
 				ret, err = run(evm, contract, input, typ == STATICCALL)
 			}
 			gas = contract.Gas
+			if evm.chainRules.IsGlamsterdam {
+				gas, evm.stateGasOut = contract.State.Exit(gas, err)
+			}
 		}
 	} else {
 		// If the account has no code, we can abort here
@@ -507,6 +524,12 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	var err error
 	var gasConsumption uint64
 	depth := evm.interpreter.Depth()
+	// EIP-8037: the reservoir handed to this frame; early returns hand it
+	// back unchanged (see call).
+	var reservoir uint64
+	if evm.chainRules.IsGlamsterdam {
+		reservoir = evm.takeStateGasIn()
+	}
 
 	if evm.config.Debug {
 		if depth == 0 {
@@ -574,15 +597,10 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// The contract is a scoped environment for this execution context only.
 	contract := evm.newContract(caller, AccountRef(address), value, gas, evm.config.SkipAnalysis)
 	contract.SetCodeOptionalHash(&address, codeAndHash)
-
-	// EIP-8037 (Amsterdam): charge state gas for the freshly created account
-	// (120 bytes x CPSB = 183600), after the pre-access failure checks above.
-	if evm.chainRules.IsGlamsterdam {
-		if !contract.UseGas(params.StateBytesPerNewAccount * params.CostPerStateByteEIP8037) {
-			evm.intraBlockState.RevertToSnapshot(snapshot)
-			return nil, address, 0, ErrOutOfGas
-		}
-	}
+	// EIP-8037: the new account's state gas is charged by the creating frame
+	// (opCreate8037, or the transaction for a creation transaction) before
+	// the 63/64 split, not here.
+	contract.State.Reservoir = reservoir
 
 	if evm.config.NoRecursion && depth > 0 {
 		return nil, address, gas, nil
@@ -627,14 +645,17 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// calculate the gas required to store the code. If the code could not
 	// be stored due to not enough gas set an error and let it be handled
 	// by the error checking condition below.
-	if err == nil {
-		// EIP-8037 (Amsterdam): deployed code is new state — CPSB (1530) per
-		// byte replaces the legacy 200/byte deposit charge.
-		perByte := uint64(params.CreateDataGas)
-		if evm.chainRules.IsGlamsterdam {
-			perByte = params.CostPerStateByteEIP8037
+	if err == nil && evm.chainRules.IsGlamsterdam {
+		// EIP-8037 (Amsterdam): the code deposit is a hash cost in execution
+		// gas (6 per word) followed by CPSB (1530) state gas per byte.
+		if !contract.UseGas(ToWordSize(uint64(len(ret)))*params.Keccak256WordGas) ||
+			!contract.chargeState(uint64(len(ret))*costPerStateByte) {
+			err = ErrCodeStoreOutOfGas
+		} else {
+			evm.intraBlockState.SetCode(address, ret)
 		}
-		createDataGas := uint64(len(ret)) * perByte
+	} else if err == nil {
+		createDataGas := uint64(len(ret)) * params.CreateDataGas
 		if contract.UseGas(createDataGas) {
 			evm.intraBlockState.SetCode(address, ret)
 		} else if evm.chainRules.IsHomestead {
@@ -652,10 +673,15 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		}
 	}
 
-	// calculate gasConsumption for deferred captures
-	gasConsumption = gas - contract.Gas
+	leftover := contract.Gas
+	if evm.chainRules.IsGlamsterdam {
+		leftover, evm.stateGasOut = contract.State.Exit(leftover, err)
+	}
 
-	return ret, address, contract.Gas, err
+	// calculate gasConsumption for deferred captures
+	gasConsumption = gas - leftover
+
+	return ret, address, leftover, err
 }
 
 // Create creates a new contract using code as deployment code.

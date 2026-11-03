@@ -10,11 +10,14 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/params"
 )
 
 // TestSelfdestruct8246 pins EIP-8246 self-beneficiary semantics: a
-// same-tx-created account loses code/storage/nonce but keeps its
-// balance; a pre-existing account is fully untouched.
+// same-tx-created account is marked for destruction but keeps its code
+// until the transaction ends; at FinalizeTx it becomes a balance-only
+// account holding whatever balance it has then (ETH sent to it after the
+// SELFDESTRUCT included). A pre-existing account is fully untouched.
 func TestSelfdestruct8246(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	tx, err := db.BeginRw(t.Context())
@@ -29,8 +32,7 @@ func TestSelfdestruct8246(t *testing.T) {
 
 	// Same-tx creation with balance, code, storage and nonce.
 	ibs.CreateAccount(addr, true)
-	bal := uint256.NewInt(1_000_000)
-	ibs.AddBalance(addr, bal)
+	ibs.AddBalance(addr, uint256.NewInt(1_000_000))
 	ibs.SetCode(addr, []byte{0x60, 0x00})
 	val := uint256.NewInt(42)
 	ibs.SetState(addr, &slot, *val)
@@ -38,8 +40,20 @@ func TestSelfdestruct8246(t *testing.T) {
 
 	ibs.Selfdestruct8246(addr)
 
-	if got := ibs.GetBalance(addr); got.Cmp(bal) != 0 {
-		t.Fatalf("balance = %s, want %s (must survive)", got, bal)
+	if !ibs.HasSelfdestructed(addr) {
+		t.Fatal("account not marked for destruction")
+	}
+	if code := ibs.GetCode(addr); len(code) == 0 {
+		t.Fatal("code gone before the transaction ended")
+	}
+	// ETH received after the SELFDESTRUCT is not burned either.
+	ibs.AddBalance(addr, uint256.NewInt(5))
+
+	if err := ibs.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsGlamsterdam: true}, NewNoopWriter()); err != nil {
+		t.Fatalf("FinalizeTx: %v", err)
+	}
+	if got := ibs.GetBalance(addr); got.Uint64() != 1_000_005 {
+		t.Fatalf("balance = %s, want 1000005 (must survive)", got)
 	}
 	if code := ibs.GetCode(addr); len(code) != 0 {
 		t.Fatalf("code survived: %x", code)

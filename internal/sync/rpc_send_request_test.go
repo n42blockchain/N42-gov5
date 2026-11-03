@@ -225,3 +225,21 @@ func TestSendBodiesByRangeRequestImmediateCloseYieldsError(t *testing.T) {
 }
 
 var errBoom = errors.New("boom")
+
+func TestSendBodiesByRangeRequestRejectsMisalignedFirstBlock(t *testing.T) {
+	fp, server := syncTNewSendRequestFixture(t)
+	defer server.Close()
+	go func() { defer server.Close(); _ = writeBlockChunk(server, comtypes.Hash{}, syncTSmallBlock(2)) }()
+	req := &sync_pb.BodiesByRangeRequest{StartBlockNumber: utils.ConvertUint256IntToH256(uint256.NewInt(1)), Count: 3, Step: 2}
+	if _, err := SendBodiesByRangeRequest(context.Background(), nil, fp, fp.self, req, nil); !errors.Is(err, ErrInvalidFetchedData) {
+		t.Fatalf("peer returned 2 for requested 1,3,5: %v", err)
+	}
+}
+
+func TestSendBodiesByRangeRejectsBoundsBeforeDial(t *testing.T) {
+	for _, req := range []*sync_pb.BodiesByRangeRequest{nil, rangeReq(1, maxRequestBlocks+1, 1), rangeReq(1, 1, rangeLimit+1), rangeReq(1, maxRequestBlocks, rangeLimit)} {
+		if _, err := SendBodiesByRangeRequest(context.Background(), nil, nil, "", req, nil); err == nil {
+			t.Fatal("invalid request reached transport")
+		}
+	}
+}

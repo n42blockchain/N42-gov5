@@ -40,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/common/fixedgas"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -165,16 +166,33 @@ type directExecutionValues interface {
 	ExecutionValues() (gasPrice, feeCap, tip, value *uint256.Int)
 }
 
+// blobTxMessage is implemented by *transaction.Message. It tells a blob
+// transaction without blob hashes apart from a non-blob message, which
+// BlobHashes alone cannot (geth uses msg.BlobHashes != nil for this).
+type blobTxMessage interface {
+	IsBlobTx() bool
+}
+
+// setCodeTxMessage is implemented by *transaction.Message. It tells a set-code
+// transaction with an empty authorization list apart from other messages.
+type setCodeTxMessage interface {
+	IsSetCodeTx() bool
+}
+
 // ExecutionResult includes all output after executing given evm message
 // no matter the execution itself is successful or not.
 type ExecutionResult struct {
 	UsedGas uint64 // Gas billed to the sender (refunds applied)
-	// BlockGasUsed is what the block consumes for this tx. Equal to UsedGas
-	// before Amsterdam; under EIP-7778 it is max(pre-refund gas, calldata
-	// floor) — refunds no longer stretch the block gas limit.
+	// BlockGasUsed is what this tx adds to the receipts' cumulative gas.
+	// Equal to UsedGas (under Amsterdam too: the block header's gas used is
+	// the EIP-8037 two-dimensional figure kept by the GasPool instead).
 	BlockGasUsed uint64
-	Err          error  // Any error encountered during execution
-	ReturnData   []byte // Returned data from evm
+	// TxExecGas and TxStateGas are the transaction's EIP-8037 block-level
+	// execution and state gas (Amsterdam only).
+	TxExecGas  uint64
+	TxStateGas uint64
+	Err        error  // Any error encountered during execution
+	ReturnData []byte // Returned data from evm
 }
 
 // Unwrap returns the internal evm error for further analysis.
@@ -436,7 +454,13 @@ func (st *StateTransition) buyGas(gasBailout bool) error {
 		subBalance = true
 	}
 
-	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
+	if st.evm.ChainRules().IsGlamsterdam {
+		// EIP-8037: the block must still have room for the worst case in
+		// both dimensions; the pool is charged when the transaction settles.
+		if err := st.gp.CheckGasAmsterdam(minGas(st.msg.Gas(), fixedgas.MaxTxnGasLimit), st.msg.Gas()); err != nil && !gasBailout {
+			return err
+		}
+	} else if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		if !gasBailout {
 			return err
 		}
@@ -480,6 +504,20 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 				st.msg.From().Hex(), stNonce)
 		}
 
+		// EIP-7825: cap the transaction gas limit from Osaka. Checked here for
+		// real transactions (eth_call/estimate messages skip nonce checks and
+		// this cap alike, as geth's skipGasLimitCapCheck does), so blocks that
+		// arrive over devp2p or through replay are held to the same rule as
+		// newPayload and the pool.
+		// Amsterdam lifts the cap on the limit itself: the excess becomes the
+		// EIP-8037 state-gas reservoir (checked in transitionAmsterdam).
+		if st.evm.ChainRules().IsOsaka && !st.evm.ChainRules().IsGlamsterdam && st.msg.Gas() > fixedgas.MaxTxnGasLimit {
+			return fmt.Errorf("%w (cap: %d, tx: %d)", ErrGasLimitTooHigh, fixedgas.MaxTxnGasLimit, st.msg.Gas())
+		}
+		if st.evm.ChainRules().IsGlamsterdam && st.msg.Gas() > params.MaxTxTotalGasEIP8037 {
+			return fmt.Errorf("%w (cap: %d, tx: %d)", ErrGasLimitTooHigh, params.MaxTxTotalGasEIP8037, st.msg.Gas())
+		}
+
 		// EIP-3607: Reject transactions from senders with deployed code.
 		// EIP-7702 exception: accounts with delegation code (0xef0100 prefix) are still valid EOA senders.
 		if codeHash := st.state.GetCodeHash(st.msg.From()); codeHash != emptyCodeHash && codeHash != (types.Hash{}) {
@@ -499,7 +537,40 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 			}
 		}
 	}
-	if len(st.msg.BlobHashes()) > 0 {
+	// Blob transaction shape (EIP-4844, EIP-7594), checked as geth does for
+	// every message including eth_call ones, so blocks imported over devp2p
+	// or replayed are held to the same rules as newPayload.
+	blobHashes := st.msg.BlobHashes()
+	isBlobTx := len(blobHashes) > 0
+	if !isBlobTx {
+		if m, ok := st.msg.(blobTxMessage); ok {
+			isBlobTx = m.IsBlobTx()
+		}
+	}
+	if isBlobTx {
+		rules := st.evm.ChainRules()
+		if !rules.IsCancun {
+			return fmt.Errorf("%w: blob tx (sender %v)", ErrTxTypeNotSupported, st.msg.From().Hex())
+		}
+		if st.msg.To() == nil {
+			return transaction.ErrBlobTxCreate
+		}
+		if len(blobHashes) == 0 {
+			return transaction.ErrNoBlobs
+		}
+		if rules.IsOsaka && len(blobHashes) > transaction.BlobTxMaxBlobs {
+			return transaction.ErrTooManyBlobs
+		}
+		for i := range blobHashes {
+			if blobHashes[i][0] != transaction.VersionedHashVersionKZG {
+				return fmt.Errorf("%w: blob %d", ErrInvalidBlobHashVersion, i)
+			}
+		}
+	}
+	if err := st.checkSetCodeTxShape(); err != nil {
+		return err
+	}
+	if len(blobHashes) > 0 {
 		blobFeeCap := st.msg.BlobFeeCap()
 		currentBlobFee := st.currentBlobBaseFee()
 		if blobFeeCap == nil || currentBlobFee == nil || blobFeeCap.Lt(currentBlobFee) {
@@ -508,6 +579,26 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 		}
 	}
 	return st.buyGas(gasBailout)
+}
+
+// checkSetCodeTxShape applies geth's EIP-7702 transaction checks: no set-code
+// transaction before Prague, none without a recipient, none with an empty
+// authorization list. N42 native chains are left to their own rules.
+func (st *StateTransition) checkSetCodeTxShape() error {
+	m, ok := st.msg.(setCodeTxMessage)
+	if !ok || !m.IsSetCodeTx() || st.evm.ChainConfig().IsN42Native() {
+		return nil
+	}
+	if !st.evm.ChainRules().IsPrague {
+		return fmt.Errorf("%w: set code tx (sender %v)", ErrTxTypeNotSupported, st.msg.From().Hex())
+	}
+	if st.msg.To() == nil {
+		return fmt.Errorf("%w (sender %v)", ErrSetCodeTxCreate, st.msg.From().Hex())
+	}
+	if len(st.msg.AuthList()) == 0 {
+		return fmt.Errorf("%w (sender %v)", ErrEmptyAuthList, st.msg.From().Hex())
+	}
+	return nil
 }
 
 // TransitionDb transitions the state by applying the current message and
@@ -527,6 +618,10 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		defer func() {
 			st.evm.Config().Tracer.CaptureTxEnd(st.gas)
 		}()
+	}
+
+	if st.evm.ChainRules().IsGlamsterdam {
+		return st.transitionAmsterdam(refunds, gasBailout)
 	}
 
 	msg := st.msg
@@ -552,6 +647,18 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		floorDataGas = vm2.FloorDataGas(st.data, rules.IsGlamsterdam)
 		if st.initialGas < floorDataGas {
 			return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.initialGas, floorDataGas)
+		}
+	}
+
+	// EIP-3860: cap the initcode of a creation transaction (raised by
+	// EIP-7954 in Glamsterdam). N42 native chains are left to their own rules.
+	if contractCreation && rules.IsShanghai && !st.evm.ChainConfig().IsN42Native() {
+		maxInitCode := uint64(params.MaxInitCodeSize)
+		if rules.IsGlamsterdam {
+			maxInitCode = params.MaxInitCodeSizeEIP7954
+		}
+		if uint64(len(st.data)) > maxInitCode {
+			return nil, fmt.Errorf("%w: code size %d limit %d", ErrMaxInitCodeSizeExceeded, len(st.data), maxInitCode)
 		}
 	}
 
@@ -597,17 +704,6 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		ret, st.gas, vmerr = st.evm.Call(sender, st.to(), st.data, st.gas, st.value, bailout)
 	}
 
-	// EIP-7778 (Amsterdam): block-level gas accounting excludes refunds — the
-	// block consumes max(pre-refund gas used, calldata floor) even though the
-	// sender's bill below still benefits from the refund.
-	blockGasUsed := uint64(0)
-	if rules.IsGlamsterdam {
-		blockGasUsed = st.gasUsed()
-		if floorDataGas > blockGasUsed {
-			blockGasUsed = floorDataGas
-		}
-	}
-
 	if refunds {
 		// Dump refund state when DBG_SSTORE targets this block.
 		if dbgRefundBlock > 0 && st.evm.Context().BlockNumber == dbgRefundBlock {
@@ -617,9 +713,9 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 			}
 		}
 		if rules.IsLondon {
-			st.refundGas(params.RefundQuotientEIP3529, floorDataGas, blockGasUsed)
+			st.refundGas(params.RefundQuotientEIP3529, floorDataGas)
 		} else {
-			st.refundGas(params.RefundQuotient, floorDataGas, blockGasUsed)
+			st.refundGas(params.RefundQuotient, floorDataGas)
 		}
 	} else if rules.IsPrague && floorDataGas > 0 {
 		if gasUsed := st.gasUsed(); gasUsed < floorDataGas {
@@ -648,22 +744,17 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		st.creditFee(burntContractAddress, burnAmount)
 	}
 
-	if blockGasUsed == 0 {
-		blockGasUsed = st.gasUsed()
-	}
 	return &ExecutionResult{
 		UsedGas:      st.gasUsed(),
-		BlockGasUsed: blockGasUsed,
+		BlockGasUsed: st.gasUsed(),
 		Err:          vmerr,
 		ReturnData:   ret,
 	}, nil
 }
 
 // refundGas returns unused gas to the sender and the block gas pool.
-// blockGasUsed is non-zero only under EIP-7778 (Amsterdam): the block
-// pool is then credited with initialGas−blockGasUsed — refunds lower the
-// sender's bill but never make room for more block gas.
-func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64, blockGasUsed uint64) {
+// Glamsterdam blocks settle gas in transitionAmsterdam instead.
+func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64) {
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
@@ -678,11 +769,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64,
 
 	remaining := new(uint256.Int).Mul(new(uint256.Int).SetUint64(st.gas), st.gasPrice)
 	st.state.AddBalance(st.msg.From(), remaining)
-	poolCredit := st.gas
-	if blockGasUsed > 0 {
-		poolCredit = st.initialGas - blockGasUsed
-	}
-	st.gp.AddGas(poolCredit)
+	st.gp.AddGas(st.gas)
 }
 
 func (st *StateTransition) gasUsed() uint64 {
@@ -766,6 +853,9 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 		}
 
 		wasEmpty := st.state.Empty(signer)
+		// The refund keys on existence in the trie, not emptiness: an empty
+		// account that predates EIP-158 still exists (geth: state.Exist).
+		existed := st.state.Exist(signer)
 
 		// Account must not have non-delegation code
 		existingCode := st.state.GetCode(signer)
@@ -774,7 +864,7 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 		}
 
 		rules := st.evm.ChainRules()
-		if !wasEmpty && params.PerEmptyAccountCost > params.PerAuthBaseCost && !rules.IsGlamsterdam {
+		if existed && params.PerEmptyAccountCost > params.PerAuthBaseCost && !rules.IsGlamsterdam {
 			// Pre-Amsterdam 7702 refund for pre-existing authorities.
 			// EIP-2780 removes it: the (lower) intrinsic auth charge
 			// applies unconditionally, with no refund.

@@ -149,226 +149,57 @@ have finished syncing first.
 codes are FULL history — never window by recency (the hottest codes are the
 oldest). Old codes dir stays until publish swap.
 
-## 5. Step 4 — DatcStoRoot sr-segment weekly update (NEW, 2026-07-10)
+## 5. Step 4 — DATC archive extension → see `datc-weekly-update.md`
 
-Since 2026-07-10 the dense storage-root history lives in **static segments**
-(`leafseg2/sr.*.seg`, 22.3 GB for 670M rows @15.22M) — the MDBX `DatcStoRoot`
-table was dropped after a verified migration (`stroot-export`, spot 2000/2000,
-bench 200/200). The reader (`storageRootAt`) serves from segments when present
-and treats the MDBX table as the mutable tail.
+**Everything §5 and §5b used to describe is gone from this box.** The library
+they operated on, `D:\n42-datc-bprime2-25m` (1,160 GiB, node records stopped at
+15,220,000, pre-format-2 40-byte storage domain), was deleted 2026-09-16 on the
+operator's instruction after the v3 rebuild was abandoned. `stroot-merge`,
+`drop-table` and the whole "DatcStoRoot sr-segment" cadence pointed at it; run
+them today and they find nothing. The sizing analysis that stood here (the
+~1,524 GiB / 31-37 h catch-up case, the `csside`/`leafseg` retention table) is
+preserved in git history at `84ecf827^` if anyone needs the measurements.
 
-**Weekly cadence (only in weeks where the DATC build head advanced):**
+**The live archive is `/data/blockchain/datc-out/datc-25m-v2-hi` on n42dev**, a
+v2 build plus the offline-derived exact ladder. Its weekly procedure, retention
+list and traps are in **`docs/ethel/datc-weekly-update.md`** — that document is
+the authority; do not re-add a DATC procedure here.
 
-1. The DATC continuation build writes the week's new rows into the
-   (auto-recreated) MDBX `DatcStoRoot` table — no config needed.
-2. Merge the delta into the segments (streaming 2-way merge, bucket-level swap,
-   kill-safe: old segments stay intact until the final swap phase):
+### What this runbook owes DATC
 
-   ```powershell
-   $env:N42_DATC_LEAFSEG_DIR='leafseg2'
-   n42-datc-ckpt2.exe stroot-merge --out D:\n42-datc-bprime2-25m --spot 2000
-   ```
+DATC's two inputs are produced by Step 1 and Step 2 of this runbook and by
+nothing else:
 
-3. GATE: the built-in `--spot 2000` floor A/B must report 2000/2000 identical
-   (it compares segments∪table vs table; any divergence is fatal).
-4. Drop the merged-away table rows to keep the DB lean:
-
-   ```powershell
-   n42-datc-ckpt2.exe drop-table --out D:\n42-datc-bprime2-25m --table DatcStoRoot --yes
-   ```
-
-   (Pages go to the MDBX freelist; physical reclaim only via the next compact
-   copy — not needed weekly.)
-5. Optional deep gate after big weeks: `proof-bench --n 200 --ckpt-fold`
-   (expect p50 ~130-160 ms warm, 200/200 verified).
-
-Related tooling (same family, not weekly): `stroot-export` (one-shot full
-migration of a frozen DB), `checkpoint-build` (early-block live-key ckpts —
-build once for ≤4M only; larger sets are auto-gated and pay no rent),
-`n42-chaindata-compact` (physical reclaim; 880→464 GB on 2026-07-10).
-
-## 5b. DATC library head extension — why it is NOT weekly yet (2026-08-30)
-
-> Full pipeline, data classes, acceptance gates and the resume procedure:
-> **`datc-pipeline.md`**. This section is the sizing and the scheduling case.
-
-DATC is the archive-plus tier: full-history EIP-1186 proofs at ANY height, not
-just the tip. §5's `stroot-merge` is its weekly tail — and the reason that step
-has read "N/A, no DATC head advance" for three weeks running is that the library
-itself has not moved since 2026-07-10.
-
-Its inputs are `--changesets D:/N42-eth1177` (Step 2's output) and
-`--headers D:/n42-eth1` (Step 1's output), so it is a natural DOWNSTREAM stage
-of this runbook and needs nothing from reth. The blocker is a ~31-37 h build,
-not disk and not wiring — see the measured sizing below.
-
-### Measured state (read from `DatcMeta`, not from prose)
-
-| | value |
-|---|---|
-| `head` / `progress` | **15,220,000** |
-| `leafprog` | **5,409,239,460** leaf changes (40.6% of the 13.33B full-chain workload) |
-| `mdbx.dat` | 464 GiB (node records: DatcAccNode/DatcStorNode) |
-| `leafseg2` | 428 GiB — `s` 159.7 + `cs` 139.7 + `a` 70.7 + `ca` 35.7 + `sr` 22.3 |
-| total | **892 GiB**, untouched since 2026-07-10 |
-| gap to this week's tip | **10,644,981 blocks / ~7.92B leaf changes** |
-
-### Space and time — MEASURED 2026-08-30, not extrapolated
-
-The first pass at this sized the catch-up by dividing every layer by
-`leafprog` (5.41B — the NODE-record progress) and got 934-1306 GiB / 71-110 h.
-That was wrong: the leaf layers run far ahead of the node layer. Measured
-straight out of the segment footers (`key | block`, block = last 8 bytes
-big-endian; every bucket's frame first-keys plus a full walk of each last
-frame):
-
-| layer | covers to | evidence |
+| input | produced by | this box |
 |---|---|---|
-| `a` account leaf history | **25,439,307** | 6 buckets sampled, keyLen 40 |
-| `s` storage leaf history | **25,439,238** | 3 buckets sampled, keyLen 80 |
-| `csside` `SMeta["prog"]` | **25,439,371** | cs-to-spill resume marker |
-| `mdbx` node records (`DatcMeta.progress`) | **15,220,000** | the only layer still behind |
+| `acctcs` / `storcs` | **Step 2 replay** | `D:/N42-eth1177/chain/freezer` |
+| `headerc` | **Step 1** | `D:/n42-eth1/chain/freezer` |
 
-The cs→spill→finalize leg already ran to 25.44M and its output is on disk
-(`leafspill2` is gone because the merge consumed it — what a clean finalize
-looks like). What remains is the node-record leg, `sr`, and ~425k blocks of
-leaf tail.
+Changesets can only come from a node that executes **every block**. The weekly
+test nodes boot from a snapshot (`--bootstrap.mode snapshot`) and never produce
+them, so `D:/N42-eth1177` must keep executing block by block — never reset it,
+trim it, or switch it to a snapshot boot.
 
-| remaining layer | basis | need |
-|---|---|---|
-| `mdbx` node records | **137 KiB/block measured** × 10.64M blocks | **~1,460 GiB** |
-| `sr` storage roots | 1.54 KiB/block × 10.64M blocks | ~16 GiB |
-| leaf tail 25.44M → 25.86M | ~525 leaves/block × 425k × 33 B | ~7 GiB |
-| **total** | | **~1,524 GiB** |
+Shipping a week's delta to n42dev has three constraints that have each cost a
+rebuild (details and the verification recipe in `datc-weekly-update.md` §4):
 
-**The 32.0 KiB/block figure in the row above was an estimate and it was 4.3x
-low.** Measured 2026-09-01 on the real run: 368 GiB of records for the
-15,220,000 → 17,900,000 stretch, i.e. 25.2% of the range, giving 137 KiB per
-block. Linear extrapolation is if anything optimistic — the DeFi-dense back
-half carries more leaf changes per block.
+1. **The changeset tail segment is not append-only.** The last under-full batch
+   is re-encoded in place, so `acctcs`/`storcs` tail segments must be replaced
+   WHOLE FILE (write-temp-then-rename, i.e. plain rsync). Never
+   `rsync --append/--inplace`, never `cp` over them.
+2. **Order:** new segments and tail `.cdat` first, `.cidx` last. Leave unchanged
+   older segments alone.
+3. On n42dev the `headerc.*` entries are symlinks into `/data/blockchain/witness`
+   — replace only the changed `headerc.cidx` and last `.cdat` with real files and
+   **do not touch `witness/`** (it is shared with another project).
 
-D: has 1,004 GiB free, so **this does not fit on this box**; it would wedge at
-roughly 85% of the range. The build moves to n42dev, which has 3.9 TiB free
-and 256 cores — see `datc-pipeline.md` §5c for what transfers and what does
-not. Windows was the wrong host on a second count as well: MDBX under WriteMap
-thrashes on this pattern, and the run degraded from 96 to 17 blk/s as private
-bytes reached 102 GB against 125.6 GB of RAM.
+A running DATC build does not need to be stopped for the swap: it cached the
+item counts at startup and holds the old inodes open, so it keeps reading the
+old data and picks up the new range on its next resume.
 
-Spill scratch is still a rounding error — it covers ~7 GiB of leaf tail, not
-610 GiB of segments.
-
-Corrected unit costs, for whoever sizes the NEXT extension: divide the leaf
-layers by their real workload (~13.2B leaf changes to 25.44M, not 5.41B) and
-`a`+`s` ≈ 18.7 B/leaf, `ca`+`cs` ≈ 14.2 B/leaf — about half what the wrong
-denominator implied.
-
-**Time**: 71-110 h assumed 7.92B leaf changes still had to be processed. They
-do not. What is left is the node-record build over 10.64M blocks at the
-July-measured 50-110 blk/s (93-95 with `--concurrent-root`) ⇒ **~31-37 h**.
-Still a separate project rather than a weekly step, but a weekend rather than
-most of a week.
-
-**What is scratch vs artefact.** None of the artefact is scratch: all four
-`leafseg2` tables are on the query path (`a`/`s` feed `leafCursor` for the
-as-of leaf fold, `ca`/`cs` feed `chgCursor` so `nodeHashAt` knows which child
-changed in which block), `sr` answers the per-block storage root, and the MDBX
-node records are the proof's main path. The scratch is `leafspill/*.zspill`,
-converted by `finalize-leaves` bucket by bucket (decompress, recompress to
-`.seg`, delete the source). It is written at `SpeedDefault` and segments at
-`SpeedBetterCompression`, so scratch runs ~10-20% larger than what it becomes,
-and finalize deliberately RETAINS the spill if it skipped a corrupt frame —
-both copies on disk at once. Small now; the rule still governs any full rebuild.
-
-### The library dir holds pipeline STATE, not just the artefact (2026-08-30)
-
-`d:/n42-datc-bprime2-25m` is 1,160 GiB, not the 892 GiB the artefact tables
-account for. Before reclaiming anything from it, know what each subdir is —
-two of them are live pipeline state and deleting either costs days:
-
-| subdir | size | what it actually is |
-|---|---|---|
-| `mdbx.dat` + logs | 464 GiB | artefact: node records (proof main path) |
-| `leafseg2` | 428 GiB | artefact: current leaf history + change index + `sr` |
-| `leafseg` | 167 GiB | **input** to `finalize-leaves --seg-old leafseg --seg-out leafseg2` |
-| `csside` | 98 GiB | **resume state** of `cs-to-spill`: liveness overlay (`SAcct`/`SSlot`) + `SMeta["prog"]` |
-| `leafspill-eq*` | 1.1 GiB | equivalence-experiment residue (near-empty) |
-| `ckpt` | 1.7 GiB | optional accelerator, rebuildable |
-
-- **`csside` is not residue.** `cs-to-spill --side` defaults to `<out>/csside`
-  and `--start 0` means "resume from side progress". Deleting it forces a
-  re-scan of the whole changeset range and loses the pre-Cancun wipe-belt
-  liveness overlay.
-- **`leafseg` is the previous generation, but it is the seg-old INPUT** of the
-  merge that produced `leafseg2`. It is reclaimable only once the next merge is
-  confirmed to read `--seg-old leafseg2`; it is not "an unused old copy".
-
-**And `SMeta["prog"]` reads 25,439,371 — while `DatcMeta.progress` reads
-15,220,000.** The cs→spill leg of the catch-up already ran to 25.44M; only the
-node-record leg is at 15.22M. If `leafseg2` really carries leaf history to
-25.44M (its merge consumed a `leafspill2` that is no longer on disk, which is
-what a successful finalize looks like), then most of the ~610 GiB of "new
-segments" in the sizing above is ALREADY SPENT, and the remaining catch-up is
-the node-record layer plus `sr` — a much smaller job than 934-1306 GiB.
-
-**Measured 2026-08-30** (see the sizing section): `leafseg2` carries leaf
-history to 25,439,3xx, so the merge that consumed `leafspill2` did complete and
-`leafseg2` is self-sufficient — the next `finalize-leaves` takes
-`--seg-old leafseg2`. That makes `leafseg` (167 GiB) reclaimable. `csside`
-stays: it is the cs-to-spill resume marker, not residue.
-
-### The DATC toolchain is now IN this repo (merged 2026-08-30)
-
-It used to live only in `D:/cherry-datc`, which meant this repo could not build
-`stroot-merge` / `drop-table` (§5's weekly commands) at all, and its
-`leafSegDir` constant would have written a second segment generation into the
-production library with no error.
-
-Merged: 22 files brought over (`cs_to_spill`, `stroot_seg`, `fork_state`,
-`drop_table`, `checkpoint_*`, `proof_bench`, `spill_heal`, `backfill`, …) plus
-three lower layers the pipeline needs — `lib/trie/hashbuilder.go` and
-`trie_root.go` (an OPTIONAL `AccRootEmitter` hook, nil by default, two guarded
-call sites — this is what feeds DatcStoRoot), `commitment/trie_root_computer.go`
-(`SetAccRootEmitter`), and `internal/ethel/changeset_codec.go`
-(`DecodeStorageChangesFunc`).
-
-The merge was NOT a copy: the divergence was two-way. This repo's
-`--src n42` path had been fixed to read `rawdb.ReadCurrentFullBlockNumber`
-(HeadBlockHash) while cherry still called `ReadCurrentBlockNumber`
-(HeadHeaderHash) — and the accessor's own comment says state/proof consumers
-must use the former, because leader-driven consensus advances the committed
-head independently of the header head. That fix was carried forward.
-
-Gates run: `go build ./...`, `go vet`, and `go test` on `lib/trie`,
-`modules/state/commitment`, `internal/ethel/...` and `cmd/n42-datc` — all
-green, i.e. the stateRoot path is unchanged with the hook unarmed.
-
-**Two-binary agreement gate: PASSED 2026-08-30.** `verify --samples 6 --seed 7`
-against the production library, merged build vs `n42-datc-ckpt2.exe` (the
-2026-07-10 cherry build): all six heights returned identical root, `recs`,
-`folds` and `leafReads` — including N=2,069,750, which really exercises the leaf
-path (`folds=177 leafReads=1190346`) and the `sr.*.seg` storage-root reader.
-Only wall time differed (cache warmth). The merged binary may be pointed at
-`--out`.
-
-### Time and memory
-
-- **~31-37 h of continuous build** (node-record leg over 10.64M blocks; see the
-  measured sizing above — the 71-110 h figure that stood here assumed the leaf
-  layers still had to be rebuilt, and they do not). Still too long for a weekly
-  window: a separate project, run in resumable chunks.
-- Memory is the same class as the N42-hashed migration, which needed the fleet
-  stopped: `--dirty.gb 16` of MDBX DirtySpace, `--stocache.m` (8M ≈ 1.2 GB,
-  raised to 64M ≈ 10 GB to cut late-block read-back), `--gogc 400`, plus the
-  mmap working set of a 464 GiB `mdbx.dat`. `--concurrent-root` adds 16 per-worker
-  RoTx and a StateOverlay on top. Do not run it beside the fleet or beside the
-  weekly replay.
-
-### What weekly looks like AFTER the catch-up
-
-Steady state is small and belongs right after Step 2b: ~525 leaves/block × 100k
-blocks ≈ 52M leaves ≈ **35 min**, ~8.7 GiB/week, then §5's `stroot-merge` +
-`drop-table` finally has a delta to fold. Until the catch-up lands, §5 stays
-"N/A — no DATC head advance" and that line is correct, not an oversight.
+**Do not start a DATC build, or ship its inputs, without an explicit
+instruction** — `datc-weekly-update.md` §4 step 3 makes that a rule, not a
+courtesy: the box is shared and a build holds it for tens of hours.
 
 ## 6. Deferred / conditional items (not every week)
 
@@ -378,7 +209,7 @@ blocks ≈ 52M leaves ≈ **35 min**, ~8.7 GiB/week, then §5's `stroot-merge` +
 | anchors / bpp | when publishing stateless mode | `blockproof-produce` | ~1.5-2 h per 60k blocks |
 | N42-hashed state | when eth-el follower redeploys | `n42-migrate-reth-hashed` (reth copy) or MerkleStageIncremental (changesets) | reth2k must be idle |
 | manifests | at publish | `cmd/n42-eth-manifest` | blake3 per file; source = a hard-link publish root, NOT the E: test dirs (they drop `*.val.zst`) |
-| DATC library head extension | separate project (node records @15.22M; leaf layers already @25.44M) — sizing in **§5b** | `n42-datc build` (resumable, cherry-datc binary) | ~1,524 GiB — moved to n42dev, see datc-pipeline.md §5c; sr merge (§5) rides on it |
+| DATC archive extension | the week's changesets are ready and the operator says so | `n42-datc weekly` on n42dev | procedure, retention and transfer traps: **`datc-weekly-update.md`**; this box only supplies the inputs (§5) |
 
 ## 6b. Time budget — take the short path, it is also the correct one
 
@@ -483,7 +314,9 @@ per-tier window rule. The retrimmed receipts still wait on the retrim artefact.
   run must have REWRITTEN the partial tail rather than skipped it (log line
   "final segment PARTIAL — rewinding"). Spot-check one tx hash from a block in
   the newly indexed range through `txlookup.Service`.
-- DATC sr merge: built-in spot gate (§5.3).
+- DATC: nothing to gate here — the archive lives on n42dev and has its own
+  acceptance (`verify --samples 50` + `bench`, plus `verify-ns`); see
+  `datc-weekly-update.md` §4.1/§5.
 
 ## 7b. Linux cross-check on n42dev — min + full only
 
@@ -532,6 +365,172 @@ Acceptance is the same as §7: `eth_blockNumber` advancing ~5 blocks/min (the
 mainnet cadence) with no state-root mismatch in the log.
 
 ## 8. Run log
+
+### 2026-10-22/23 (full cycle + three-mode test)
+
+Source: geth ancient frozen **26,245,275** -> target **26,245,274** (hash
+`0x1250c94800f8b542293457ef520612658ffcae3edabd8adff523f5f34c236d6b`, stateRoot
+`0xdb7cc3d3081ed21beaea6dea42bf4d925703acffff9797790fd14ea55ed0df17`; prior week
+26,130,711; d 114,563). reth2k finished at exactly 26,245,274 (`n42-reth-head`:
+`BlockBodyIndices lastKey`). geth, reth and the fleet were stopped. Every tool
+was rebuilt from source first into `C:\N42\wk-20261022\` (commit `47f13947`,
+including `wk-eth-el` with `-tags n42el`); logs in `D:\weekly-20261022\`.
+
+- Step 1: senders 58 s / 56 s, headerc 2 s, bodyc 6m36s, receipts 4m33s (421 blk/s).
+  headerc and bodyc both rewound the PARTIAL tail segment. All exit 0.
+- Step 2 replay: **1h09m @ ~26-33 blk/s**; `SyncStageProgress/ethel-last-block` =
+  26245274 (read with `n42-read-ethel-progress -dir d:/N42-eth1177`; the log has no
+  completion line). Witness spot-check 26,180,000 / 26,220,000 / 26,245,274: **gas
+  diff +0**.
+- Step 2b txindex: archive 8m19s (27 segments, 3,804,829,443 tx, 16.90 GB,
+  35.53 bits/key, resumed from 26,000,000 after rewinding the partial tail); window
+  8m28s (base 23,000,000, 4 segments, 896,886,812 tx, 4.92 GB, 43.88 bits/key), built
+  on a COPY of last week's directory (`d:/n42-txindex-window-26245274`).
+  `wk-ethexec txlookup-query --dir <d> --ancient <geth> --blocks
+  26130712,26180000,26245274` on both: 10 checked, 0 failed, negative probe correct.
+- Step 3 codes 12m08s: **2,897,481** codes, 6.7 GB, `codes.coverage=26245274`.
+- Snapshot 1h35m28s (A 55m43s scan, B 7m42s, C 32m02s zstd): storage 1,678,895,704
+  entries (.val 25.93 GB -> .zst 19.53 GB, 75.3%), 16 shards, 56 GB.
+  `snapshot-verify --snap d:/n42-snapshot-26245274 --acc-prefix accounts.0-26245274
+  --sto-prefix storage.0-26245274 --limit 3000000`: 3M accounts + 3M storage rows OK
+  (4m23s). The prefixes are required: the files carry the height suffix.
+- N42-hashed migration about 2h (finished 02:29:49): acc 426,803,115 / sto 1,678,895,704 / tacc 31,860,548 /
+  tsto 147,074,704 / code 2,897,481, decodeFail/shortVal/badSub 0, **vtrie OK: root ==
+  expect**, `ethel-last-block=26245274`, 164 GB. sto and code counts equal the snapshot
+  and codes exports. Progress goes to `migrate.err.log`, not stdout.
+- **Three-mode test (E:, :30403 / 20115, serialized) - all three PASS.** archive caught
+  up 42 min after a slow start (below), minimal 20 min, full 23 min, each to within a few
+  blocks of the network head (~26,253,9xx, 8.6k blocks from the seed), then followed
+  8 min: +40 / +41 / +41 blocks, `eth_syncing=false`, 0 `level=error` / panic / state-root
+  mismatch. Dirs: archive 169 GB, minimal 44 GB (no `.val.zst`), full 143 GB (56 bodyc
+  segments + `bodyc.cidx` + window txindex). Assembled by copy from D: (NVMe, ~1.9 GB/s).
+- **Manifests** (hard-link roots, active tails copied, checked file-by-file: 0 missing,
+  0 size mismatch): minimal `d:/n42-publish-26245274` 106 files / 36.82 GiB
+  `e529c202dc6fb7bb…`; archive same root 491 files / 831.6 GiB `fc52cef548dd33fc…`;
+  full `d:/n42-publish-26245274-full` 168 files / 135.0 GiB `27653c11b6e7596c…`. The
+  `height` field is 0 in all three, as in the previous week (`-height` was not passed).
+- Traps hit:
+  1. **`eldevp2p: caught up` can be false.** The node saw one lagging peer (tip 26,238,405,
+     below the local head) and logged `caught up ... lag=0` every 12 s while the network
+     head was 8.6k blocks ahead; `eth_blockNumber` answers 0 until the first block is
+     imported. Judge catch-up by the RPC height against the highest recent peer
+     `handshake complete head=`, not by that line. Fixed after this cycle (not yet
+     seen live): `f6499111` logs `waiting for a peer ahead of the local head` instead
+     when every peer is behind, and `ea9dcc95` makes `eth_blockNumber` report the seed
+     head before the first import. A node held by lagging peers still sits at the seed
+     head, so the RPC-vs-peer-head check above stays the acceptance test.
+  2. **Good peers disconnect within about 1 s** (`too many peers` sent by the remote); of
+     1,255 peers only three stayed, all lagging. archive started importing after ~17
+     min; minimal and full connected at once. The code under `internal/devp2p`,
+     `internal/ethel/eldevp2p` and `cmd/eth-el` had not changed since 10-05, so this is
+     the public network, not a regression. Wait; do not restart.
+  3. A PowerShell function that logs with `Tee-Object` returns the log text as well as its
+     value, so `if ((Run ...) -ne 0)` is always true and the driver stopped after a
+     successful step. Log with `Out-File` and read `$LASTEXITCODE` directly.
+  4. `n42-ancient-seal`, `txindex-watermark` and the like in `C:\N42\` can be months old;
+     rebuild before use (see the replay runbook).
+  5. A background waiter was reaped under memory pressure again; the jobs themselves were
+     detached with `Start-Process` and were unaffected.
+- NOT run: DATC, anchors/bpp, the Linux cross-check on n42dev. Cleanup of the
+  superseded `E:\ethel-*-26130711` test dirs (383 GB) and older publish roots is pending
+  the operator's go-ahead.
+
+### 2026-10-19 (n42dev `/data` space: what is a Windows copy, what was removed)
+
+`/data` on n42dev was 7.0T, 6.5T used, **519 GB free** (93%); after the cleanup
+below 5.0T used, **2.1 TB free** (71%). Sizes are `du` at 2026-10-19.
+
+| n42dev directory | Size | Is a copy of | Linux copy last pushed |
+|---|---|---|---|
+| `blockchain/witness-geth` | 866 GB | `D:\geth\geth\chaindata\ancient\chain` (geth ancient: `headers`, `bodies`) | 2026-09-14 |
+| `blockchain/witness` | 833 GB | `bodyc`/`headerc`/`senders` from `D:\n42-eth1\chain\freezer`; `witness`/`codes` from `D:\N42-eth1177\chain\freezer` (its `MANIFEST.txt` records this) | 2026-09-14 |
+| `blockchain/datc-input/N42-eth1177` | 434 GB | `D:\N42-eth1177` (945 GB) | not checked |
+| `blockchain/qs-replay-hist-20261014` | 84 GB | `E:\qs-replay-hist-20261014` (md5 identical) | 2026-10-14 |
+| `blockchain/mainnet-source`, `mainnet-source-win` | 40 GB each | `D:\mainnet\mainnet` | 2026-08/09 |
+
+- `witness` and `witness-geth` are two different directories, not duplicates of
+  each other and not symlinks (no large file is shared between them). They are
+  the witness-replay inputs and were pushed from Windows by the
+  `weekly-0830-push-geth.sh` / `weekly-0831-push-witness.sh` style scripts. The
+  Windows originals were already newer (2026-10-06).
+- **Removed on 2026-10-19 by the operator: `blockchain/witness` and
+  `blockchain/witness-geth`** (about 1.7 TB) after checking every file by name and
+  size against the Windows trees (`D:\geth`, `D:\n42-eth1`, `D:\N42-eth1177`,
+  `D:\n42-publish-*`): all present, or present in a newer and larger version (grown
+  tail segments and `.cidx`). Name+size only, not a byte compare; these are
+  append-only freezer files. No process held either directory open.
+- Five files existed only on Linux and were copied to
+  `D:\witness-linux-only-20261019\` (md5 verified) before the removal:
+  `MANIFEST.txt` and the four `*.addridx-20260601` backups of `codes`
+  (about 5.9 GB).
+- To bring them back for a witness-replay run, push again from Windows (about 1.7 TB,
+  roughly 4 h at the ~118 MB/s measured for scp on 2026-10-14).
+- Not touched: `witness.prev-25864982` and `witness-geth.prev-25864982` (about
+  2.4 GB), `datc-input-backup-26130711`, and other projects' directories
+  (`n42-build`, `rust-fleet*`, `gov5-perf*`, `qs-node0..6`, `n42-performance-chain`,
+  `qs-replay-node3-bu`, `bench/*`, `n42-pregen`), which need their owners' say.
+- Not reclaimable: `datc-out/datc-25m-v2-hi` (1.04 TB) and `datc-25m-serving`
+  (765 GB) share 1,685 hard-linked files, so together they use 1.8 TB and deleting
+  either frees much less than its size.
+
+### 2026-10-08 (DATC extension on n42dev)
+
+- Inputs shipped with `scripts/datc/ship-inputs.py`: 9.5 GB (acctcs, storcs, headerc
+  new segments, tail segments and cidx), all sha256-verified.
+- DATC weekly 25,943,311 -> **26,130,712** (block 26,130,711): build 187,401 blocks in
+  2h03m, no ROOT MISMATCH.
+- **The leaf finalize failed with ENOSPC at bucket 1200/1332** (562 GB free; it
+  rewrote 591 GB next to segments still pinned by the serving hard links). Stale
+  `*.seg.tmp` removed, the printed build command re-run: the remaining 85 spills
+  merged in 4m56s, no corrupt frames. Then `weekly --skip-build --from 25943311`:
+  derive-ns 28m (112,475 roots ok), verify-ns 1400 roots 0 mismatches, verify 50/50,
+  bench 500/500 (account proof p50 49 ms, account+slots p50 53 ms, max 177 ms).
+- Lesson: keep >= 800 GB free on n42dev `/data` before a two-week extension
+  (see `datc-weekly-update.md` section 5).
+
+### 2026-10-06/07 (full cycle + three-mode test)
+
+Source: geth ancient frozen **26,130,712** -> target **26,130,711** (hash
+`0x5eddacb1d1bc55535172b7ea0bbeb12b4c710d2441f6e3499e6b2026aff362ae`, stateRoot
+`0x72bdb919ab81cce4527b2aa88c8b3239383772f914550f9ce41452ce3ba0863b`; prior week
+26,015,205; d 115,506). reth2k finished at exactly 26,130,711 (read from
+`BlockBodyIndices`). geth stopped, no fleet running. All `wk-*.exe` rebuilt from
+source first (including `wk-eth-el.exe` with `-tags n42el`).
+
+- Step 1: senders 67s / 66s, headerc 2s, bodyc 7m32s, receipts 5m09s. All exit 0.
+- Step 2 replay: **1h19m12s @ ~22-27 blk/s** (reth was syncing/IO-contending at the
+  start). Witness spot-check 26,060,000 / 26,100,000 / 26,130,711: **gas diff +0**.
+- Step 2b txindex: archive 4m30s (27 segments, 3,776,203,615 tx, 16.74 GB,
+  35.47 bits/key); window 4m27s (4 segments from base 23,000,000, 868,260,984 tx,
+  4.76 GB, 43.88). Window was extended IN PLACE on last week's directory
+  (renamed to `d:/n42-txindex-window-26130711`) — its files are hard-linked into
+  `n42-publish-25943310-full`, so that older root's manifest no longer verifies.
+  Copy the directory first next time (the 09-10 rule).
+- Step 3 codes 14m58s: **2,829,445** codes, 6.6 GB, `codes.coverage=26130711`.
+- Snapshot 1h35m28s: storage 1,665,423,887 entries (.val 25.72 GB -> .zst 19.37 GB,
+  75.3%), 16 shards, 56 GB.
+- N42-hashed migration 2h03m: acc 422,785,946 / sto 1,665,423,887 / tacc 31,558,405 /
+  tsto 146,112,432 / code 2,829,445, decodeFail/shortVal/badSub 0, **vtrie OK: root
+  == expect**, `ethel-last-block=26130711`, 160 GB. sto and code counts equal the
+  snapshot and codes exports.
+- **Three-mode test (E:, :30403 / 20115, serialized) — all three PASS.** Each caught
+  up to the live tip (~10.5k blocks) and then followed at ~5 blocks/min with
+  `eth_syncing=false`: archive 26,130,711 -> 26,141,287 (165 GB), minimal ->
+  26,141,430 (44 GB), full -> 26,141,582 (142 GB). `level=error`/panic/state-root
+  mismatch: 0 in all three. Catch-up ran 2-4 blk/s with long silent gaps between
+  batches (a batch of ~2k blocks logs only when it finishes, 10 min) — the CPU
+  counter, not the log, tells you it is alive.
+- **Manifests** (hard-link roots, active tails copied, verified file-by-file: 0
+  missing, 0 size mismatch): minimal `d:/n42-publish-26130711` 106 files / 36.44 GB
+  `f02de08e22e7b170…`; archive same root 486 files / 824.24 GB `bd0ec56216def0c1…`;
+  full `d:/n42-publish-26130711-full` 167 files / 134.30 GB `85cfd5dac2ef80f2…`.
+- Traps hit: the background waiter was killed by the memory watchdog during the
+  snapshot export (the export itself was unaffected — check the log, not the
+  waiter); `wk-hdr-probe` is pre-framing and cannot read current headerc (use
+  `wk-geth-hdr-probe` against the ancient dir for the stateRoot).
+- NOT run: DATC, anchors/bpp, Linux cross-check on n42dev. Cleanup of the
+  2026-09-10/09-20/10-06-superseded test dirs and artefacts is pending the
+  operator's go-ahead.
 
 ### 2026-09-10/11 (full cycle; first week generated with framed segments)
 

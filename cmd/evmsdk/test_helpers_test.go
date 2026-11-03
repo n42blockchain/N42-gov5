@@ -14,11 +14,17 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal"
 )
 
 // emptyEthTrieRoot is the canonical empty MPT root: keccak256(rlp([])).
 // Used as the receipts root for empty blocks (no txs → no receipts).
 var emptyEthTrieRoot = types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+
+// emptyNativeReceiptsRoot is what an empty block's header carries on an N42
+// native chain (the default config ExecuteAndVerifyV2 uses for nil): the
+// native concat root of no receipts, not the Ethereum empty trie root.
+var emptyNativeReceiptsRoot = internal.ReceiptsRootFor(nil, 0, nil)
 
 // minimalHeader returns a header with every required field filled in so
 // header.Marshal() does not panic on nil pointer fields. The defaults are

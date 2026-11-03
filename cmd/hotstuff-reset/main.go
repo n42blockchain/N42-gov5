@@ -168,6 +168,11 @@ func committedQCCanonical(tx kv.Tx, state *hotstuff.ConsensusState) (bool, error
 // folding the old lock back in.
 func applyReset(ctx context.Context, db kv.RwDB, state *hotstuff.ConsensusState, wipe bool) error {
 	return db.Update(ctx, func(tx kv.RwTx) error {
+		if marked, err := hotstuff.HasIndependentVoteStore(tx); err != nil {
+			return err
+		} else if marked {
+			return errors.New("independent vote store enabled: refusing a reset of only the main checkpoint")
+		}
 		if err := tx.Delete(modules.HotStuffState, stateKey); err != nil {
 			return err
 		}
@@ -307,6 +312,19 @@ func main() {
 		}
 		fmt.Println("emergency apply requires -apply -force -backup <new-file>")
 		return
+	}
+	// Refuse before touching the journal: with the independent vote store
+	// (vote_store.go) a reset of only the main checkpoint is unsafe.
+	if err := db.View(ctx, func(tx kv.Tx) error {
+		if marked, err := hotstuff.HasIndependentVoteStore(tx); err != nil {
+			return err
+		} else if marked {
+			return errors.New("independent vote store enabled: refusing a reset of only the main checkpoint")
+		}
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "reset: %v\n", err)
+		os.Exit(1)
 	}
 	// The journal first: a reset whose journal still holds the old votes is
 	// undone at the next start.

@@ -3,6 +3,7 @@ package internal
 import (
 	"crypto/ecdsa"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -684,6 +685,18 @@ func TestApplyTransactionOsakaModExpGasCapWrapper(t *testing.T) {
 }
 
 func TestApplyTransactionAuthorizedTxRefundsExistingAuthority(t *testing.T) {
+	checkExistingAuthorityRefund(t, 1)
+}
+
+// EIP-7702 refunds PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST when the
+// authority exists in the trie, empty or not. Mainnet still holds empty
+// accounts created before EIP-158; geth tests Exist, and so must we.
+func TestApplyTransactionAuthorizedTxRefundsExistingEmptyAuthority(t *testing.T) {
+	checkExistingAuthorityRefund(t, 0)
+}
+
+func checkExistingAuthorityRefund(t *testing.T, authorityBalance uint64) {
+	t.Helper()
 	db := memdb.NewTestDB(t)
 	txdb := memdb.BeginRw(t, db)
 	ibs := state.New(state.NewPlainState(txdb, 1))
@@ -710,7 +723,12 @@ func TestApplyTransactionAuthorizedTxRefundsExistingAuthority(t *testing.T) {
 	ibs.CreateAccount(sender, false)
 	ibs.AddBalance(sender, uint256.NewInt(1_000_000_000_000_000_000))
 	ibs.CreateAccount(authSigner, false)
-	ibs.AddBalance(authSigner, uint256.NewInt(1))
+	if authorityBalance > 0 {
+		ibs.AddBalance(authSigner, uint256.NewInt(authorityBalance))
+	}
+	if !ibs.Exist(authSigner) {
+		t.Fatal("fixture: authority account does not exist")
+	}
 	ibs.CreateAccount(recipient, false)
 	ibs.AddBalance(recipient, uint256.NewInt(1))
 	ibs.CreateAccount(target, true)
@@ -890,5 +908,218 @@ func TestApplyTransactionCancunModExpCallCodeOverflowingExponentLength(t *testin
 	ibs.GetState(contractAddr, &slot1, &slot1Value)
 	if got := slot1Value.Uint64(); got != 1 {
 		t.Fatalf("storage[1] = %d, want 1", got)
+	}
+}
+
+// EIP-7825: from Osaka a transaction above 2^24 gas is invalid in the core
+// execution path too, not only at newPayload and in the pool, so a block
+// imported over devp2p or replayed with one is rejected as geth rejects it.
+func TestApplyTransactionOsakaRejectsGasAboveTxCap(t *testing.T) {
+	for _, tc := range []struct {
+		gas     uint64
+		wantErr bool
+	}{
+		{fixedgas.MaxTxnGasLimit, false},
+		{fixedgas.MaxTxnGasLimit + 1, true},
+	} {
+		db := memdb.NewTestDB(t)
+		txdb := memdb.BeginRw(t, db)
+		ibs := state.New(state.NewPlainState(txdb, 1))
+
+		senderKey, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("generate sender key: %v", err)
+		}
+		sender := crypto.PubkeyToAddress(senderKey.PublicKey)
+		recipient := types.HexToAddress("0x2222222222222222222222222222222222222222")
+		coinbase := types.HexToAddress("0x1111111111111111111111111111111111111111")
+		ibs.CreateAccount(sender, false)
+		ibs.AddBalance(sender, uint256.NewInt(1_000_000_000_000_000_000))
+
+		signedTx, err := transaction.SignTx(transaction.NewTx(&transaction.LegacyTx{
+			Nonce:    0,
+			GasPrice: uint256.NewInt(7),
+			Gas:      tc.gas,
+			To:       &recipient,
+			Value:    uint256.NewInt(1),
+		}), transaction.NewEIP155Signer(big.NewInt(1)), senderKey)
+		if err != nil {
+			t.Fatalf("SignTx: %v", err)
+		}
+		header := &block.Header{
+			Number:     uint256.NewInt(1),
+			GasLimit:   60_000_000,
+			Time:       1,
+			BaseFee:    uint256.NewInt(7),
+			Difficulty: uint256.NewInt(0),
+		}
+		gp := new(common.GasPool).AddGas(header.GasLimit)
+		usedGas := uint64(0)
+		_, _, err = ApplyTransaction(testStateTransitionChainConfig(), func(uint64) types.Hash { return types.Hash{} },
+			nil, &coinbase, gp, ibs, state.NewNoopWriter(), header, signedTx, &usedGas, vm2.Config{})
+		if tc.wantErr {
+			if !errors.Is(err, ErrGasLimitTooHigh) {
+				t.Fatalf("gas %d: err = %v, want ErrGasLimitTooHigh", tc.gas, err)
+			}
+		} else if err != nil {
+			t.Fatalf("gas %d: unexpected error %v", tc.gas, err)
+		}
+	}
+}
+
+func blobTestHashes(n int, version byte) []types.Hash {
+	hashes := make([]types.Hash, n)
+	for i := range hashes {
+		hashes[i][0] = version
+		hashes[i][31] = byte(i + 1)
+	}
+	return hashes
+}
+
+// A blob transaction's shape is checked in the core execution path as geth's
+// preCheck does, so a block imported over devp2p or replayed is held to the
+// same rules as newPayload: no blob tx before Cancun, at least one blob hash,
+// every hash carrying the KZG version byte, and at most 6 blobs from Osaka.
+func TestApplyTransactionRejectsMalformedBlobTx(t *testing.T) {
+	preCancun := testStateTransitionChainConfig()
+	preCancun.CancunBlock = nil
+	preCancun.PragueTime = nil
+	preCancun.OsakaTime = nil
+
+	for _, tc := range []struct {
+		name    string
+		config  *params.ChainConfig
+		time    uint64
+		hashes  []types.Hash
+		wantErr error
+	}{
+		{"osaka one blob", testStateTransitionChainConfig(), 1, blobTestHashes(1, 0x01), nil},
+		{"osaka six blobs", testStateTransitionChainConfig(), 1, blobTestHashes(6, 0x01), nil},
+		{"prague seven blobs", testStateTransitionChainConfig(), 0, blobTestHashes(7, 0x01), nil},
+		{"osaka seven blobs", testStateTransitionChainConfig(), 1, blobTestHashes(7, 0x01), transaction.ErrTooManyBlobs},
+		{"no blob hashes", testStateTransitionChainConfig(), 1, nil, transaction.ErrNoBlobs},
+		{"bad hash version", testStateTransitionChainConfig(), 1, blobTestHashes(1, 0x02), ErrInvalidBlobHashVersion},
+		{"pre-cancun", preCancun, 1, blobTestHashes(1, 0x01), ErrTxTypeNotSupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := memdb.NewTestDB(t)
+			txdb := memdb.BeginRw(t, db)
+			ibs := state.New(state.NewPlainState(txdb, 1))
+
+			senderKey, err := crypto.GenerateKey()
+			if err != nil {
+				t.Fatalf("generate sender key: %v", err)
+			}
+			sender := crypto.PubkeyToAddress(senderKey.PublicKey)
+			recipient := types.HexToAddress("0x2222222222222222222222222222222222222222")
+			coinbase := types.HexToAddress("0x1111111111111111111111111111111111111111")
+			ibs.CreateAccount(sender, false)
+			ibs.AddBalance(sender, uint256.NewInt(1_000_000_000_000_000_000))
+
+			signedTx, err := transaction.SignTx(transaction.NewTx(&transaction.BlobTx{
+				ChainID:    uint256.NewInt(1),
+				Nonce:      0,
+				GasTipCap:  uint256.NewInt(1),
+				GasFeeCap:  uint256.NewInt(100),
+				Gas:        21_000,
+				To:         recipient,
+				Value:      uint256.NewInt(1),
+				BlobFeeCap: uint256.NewInt(1_000_000_000),
+				BlobHashes: tc.hashes,
+			}), transaction.LatestSignerForChainID(big.NewInt(1)), senderKey)
+			if err != nil {
+				t.Fatalf("SignTx: %v", err)
+			}
+			excessBlobGas := uint64(0)
+			header := &block.Header{
+				Number:        uint256.NewInt(1),
+				GasLimit:      60_000_000,
+				Time:          tc.time,
+				BaseFee:       uint256.NewInt(7),
+				Difficulty:    uint256.NewInt(0),
+				ExcessBlobGas: &excessBlobGas,
+			}
+			gp := new(common.GasPool).AddGas(header.GasLimit)
+			usedGas := uint64(0)
+			_, _, err = ApplyTransaction(tc.config, func(uint64) types.Hash { return types.Hash{} },
+				nil, &coinbase, gp, ibs, state.NewNoopWriter(), header, signedTx, &usedGas, vm2.Config{})
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("unexpected error %v", err)
+				}
+			} else if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A message carrying blob hashes cannot create a contract. A blob transaction
+// always has a recipient, so this guards messages built directly (as geth
+// guards eth_call messages), and the check applies even when nonce checks are
+// skipped.
+func TestApplyMessageRejectsBlobContractCreation(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	txdb := memdb.BeginRw(t, db)
+	ibs := state.New(state.NewPlainState(txdb, 1))
+
+	sender := types.HexToAddress("0x3333333333333333333333333333333333333333")
+	ibs.CreateAccount(sender, false)
+	ibs.AddBalance(sender, uint256.NewInt(1_000_000_000_000_000_000))
+
+	excessBlobGas := uint64(0)
+	header := &block.Header{
+		Number:        uint256.NewInt(1),
+		GasLimit:      60_000_000,
+		Time:          1,
+		BaseFee:       uint256.NewInt(7),
+		Difficulty:    uint256.NewInt(0),
+		ExcessBlobGas: &excessBlobGas,
+	}
+	config := testStateTransitionChainConfig()
+	msg := transaction.NewMessage(sender, nil, 0, uint256.NewInt(0), 100_000,
+		uint256.NewInt(100), uint256.NewInt(100), uint256.NewInt(1), uint256.NewInt(1_000_000_000),
+		blobTestHashes(1, 0x01), nil, nil, false, false)
+	blockContext := NewEVMBlockContext(header, func(uint64) types.Hash { return types.Hash{} }, nil, config, &sender)
+	evm := vm2.NewEVM(blockContext, NewEVMTxContext(&msg), ibs, config, vm2.Config{})
+	gp := new(common.GasPool).AddGas(header.GasLimit)
+	if _, err := ApplyMessage(evm, &msg, gp, true, false); !errors.Is(err, transaction.ErrBlobTxCreate) {
+		t.Fatalf("err = %v, want ErrBlobTxCreate", err)
+	}
+}
+
+// A zero-hash blob transaction must stay distinguishable from a non-blob one
+// after conversion to a Message, as geth's msg.BlobHashes != nil does.
+func TestAsMessageKeepsBlobTxWithoutHashes(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	signer := transaction.LatestSignerForChainID(big.NewInt(1))
+	blobTx, err := transaction.SignTx(transaction.NewTx(&transaction.BlobTx{
+		ChainID: uint256.NewInt(1), GasTipCap: uint256.NewInt(1), GasFeeCap: uint256.NewInt(1),
+		Gas: 21_000, Value: uint256.NewInt(0), BlobFeeCap: uint256.NewInt(1),
+	}), signer, key)
+	if err != nil {
+		t.Fatalf("SignTx: %v", err)
+	}
+	msg, err := blobTx.AsMessage(signer, nil)
+	if err != nil {
+		t.Fatalf("AsMessage: %v", err)
+	}
+	if !msg.IsBlobTx() {
+		t.Fatal("blob tx without hashes lost its blob type in AsMessage")
+	}
+	to := types.HexToAddress("0x2222222222222222222222222222222222222222")
+	legacy, err := transaction.SignTx(transaction.NewTx(&transaction.LegacyTx{
+		GasPrice: uint256.NewInt(1), Gas: 21_000, To: &to, Value: uint256.NewInt(0),
+	}), signer, key)
+	if err != nil {
+		t.Fatalf("SignTx: %v", err)
+	}
+	if msg, err = legacy.AsMessage(signer, nil); err != nil {
+		t.Fatalf("AsMessage: %v", err)
+	} else if msg.IsBlobTx() {
+		t.Fatal("legacy tx reported as blob tx")
 	}
 }

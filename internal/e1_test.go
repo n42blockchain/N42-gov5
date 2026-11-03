@@ -158,8 +158,10 @@ func testE1LightFollowsExecutor(t *testing.T) {
 	launched, _, _, _ := light.bc.LagPipelineStats()
 	require.Zero(t, launched, "the light node ran a block ahead")
 	require.NoError(t, light.db.View(context.Background(), func(tx kv.Tx) error {
-		_, _, applied, err := rawdb.ReadQMDBApplied(tx)
-		require.False(t, applied, "the light node applied state")
+		// Genesis seeds the applied marker at block 0 (it is the verified
+		// genesis state); a light node never moves it past that.
+		num, _, applied, err := rawdb.ReadQMDBApplied(tx)
+		require.False(t, applied && num != 0, "the light node applied state (marker at %d)", num)
 		return err
 	}))
 	imported, _, _, _ := E1LightStats()

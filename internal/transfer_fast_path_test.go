@@ -37,6 +37,9 @@ type fastPathWorld struct {
 	// delegated are EIP-7702 delegated EOAs used as recipients: delegated
 	// to each contract and to a plain EOA.
 	delegated []types.Address
+	// withCode lets randomBlock send to contracts, delegated EOAs and
+	// precompiles and attach calldata.
+	withCode bool
 }
 
 func newFastPathWorld(t *testing.T, rng *rand.Rand) *fastPathWorld {
@@ -137,18 +140,28 @@ func (w *fastPathWorld) randomBlock(t *testing.T, rng *rand.Rand, cfg *params.Ch
 		switch r := rng.Intn(20); {
 		case r < 12:
 			to = w.eoas[rng.Intn(len(w.eoas))]
-		case r < 13:
-			to = w.contracts[rng.Intn(len(w.contracts))]
-		case r < 14:
-			to = w.delegated[rng.Intn(len(w.delegated))]
-		case r < 15:
-			to = precompiles[rng.Intn(len(precompiles))]
+		case r < 15 && w.withCode:
+			// Contract, delegated and precompile recipients: a block with
+			// any of them runs with its fee credits in the MVS
+			// (canDeferParallelFees), where no fast path applies.
+			switch r {
+			case 12:
+				to = w.contracts[rng.Intn(len(w.contracts))]
+			case 13:
+				to = w.delegated[rng.Intn(len(w.delegated))]
+			default:
+				to = precompiles[rng.Intn(len(precompiles))]
+			}
 		case r < 17:
 			to = types.BytesToAddress(crypto.Keccak256([]byte{0xF0, byte(rng.Intn(256)), byte(len(txs))})) // fresh
 		case r < 18:
 			to = w.senders[s] // self
 		default:
 			to = w.senders[rng.Intn(len(w.senders))]
+		}
+		if !w.withCode && to == w.senders[2] {
+			// Sender 2 is a delegated EOA: as a recipient it carries code.
+			to = w.eoas[rng.Intn(len(w.eoas))]
 		}
 		var value *uint256.Int
 		switch r := rng.Intn(20); {
@@ -171,7 +184,7 @@ func (w *fastPathWorld) randomBlock(t *testing.T, rng *rand.Rand, cfg *params.Ch
 			consumes = false
 		}
 		var data []byte
-		if rng.Intn(16) == 0 {
+		if rng.Intn(16) == 0 && w.withCode {
 			data = []byte{byte(rng.Intn(2))}
 			if gas == 21000 {
 				gas = 21100
@@ -353,6 +366,23 @@ func TestTransferFastPathMatchesEVM(t *testing.T) {
 				require.Equal(t, slow.collector, fast.collector, "collector balance")
 				require.Equal(t, slow.stateRoot, fast.stateRoot, "state root")
 				t.Logf("seed %d: %d txs, %d included, %d failed, %d fast, %d direct", seed, len(txs), len(fast.included), fast.failed, took, tookDirect)
+
+				// With contract, delegated and precompile recipients and
+				// calldata the fee credits stay in the MVS (no deferral, or
+				// a second run once a worker meets code): the results must
+				// still equal the EVM run's.
+				w.withCode = true
+				mixed := w.randomBlock(t, rng, c.cfg, header, 400)
+				w.withCode = false
+				mixedSlow := runFastPathBlock(t, db, c.cfg, header, mixed, false)
+				restore = setTransferFast2ForTest(true)
+				mixedFast := runFastPathBlockMode(t, db, c.cfg, header, mixed, true, true)
+				restore()
+				require.Equal(t, mixedSlow.included, mixedFast.included, "mixed: included transactions")
+				require.Equal(t, mixedSlow.usedGas, mixedFast.usedGas, "mixed: gas used")
+				require.Equal(t, mixedSlow.receiptsRoot, mixedFast.receiptsRoot, "mixed: receipts root")
+				require.Equal(t, mixedSlow.coinbase, mixedFast.coinbase, "mixed: coinbase balance")
+				require.Equal(t, mixedSlow.stateRoot, mixedFast.stateRoot, "mixed: state root")
 			}
 		})
 	}

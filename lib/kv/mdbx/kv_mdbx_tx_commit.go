@@ -51,11 +51,20 @@ func (tx *MdbxTx) Commit() error {
 	defer tx.cleanup()
 	tx.closeCursors()
 	tx.CollectMetrics()
+	traceCommit := commitTraceEnabled && !tx.readOnly && tx.db.opts.label == kv.ChainDB
+	var traceTxID uint64
+	if traceCommit {
+		// The native transaction handle becomes invalid when Commit returns.
+		traceTxID = tx.tx.ID()
+	}
 	dirty, limit, probe := tx.writeProbeDirty()
 
 	latency, err := tx.tx.Commit()
 	if err != nil {
 		return fmt.Errorf("label: %s, %w", tx.db.opts.label, err)
+	}
+	if traceCommit {
+		tx.logCommitTrace(traceTxID, latency)
 	}
 	if probe {
 		tx.logWriteProbe(dirty, limit, latency.Whole)

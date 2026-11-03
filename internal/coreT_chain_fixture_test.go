@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"math/big"
+	"os"
 	"sync"
 	"testing"
 
@@ -140,7 +141,22 @@ type coreTChainFixture struct {
 var (
 	coreTFixtureOnce  sync.Once
 	coreTFixtureValue *coreTChainFixture
+	// coreTFixtureDir holds the shared fixture's database. It outlives the
+	// test that first builds the fixture, so TestMain removes it.
+	coreTFixtureDir string
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if f := coreTFixtureValue; f != nil {
+		f.Chain.Close()
+		f.DB.Close()
+	}
+	if coreTFixtureDir != "" {
+		os.RemoveAll(coreTFixtureDir)
+	}
+	os.Exit(code)
+}
 
 // coreTGetChainFixture returns the shared executed-chain fixture, building it
 // once per test binary. Safe to call from multiple tests/subtests; the
@@ -148,7 +164,10 @@ var (
 func coreTGetChainFixture(tb testing.TB) *coreTChainFixture {
 	tb.Helper()
 	coreTFixtureOnce.Do(func() {
-		coreTFixtureValue = coreTBuildChainFixture(tb)
+		dir, err := os.MkdirTemp("", "coreT-fixture")
+		require.NoError(tb, err)
+		coreTFixtureDir = dir
+		coreTFixtureValue = coreTBuildChainFixture(tb, memdb.New(dir))
 	})
 	if coreTFixtureValue == nil {
 		tb.Fatal("coreT chain fixture failed to build")
@@ -178,19 +197,23 @@ func coreTTinyLogInitCode() []byte {
 // over a brand new memdb instance. Used by tests that need to mutate chain
 // state (reorgs, SetHead, startup repair) without disturbing the shared
 // read-only fixture returned by coreTGetChainFixture.
+// The database is closed when the test ends, before its directory is
+// removed: Windows cannot delete the files of an open database.
 func coreTNewChainFixture(tb testing.TB) *coreTChainFixture {
 	tb.Helper()
-	return coreTBuildChainFixture(tb)
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	f := coreTBuildChainFixture(tb, memdb.NewTestDB(tb))
+	tb.Cleanup(func() { f.Chain.Close() })
+	return f
 }
 
-func coreTBuildChainFixture(tb testing.TB) *coreTChainFixture {
+func coreTBuildChainFixture(tb testing.TB, db kv.RwDB) *coreTChainFixture {
 	tb.Helper()
 	ctx := context.Background()
 
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
-
-	db := memdb.New(tb.TempDir())
 
 	cfg := &params.ChainConfig{
 		ChainID:               big.NewInt(1337),
