@@ -237,6 +237,17 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	if head == 0 || head <= from {
 		return false, nil
 	}
+	if lagWriteDeferBG {
+		// Yield to the lag writer while it is busy, until a full batch is
+		// pending (lag_write_bg_gate.go).
+		maxBehind := lagWriteDeferBGMaxBlocks
+		if maxBehind == 0 {
+			maxBehind = b.maxBatch
+		}
+		if head-from < maxBehind && lagBGGate.activeWithin(lagWriteDeferBGIdle) {
+			return false, nil
+		}
+	}
 	to := from + b.batch
 	if to > head {
 		to = head
@@ -286,6 +297,10 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	next := 0
 	for {
 		last := false
+		if lagWriteDeferBG {
+			// Begin right after a lag write commits, not in its way.
+			lagBGGate.waitClosed(lagWriteDeferBGWait, b.ctx.Done())
+		}
 		if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
 			cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
 			if err != nil {

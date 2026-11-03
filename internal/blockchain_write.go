@@ -283,6 +283,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// and the write's wait for it (and the Log rows) before the
 		// transaction opened.
 		dPrep, dPrepWait time.Duration
+		// The write transactions that held the MDBX writer while this one
+		// waited to begin (N42_RW_HOLDER_DIAG=1; "" otherwise).
+		beginBehind string
 		// The frame store write (P11): its own run and the commit's wait.
 		dFrames, dFramesWait time.Duration
 		prepFast             bool
@@ -320,8 +323,17 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		dPrepWait = time.Since(tWait)
 	}
 
+	lagTx := job != nil && lagWriteDeferBG
+	if lagTx {
+		lagBGGate.enter()
+	}
 	if err := bc.ChainDB.Update(writeCtx, func(tx kv.RwTx) error {
 		tClosureStart = time.Now()
+		if d, ok := tx.(interface {
+			RwBeginBehind() (time.Duration, string)
+		}); ok {
+			_, beginBehind = d.RwBeginBehind()
+		}
 		// Reject an in-flight leader candidate before touching receipts, logs,
 		// changesets, or any other append-only table. The applied head can move
 		// while the isolated candidate is being built.
@@ -725,6 +737,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		dInClosure = time.Since(tClosureStart)
 		return nil
 	}); err != nil {
+		if lagTx {
+			lagBGGate.exit()
+		}
 		if job == nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 			// The tx rolled back: discard the staged flush cursor and re-queue
 			// the staged dead-row reclaims. lastUndo is intentionally KEPT —
@@ -746,6 +761,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
 	// isolates the MDBX Commit (fsync) from everything the closure did.
 	dUpdate := time.Since(tUpdateStart)
+	if lagTx {
+		lagBGGate.exit()
+	}
 	if job == nil && ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 		// The tx is durable: adopt the staged flush cursor, then evict the
 		// flushed window (its rows are now recoverable from cold) and consume
@@ -795,6 +813,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		if dFrames > 0 {
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
+		}
+		if beginBehind != "" {
+			fields = append(fields, "beginBehind", beginBehind)
 		}
 		// Distinct accounts and slots the block changed. The commit cost is set
 		// by this COUNT, not by the byte volume: every account update is keyed
