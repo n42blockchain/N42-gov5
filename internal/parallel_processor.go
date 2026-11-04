@@ -553,12 +553,15 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// The preparation's stages, from the block's queueing: its senders
 	// settling (prepSendersUs) and the computation (prepComputeUs). Taken
 	// here: prep is cleared once adopted.
-	var prepSenders, prepCompute time.Duration
+	var prepSenders, prepCompute, prepKeys, prepPart time.Duration
 	if prep != nil && !prep.startedAt.IsZero() {
 		prepSenders = prep.startedAt.Sub(prep.queuedAt)
 		if !prep.computedAt.IsZero() {
 			prepCompute = prep.computedAt.Sub(prep.startedAt)
 		}
+		// r65a: the computation's split (N42_WAVE_PARTITION_FAST cuts
+		// the partition).
+		prepKeys, prepPart = prep.aff.Timings()
 	}
 	// The base prefill (ahead_base_prefill.go): the run's tree reads answer
 	// its keys without the tree's lock.
@@ -1336,7 +1339,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		blockLog := []any{"n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "baseKeysUs", baseKeys.Microseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "prepKeysUs", prepKeys.Microseconds(), "prepPartUs", prepPart.Microseconds(), "partFast", parallel.WavePartitionFastOn(), "baseKeysUs", baseKeys.Microseconds(),
 			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillDepth", baseDepth, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillTreeWaitMs", baseTreeWait.Milliseconds(), "basePrefillCut", baseCut, "basePrefillSkip", baseSkip,
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),

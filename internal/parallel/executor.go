@@ -939,6 +939,17 @@ type AffinityPrep struct {
 	part            *wavePartition
 	// taken: adopted once (the steal chains carry run state).
 	taken atomic.Bool
+	// keysTook, partTook: the key computation and the partition (log
+	// fields; r65a N42_WAVE_PARTITION_FAST).
+	keysTook, partTook time.Duration
+}
+
+// Timings returns how long the keys and the partition took (zero for nil).
+func (p *AffinityPrep) Timings() (keys, part time.Duration) {
+	if p == nil {
+		return 0, 0
+	}
+	return p.keysTook, p.partTook
 }
 
 // PrepareAffinityFor computes PrepareAffinity's result for numTxs
@@ -951,8 +962,12 @@ func PrepareAffinityFor(numTxs, workers int, key func(txIndex int) uint64, gorou
 	}
 	w := ResolveWorkers(numTxs, workers)
 	all := allIndices(numTxs)
+	t0 := time.Now()
 	keys := affinityKeysOn(numTxs, all, key, goroutines)
-	return &AffinityPrep{numTxs: numTxs, workers: w, lpt: waveLPT, steal: waveSteal, keys: keys, part: partitionFor(all, w, keys)}
+	t1 := time.Now()
+	part := partitionFor(all, w, keys)
+	return &AffinityPrep{numTxs: numTxs, workers: w, lpt: waveLPT, steal: waveSteal, keys: keys, part: part,
+		keysTook: t1.Sub(t0), partTook: time.Since(t1)}
 }
 
 // AdoptAffinity takes p in place of PrepareAffinity when it was computed
@@ -985,6 +1000,15 @@ func (e *Executor) partitionWave(txIndices []int, keys []uint64) *wavePartition 
 }
 
 func partitionFor(txIndices []int, workers int, keys []uint64) *wavePartition {
+	if wavePartitionFast && waveLPT && len(txIndices) >= partitionFastMin {
+		return partitionForFast(txIndices, workers, keys, waveSteal)
+	}
+	return partitionForSerial(txIndices, workers, keys)
+}
+
+// partitionForSerial is partitionFor's serial code (N42_WAVE_PARTITION_FAST
+// off, small waves, or modulo mode).
+func partitionForSerial(txIndices []int, workers int, keys []uint64) *wavePartition {
 	p := &wavePartition{}
 	p.queues, p.keys, p.topChain = partitionByAffinity(txIndices, workers, func(i int) uint64 { return keys[i] }, waveLPT)
 	if waveLPT && waveSteal {
