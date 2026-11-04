@@ -113,6 +113,9 @@ type lagWriter struct {
 	inflight *lagWriteJob
 	// visible: the block readers see as stored until its write is durable.
 	visible atomic.Pointer[lagWriteJob]
+	// early: the executed result of the block being imported, published
+	// before its hand-off (N42_LAG_RESULT_EARLY, lag_gate_applied.go).
+	early atomic.Pointer[lagEarlyResult]
 
 	notifyOnce sync.Once
 	notify     chan *lagWriteJob

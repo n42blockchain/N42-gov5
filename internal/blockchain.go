@@ -2736,6 +2736,13 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			// Serial path: hashed while the write's earlier tables land.
 			bc.receiptsFuture = startReceiptsResult(bc.chainConfig, blockNumber.Uint64(), blk.Hash(), receipts)
 		}
+		// N42_LAG_RESULT_EARLY: the result is final now; the leader's gate
+		// and build may take it before the hand-off's wait for the previous
+		// write (lag_gate_applied.go). Withdrawn once the hand-off returned.
+		var earlyRes *lagEarlyResult
+		if lag != nil {
+			earlyRes = bc.lagPublishEarlyResult(concreteBlock, receipts, ibs)
+		}
 		wstart := time.Now()
 		var status WriteStatus
 		if err = lagPipeInjectedFailure(blk.Hash()); err == nil {
@@ -2767,6 +2774,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			// Not written: let the preparation finish with the state it owns.
 			_, _ = ep.wait()
 		}
+		bc.lagWithdrawEarlyResult(earlyRes)
 		bc.receiptsFuture = nil
 		if err != nil {
 			// writeBlockWithState rolled its tx back, but execution above already
@@ -2845,6 +2853,13 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 					"cPref", procPhases.CollectPrefetch, "cFees", procPhases.CollectFees,
 					"applyWalk", procPhases.ApplyWalk, "applyAcct", procPhases.ApplyAccounts, "applySto", procPhases.ApplyStorage,
 					"cRcptRun", procPhases.CollectRcptRun, "earlyPub", lagEarlyPublishOn, "finFast", state.FinalizeFastOn(), "foldNJ", state.FoldNoJournalOn())
+				// aheadPre's split (r69a): drain, frames, the claim of the
+				// preparation (fill: its base prefill part), bind the rest;
+				// read per launchBy (N42_AHEAD_PRE_EARLY cuts a late fill).
+				fields = append(fields, "aheadPreDrain", ahead.preDrain, "aheadPreFrames", ahead.preFrames,
+					"aheadPreClaim", ahead.preClaim, "aheadPreFill", ahead.preFill,
+					"aheadPreBind", ahead.pre-ahead.preDrain-ahead.preFrames-ahead.preClaim,
+					"aheadPreCut", ahead.preCut, "preEarly", aheadPreEarlyOn, "resultEarly", lagResultEarlyOn)
 			}
 			// The root's own split (P7: the fleet logged only the total):
 			// the wait for the tree's readers, the dirty-set collection, the

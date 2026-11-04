@@ -117,6 +117,10 @@ func SetAheadBaseClaimWaitForTest(wait bool) func() {
 	return func() { aheadBaseClaimWaitsFill = prev }
 }
 
+// aheadBaseBeforeFillForTest runs before a prefill reads its keys (tests:
+// hold the fill until the claim).
+var aheadBaseBeforeFillForTest func(ab *aheadBase)
+
 // aheadBaseMaxWait bounds a prefill's wait for the tree to reach the
 // child's grandparent (the claim of the preparation ends it sooner).
 var aheadBaseMaxWait = 10 * time.Second
@@ -139,6 +143,10 @@ type aheadBase struct {
 	skip   string
 	// cut: the claim stopped the fill; pf holds the keys read before.
 	cut atomic.Bool
+	// cutAtClaim: the claim stops a fill still reading even when
+	// aheadBaseClaimWaitsFill (N42_AHEAD_PRE_EARLY, a late child's claim);
+	// set before the claim closes stop.
+	cutAtClaim atomic.Bool
 
 	// claimWait: the claim's wait for the prefill to finish (set by the
 	// claimer).
@@ -338,7 +346,7 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 		if abort() {
 			return true
 		}
-		if aheadBaseClaimWaitsFill {
+		if aheadBaseClaimWaitsFill && !ab.cutAtClaim.Load() {
 			return false
 		}
 		select {
@@ -348,6 +356,9 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 		default:
 			return false
 		}
+	}
+	if fn := aheadBaseBeforeFillForTest; fn != nil {
+		fn(ab)
 	}
 	tFill := time.Now()
 	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)

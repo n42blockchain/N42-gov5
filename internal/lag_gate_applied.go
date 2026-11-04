@@ -18,9 +18,13 @@ package internal
 
 import (
 	"os"
+	"sync"
+	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // The leader gate on the applied result (docs/QS_MULTI_MILLION_DESIGN.md
@@ -83,7 +87,10 @@ func (bc *BlockChain) pendingExecutedResult(hash types.Hash) (rawdb.ExecutedResu
 	if !lagGateApplied {
 		return rawdb.ExecutedResult{}, false
 	}
-	return bc.inflightExecutedResult(hash)
+	if r, ok := bc.inflightExecutedResult(hash); ok {
+		return r, true
+	}
+	return bc.earlyExecutedResult(hash)
 }
 
 // inflightExecutedResult is pendingExecutedResult whatever
@@ -128,4 +135,146 @@ func (bc *BlockChain) lagResultReadySoon(j *lagWriteJob) {
 			(*fn)(j.hash)
 		}
 	}()
+}
+
+// N42_LAG_RESULT_EARLY (r69a). The gate on the applied result above takes a
+// block's result from the write job, which exists only once the import's
+// hand-off waited for the previous block's write (E1N26 run 34: handWait
+// p50 5 ms, p90 26 ms): at depth 2 the leader builds N+2 only then, and the
+// followers' child N+1 arrives that much closer to their hook of N. Yet the
+// result is final as soon as the import's execution and validation passed:
+// the state root is computed (ibs.LastIntermediateRoot, what the write
+// stores) and the receipts part is hashed from the final receipts
+// (receiptsResultFuture), exactly what the job then serves. With the switch
+// on, the lag import publishes the result right after validation; the gate,
+// the build and the result hook see it from then on, and the job takes over
+// at the hand-off (the early result is withdrawn after it, so there is no
+// gap). What may still fail after the publication -- the previous block's
+// write (the tree is reloaded, both blocks are queued again), this block's
+// hand-off or write -- leaves the result valid: the block executes again on
+// the same parent state to the same result, which is the argument the gate
+// on the applied result already rests on (a write in flight may fail too).
+// Nothing durable is read through it: the store, the applied marker, the
+// commit path and the import of the child still see durable or applied
+// state only, as before. Only the leader's gate and build (and the result
+// hook that resumes them) move earlier.
+
+// lagResultEarlyOn is N42_LAG_RESULT_EARLY (default off; "1", "true" or
+// "on" enables). It needs N42_LAG_GATE_APPLIED (default on).
+var lagResultEarlyOn = parseOptIn(os.Getenv("N42_LAG_RESULT_EARLY"))
+
+// SetLagResultEarlyForTest switches N42_LAG_RESULT_EARLY and returns the
+// restore.
+func SetLagResultEarlyForTest(on bool) func() {
+	prev := lagResultEarlyOn
+	lagResultEarlyOn = on
+	return func() { lagResultEarlyOn = prev }
+}
+
+// lagResultsEarly counts results published before their hand-off, and
+// lagResultsEarlyServed the gate or build reads they answered (since start).
+var lagResultsEarly, lagResultsEarlyServed atomic.Uint64
+
+// lagEarlyResultForTest, when set, is told each early result the moment it
+// is complete (tests: compare it with the stored one).
+var lagEarlyResultForTest func(bc *BlockChain, hash types.Hash, r rawdb.ExecutedResult)
+
+// lagEarlyResult is one block's executed result published before its
+// hand-off.
+type lagEarlyResult struct {
+	hash   types.Hash
+	root   types.Hash
+	future *receiptsResultFuture
+	// gone closes once the result is withdrawn.
+	gone chan struct{}
+	once sync.Once
+}
+
+// result returns the complete result, or false while its receipts part is
+// still hashed.
+func (e *lagEarlyResult) result() (rawdb.ExecutedResult, bool) {
+	select {
+	case <-e.future.done:
+	default:
+		return rawdb.ExecutedResult{}, false
+	}
+	r := e.future.result
+	r.Root = e.root
+	return r, true
+}
+
+// lagPublishEarlyResult publishes blk's executed result (the import's
+// execution and validation passed, its hand-off not begun) and tells the
+// result hook once it is complete. nil when it publishes nothing: the
+// switch or the applied gate off, a block not under deferred execution, no
+// computed root, or no receipts part for these receipts. The caller
+// withdraws it (lagWithdrawEarlyResult) once the hand-off returned.
+func (bc *BlockChain) lagPublishEarlyResult(blk *block.Block, receipts []*block.Receipt, ibs *state.IntraBlockState) *lagEarlyResult {
+	if !lagResultEarlyOn || !lagGateApplied || blk == nil || ibs == nil || bc.chainConfig == nil {
+		return nil
+	}
+	hdr, ok := blk.Header().(*block.Header)
+	if !ok || !bc.chainConfig.IsDeferredExecution(hdr.Time) {
+		return nil
+	}
+	hash := blk.Hash()
+	f := bc.receiptsFuture
+	if !f.matches(hash, receipts) {
+		return nil
+	}
+	root, ok := ibs.LastIntermediateRoot()
+	if !ok {
+		return nil
+	}
+	e := &lagEarlyResult{hash: hash, root: root, future: f, gone: make(chan struct{})}
+	bc.lagWrite.early.Store(e)
+	lagResultsEarly.Add(1)
+	fn := bc.lagExec.resultHook.Load()
+	test := lagEarlyResultForTest
+	if fn == nil && test == nil {
+		return e
+	}
+	go func() {
+		select {
+		case <-f.done:
+		case <-e.gone:
+			return
+		}
+		if test != nil {
+			if r, ok := e.result(); ok {
+				test(bc, hash, r)
+			}
+		}
+		if fn != nil && bc.lagWrite.early.Load() == e {
+			(*fn)(hash)
+		}
+	}()
+	return e
+}
+
+// lagWithdrawEarlyResult withdraws e (the hand-off returned: its job, if
+// any, serves the result from now on).
+func (bc *BlockChain) lagWithdrawEarlyResult(e *lagEarlyResult) {
+	if e == nil {
+		return
+	}
+	bc.lagWrite.early.CompareAndSwap(e, nil)
+	e.once.Do(func() { close(e.gone) })
+}
+
+// earlyExecutedResult returns hash's early result when it is published and
+// complete; it never waits.
+func (bc *BlockChain) earlyExecutedResult(hash types.Hash) (rawdb.ExecutedResult, bool) {
+	if !lagResultEarlyOn {
+		return rawdb.ExecutedResult{}, false
+	}
+	e := bc.lagWrite.early.Load()
+	if e == nil || e.hash != hash {
+		return rawdb.ExecutedResult{}, false
+	}
+	r, ok := e.result()
+	if ok {
+		lagResultsEarlyServed.Add(1)
+	}
+	return r, ok
 }

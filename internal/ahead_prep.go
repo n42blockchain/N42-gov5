@@ -319,6 +319,14 @@ var aheadPrepDoneForTest func(pr *aheadPrep)
 // (one still waiting for the tree is ended, one still reading stops at its
 // next key and keeps what it read, aheadBase.halt). The wait is returned.
 func (bc *BlockChain) claimAheadPrep(h types.Hash) (*aheadPrep, time.Duration) {
+	return bc.claimAheadPrepCut(h, false)
+}
+
+// claimAheadPrepCut is claimAheadPrep; with cut, a base prefill still reading
+// stops at its next key (keeping what it read) instead of being waited for,
+// whatever N42_AHEAD_BASE_CLAIM_WAIT says (N42_AHEAD_PRE_EARLY: a late
+// child's claim).
+func (bc *BlockChain) claimAheadPrepCut(h types.Hash, cut bool) (*aheadPrep, time.Duration) {
 	if bc == nil {
 		return nil, 0
 	}
@@ -332,6 +340,9 @@ func (bc *BlockChain) claimAheadPrep(h types.Hash) (*aheadPrep, time.Duration) {
 	}
 	t0 := time.Now()
 	<-pr.done
+	if cut && pr.base != nil {
+		pr.base.cutAtClaim.Store(true)
+	}
 	pr.base.halt()
 	wait := time.Since(t0)
 	if !pr.ok {

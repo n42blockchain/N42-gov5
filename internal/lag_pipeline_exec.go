@@ -112,6 +112,10 @@ var lagPipeBeforePublishForTest func(parent types.Hash)
 // publication, which the child's ahead run overlaps).
 var lagPipeAfterPublishForTest func(parent types.Hash)
 
+// lagPipeBeforeClaimForTest runs on an ahead execution's goroutine right
+// before it claims its preparation (tests: let the preparation start).
+var lagPipeBeforeClaimForTest func(bc *BlockChain, child *block.Block)
+
 // lagPipeAheadStartedForTest runs on an ahead execution's goroutine once
 // it holds its read transaction (tests: orphan the child mid-run).
 var lagPipeAheadStartedForTest func(child *block.Block)
@@ -329,6 +333,13 @@ type aheadExec struct {
 	availCheck      time.Duration
 	hookAt          time.Time
 	launchBy        int
+	// pre's split (log fields aheadPre*): the wait for a discarded run of
+	// the block, the frame resolution, the claim of the preparation (its
+	// wait, of which fill is the base prefill's), and the rest (the binding
+	// to the parent's post-state: layers, transaction, readers). cut: the
+	// claim stopped a prefill still reading (N42_AHEAD_PRE_EARLY).
+	preDrain, preFrames, preClaim, preFill time.Duration
+	preCut                                 bool
 
 	// Set by the executing goroutine before done closes.
 	ibs    *state.IntraBlockState
@@ -581,6 +592,37 @@ func (bc *BlockChain) lagPipeLaunch(by int) {
 	go bc.runAhead(a, par)
 }
 
+// aheadPreEarlyOn is N42_AHEAD_PRE_EARLY (default off; "1", "true" or "on"
+// enables). A child launched after its parent's snapshot hook (launchBy
+// enqueue or take: it arrived late) is on the period's serial chain from
+// its launch, and its pre-run (E1N26 run 34: aheadPre p50 13 ms against
+// 0.14 ms for a hook launch) is the claim of its preparation: the
+// computation started by the availability check just before the launch,
+// and the base prefill read beside it, which the claim waits for to finish
+// (N42_AHEAD_BASE_CLAIM_WAIT, ~6 ms p50 of it). The frames, the
+// preparation and the prefill already start when the block is checked
+// available, before the launch; only the binding to the parent's
+// post-state (layers, read transaction, readers) waits for the launch.
+// With the switch on, a late child's claim stops a prefill still reading
+// at its next key and keeps what it read -- the N42_AHEAD_BASE_CLAIM_WAIT=0
+// semantics, for late children only: the run reads the remaining keys
+// through the tree, the same values. A hook launch is unchanged (its child
+// waited for the hook anyway, so its prefill usually finished).
+var aheadPreEarlyOn = parseOptIn(os.Getenv("N42_AHEAD_PRE_EARLY"))
+
+// SetAheadPreEarlyForTest switches N42_AHEAD_PRE_EARLY and returns the
+// restore.
+func SetAheadPreEarlyForTest(on bool) func() {
+	prev := aheadPreEarlyOn
+	aheadPreEarlyOn = on
+	return func() { aheadPreEarlyOn = prev }
+}
+
+// aheadPreCutClaims counts late claims made with N42_AHEAD_PRE_EARLY on a
+// preparation with a base prefill, aheadPreCuts those that stopped a fill
+// still reading (process-wide, since start).
+var aheadPreCutClaims, aheadPreCuts atomic.Uint64
+
 // newAheadLocked creates the ahead execution of child on par's snapshot
 // (p.mu held); the caller starts runAhead.
 func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent, by int) *aheadExec {
@@ -618,8 +660,13 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	}
 	// A discarded run of the same block may still be filling its
 	// transactions' senders.
+	tDrain := time.Now()
 	a.pipe.awaitDrained(a.blk.Hash(), a)
-	if err := bc.ResolveFrames(a.blk); err != nil {
+	tFrames := time.Now()
+	a.preDrain = tFrames.Sub(tDrain)
+	err := bc.ResolveFrames(a.blk)
+	a.preFrames = time.Since(tFrames)
+	if err != nil {
 		a.err = err
 		return
 	}
@@ -646,7 +693,23 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		parent := par.hash
 		claim.execStart = func() { bc.lagEarlyPrepChildStarted(parent) }
 	}
-	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
+	// N42_AHEAD_PRE_EARLY: a late child (launched after its parent's hook)
+	// does not wait for a base prefill still reading; it keeps what was read.
+	cut := aheadPreEarlyOn && a.launchBy != lagLaunchHook
+	if fn := lagPipeBeforeClaimForTest; fn != nil {
+		fn(bc, a.blk)
+	}
+	claim.prep, claim.wait = bc.claimAheadPrepCut(a.blk.Hash(), cut)
+	a.preClaim = claim.wait
+	if ab := claim.prep.prefill(); ab != nil {
+		a.preFill, a.preCut = ab.claimWait, ab.cut.Load()
+		if cut {
+			aheadPreCutClaims.Add(1)
+			if a.preCut {
+				aheadPreCuts.Add(1)
+			}
+		}
+	}
 	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 		layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
 		a.pf = ab.pf
