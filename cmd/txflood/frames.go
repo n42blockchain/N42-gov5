@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/ingest"
+	"golang.org/x/sys/unix"
 )
 
 // frameRun is the -frames mode: the run's pre-signed transactions are packed
@@ -49,6 +50,9 @@ type frameRun struct {
 	// corpusFingerprint); it is stored in the header so -presign-reuse can
 	// tell a corpus for this exact run from a stale one.
 	fingerprint [32]byte
+	// corpusNoCache (-corpus-nocache): writeCorpus syncs the file and drops it
+	// from the page cache, and the corpus reader drops what it has streamed.
+	corpusNoCache bool
 
 	presigned, streamed                                  atomic.Int64
 	frames, txs, busy, failed, conns, rejected, timeouts atomic.Int64
@@ -501,6 +505,13 @@ func (fr *frameRun) writeCorpus(path string) error {
 	if err := w.Flush(); err != nil {
 		return fail(err)
 	}
+	if fr.corpusNoCache {
+		// Written pages are dirty: write them back first, or DONTNEED keeps them.
+		if err := f.Sync(); err != nil {
+			return fail(err)
+		}
+		dropPageCache(f, 0, 0)
+	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
@@ -535,6 +546,10 @@ type corpusReader struct {
 	h corpusHeader
 	// fp is the v2 fingerprint; nil for a v1 corpus.
 	fp *[32]byte
+	// noCache (-corpus-nocache) drops the pages stream has consumed from the
+	// page cache, so a corpus kept on disk across legs does not hold tens of
+	// GB of page cache during the measured windows.
+	noCache bool
 	// free holds frame buffers every peer has finished with. Streaming
 	// allocated (and zeroed) a fresh ~56 KB buffer per frame only to
 	// overwrite it, which with the GC it drove was a fifth of a replaying
@@ -584,6 +599,26 @@ func openCorpus(path string) (*corpusReader, error) {
 	return c, nil
 }
 
+// corpusDropStep is how much consumed corpus stream lets accumulate in the
+// page cache before it drops it (-corpus-nocache).
+var corpusDropStep int64 = 64 << 20
+
+// headerLen is the size of the corpus header stream starts after.
+func (c *corpusReader) headerLen() int64 {
+	n := int64(len(corpusMagic)) + int64(binary.Size(c.h))
+	if c.fp != nil {
+		n += int64(len(c.fp))
+	}
+	return n
+}
+
+// dropPageCache asks the kernel to evict f's clean cached pages in
+// [off, off+n) (n == 0: to the end of the file). Best effort: an error only
+// means the pages stay cached.
+func dropPageCache(f *os.File, off, n int64) {
+	_ = unix.Fadvise(int(f.Fd()), off, n, unix.FADV_DONTNEED)
+}
+
 // check verifies the corpus was built for this run's shape.
 func (c *corpusReader) check(peers int, broadcast bool, total int64) error {
 	if int(c.h.Peers) != peers || (c.h.Broadcast == 1) != broadcast || int64(c.h.Total) != total {
@@ -598,7 +633,17 @@ func (c *corpusReader) stream(nFrames int64, streamed *atomic.Int64) <-chan buil
 	go func() {
 		defer close(out)
 		defer c.f.Close()
+		// consumed is the file offset stream has read up to; the bufio
+		// read-ahead past it stays cached until the next drop.
+		consumed, dropped := c.headerLen(), int64(0)
+		if c.noCache {
+			defer func() { dropPageCache(c.f, 0, 0) }()
+		}
 		for k := int64(0); k < nFrames; k++ {
+			if c.noCache && consumed-dropped >= corpusDropStep {
+				dropPageCache(c.f, 0, consumed)
+				dropped = consumed
+			}
 			var hd [8]byte
 			if _, err := io.ReadFull(c.r, hd[:]); err != nil {
 				out <- builtFrame{k: k, err: err}
@@ -614,6 +659,7 @@ func (c *corpusReader) stream(nFrames int64, streamed *atomic.Int64) <-chan buil
 				out <- builtFrame{k: k, err: err}
 				continue
 			}
+			consumed += int64(len(hd)) + int64(n)
 			ntx := int(binary.LittleEndian.Uint32(hd[4:]))
 			streamed.Add(int64(ntx))
 			out <- builtFrame{k: k, raw: raw, ntx: ntx}

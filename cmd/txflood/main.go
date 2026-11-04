@@ -715,6 +715,7 @@ func main() {
 	signWorkers := flag.Int("sign-workers", 1, "with -frames: goroutines that sign and encode frames ahead of the in-order per-peer senders (frame content depends only on its index, so this keeps delivery order). One worker is the historical single producer, which caps a generator near 37k tx/s")
 	presignFile := flag.String("presign", "", "with -frames: after funding and the nonce probe, sign and encode every frame into this corpus file (-sign-workers goroutines), then stream the run from it. Opt-in; takes the signing off the flood's critical path")
 	presignReuse := flag.Bool("presign-reuse", false, "with -presign: if the file already holds a complete corpus for this exact run (same frame shape, gateway, start nonces and sampled signed transactions: see corpusFingerprint), stream it instead of signing again. Legs that reseed the same chain state and flood the same senders produce byte-identical corpora, so a harness that keeps the file across legs signs once per round")
+	corpusNoCache := flag.Bool("corpus-nocache", false, "with -presign/-replay: keep the corpus out of the page cache -- sync and drop it after -presign writes it, and drop what has been streamed every 64 MB (posix_fadvise DONTNEED). A corpus kept across legs (-presign-reuse) otherwise holds tens of GB of page cache through the measured windows")
 	replayFile := flag.String("replay", "", "with -frames: stream a corpus written by -presign (same -senders/-pertx/-frame-peers/-frame-broadcast/-sender-offset, nonces unchanged) and sign nothing; combine with -skip-funding. Depth-by-nonce pacing needs the same process to have probed nonces, so prefer -presign for that")
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile of the whole run to this file")
 	flag.Parse()
@@ -1071,12 +1072,13 @@ func main() {
 			os.Exit(2)
 		}
 		pre := &frameRun{
-			peers:     strings.Split(*framePeers, ","),
-			key:       gk,
-			total:     totalTxs,
-			rawAt:     func(i int64) []byte { return rawBytes(rawAt(i)) },
-			broadcast: *frameBroadcast,
-			workers:   *signWorkers,
+			peers:         strings.Split(*framePeers, ","),
+			key:           gk,
+			total:         totalTxs,
+			rawAt:         func(i int64) []byte { return rawBytes(rawAt(i)) },
+			broadcast:     *frameBroadcast,
+			workers:       *signWorkers,
+			corpusNoCache: *corpusNoCache,
 		}
 		t0 := time.Now()
 		pre.fingerprint = pre.corpusFingerprint(senderBase)
@@ -1355,6 +1357,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "FATAL: replay: %v\n", err)
 				os.Exit(1)
 			}
+			c.noCache = *corpusNoCache
 			fr.corpus = c
 			fr.presigned.Store(int64(c.h.Total))
 		}
