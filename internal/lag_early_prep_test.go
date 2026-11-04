@@ -65,6 +65,9 @@ func TestLagWriterEarlyPrepSameRows(t *testing.T) {
 			defer state.SetHistoryIndexDeferredForTest(deferred)()
 			defer SetLagWriteAsyncForTest(true)()
 			defer SetLagWritePrepareForTest(true)()
+			// The preparation starts in the root (a delayed one never
+			// starts for the failed write; lag_r68a_test.go covers it).
+			defer SetLagWriteEarlyPrepDelayForTest(false, 0)()
 			// Slow writes, so every child imports (and its preparation
 			// starts) while its parent's write is in flight.
 			lagWriteBeforeCommitForTest = func(uint64) error {
