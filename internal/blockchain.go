@@ -2595,7 +2595,17 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		if ahead != nil && deferredExec && ahead.run != nil {
 			bc.receiptsFuture = startReceiptsResult(bc.chainConfig, blockNumber.Uint64(), blk.Hash(), ahead.run.Receipts)
 		}
+		// N42_LAG_WRITE_EARLY_PREP: the write's preparation may start inside
+		// the root (lag_writer.go lagWriteEarlyPrep); earlySlot then holds it.
+		var earlySlot **stateWritePrep
+		earlyPrep := func() *stateWritePrep {
+			if earlySlot == nil {
+				return nil
+			}
+			return *earlySlot
+		}
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk, ahead, func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
+			earlySlot = bc.lagWriteEarlyPrepArm(concreteBlock, ibs, lag, ahead)
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return bc.readHeaderOrPending(tx, hash, number)
 			}
@@ -2677,6 +2687,11 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			return nopay, nil
 		})
 		if err != nil {
+			if ep := earlyPrep(); ep != nil {
+				// Nothing writes this block; the preparation reads through
+				// the ahead run's transaction, released when this call ends.
+				_, _ = ep.wait()
+			}
 			// The execution tx above rolled back, but the live QMDB tree is
 			// NOT transactional: if execution got as far as ComputeRoot (a
 			// ValidateState root mismatch always does), the failed block's
@@ -2724,7 +2739,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		wstart := time.Now()
 		var status WriteStatus
 		if err = lagPipeInjectedFailure(blk.Hash()); err == nil {
-			if lag != nil && bc.lagWriteUsable(blk, ibs) {
+			if ep := earlyPrep(); lag != nil && (ep != nil || bc.lagWriteUsable(blk, ibs)) {
 				// The ordered writer makes it durable; the next block's root
 				// overlaps the write (lag_writer.go).
 				var handAhead *aheadExec
@@ -2733,7 +2748,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 					handAhead = ahead
 					aheadTaken = aheadTaken[:len(aheadTaken)-1]
 				}
-				if err = bc.lagWriteHandOff(concreteBlock, receipts, ibs, nopay, handAhead); err == nil {
+				if err = bc.lagWriteHandOff(concreteBlock, receipts, ibs, nopay, handAhead, ep); err == nil {
 					lag.handed = true
 					status = SideStatTy
 				} else if handAhead != nil {
@@ -2742,6 +2757,9 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			} else {
 				status, err = bc.writeBlockWithState(blk, receipts, ibs, nopay)
 			}
+		} else if ep := earlyPrep(); ep != nil {
+			// Not written: let the preparation finish with the state it owns.
+			_, _ = ep.wait()
 		}
 		bc.receiptsFuture = nil
 		if err != nil {

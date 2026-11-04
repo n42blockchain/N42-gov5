@@ -264,6 +264,10 @@ type IntraBlockState struct {
 	// (SetRootPostStateHook).
 	rootPostHook func(*PostState)
 
+	// rootComputeHook runs after beforeRoot and rootPostHook, right before
+	// the root computer is called (SetRootComputeHook).
+	rootComputeHook func()
+
 	// detachPending lets the root computation read a pending balance credit
 	// of an account it never loaded from the prefetch layer, in parallel,
 	// instead of materialising its object (SetDetachedPendingCredits).
@@ -2089,6 +2093,10 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	if hook := s.rootPostHook; hook != nil {
 		s.rootPostHook = nil
 		hook(post)
+	}
+	if hook := s.rootComputeHook; hook != nil {
+		s.rootComputeHook = nil
+		hook()
 	}
 	rp.Hook, tStep = stepSince(tStep)
 	defer func() { rp.Compute = time.Since(tStep) }()

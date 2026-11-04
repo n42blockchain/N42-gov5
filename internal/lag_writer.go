@@ -154,6 +154,9 @@ type lagWriteJob struct {
 	// logs: the block's Log rows and log-index input, prepared from the
 	// hand-off on (nil: the write walks the receipts itself).
 	logs *logsPrep
+	// handAt: when the hand-off began (the early preparation's lead is
+	// measured to it).
+	handAt time.Time
 
 	done chan struct{}
 	err  error
@@ -179,12 +182,16 @@ type stateWritePrep struct {
 	p    *state.PreparedStateWrite
 	err  error
 	took time.Duration
+	// start: when the preparation started; early: it was started inside the
+	// block's state root (N42_LAG_WRITE_EARLY_PREP), not at the hand-off.
+	start time.Time
+	early bool
 }
 
 // startStateWritePrep runs state.PrepareStateWrite on its own goroutine. It
 // owns ibs from here on, as the write would.
 func (bc *BlockChain) startStateWritePrep(ibs *state.IntraBlockState, number uint64) *stateWritePrep {
-	sp := &stateWritePrep{done: make(chan struct{})}
+	sp := &stateWritePrep{done: make(chan struct{}), start: time.Now()}
 	rules := bc.chainConfig.Rules(number)
 	go func() {
 		t0 := time.Now()
@@ -194,6 +201,70 @@ func (bc *BlockChain) startStateWritePrep(ibs *state.IntraBlockState, number uin
 	}()
 	return sp
 }
+
+// lagWriteEarlyPrep is N42_LAG_WRITE_EARLY_PREP (default off, r67a). With
+// it on, a lag import whose write will be handed to the ordered writer
+// starts the prepared state write (startStateWritePrep) inside its state
+// root, right before the root computer runs (IntraBlockState
+// SetRootComputeHook), instead of at the hand-off after the root. The
+// preparation then overlaps the root computer (~14 ms at 163k transfers)
+// as well as the hand-off's wait for the previous write, and the write's
+// prepWait -- the head of the writer chain -- shrinks by as much.
+//
+// What is written does not change: the preparation is the same function on
+// the same, final state (the dirty set is complete when the hook runs; the
+// root computer reads its own copies of it, never the state objects), only
+// started earlier. Preconditions, checked when the hook is armed:
+//
+//   - The block executed ahead (lag pipeline): its reader is the ahead
+//     run's, whose read transaction stays open until the block is written
+//     or the import gives up. The serial path's reader is the import's own
+//     read transaction, which closes when execution returns, and its
+//     cursors must not be shared with another goroutine.
+//   - The write will be handed off (lagWriteUsable): no other writer will
+//     run CommitBlock on the state. An import that arms the hook and then
+//     does not hand the write off (execution or validation failed, an
+//     injected failure) waits for the preparation before it lets the ahead
+//     run's read transaction go.
+//
+// Ordering for readers is the ordered writer's (see the file comment):
+// writes land in block order, one in flight; head pointers, the applied
+// marker, receipts and the frames are written in the block's one MDBX
+// transaction exactly as before, and the block is reported imported only
+// once that transaction committed.
+var lagWriteEarlyPrep = os.Getenv("N42_LAG_WRITE_EARLY_PREP") == "1"
+
+// SetLagWriteEarlyPrepForTest switches the early preparation and returns
+// the restore.
+func SetLagWriteEarlyPrepForTest(on bool) func() {
+	prev := lagWriteEarlyPrep
+	lagWriteEarlyPrep = on
+	return func() { lagWriteEarlyPrep = prev }
+}
+
+// lagWriteEarlyPrepArm arms the early preparation of blk's state write on
+// ibs (see lagWriteEarlyPrep) and returns where the started preparation
+// will be put, or nil when it is not armed. Called on the importing
+// goroutine before execution, with the root computer already set.
+func (bc *BlockChain) lagWriteEarlyPrepArm(blk *block.Block, ibs *state.IntraBlockState, lag *lagInsert, ahead *aheadExec) **stateWritePrep {
+	if !lagWriteEarlyPrep || !lagWritePrepare || lag == nil || ahead == nil || bc.chainConfig == nil ||
+		!bc.lagWriteUsable(blk, ibs) {
+		return nil
+	}
+	slot := new(*stateWritePrep)
+	number := blk.Number64().Uint64()
+	ibs.SetRootComputeHook(func() {
+		sp := bc.startStateWritePrep(ibs, number)
+		sp.early = true
+		*slot = sp
+		lagEarlyPreps.Add(1)
+	})
+	return slot
+}
+
+// lagEarlyPreps counts the preparations started inside a root (since
+// start).
+var lagEarlyPreps atomic.Uint64
 
 // wait returns the prepared write once it is ready.
 func (sp *stateWritePrep) wait() (*state.PreparedStateWrite, error) {
@@ -379,12 +450,16 @@ func (bc *BlockChain) lagAppliedIs(hash types.Hash, number uint64) bool {
 // lagWriteHandOff hands blk's write to the ordered writer (bc.lock held,
 // right after its root): it waits for the previous write, captures the
 // block's QMDB rows and undo record from the tree, and starts the write.
+//
+// early is the block's state write preparation when it was started inside
+// the root (lagWriteEarlyPrep), else nil.
 func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receipt, ibs *state.IntraBlockState,
-	nopay map[types.Address]*uint256.Int, ahead *aheadExec) error {
+	nopay map[types.Address]*uint256.Int, ahead *aheadExec, early *stateWritePrep) error {
+	handAt := time.Now()
 	// The block's CommitBlock needs nothing of the previous write: it starts
-	// now and overlaps the wait below.
-	var prep *stateWritePrep
-	if lagWritePrepare && bc.chainConfig != nil {
+	// now (or started in the root) and overlaps the wait below.
+	prep := early
+	if prep == nil && lagWritePrepare && bc.chainConfig != nil {
 		prep = bc.startStateWritePrep(ibs, blk.Number64().Uint64())
 	}
 	// So do its frames, which go to the frame store in their own durable
@@ -417,7 +492,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
-		prep: prep, frames: frames, logs: logs, done: make(chan struct{})}
+		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{})}
 	rc := bc.qmdbRootComputer
 	if _, err := rc.FlushTo(&j.flush); err != nil {
 		rc.AbortFlushed()

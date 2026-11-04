@@ -160,6 +160,14 @@ type blockWritePhases struct {
 	// transaction opened (part of Total, not of any phase).
 	Prep, PrepWait time.Duration
 	PrepFast       bool // applied from prepared rows (not a replay)
+	// PrepEarly: the preparation started inside the block's root
+	// (N42_LAG_WRITE_EARLY_PREP); PrepLead is how long before the hand-off
+	// it started.
+	PrepEarly bool
+	PrepLead  time.Duration
+	// PrepSharded: the preparation took the sharded path (its phases are
+	// set).
+	PrepSharded bool
 	// Frames is the frame store write's run (its own transaction),
 	// FramesWait the write's wait for it before committing.
 	Frames, FramesWait time.Duration
@@ -290,6 +298,10 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// and the write's wait for it (and the Log rows) before the
 		// transaction opened.
 		dPrep, dPrepWait time.Duration
+		// N42_LAG_WRITE_EARLY_PREP: the preparation started in the root,
+		// dPrepLead before the hand-off.
+		prepEarly bool
+		dPrepLead time.Duration
 		// The write transactions that held the MDBX writer while this one
 		// waited to begin (N42_RW_HOLDER_DIAG=1; "" otherwise).
 		beginBehind string
@@ -319,6 +331,10 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				return NonStatTy, fmt.Errorf("preparing the state write of block %d: %w", blockNumber.Uint64(), err)
 			}
 			prepared, dPrep = p, job.prep.took
+			prepEarly = job.prep.early
+			if prepEarly {
+				dPrepLead = job.handAt.Sub(job.prep.start)
+			}
 		}
 		if job.logs != nil && len(receipts) > 0 {
 			l, err := job.logs.wait()
@@ -843,6 +859,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		if dPrep > 0 {
 			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
+			if prepEarly {
+				fields = append(fields, "prepEarly", 1, "prepLead", dPrepLead)
+			}
 			if ph := prepared.Phases(); ph.Commit > 0 {
 				fields = append(fields, "prepLoad", ph.Load, "prepMark", ph.Mark,
 					"prepCommit", ph.Commit, "prepReset", ph.Reset, "prepEncode", ph.Encode,
@@ -876,7 +895,8 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				State: dState, ChgTruncate: dChgTruncate, ChgSets: dChgSets, ChgHistory: dChgHistory,
 				Root2: dRoot2, QMDBFlush: dQMDBFlush, QMDBMeta: dQMDBMeta, Snapshot: dSnapshot,
 				Commit: dCommit, Post: dPost, Total: dTotal, Prep: dPrep, PrepWait: dPrepWait, PrepFast: prepFast,
-				Frames: dFrames, FramesWait: dFramesWait,
+				PrepEarly: prepEarly, PrepLead: dPrepLead, Frames: dFrames, FramesWait: dFramesWait,
+				PrepSharded: prepared != nil && prepared.Phases().Commit > 0,
 			})
 		}
 		if dTotal >= slowBlockThreshold {

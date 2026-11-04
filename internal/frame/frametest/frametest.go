@@ -49,13 +49,17 @@ func Keys(tb testing.TB, n int, salt byte) []*ecdsa.PrivateKey {
 // Builder signs transfers from a fixed sender set, tracking each sender's
 // next nonce, and packs them into frames signed by Gateway.
 type Builder struct {
-	Gateway  *ecdsa.PrivateKey
-	ChainID  *big.Int
-	Senders  []*ecdsa.PrivateKey
-	Nonces   []uint64
-	Gas      uint64
-	FeeCap   uint64
-	To       types.Address
+	Gateway *ecdsa.PrivateKey
+	ChainID *big.Int
+	Senders []*ecdsa.PrivateKey
+	Nonces  []uint64
+	Gas     uint64
+	FeeCap  uint64
+	To      types.Address
+	// ToFn, when set, names each transfer's recipient from its sequence
+	// number (counted from zero across Tx calls) instead of To.
+	ToFn     func(n uint64) types.Address
+	txSeq    uint64
 	seq      uint64
 	next     int
 	signer   transaction.Signer
@@ -82,6 +86,10 @@ func (b *Builder) Tx(tb testing.TB, nonceDelta int64) *transaction.Transaction {
 		b.Nonces[i]++
 	}
 	to := b.To
+	if b.ToFn != nil {
+		to = b.ToFn(b.txSeq)
+	}
+	b.txSeq++
 	tx, err := transaction.SignNewTx(b.Senders[i], b.signer, &transaction.DynamicFeeTx{
 		ChainID:   b.chainU64,
 		Nonce:     nonce,

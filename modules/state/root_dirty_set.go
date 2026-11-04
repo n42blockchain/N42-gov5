@@ -53,6 +53,19 @@ func (s *IntraBlockState) SetRootPostStateHook(fn func(*PostState)) {
 	s.rootPostHook = fn
 }
 
+// SetRootComputeHook installs fn to run once inside the next root
+// computation through a RootComputer, after SetBeforeRootHook's and
+// SetRootPostStateHook's hooks, right before the root computer is called.
+// From that point on the root computation reads only the dirty-set maps it
+// has built (fresh copies, not the state objects) and writes only its own
+// result fields (the last root, the last dirty set, the phase times), so fn
+// may hand the state to another goroutine that finishes the block with it
+// (the ordered writer's CommitBlock, internal/lag_writer.go), as long as
+// nothing else uses the state afterwards but those result getters.
+func (s *IntraBlockState) SetRootComputeHook(fn func()) {
+	s.rootComputeHook = fn
+}
+
 // SetDetachedPendingCredits lets the root computation take a pending
 // balance credit of an account this state never loaded straight from the
 // prefetch layer (base + credit, computed in parallel) instead of

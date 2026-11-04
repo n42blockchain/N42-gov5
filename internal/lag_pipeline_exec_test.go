@@ -269,6 +269,23 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	defer pushWG.Wait()
 
 	fb := frametest.NewBuilder(keys[0], piped.cfg.ChainID, keys[1:])
+	if lagPipeDistinctToForTest {
+		// Every transfer of a block to its own account, the same accounts
+		// in every block (created by the first): a block's pending credits
+		// of existing accounts take the detached root walk and the sharded
+		// prepared write.
+		perBlock := uint64(frames * perFrame)
+		fb.ToFn = func(n uint64) types.Address {
+			n %= perBlock
+			// First bytes spread over every shard.
+			var a types.Address
+			a[0], a[1], a[2] = byte(n*167), byte(n>>8), 0xd1
+			for i := 0; i < 8; i++ {
+				a[19-i] = byte(n >> (8 * i))
+			}
+			return a
+		}
+	}
 	parent := piped.bc.genesisBlock.Header().(*block.Header)
 	wire := make([]*block.Block, 0, blocks)
 	for n := uint64(1); n <= blocks; n++ {
@@ -438,6 +455,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	piped.bc.lagPipe.mu.Unlock()
 	_, _, queued := piped.bc.LagStats()
 	require.Zero(t, queued)
+	if fn := lagPipeTablesSinkForTest; fn != nil {
+		fn(piped)
+	}
 	piped.bc.aheadPreps.mu.Lock()
 	require.Empty(t, piped.bc.aheadPreps.m, "preparations outlived their blocks")
 	piped.bc.aheadPreps.mu.Unlock()
