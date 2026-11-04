@@ -4,6 +4,7 @@
 package state
 
 import (
+	"os"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -167,6 +168,26 @@ func (sdb *IntraBlockState) applyAccountEntry(e *AccountApply) {
 func (sdb *IntraBlockState) prepareAccounts(pf *AccountPrefetch, entries []AccountApply, prep []preparedAccount) int {
 	hits := 0
 	var empty account.StateAccount
+	// N42_AHEAD_COLLECT_CUT: the objects come from one slab per call (see
+	// foldObjectSlab), sized for this call's full entries.
+	var slab []stateObject
+	if foldObjectSlab {
+		full := 0
+		for i := range entries {
+			if entries[i].Delta == nil && !entries[i].Delete {
+				full++
+			}
+		}
+		slab = make([]stateObject, full)
+	}
+	newObj := func(addr types.Address, data, original *account.StateAccount) *stateObject {
+		if len(slab) > 0 {
+			so := &slab[0]
+			slab = slab[1:]
+			return initObject(so, sdb, addr, data, original)
+		}
+		return newObject(sdb, addr, data, original)
+	}
 	for i := range entries {
 		e := &entries[i]
 		if e.Delta != nil || e.Delete {
@@ -196,11 +217,11 @@ func (sdb *IntraBlockState) prepareAccounts(pf *AccountPrefetch, entries []Accou
 		if acc == nil {
 			// createObject(addr, nil): a zero account over a zero original,
 			// its nonce set (to 0) to mark it dirty.
-			p.obj = newObject(sdb, addr, &empty, &empty)
+			p.obj = newObj(addr, &empty, &empty)
 			p.obj.setNonce(0)
 			p.created = true
 		} else {
-			p.obj = newObject(sdb, addr, acc, acc)
+			p.obj = newObj(addr, acc, acc)
 		}
 		p.prevBal = p.obj.data.Balance
 		p.obj.setBalance(&e.Balance)
@@ -209,3 +230,27 @@ func (sdb *IntraBlockState) prepareAccounts(pf *AccountPrefetch, entries []Accou
 	}
 	return hits
 }
+
+// foldObjectSlab is N42_AHEAD_COLLECT_CUT (default off, r68a): the account
+// fold's prepared objects (prepareAccounts, on the parallel collect of
+// every Block-STM run) are carved from one slab per worker instead of
+// taken one by one from stateObjectPool. A block's state is never Reset on
+// the node's import and build paths, so nothing is ever put back and every
+// Get misses: sync.Pool's slow path then probes every P's shared chain and
+// victim cache before New -- O(GOMAXPROCS) per object, run by every fold
+// worker at once (a 52.5k-transfer fold at 32 Ps spent ~77% of its
+// preparation there). The object a slab entry becomes is newObject's on a
+// zero struct -- exactly the struct New returns, and what
+// N42_STATE_OBJECT_POOL=off allocates -- so the state is the same.
+var foldObjectSlab = os.Getenv("N42_AHEAD_COLLECT_CUT") == "1"
+
+// SetFoldObjectSlabForTest switches the fold's object slab and returns the
+// restore.
+func SetFoldObjectSlabForTest(on bool) func() {
+	prev := foldObjectSlab
+	foldObjectSlab = on
+	return func() { foldObjectSlab = prev }
+}
+
+// FoldObjectSlabOn reports N42_AHEAD_COLLECT_CUT's fold object slab.
+func FoldObjectSlabOn() bool { return foldObjectSlab }

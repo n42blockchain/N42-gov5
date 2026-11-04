@@ -653,6 +653,11 @@ func (r *QMDBRootComputer) verifyReloadIndex(ref *qmdb.Tree, path string) bool {
 func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	return r.flushToLocked(p)
+}
+
+// flushToLocked is FlushTo with readers held exclusively.
+func (r *QMDBRootComputer) flushToLocked(p qmdb.Putter) (int, error) {
 	// Settle the batch's accumulated death-stamp deltas first (one
 	// read-modify-write per touched twig per batch), same tx as the flush.
 	if err := r.t.FlushHistory(); err != nil {

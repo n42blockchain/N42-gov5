@@ -642,6 +642,10 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	// are built -- before the run's transaction opens: the prefill's own
 	// transactions may wait for read permits -- and the run adopts the rest.
 	claim := &aheadClaim{}
+	if lagWriteEarlyPrepDelay {
+		parent := par.hash
+		claim.execStart = func() { bc.lagEarlyPrepChildStarted(parent) }
+	}
 	claim.prep, claim.wait = bc.claimAheadPrep(a.blk.Hash())
 	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 		layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)

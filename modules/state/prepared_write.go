@@ -253,7 +253,14 @@ func (p *PreparedStateWrite) Phases() PrepPhases { return p.phases }
 // produces the plain rows and the encoded changesets of block number. It
 // owns ibs while it runs, as the write would.
 func PrepareStateWrite(ibs *IntraBlockState, rules *params.Rules, number uint64) (*PreparedStateWrite, error) {
-	if p, ok, err := prepareStateWriteShards(ibs, rules, number, prepShards); ok {
+	return PrepareStateWriteShards(ibs, rules, number, prepShards)
+}
+
+// PrepareStateWriteShards is PrepareStateWrite at shards address shards
+// instead of N42_STATE_WRITE_PREP_SHARDS' count (0 or 1: serial). The
+// prepared write is the same for any count.
+func PrepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number uint64, shards int) (*PreparedStateWrite, error) {
+	if p, ok, err := prepareStateWriteShards(ibs, rules, number, shards); ok {
 		return p, err
 	}
 	log := &StateWriteLog{}

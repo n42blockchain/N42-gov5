@@ -282,6 +282,11 @@ func newObject(db *IntraBlockState, address types.Address, data, original *accou
 	} else {
 		so = freshStateObject()
 	}
+	return initObject(so, db, address, data, original)
+}
+
+// initObject is newObject on the struct so (pooled, fresh or from a slab).
+func initObject(so *stateObject, db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
 	so.dirtyKeys = so.dirtyKeys[:0]
 	so.db = db
 	so.address = address

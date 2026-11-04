@@ -2597,12 +2597,12 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		}
 		// N42_LAG_WRITE_EARLY_PREP: the write's preparation may start inside
 		// the root (lag_writer.go lagWriteEarlyPrep); earlySlot then holds it.
-		var earlySlot **stateWritePrep
+		var earlySlot *earlyPrepSlot
 		earlyPrep := func() *stateWritePrep {
 			if earlySlot == nil {
 				return nil
 			}
-			return *earlySlot
+			return earlySlot.settle()
 		}
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk, ahead, func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			earlySlot = bc.lagWriteEarlyPrepArm(concreteBlock, ibs, lag, ahead)
@@ -2739,7 +2739,13 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		wstart := time.Now()
 		var status WriteStatus
 		if err = lagPipeInjectedFailure(blk.Hash()); err == nil {
-			if ep := earlyPrep(); lag != nil && (ep != nil || bc.lagWriteUsable(blk, ibs)) {
+			var ep *stateWritePrep
+			if earlySlot != nil {
+				// N42_LAG_WRITE_EARLY_PREP_DELAY: an armed preparation the
+				// child's launch has not started yet starts now.
+				ep = earlySlot.forHandoff()
+			}
+			if lag != nil && (ep != nil || bc.lagWriteUsable(blk, ibs)) {
 				// The ordered writer makes it durable; the next block's root
 				// overlaps the write (lag_writer.go).
 				var handAhead *aheadExec
@@ -2879,7 +2885,8 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			if lag != nil && lag.handed {
 				// write above is the hand-off to the ordered writer;
 				// handWait is its wait for the previous block's write.
-				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()))
+				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()),
+					"handoffUs", bc.lagWrite.lastHandoff.Load()/1000, "handLean", lagHandoffLean)
 			}
 			fields = append(fields, bc.lagPipeLogFields()...)
 			fields = append(fields, senderSrcLogFields()...)

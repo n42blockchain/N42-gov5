@@ -415,6 +415,9 @@ func (p *StateProcessor) executeParallelAhead(b *block.Block, ibs *state.IntraBl
 type aheadClaim struct {
 	prep *aheadPrep
 	wait time.Duration
+	// execStart, when set, runs once the run's setup is done, right before
+	// its transactions start executing (N42_LAG_WRITE_EARLY_PREP_DELAY).
+	execStart func()
 }
 
 // FinishParallel is the second half: the gas check, block end and Finalize
@@ -932,6 +935,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// nothing in the run takes the writer side -- the owner is this
 	// goroutine.
 	tExecutorMade := time.Now()
+	if ahead && claim != nil && claim.execStart != nil {
+		claim.execStart()
+	}
 	tRunStart := time.Now()
 	// S81 measurement-only snapshot: coldReads/residentHits/coldNanos
 	// (lib/qmdb/evict.go) are process-wide atomics, but in production the
@@ -2001,6 +2007,9 @@ func ParallelWorkers() int { return parallelWorkers() }
 // applyMVSWorkers is how many goroutines read a block's final versions in
 // applyMVSToIBS: one for small blocks, up to 16 (and GOMAXPROCS).
 func applyMVSWorkers(numTxs int) int {
+	if state.FoldObjectSlabOn() {
+		return applyMVSWorkersCut(numTxs)
+	}
 	w := numTxs / 4096
 	if p := runtime.GOMAXPROCS(0); w > p {
 		w = p
@@ -2013,6 +2022,29 @@ func applyMVSWorkers(numTxs int) int {
 	}
 	return w
 }
+
+// applyMVSWorkersCut is applyMVSWorkers under N42_AHEAD_COLLECT_CUT: one
+// worker per collectCutPerWorker transactions, up to collectCutMaxWorkers
+// (and GOMAXPROCS). The walk's parts are concatenated in shard order and
+// the decode writes by index, so the fold is the same for any count.
+func applyMVSWorkersCut(numTxs int) int {
+	w := numTxs / collectCutPerWorker
+	if p := runtime.GOMAXPROCS(0); w > p {
+		w = p
+	}
+	if w > collectCutMaxWorkers {
+		w = collectCutMaxWorkers
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+var (
+	collectCutPerWorker  = 2048
+	collectCutMaxWorkers = 24
+)
 
 // prefetchPendingCredits reads the state's pending balance-increase
 // addresses across goroutines, each on its own read transaction through the

@@ -186,6 +186,9 @@ type BlockChain struct {
 	lagPipe lagPipeline
 	// lagWrite: the lag executor's ordered writer (lag_writer.go).
 	lagWrite lagWriter
+	// lagEarlyDelay: N42_LAG_WRITE_EARLY_PREP_DELAY's pairing of a block's
+	// armed preparation with its child's launch (lag_writer.go).
+	lagEarlyDelay lagEarlyDelay
 	// senderJobs: per-block sender recovery started when a block is queued
 	// for the lag executor (sender_prewarm.go).
 	senderJobs senderJobs

@@ -669,7 +669,13 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			}
 			tPhase = time.Now()
 			if job != nil {
-				// The rows the hand-off captured from the tree at this block.
+				// The rows the hand-off captured from the tree at this block
+				// (N42_LAG_HANDOFF_LEAN: once its capture is done).
+				if job.capture != nil {
+					if _, err := job.capture.Wait(); err != nil {
+						return fmt.Errorf("capturing QMDB rows of block %d: %w", blockNumber.Uint64(), err)
+					}
+				}
 				if err := job.flush.replay(tx); err != nil {
 					return fmt.Errorf("writing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
 				}
@@ -861,6 +867,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
 			if prepEarly {
 				fields = append(fields, "prepEarly", 1, "prepLead", dPrepLead)
+				if lagWriteEarlyPrepDelay {
+					// Cumulative: early preparations started by the
+					// child's launch (the rest at the hand-off).
+					fields = append(fields, "prepDelay", 1, "prepByChild", lagEarlyPrepDelayed.Load())
+				}
 			}
 			if ph := prepared.Phases(); ph.Commit > 0 {
 				fields = append(fields, "prepLoad", ph.Load, "prepMark", ph.Mark,

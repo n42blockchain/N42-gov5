@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
 // The lag executor's ordered writer (docs/QS_MULTI_MILLION_DESIGN.md P4b).
@@ -119,6 +121,10 @@ type lagWriter struct {
 	failed   atomic.Uint64
 	overlap  atomic.Uint64 // imports that ran while their parent's write was in flight
 	lastWait atomic.Int64  // the last hand-off's wait for the previous write
+	// lastHandoff: the last hand-off's serial work on the importing
+	// goroutine -- its whole span less the wait for the previous write to
+	// finish (handoffUs on the "blockimport phases" line).
+	lastHandoff atomic.Int64
 }
 
 // lagWriteJob is one block's durable write.
@@ -157,6 +163,11 @@ type lagWriteJob struct {
 	// handAt: when the hand-off began (the early preparation's lead is
 	// measured to it).
 	handAt time.Time
+	// capture: the FlushTo of flush running off the importing goroutine
+	// (N42_LAG_HANDOFF_LEAN), nil when flush was captured in the hand-off.
+	// gen: the tree's mutation count at the hand-off (lagWriteFastReady).
+	capture *commitment.FlushCapture
+	gen     uint64
 
 	done chan struct{}
 	err  error
@@ -191,11 +202,21 @@ type stateWritePrep struct {
 // startStateWritePrep runs state.PrepareStateWrite on its own goroutine. It
 // owns ibs from here on, as the write would.
 func (bc *BlockChain) startStateWritePrep(ibs *state.IntraBlockState, number uint64) *stateWritePrep {
+	return bc.startStateWritePrepShards(ibs, number, 0)
+}
+
+// startStateWritePrepShards is startStateWritePrep with shards address
+// shards (0: the default count; the prepared write is the same for any).
+func (bc *BlockChain) startStateWritePrepShards(ibs *state.IntraBlockState, number uint64, shards int) *stateWritePrep {
 	sp := &stateWritePrep{done: make(chan struct{}), start: time.Now()}
 	rules := bc.chainConfig.Rules(number)
 	go func() {
 		t0 := time.Now()
-		sp.p, sp.err = state.PrepareStateWrite(ibs, rules, number)
+		if shards > 0 {
+			sp.p, sp.err = state.PrepareStateWriteShards(ibs, rules, number, shards)
+		} else {
+			sp.p, sp.err = state.PrepareStateWrite(ibs, rules, number)
+		}
 		sp.took = time.Since(t0)
 		close(sp.done)
 	}()
@@ -242,22 +263,151 @@ func SetLagWriteEarlyPrepForTest(on bool) func() {
 	return func() { lagWriteEarlyPrep = prev }
 }
 
+// lagWriteEarlyPrepDelay is N42_LAG_WRITE_EARLY_PREP_DELAY (default off,
+// r68a; only with N42_LAG_WRITE_EARLY_PREP). The early preparation is
+// armed in the root as before, but started only once the child's ahead
+// execution on this block's post-state has finished its setup and begun
+// executing (its launch: lagEarlyPrepChildStarted), or at the hand-off,
+// whichever comes first -- instead of at the root computer's start, where
+// it competed for the CPU with the root and with the child's setup. The
+// preparation is the same function on the same final state (the state is
+// the writer's from the root's compute hook on); only its start moves.
+//
+// N42_LAG_WRITE_EARLY_PREP_SHARDS=<n> (default 0: the preparation's
+// default count) runs an early preparation at n address shards; the
+// prepared write is the same for any count.
+var (
+	lagWriteEarlyPrepDelay  = os.Getenv("N42_LAG_WRITE_EARLY_PREP_DELAY") == "1"
+	lagWriteEarlyPrepShards = parseEarlyPrepShards(os.Getenv("N42_LAG_WRITE_EARLY_PREP_SHARDS"))
+)
+
+func parseEarlyPrepShards(v string) int {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0
+	}
+	if n > 256 {
+		return 256
+	}
+	return n
+}
+
+// SetLagWriteEarlyPrepDelayForTest switches the delayed early preparation
+// (and its shard count, 0: default) and returns the restore.
+func SetLagWriteEarlyPrepDelayForTest(on bool, shards int) func() {
+	prev, prevS := lagWriteEarlyPrepDelay, lagWriteEarlyPrepShards
+	lagWriteEarlyPrepDelay, lagWriteEarlyPrepShards = on, shards
+	return func() { lagWriteEarlyPrepDelay, lagWriteEarlyPrepShards = prev, prevS }
+}
+
+// earlyPrepSlot is one import's early preparation: armed by the root's
+// compute hook, started once (start), or settled without a start.
+type earlyPrepSlot struct {
+	bc     *BlockChain
+	ibs    *state.IntraBlockState
+	number uint64
+	armed  atomic.Bool
+	once   sync.Once
+	sp     *stateWritePrep // set inside once
+}
+
+// start starts the preparation unless it started or was settled already,
+// and reports whether this call started it. Only once armed: the state is
+// the writer's from the compute hook on.
+func (s *earlyPrepSlot) start() bool {
+	if !s.armed.Load() {
+		return false
+	}
+	started := false
+	s.once.Do(func() {
+		sp := s.bc.startStateWritePrepShards(s.ibs, s.number, lagWriteEarlyPrepShards)
+		sp.early = true
+		s.sp = sp
+		lagEarlyPreps.Add(1)
+		started = true
+	})
+	return started
+}
+
+// forHandoff returns the preparation for the hand-off, starting it now if
+// it is armed and not started yet (nil when never armed).
+func (s *earlyPrepSlot) forHandoff() *stateWritePrep {
+	s.start()
+	return s.settle()
+}
+
+// settle stops any later start and returns the started preparation (nil:
+// none started).
+func (s *earlyPrepSlot) settle() *stateWritePrep {
+	s.once.Do(func() {})
+	return s.sp
+}
+
+// lagEarlyDelay pairs a delayed early preparation with its child's launch,
+// whichever of the two comes first (one block at a time).
+type lagEarlyDelay struct {
+	mu           sync.Mutex
+	hash         types.Hash
+	slot         *earlyPrepSlot
+	childStarted bool
+}
+
+// lagEarlyPrepDelayed counts the early preparations started by a child's
+// launch (since start).
+var lagEarlyPrepDelayed atomic.Uint64
+
+// lagEarlyPrepChildStarted is called by the ahead execution of a child of
+// parent once its setup is done and it starts executing.
+func (bc *BlockChain) lagEarlyPrepChildStarted(parent types.Hash) {
+	if !lagWriteEarlyPrepDelay {
+		return
+	}
+	d := &bc.lagEarlyDelay
+	d.mu.Lock()
+	if d.hash == parent && d.slot != nil {
+		s := d.slot
+		d.slot = nil
+		d.mu.Unlock()
+		if s.start() {
+			lagEarlyPrepDelayed.Add(1)
+		}
+		return
+	}
+	d.hash, d.slot, d.childStarted = parent, nil, true
+	d.mu.Unlock()
+}
+
 // lagWriteEarlyPrepArm arms the early preparation of blk's state write on
-// ibs (see lagWriteEarlyPrep) and returns where the started preparation
-// will be put, or nil when it is not armed. Called on the importing
-// goroutine before execution, with the root computer already set.
-func (bc *BlockChain) lagWriteEarlyPrepArm(blk *block.Block, ibs *state.IntraBlockState, lag *lagInsert, ahead *aheadExec) **stateWritePrep {
+// ibs (see lagWriteEarlyPrep) and returns its slot, or nil when it is not
+// armed. Called on the importing goroutine before execution, with the root
+// computer already set.
+func (bc *BlockChain) lagWriteEarlyPrepArm(blk *block.Block, ibs *state.IntraBlockState, lag *lagInsert, ahead *aheadExec) *earlyPrepSlot {
 	if !lagWriteEarlyPrep || !lagWritePrepare || lag == nil || ahead == nil || bc.chainConfig == nil ||
 		!bc.lagWriteUsable(blk, ibs) {
 		return nil
 	}
-	slot := new(*stateWritePrep)
-	number := blk.Number64().Uint64()
+	slot := &earlyPrepSlot{bc: bc, ibs: ibs, number: blk.Number64().Uint64()}
+	delay := lagWriteEarlyPrepDelay
+	hash := blk.Hash()
 	ibs.SetRootComputeHook(func() {
-		sp := bc.startStateWritePrep(ibs, number)
-		sp.early = true
-		*slot = sp
-		lagEarlyPreps.Add(1)
+		slot.armed.Store(true)
+		if !delay {
+			slot.start()
+			return
+		}
+		d := &bc.lagEarlyDelay
+		d.mu.Lock()
+		if d.hash == hash && d.childStarted {
+			// The child launched first.
+			d.childStarted = false
+			d.mu.Unlock()
+			if slot.start() {
+				lagEarlyPrepDelayed.Add(1)
+			}
+			return
+		}
+		d.hash, d.slot, d.childStarted = hash, slot, false
+		d.mu.Unlock()
 	})
 	return slot
 }
@@ -426,6 +576,12 @@ func (bc *BlockChain) lagWriteFastReady() bool {
 		return false
 	}
 	rc := bc.qmdbRootComputer
+	if j.capture != nil {
+		// N42_LAG_HANDOFF_LEAN: the flush may still hold the tree's lock;
+		// j.root was read with the mutation count j.gen, so an unchanged
+		// count is an unchanged root.
+		return rc.LastUndo() == nil && rc.AppliedState().Gen == j.gen
+	}
 	return rc.LastUndo() == nil && rc.Root() == j.root
 }
 
@@ -485,7 +641,9 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		return err
 	}
 	tWait := time.Now()
-	if err := bc.joinLagWrite(); err != nil {
+	lean := lagHandoffLean
+	doneWait, joined, err := bc.joinLagWriteMode(lean)
+	if err != nil {
 		return failed(err)
 	}
 	bc.lagWrite.lastWait.Store(int64(time.Since(tWait)))
@@ -494,15 +652,30 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
 		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{})}
 	rc := bc.qmdbRootComputer
-	if _, err := rc.FlushTo(&j.flush); err != nil {
-		rc.AbortFlushed()
-		return failed(fmt.Errorf("capturing QMDB rows of block %d: %w", j.number, err))
+	if lean {
+		// The undo record and the root first (neither depends on the
+		// flush or the eviction), then the previous block's eviction and
+		// this block's flush on their own goroutine, ordered here: they
+		// hold the tree's lock until done (StartFlushTo).
+		j.undo = rc.TakeUndo()
+		if j.undo == nil {
+			j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
+		}
+		j.root = rc.Root()
+		j.gen = rc.AppliedState().Gen
+		j.capture = rc.StartFlushTo(&j.flush, joined)
+		lagLeanCaptures.Add(1)
+	} else {
+		if _, err := rc.FlushTo(&j.flush); err != nil {
+			rc.AbortFlushed()
+			return failed(fmt.Errorf("capturing QMDB rows of block %d: %w", j.number, err))
+		}
+		j.undo = rc.TakeUndo()
+		if j.undo == nil {
+			j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
+		}
+		j.root = rc.Root()
 	}
-	j.undo = rc.TakeUndo()
-	if j.undo == nil {
-		j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
-	}
-	j.root = rc.Root()
 	j.execRoot, j.execRootOK = ibs.LastIntermediateRoot()
 	p := &bc.lagPipe
 	p.mu.Lock()
@@ -515,7 +688,41 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	bc.lagWrite.handed.Add(1)
 	go bc.runLagWrite(j)
 	bc.lagResultReadySoon(j)
+	bc.lagWrite.lastHandoff.Store(int64(time.Since(handAt) - doneWait))
 	return nil
+}
+
+// lagHandoffLean is N42_LAG_HANDOFF_LEAN (default off, r68a). With it on
+// the hand-off's QMDB work leaves the importing goroutine: the previous
+// write's eviction (EvictFlushed, joinLagWrite's tail) and the block's
+// FlushTo into its row buffer run on their own goroutine
+// (QMDBRootComputer.StartFlushTo), which holds the tree's lock from the
+// hand-off until they are done, so everything that touches the tree after
+// the hand-off -- the child's SetCold and root, a reader's Lookup, a join's
+// CommitFlushed -- runs after them, on the tree they leave, exactly as
+// when they ran in the hand-off. The writer waits for the rows before it
+// replays them; the job is not done before they are captured. The rows,
+// the undo record and the root are the same; a failed capture fails the
+// write (the tree is reloaded and the block queued again) instead of the
+// hand-off.
+var lagHandoffLean = os.Getenv("N42_LAG_HANDOFF_LEAN") == "1"
+
+// lagLeanCaptures counts the hand-offs whose rows were captured off the
+// importing goroutine (since start).
+var lagLeanCaptures atomic.Uint64
+
+// SetLagHandoffLeanForTest switches the lean hand-off and returns the
+// restore.
+func SetLagHandoffLeanForTest(on bool) func() {
+	prev := lagHandoffLean
+	lagHandoffLean = on
+	return func() { lagHandoffLean = prev }
+}
+
+// LagHandoffStats returns the last hand-off's serial work on the importing
+// goroutine (its span less the wait for the previous write).
+func (bc *BlockChain) LagHandoffStats() time.Duration {
+	return time.Duration(bc.lagWrite.lastHandoff.Load())
 }
 
 // runLagWrite is the writer goroutine of one block.
@@ -525,6 +732,12 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 	}
 	if j.err == nil {
 		_, j.err = bc.writeBlockWithStateJob(j)
+	}
+	if j.capture != nil {
+		// Not done before the rows are captured, whatever the write did.
+		if _, cerr := j.capture.Wait(); cerr != nil && j.err == nil {
+			j.err = cerr
+		}
 	}
 	if j.ahead != nil {
 		j.ahead.release()
@@ -545,23 +758,36 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 // live tree: the flushed window is adopted and evicted once durable; after a
 // failure the tree is reloaded from the store and the block queued again.
 func (bc *BlockChain) joinLagWrite() error {
+	_, _, err := bc.joinLagWriteMode(false)
+	return err
+}
+
+// joinLagWriteMode is joinLagWrite; with skipEvict the eviction is left to
+// the caller (the lean hand-off runs it in StartFlushTo). It also returns
+// how long it waited for the write to finish and whether it joined one
+// that succeeded.
+func (bc *BlockChain) joinLagWriteMode(skipEvict bool) (time.Duration, bool, error) {
 	j := bc.lagWrite.inflight
 	if j == nil {
-		return nil
+		return 0, false, nil
 	}
 	if fn := lagWriteJoinForTest; fn != nil {
 		fn(j.number)
 	}
+	t0 := time.Now()
 	<-j.done
+	wait := time.Since(t0)
 	bc.lagWrite.inflight = nil
 	rc := bc.qmdbRootComputer
 	if j.err != nil {
 		bc.recoverLagWrite(j)
-		return fmt.Errorf("lag writer: block %d not written: %w", j.number, j.err)
+		return wait, false, fmt.Errorf("lag writer: block %d not written: %w", j.number, j.err)
 	}
 	rc.CommitFlushed()
-	rc.EvictFlushed()
-	return nil
+	if !skipEvict {
+		rc.EvictFlushed()
+	}
+	return wait, true, nil
 }
 
 // recoverLagWrite restores the memory-equals-store invariant after a failed
