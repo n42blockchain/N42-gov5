@@ -1891,12 +1891,24 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	}
 	rp.Merge, tStep = stepSince(tStep)
 
-	accounts := make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty)+len(detached.addrs))
+	// N42_PREHOOK_CUT (finalize_prehook.go): the account map is made and
+	// the detached credits are put in on their own goroutine, beside the
+	// sort and the walk below, which takes the parallel path (the dirty
+	// set's size is final here) and joins it.
+	var credIns *creditInserts
+	var accounts map[types.Address]*account.StateAccount
 	storage := make(map[types.Address]map[types.Hash]*uint256.Int)
 	var post *PostState
-	if s.rootPostHook != nil {
-		post = &PostState{accounts: accounts, storage: storage,
-			wiped: make(map[types.Address]struct{}), code: make(map[types.Hash][]byte)}
+	if prehookCutMode > 0 && finalizeFastOn && !ltEnabled && len(detached.addrs) > 0 &&
+		len(s.stateObjectsDirty) >= finalizeFastMin {
+		credIns = startCreditInserts(&detached, len(s.stateObjectsDirty)+len(detached.addrs), storage, s.rootPostHook != nil)
+		rp.Cut = true
+	} else {
+		accounts = make(map[types.Address]*account.StateAccount, len(s.stateObjectsDirty)+len(detached.addrs))
+		if s.rootPostHook != nil {
+			post = &PostState{accounts: accounts, storage: storage,
+				wiped: make(map[types.Address]struct{}), code: make(map[types.Hash][]byte)}
+		}
 	}
 	var originals map[types.Address]*account.StateAccount
 	var originalStorage map[types.Address]map[types.Hash]*uint256.Int
@@ -1909,9 +1921,17 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	rp.Dirty = len(dirtyAddrs)
 	rp.Sort, tStep = stepSince(tStep)
 	if finalizeFastOn && !ltEnabled && len(dirtyAddrs) >= finalizeFastMin {
-		s.collectDirtyParallel(dirtyAddrs, accounts, storage, post, &detached)
+		if credIns != nil {
+			accounts, post = s.collectDirtyParallelCut(dirtyAddrs, storage, credIns)
+		} else {
+			s.collectDirtyParallel(dirtyAddrs, accounts, storage, post, &detached, nil)
+		}
 		dirtyAddrs = nil
 		detached = pendingCredits{} // put in by the parallel walk
+	} else if credIns != nil {
+		// Not reached: the same condition takes the walk above.
+		credIns.wait()
+		accounts, post = credIns.accounts, credIns.post
 	}
 	for _, addr := range dirtyAddrs {
 		obj := s.getStateObject(addr)

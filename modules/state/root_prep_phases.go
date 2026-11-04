@@ -27,6 +27,17 @@ type RootPrepPhases struct {
 	// Hoisted: Pending and Detach came from the hoisted preparation
 	// (N42_FINALIZE_HOIST_DETACH); Detach is then the whole step.
 	Hoisted bool
+	// The hoisted Detach's parts: HoistWait the root's wait for the hoisted
+	// goroutine, HoistRun that goroutine's run (from its arm), HoistGap
+	// the time from its arm to the root's take.
+	HoistWait, HoistRun, HoistGap time.Duration
+	// Objs: the parallel walk's object resolution (part of Loop).
+	Objs time.Duration
+	// Cut: N42_PREHOOK_CUT moved the detached credits' inserts to their own
+	// goroutine; CredIns its run (from the start, before Sort), CredJoin
+	// the walk's wait for it (part of Loop).
+	Cut               bool
+	CredIns, CredJoin time.Duration
 }
 
 // LastRootPrepPhases returns the split of this state's most recent root

@@ -2841,6 +2841,17 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				if state.FinalizeHoistOn() {
 					_, fb := state.FinalizeHoistStats()
 					fields = append(fields, "fHoist", rp.Hoisted, "fHoistFb", fb)
+					if rp.Hoisted {
+						// fDetach's parts: the wait for the hoisted goroutine,
+						// its run from the arm, and the arm-to-take gap.
+						fields = append(fields, "fHoistWait", rp.HoistWait, "fHoistRun", rp.HoistRun, "fHoistGap", rp.HoistGap)
+					}
+				}
+				// fLoop's object resolution; N42_PREHOOK_CUT's credit inserts
+				// (their run from before fSort, and fLoop's wait for them).
+				fields = append(fields, "fObjs", rp.Objs, "fCutMode", state.PrehookCutMode())
+				if rp.Cut {
+					fields = append(fields, "fCredIns", rp.CredIns, "fCredJoin", rp.CredJoin)
 				}
 			}
 			if det, mat := state.LastRootCredits(); det+mat > 0 {

@@ -93,8 +93,8 @@ func (s *IntraBlockState) detachPendingCredits(pending []types.Address) (pending
 	out := make([]*account.StateAccount, len(pending))
 	seeded := s.accountPrefetch
 	workers := runtime.GOMAXPROCS(0)
-	if workers > 8 {
-		workers = 8
+	if c := finalizeWorkerCap(); workers > c {
+		workers = c
 	}
 	if w := len(pending) / 1024; w < workers {
 		workers = w

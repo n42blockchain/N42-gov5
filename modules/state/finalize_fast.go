@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -96,17 +97,17 @@ type dirtyEntry struct {
 // while the workers run: no detached address is in the dirty set (the
 // detach skips every address in it or loaded, and the merge leaves the
 // detached ones out), so the order of the two kinds of insert is free.
+//
+// With N42_PREHOOK_CUT (ins non-nil) the detached credits are already being
+// put in by ins, which is joined before the dirty entries go in, and the
+// objects are resolved by resolveDirtyObjects.
 func (s *IntraBlockState) collectDirtyParallel(addrs []types.Address, accounts map[types.Address]*account.StateAccount,
-	storage map[types.Address]map[types.Hash]*uint256.Int, post *PostState, d *pendingCredits) {
+	storage map[types.Address]map[types.Hash]*uint256.Int, post *PostState, d *pendingCredits, ins *creditInserts) (map[types.Address]*account.StateAccount, *PostState) {
 	finalizeFastWalks.Add(1)
-	objs := make([]*stateObject, len(addrs))
-	for i, addr := range addrs {
-		objs[i] = s.getStateObject(addr)
-	}
-	out := make([]dirtyEntry, len(addrs))
+	tObjs := time.Now()
 	workers := runtime.GOMAXPROCS(0)
-	if workers > 8 {
-		workers = 8
+	if c := finalizeWorkerCap(); workers > c {
+		workers = c
 	}
 	if w := len(addrs) / finalizeFastChunk; w < workers {
 		workers = w
@@ -114,6 +115,16 @@ func (s *IntraBlockState) collectDirtyParallel(addrs []types.Address, accounts m
 	if workers < 1 {
 		workers = 1
 	}
+	objs := make([]*stateObject, len(addrs))
+	if ins != nil {
+		s.resolveDirtyObjects(addrs, objs, workers)
+	} else {
+		for i, addr := range addrs {
+			objs[i] = s.getStateObject(addr)
+		}
+	}
+	s.rootPrep.Objs = time.Since(tObjs)
+	out := make([]dirtyEntry, len(addrs))
 	per := (len(addrs) + workers - 1) / workers
 	var wg sync.WaitGroup
 	for lo := 0; lo < len(addrs); lo += per {
@@ -129,14 +140,21 @@ func (s *IntraBlockState) collectDirtyParallel(addrs []types.Address, accounts m
 			}
 		}(lo, hi)
 	}
-	for i, addr := range d.addrs {
-		a := d.accts[i]
-		accounts[addr] = a
-		if post != nil && accountIsEmpty(a) {
-			post.wiped[addr] = struct{}{}
+	if ins == nil {
+		for i, addr := range d.addrs {
+			a := d.accts[i]
+			accounts[addr] = a
+			if post != nil && accountIsEmpty(a) {
+				post.wiped[addr] = struct{}{}
+			}
 		}
 	}
 	wg.Wait()
+	if ins != nil {
+		s.rootPrep.CredJoin = ins.wait()
+		s.rootPrep.CredIns = ins.took
+		accounts, post = ins.accounts, ins.post
+	}
 	for i, addr := range addrs {
 		e := &out[i]
 		accounts[addr] = e.acct
@@ -152,6 +170,15 @@ func (s *IntraBlockState) collectDirtyParallel(addrs []types.Address, accounts m
 			}
 		}
 	}
+	return accounts, post
+}
+
+// collectDirtyParallelCut is collectDirtyParallel under N42_PREHOOK_CUT:
+// the account map and the post-state are ins's, available once it is
+// joined.
+func (s *IntraBlockState) collectDirtyParallelCut(addrs []types.Address, storage map[types.Address]map[types.Hash]*uint256.Int,
+	ins *creditInserts) (map[types.Address]*account.StateAccount, *PostState) {
+	return s.collectDirtyParallel(addrs, nil, storage, nil, nil, ins)
 }
 
 // dirtyEntryOf fills e for one dirty object exactly as the single loop

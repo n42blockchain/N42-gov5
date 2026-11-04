@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -79,6 +80,8 @@ type detachHoist struct {
 	armed bool
 	pfGen uint64
 	done  chan struct{}
+	armAt time.Time     // when ArmDetachHoist started the goroutine
+	took  time.Duration // the goroutine's run (written before done)
 	// Written by the goroutine, read after done.
 	addrs []types.Address        // the fold's credits, sorted and distinct
 	base  []account.StateAccount // the normalised base account where has
@@ -118,6 +121,7 @@ func (s *IntraBlockState) ArmDetachHoist() {
 	h.armed = true
 	h.pfGen = pf.gen
 	h.done = make(chan struct{})
+	h.armAt = time.Now()
 	addrs := append([]types.Address(nil), s.foldCredits...)
 	go h.run(addrs, pf.accts, pf.known)
 }
@@ -131,6 +135,7 @@ func (s *IntraBlockState) noteHoistInsert(addr types.Address) {
 // run is the hoisted goroutine: sort, dedupe, base lookups.
 func (h *detachHoist) run(addrs []types.Address, accts map[types.Address]*account.StateAccount, known KnownAccounts) {
 	defer close(h.done)
+	defer func() { h.took = time.Since(h.armAt) }()
 	sortAddresses(addrs)
 	addrs = dedupeSortedAddresses(addrs)
 	n := len(addrs)
@@ -160,8 +165,8 @@ func (h *detachHoist) run(addrs []types.Address, accts map[types.Address]*accoun
 
 func hoistWorkers(n int) int {
 	workers := runtime.GOMAXPROCS(0)
-	if workers > 8 {
-		workers = 8
+	if c := finalizeWorkerCap(); workers > c {
+		workers = c
 	}
 	if w := n / 1024; w < workers {
 		workers = w
@@ -230,7 +235,11 @@ func (s *IntraBlockState) takeDetachHoist(ltEnabled bool) (pendingCredits, []typ
 		finalizeHoistFallbacks.Add(1)
 		return pendingCredits{}, nil, false
 	}
+	tWait := time.Now()
 	<-h.done
+	s.rootPrep.HoistWait = time.Since(tWait)
+	s.rootPrep.HoistRun = h.took
+	s.rootPrep.HoistGap = tWait.Sub(h.armAt)
 
 	// The universe: the fold's credits merged with the late inserts.
 	uAddr, uSrc := h.addrs, []int32(nil)

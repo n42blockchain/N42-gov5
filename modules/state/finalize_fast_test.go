@@ -305,9 +305,15 @@ func BenchmarkRootPrep163k(b *testing.B) {
 		store[recipients[i]] = &a
 	}
 	rules := &params.Rules{IsSpuriousDragon: true, IsByzantium: true, IsLondon: true}
-	for _, fast := range []bool{false, true} {
-		b.Run(fmt.Sprintf("fast=%v", fast), func(b *testing.B) {
+	type mode struct {
+		fast bool
+		cut  int
+	}
+	for _, m := range []mode{{false, 0}, {true, 0}, {true, 1}, {true, 2}} {
+		fast := m.fast
+		b.Run(fmt.Sprintf("fast=%v/cut=%d", fast, m.cut), func(b *testing.B) {
 			defer SetFinalizeFastForTest(fast)()
+			defer SetPrehookCutForTest(m.cut)()
 			var sum RootPrepPhases
 			for it := 0; it < b.N; it++ {
 				b.StopTimer()
@@ -346,6 +352,9 @@ func BenchmarkRootPrep163k(b *testing.B) {
 				sum.Sort += rp.Sort
 				sum.Loop += rp.Loop
 				sum.Tail += rp.Tail
+				sum.Objs += rp.Objs
+				sum.CredJoin += rp.CredJoin
+				sum.CredIns += rp.CredIns
 				sum.Dirty = rp.Dirty
 			}
 			n := float64(b.N) * 1e6
@@ -356,6 +365,9 @@ func BenchmarkRootPrep163k(b *testing.B) {
 			b.ReportMetric(float64(sum.Sort)/n, "sort-ms")
 			b.ReportMetric(float64(sum.Loop)/n, "loop-ms")
 			b.ReportMetric(float64(sum.Tail)/n, "tail-ms")
+			b.ReportMetric(float64(sum.Objs)/n, "objs-ms")
+			b.ReportMetric(float64(sum.CredJoin)/n, "credjoin-ms")
+			b.ReportMetric(float64(sum.CredIns)/n, "credins-ms")
 			b.ReportMetric(float64(sum.Dirty), "dirty")
 		})
 	}
