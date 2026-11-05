@@ -203,6 +203,21 @@ type ConsensusEngine struct {
 	// already durable (commitJournalEarly); the release only signs and sends.
 	pendingCommitJournaled bool
 
+	// Deferred-vote retry state (vote_defer_retry.go, N42_VOTE_DEFER_RETRY).
+	floorHeld            *floorHeldCommit // commit vote held on a "wait" floor verdict
+	prepareFloorWait     bool             // a Round 1 vote saw "wait" in prepareFloorWaitView
+	prepareFloorWaitView ViewNumber
+	floorRetryArmed      bool // a fallback re-check timer is pending
+	floorRetryAttempts   int  // fallback re-checks since the last hold
+	deferRetry           bool // N42_VOTE_DEFER_RETRY, fixed at construction
+	floorLag             bool // N42_FLOOR_LAG_HEADERS, fixed at construction
+
+	// floorParents/floorParentsFIFO: hash-bound parent links kept for the
+	// committed-floor walk beyond importedParents' window
+	// (N42_FLOOR_LAG_HEADERS, vote_defer_retry.go).
+	floorParents     map[types.Hash]types.Hash
+	floorParentsFIFO []types.Hash
+
 	// committedChain is this node's own committed chain (committed_floor.go):
 	// no vote and no local commit may conflict with it. Nil disables the
 	// floor (unit tests, embedded harnesses).
@@ -493,6 +508,8 @@ func NewConsensusEngineWithEpochManager(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
+		deferRetry:                voteDeferRetry,
+		floorLag:                  floorLagHeaders,
 	}
 	// Seed the first view's timing from the round state so the very first
 	// committed view is reported under its real view number.
@@ -535,6 +552,8 @@ func WithRecoveredState(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
+		deferRetry:                voteDeferRetry,
+		floorLag:                  floorLagHeaders,
 	}
 	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
@@ -1170,6 +1189,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	if t := e.trailing; t != nil && newView > t.view+FutureViewWindow {
 		e.dropTrailing("stale")
 	}
+	e.dropFloorHeldOnViewChange(newView)
 	for v := range e.pendingJustifyBlocks {
 		if v < newView && (e.trailing == nil || v != e.trailing.view) {
 			delete(e.pendingJustifyBlocks, v)

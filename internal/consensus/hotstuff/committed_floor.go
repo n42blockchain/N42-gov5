@@ -73,7 +73,7 @@ func (e *ConsensusEngine) SetCommittedChain(r CommittedChainReader) {
 // parentOf returns blockHash's parent from the engine's own maps, falling
 // back to the stored header.
 func (e *ConsensusEngine) parentOf(blockHash types.Hash) (types.Hash, bool) {
-	if p, ok := e.importedParents[blockHash]; ok && p != (types.Hash{}) {
+	if p, ok := e.floorParent(blockHash); ok {
 		return p, true
 	}
 	if _, p, ok := e.committedChain.HeaderInfo(blockHash); ok && p != (types.Hash{}) {
@@ -108,12 +108,12 @@ func (e *ConsensusEngine) checkCommittedFloor(blockHash types.Hash) floorVerdict
 	// up as a parent (the common case) or a stored header gives a height.
 	cur, steps := blockHash, uint64(0)
 	for {
-		if p, known := e.importedParents[cur]; known && p != (types.Hash{}) {
+		if p, known := e.floorParent(cur); known {
 			if p == cHash {
 				return floorAllow
 			}
 			cur, steps = p, steps+1
-			if steps > maxFloorWalk {
+			if steps > e.floorWalkLimit() {
 				return floorWait
 			}
 			continue
@@ -142,7 +142,7 @@ func (e *ConsensusEngine) checkCommittedFloor(blockHash types.Hash) floorVerdict
 
 	// Phase 2: heights are known from here down; reach the committed height.
 	for num > cNum+1 {
-		if steps++; steps > maxFloorWalk {
+		if steps++; steps > e.floorWalkLimit() {
 			return floorWait
 		}
 		cur, num = parent, num-1
@@ -161,10 +161,15 @@ func (e *ConsensusEngine) checkCommittedFloor(blockHash types.Hash) floorVerdict
 // extendsCommitted is checkCommittedFloor for the vote sites: true only on
 // floorAllow, logging the refusals. Caller must hold e.mu.
 func (e *ConsensusEngine) extendsCommitted(view ViewNumber, blockHash types.Hash) bool {
+	return e.committedVerdict(view, blockHash) == floorAllow
+}
+
+// committedVerdict is checkCommittedFloor for the vote sites, keeping
+// "refuse" and "wait" apart and logging both. Caller must hold e.mu.
+func (e *ConsensusEngine) committedVerdict(view ViewNumber, blockHash types.Hash) floorVerdict {
 	v := e.checkCommittedFloor(blockHash)
 	switch v {
 	case floorAllow:
-		return true
 	case floorRefuse:
 		cNum, cHash, _, _ := e.committedChain.CommittedHead()
 		log.Warn("hotstuff vote REFUSED: block does not extend this node's committed block",
@@ -174,7 +179,7 @@ func (e *ConsensusEngine) extendsCommitted(view ViewNumber, blockHash types.Hash
 		log.Info("hotstuff vote deferred: ancestry to the committed block not known yet",
 			"view", view, "blockHash", blockHash)
 	}
-	return false
+	return v
 }
 
 // ConflictsWithCommitted reports whether blockHash provably conflicts with

@@ -862,6 +862,11 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 			// just canonicalized its lineage.
 			s.recoveredCommit = types.Hash{}
 			s.pendingMu.Unlock()
+			// The committed floor just advanced: a vote held on an
+			// unresolved ancestry may now resolve (N42_VOTE_DEFER_RETRY).
+			if ce := s.engine.Engine(); ce != nil {
+				ce.RecheckDeferredVotes()
+			}
 		}
 		dCanon = time.Since(tCanon)
 	}

@@ -315,7 +315,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 	// imported (a direct push arrived before the Proposal), vote now; otherwise
 	// defer until EventBlockImported fires onBlockImported, which casts the vote.
 	if e.importedBlocks[proposal.BlockHash] {
-		if !e.extendsJustify(view, proposal.BlockHash) {
+		if !e.prepareExtends(view, proposal.BlockHash) {
 			return nil // extends-rule violation logged; do not vote
 		}
 		log.Info("import-gated vote: block already imported, voting now", "view", view, "blockHash", proposal.BlockHash)
@@ -360,7 +360,7 @@ func (e *ConsensusEngine) tryHeaderVote(view ViewNumber) (bool, error) {
 	if parent, known := e.importedParents[pending]; !known || parent == (types.Hash{}) {
 		return false, nil
 	}
-	if !e.extendsJustify(view, pending) {
+	if !e.prepareExtends(view, pending) {
 		return false, nil // extends-rule violation logged; do not vote
 	}
 	if err := e.journalPrepareVote(view, pending); err != nil {
@@ -388,7 +388,7 @@ func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
 	if !ok || (justify != (types.Hash{}) && !e.importedBlocks[justify] && !e.voteOnAvailability) {
 		return false, nil
 	}
-	if !e.extendsJustify(view, pending) {
+	if !e.prepareExtends(view, pending) {
 		return false, nil // extends-rule violation logged; do not vote
 	}
 	if err := e.journalPrepareVote(view, pending); err != nil {
@@ -478,7 +478,10 @@ func (e *ConsensusEngine) journalHeldCommitVote(pqc *PrepareQCMsg) {
 // journalHeldCommitVote already made durable: the extends-check that needs
 // the attested parent, then sign and send -- no journal write on the path.
 func (e *ConsensusEngine) releaseJournaledCommitVote(pqc *PrepareQCMsg) error {
-	if !e.extendsJustify(pqc.View, pqc.BlockHash) {
+	if v := e.extendsJustifyVerdict(pqc.View, pqc.BlockHash); v != floorAllow {
+		if v == floorWait && e.holdFloorWaitCommit(pqc, true) {
+			return nil // re-evaluated once the ancestry resolves (vote_defer_retry.go)
+		}
 		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block or the committed block",
 			"view", pqc.View, "blockHash", pqc.BlockHash)
 		return nil
@@ -506,9 +509,11 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 	}
 	if parentHash != (types.Hash{}) {
 		e.importedParents[blockHash] = parentHash // the extends-check reads it
+		e.recordFloorParent(blockHash, parentHash)
 	}
 	_, err := e.tryDeferredVote(e.roundState.CurrentView())
 	e.castHeldCommitVoteIfAttested(blockHash, "checked")
+	e.retryDeferredVotes("checked")
 	return err
 }
 
@@ -537,7 +542,9 @@ func (e *ConsensusEngine) onBlockHeaderKnown(blockHash, parentHash types.Hash, _
 		e.headerKnownFIFO = append(e.headerKnownFIFO, blockHash)
 	}
 	e.importedParents[blockHash] = parentHash
+	e.recordFloorParent(blockHash, parentHash)
 	_, err := e.tryHeaderVote(e.roundState.CurrentView())
+	e.retryDeferredVotes("header")
 	return err
 }
 
@@ -638,7 +645,10 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 	// deferredAttested true), so extendsJustify can resolve for real instead
 	// of failing open; refuse the commit vote if it does not extend its own
 	// JustifyQC block (recorded from this view's Proposal).
-	if !e.extendsJustify(view, pqc.BlockHash) {
+	if v := e.extendsJustifyVerdict(view, pqc.BlockHash); v != floorAllow {
+		if v == floorWait && e.holdFloorWaitCommit(pqc, false) {
+			return nil // re-evaluated once the ancestry resolves (vote_defer_retry.go)
+		}
 		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block or the committed block",
 			"view", view, "blockHash", pqc.BlockHash)
 		return nil
@@ -751,6 +761,9 @@ func (e *ConsensusEngine) hintNextBuild(view ViewNumber, blockHash types.Hash) {
 // new import is always recorded (a stuck round re-imports the SAME hash, which
 // occupies one slot, so the recent-block window is never starved).
 func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
+	if parent != (types.Hash{}) {
+		e.recordFloorParent(h, parent)
+	}
 	if e.importedBlocks[h] {
 		if parent != (types.Hash{}) {
 			e.importedParents[h] = parent // backfill if the first notify lacked it
@@ -782,9 +795,13 @@ func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
 // justify is exactly what a reset node sees, so it is no pass on its own
 // (round S131: nodes that had committed f343 voted for its sibling).
 func (e *ConsensusEngine) extendsJustify(view ViewNumber, blockHash types.Hash) bool {
-	if !e.extendsCommitted(view, blockHash) {
-		return false
-	}
+	return e.extendsJustifyVerdict(view, blockHash) == floorAllow
+}
+
+// justifyMatches is extendsJustify's JustifyQC half: false only when the
+// block's known parent differs from the view's JustifyQC block (logged).
+// Caller must hold e.mu.
+func (e *ConsensusEngine) justifyMatches(view ViewNumber, blockHash types.Hash) bool {
 	justify, ok := e.pendingJustifyBlocks[view]
 	if !ok || justify == (types.Hash{}) {
 		return true
@@ -805,6 +822,9 @@ func (e *ConsensusEngine) extendsJustify(view ViewNumber, blockHash types.Hash) 
 // onBlockImported handles the BlockImported event and verifies DA commitment.
 func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot types.Hash, parentHash types.Hash) error {
 	e.rememberImported(blockHash, parentHash)
+	// Import progress can resolve a held vote's ancestry (the header is now
+	// stored, or the lag drained); re-check after this event's own work.
+	defer e.retryDeferredVotes("import")
 
 	// Baby Raptr DA verification: compare the proposal's TxRootHash with
 	// the actual transaction root computed during block import.
@@ -864,7 +884,7 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	}
 	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash &&
 		!e.roundState.HasVotedInView(view) {
-		if !e.extendsJustify(view, blockHash) {
+		if !e.prepareExtends(view, blockHash) {
 			return nil // extends-rule violation logged; do not vote
 		}
 		if err := e.journalPrepareVote(view, blockHash); err != nil {
@@ -891,6 +911,7 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 // block that failed on import (n42-rs found a rejected block keeping it:
 // a re-proposal of the hash was voted for unchecked).
 func (e *ConsensusEngine) onBlockRejected(blockHash types.Hash) {
+	delete(e.floorParents, blockHash) // FIFO slot ages out on its own
 	if !e.checkedBlocks[blockHash] {
 		return
 	}

@@ -61,6 +61,10 @@ var (
 	// what it has committed -- after a consensus-state reset, the signature
 	// of a fleet split.
 	metricVoteCommittedFloor = prometheus.GetOrCreateCounter("hotstuff_vote_committed_floor_refused_total", false)
+	// Commit votes held on an unresolved committed-floor ancestry, and those
+	// later released for re-evaluation (N42_VOTE_DEFER_RETRY=1).
+	metricVoteDeferHeld     = prometheus.GetOrCreateCounter("hotstuff_vote_defer_held_total", false)
+	metricVoteDeferReleased = prometheus.GetOrCreateCounter("hotstuff_vote_defer_released_total", false)
 
 	// Vote counts of the last committed view (gauges).
 	metricPrepareVotes = prometheus.GetOrCreateCounter("hotstuff_prepare_votes", true)
