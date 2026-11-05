@@ -692,6 +692,28 @@ func (s *Store) ScanFillableReady(grace time.Duration, fn func(h types.Hash, e E
 	}
 }
 
+// ScanUncommittedReady is ScanFillableReady over every frame no committed
+// block holds: the fillable ones and those pinned by written, uncommitted
+// blocks (pinned true). A builder that knows which frames its own chain
+// holds (N42_ORPHAN_REINJECT) takes the pinned frames of other branches --
+// an abandoned sibling's -- in their arrival position.
+func (s *Store) ScanUncommittedReady(grace time.Duration, fn func(h types.Hash, e Entry, ready, pinned bool) bool) {
+	recovering := s.recoverer.Load() != nil
+	cutoff := time.Now().Add(-grace).UnixNano()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, h := range s.ring[s.head:] {
+		sl, ok := s.m[h]
+		if !ok || sl.commitAt != 0 {
+			continue
+		}
+		ready := !recovering || sl.senders != nil || sl.at <= cutoff
+		if !fn(h, sl.Entry, ready, sl.pendAt != 0) {
+			return
+		}
+	}
+}
+
 // Recovering reports whether a sender recoverer is attached.
 func (s *Store) Recovering() bool { return s.recoverer.Load() != nil }
 

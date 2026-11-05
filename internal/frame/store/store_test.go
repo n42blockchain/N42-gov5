@@ -332,3 +332,25 @@ func TestBeginRecoverOneOwner(t *testing.T) {
 	s.FinishRecover(tk, ss)
 	<-w.Wait
 }
+
+// TestScanUncommittedReady (N42_ORPHAN_REINJECT): the scan yields every
+// frame no committed block holds, in arrival order, telling pinned ones
+// apart; committed frames are never yielded.
+func TestScanUncommittedReady(t *testing.T) {
+	s := NewWithKeep(1<<20, 64)
+	for i := 0; i < 4; i++ {
+		s.PutEntry(hashOf(i), Entry{Raw: make([]byte, 10), Gas: uint64(i)})
+	}
+	s.Include([]types.Hash{hashOf(0)}, 5) // the parent's, committed below
+	s.Include([]types.Hash{hashOf(1)}, 6) // an abandoned sibling's
+	s.Commit(5, []types.Hash{hashOf(0)})
+	var got []int
+	var pinned []bool
+	s.ScanUncommittedReady(0, func(h types.Hash, e Entry, ready, pin bool) bool {
+		got, pinned = append(got, int(e.Gas)), append(pinned, pin)
+		return true
+	})
+	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 || !pinned[0] || pinned[1] || pinned[2] {
+		t.Fatalf("scan %v pinned %v", got, pinned)
+	}
+}

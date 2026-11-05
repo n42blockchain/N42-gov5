@@ -34,6 +34,7 @@ import (
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/internal/miner/builder"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -128,6 +129,50 @@ func envFrameReadyGrace() time.Duration {
 // order. A frame whose senders are not ready (store.ScanFillableReady)
 // holds back its gateway's frames from there on.
 func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
+	scan := func(fn func(h types.Hash, e store.Entry, ready bool) bool) {
+		st.ScanFillableReady(frameReadyGrace, fn)
+	}
+	return pickFramesScan(st, scan, inFlight, exclude, budget, maxFrames)
+}
+
+// pickFramesOnChain is pickFrames for a block whose chain's frames are known
+// (N42_ORPHAN_REINJECT, internal.ChainFramesAbove): it skips exactly the
+// frames onChain names and the committed ones; a frame pinned or in flight
+// for another branch (an abandoned sibling's) is taken in its arrival
+// position.
+func pickFramesOnChain(st *store.Store, onChain map[types.Hash]struct{}, exclude types.Address, budget uint64, maxFrames int) framePick {
+	scan := func(fn func(h types.Hash, e store.Entry, ready bool) bool) {
+		st.ScanUncommittedReady(frameReadyGrace, func(h types.Hash, e store.Entry, ready, _ bool) bool {
+			return fn(h, e, ready)
+		})
+	}
+	skip := func(h types.Hash) bool { _, ok := onChain[h]; return ok }
+	return pickFramesScan(st, scan, skip, exclude, budget, maxFrames)
+}
+
+// orphanReinjectPicks counts gateway picks made on the chain's own frames
+// (N42_ORPHAN_REINJECT) and those that fell back to the pins.
+var orphanReinjectPicks, orphanReinjectFallbacks atomic.Uint64
+
+// pickGatewayFrames is the builders' gateway pick for a block on parent
+// (parentHash at parentNumber): with N42_ORPHAN_REINJECT, on the chain's own
+// frames (pickFramesOnChain) when its ancestry is known, else pickFrames.
+func (w *worker) pickGatewayFrames(bc *internal.BlockChain, tx kv.Getter, parentHash types.Hash, parentNumber uint64,
+	st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
+	if internal.OrphanReinjectOn() {
+		if onChain, ok := bc.ChainFramesAbove(tx, parentHash, parentNumber, w.ownSealed); ok {
+			orphanReinjectPicks.Add(1)
+			return pickFramesOnChain(st, onChain, exclude, budget, maxFrames)
+		}
+		orphanReinjectFallbacks.Add(1)
+	}
+	return pickFrames(st, inFlight, exclude, budget, maxFrames)
+}
+
+// pickFramesScan is pickFrames over the frames scan yields, skipping those
+// inFlight reports.
+func pickFramesScan(st *store.Store, scan func(fn func(h types.Hash, e store.Entry, ready bool) bool), inFlight func(types.Hash) bool,
+	exclude types.Address, budget uint64, maxFrames int) framePick {
 	var p framePick
 	// Frames whose senders are not cached yet are left for a later block
 	// (P10: no sender recovery at block time), and so is every later frame
@@ -143,7 +188,7 @@ func pickFrames(st *store.Store, inFlight func(types.Hash) bool, exclude types.A
 		return false
 	}
 	var hurry []types.Hash
-	st.ScanFillableReady(frameReadyGrace, func(h types.Hash, e store.Entry, ready bool) bool {
+	scan(func(h types.Hash, e store.Entry, ready bool) bool {
 		if inFlight != nil && inFlight(h) {
 			return true
 		}
@@ -223,7 +268,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	// Pool transactions first, as this node's local frames, up to the pool
 	// gas budget; gateway frames fill the rest.
 	local, own := w.fillLocalFrames(env, ibs, st, inFlight, budget, maxFrames)
-	gw := pickFrames(st, inFlight, own, budget-local.gas, maxFrames-len(local.hashes))
+	gw := w.pickGatewayFrames(bc, nil, header.ParentHash, number-1, st, inFlight, own, budget-local.gas, maxFrames-len(local.hashes))
 	pick := local
 	pick.hashes = append(pick.hashes, gw.hashes...)
 	pick.raws = append(pick.raws, gw.raws...)

@@ -185,7 +185,7 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 	// frame of an unexecuted block holds are left out.
 	ibs := state.New(state.NewPlainStateReader(tx))
 	local, own := w.fillLocalFrames(env, ibs, st, inFlight, budget, maxFrames)
-	gw := pickFrames(st, inFlight, own, budget-local.gas, maxFrames-len(local.hashes))
+	gw := w.pickGatewayFrames(bc, tx, parent.Hash(), parent.Number.Uint64(), st, inFlight, own, budget-local.gas, maxFrames-len(local.hashes))
 	hashes := append(local.hashes, gw.hashes...)
 	raws := append(local.raws, gw.raws...)
 	if len(hashes) > 0 {

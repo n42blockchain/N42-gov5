@@ -31,6 +31,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -187,6 +188,143 @@ func (bc *BlockChain) ReleaseFramesInFlight(hashes []types.Hash, number uint64) 
 // OrphanFramesReleased returns how many in-flight frames of losing blocks
 // were made fillable again since start (S90 defect 2).
 func (bc *BlockChain) OrphanFramesReleased() uint64 { return bc.frames.orphanReleased.Load() }
+
+// orphanReinjectOn is N42_ORPHAN_REINJECT (default off; "1", "true" or "on"
+// enables). Run 36 (E1N26 B2/B3): a view timed out after leader A's
+// proposal at height h, and the next leader built sibling B at h on the
+// same parent. The frames A held were in flight (resolved here) or pinned
+// (A was written here: the E=1 light nodes and the executor write every
+// available block) at h, so B's build skipped them and took the gateways'
+// later frames, whose nonces follow A's. B won; every transaction of B and
+// of every later block was skipped as a future nonce, and A's frames came
+// back only after B's commit (pins) or 16 blocks (in flight), behind frames
+// already lost -- the fleet built empty blocks for the rest of the run.
+//
+// With the switch on, the lag build and the frame fill exclude exactly the
+// frames of the chain they extend: the frames of the parent and of each
+// ancestor above the frame store's committed head (ChainFramesAbove), plus
+// the committed ones. A frame pinned or in flight for any other block --
+// an abandoned or competing sibling -- is fillable in its arrival position.
+// When the ancestry cannot be walked (an unknown block, a walk past
+// chainFramesWalkMax, no committed head yet) the build falls back to the
+// pins and the in-flight set. A frame both on the chain and pinned by
+// another branch is excluded (it is on the chain); one only on another
+// branch may be taken again by a block of this one, which is valid either
+// way: a transaction already applied is skipped as a stale nonce.
+var orphanReinjectOn = parseOrphanReinject(os.Getenv("N42_ORPHAN_REINJECT"))
+
+func parseOrphanReinject(v string) bool {
+	switch v {
+	case "1", "true", "TRUE", "on", "ON", "yes":
+		return true
+	}
+	return false
+}
+
+// OrphanReinjectOn reports N42_ORPHAN_REINJECT.
+func OrphanReinjectOn() bool { return orphanReinjectOn }
+
+// SetOrphanReinjectForTest switches N42_ORPHAN_REINJECT and returns the
+// restore.
+func SetOrphanReinjectForTest(on bool) func() {
+	prev := orphanReinjectOn
+	orphanReinjectOn = on
+	return func() { orphanReinjectOn = prev }
+}
+
+// chainFramesWalkMax bounds ChainFramesAbove's ancestor walk.
+const chainFramesWalkMax = 64
+
+// ChainFramesAbove returns the frames held by the parent (parentHash at
+// parentNumber) and its ancestors
+// above the frame store's committed head: what a block built on parent
+// must not take again (committed frames the store marks itself). own
+// resolves blocks this node sealed and has not written (nil = none). ok is
+// false when the walk cannot reach the committed head.
+func (bc *BlockChain) ChainFramesAbove(tx kv.Getter, parentHash types.Hash, parentNumber uint64, own func(types.Hash) block.IBlock) (map[types.Hash]struct{}, bool) {
+	st := bc.frames.store
+	if st == nil || parentHash == (types.Hash{}) {
+		return nil, false
+	}
+	floor, ok := st.CommittedHead()
+	if !ok {
+		return nil, false
+	}
+	out := make(map[types.Hash]struct{})
+	hash, n := parentHash, parentNumber
+	for walked := 0; n > floor; walked++ {
+		if walked >= chainFramesWalkMax {
+			return nil, false
+		}
+		frames, ph, found := bc.blockFramesAnywhere(tx, hash, n, own)
+		if !found {
+			return nil, false
+		}
+		for _, f := range frames {
+			out[f] = struct{}{}
+		}
+		hash, n = ph, n-1
+	}
+	return out, true
+}
+
+// blockFramesAnywhere returns the frame hashes and the parent hash of block
+// (hash, number): sealed here, available, being written, or stored.
+func (bc *BlockChain) blockFramesAnywhere(tx kv.Getter, hash types.Hash, number uint64, own func(types.Hash) block.IBlock) ([]types.Hash, types.Hash, bool) {
+	of := func(b block.IBlock) ([]types.Hash, types.Hash, bool) {
+		if b == nil || b.Number64() == nil || b.Number64().Uint64() != number {
+			return nil, types.Hash{}, false
+		}
+		if body, ok := b.Body().(*block.Body); ok && body.IsFrameBody() {
+			return body.FrameHashes, b.ParentHash(), true
+		}
+		return nil, b.ParentHash(), true
+	}
+	if own != nil {
+		if fs, ph, ok := of(own(hash)); ok {
+			return fs, ph, true
+		}
+	}
+	if b := bc.AvailableBlock(hash); b != nil {
+		if fs, ph, ok := of(b); ok {
+			return fs, ph, true
+		}
+	}
+	if j := bc.lagWritePending(hash); j != nil && j.blk != nil {
+		if fs, ph, ok := of(j.blk); ok {
+			return fs, ph, true
+		}
+	}
+	stored := func(g kv.Getter) ([]types.Hash, types.Hash, bool) {
+		if hdr := rawdb.ReadHeader(g, hash, number); hdr != nil {
+			if fs, err := rawdb.ReadFrameBodyHashes(g, hash, number); err == nil {
+				return fs, hdr.ParentHash, true
+			}
+		}
+		return nil, types.Hash{}, false
+	}
+	if tx != nil {
+		if fs, ph, ok := stored(tx); ok {
+			return fs, ph, true
+		}
+	}
+	if bc.ChainDB != nil {
+		// Written after tx began.
+		var (
+			fs    []types.Hash
+			ph    types.Hash
+			found bool
+		)
+		_ = bc.ChainDB.View(context.Background(), func(tx2 kv.Tx) error {
+			fs, ph, found = stored(tx2)
+			return nil
+		})
+		if found {
+			return fs, ph, true
+		}
+	}
+	return nil, types.Hash{}, false
+}
 
 // inFlightPruneDepth: in-flight entries of blocks this far below a written
 // block belong to abandoned siblings; their frames become fillable again.
