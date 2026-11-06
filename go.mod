@@ -80,7 +80,7 @@ require (
 	github.com/erigontech/speedtest v0.0.2
 	github.com/ethereum/go-verkle v0.2.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.2
 	github.com/mattn/go-colorable v0.1.15
 	github.com/mattn/go-isatty v0.0.24
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
