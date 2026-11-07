@@ -245,6 +245,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		if !e.active && t.leafStore != nil && t.hist == nil {
 			continue // dead at flush; blob carries its frozen leaf (non-archive)
 		}
+		if e.hashOnly {
+			// Imported from a tombstone: no row to write, and without a leaf
+			// store nothing else would carry its frozen leaf.
+			return flushedThrough, bytesW, &HashOnlySlotError{Slot: s, Op: "a flush without a leaf store"}
+		}
 		val := make([]byte, 0, 32+len(e.value))
 		val = append(val, e.keyHash[:]...)
 		val = append(val, e.value...)

@@ -148,6 +148,13 @@ type entry struct {
 	keyHash Hash
 	value   []byte
 	active  bool
+	// hashOnly marks a dead slot imported from a tombstone (a kind-2 or
+	// kind-3 record of the tombstone portable snapshot,
+	// portable_tombstone.go): its key and value are gone, its frozen leaf
+	// hash lives only in the twig's leaf tree. Every path that needs the
+	// key -- an undo revival, a v1 export, a flush without a leaf store --
+	// refuses it with a *HashOnlySlotError.
+	hashOnly bool
 }
 
 type twig struct {
