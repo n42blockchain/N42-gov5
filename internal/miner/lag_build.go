@@ -202,11 +202,14 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 	bc.MarkFramesInFlight(hashes, number)
 	w.markLocalFramesInFlight(local.hashes, number)
 	heldN, heldFilled := countHeldBuild(gw)
+	ss := st.Stats()
 	log.Info("miner: lag build", "n", number, "parent", parent.Hash().Hex()[:12], "frames", len(hashes),
 		"localFrames", len(local.hashes), "txs", local.txs+gw.txs, "gasEst", local.gas+gw.gas,
 		"reports", number-uint64(block.DeferredDepthAt(number)), "fill", dFill, "total", time.Since(start),
 		"storeFrames", st.Len(), "heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready,
-		"capped", gw.capped, "hurried", gw.hurried, "heldBuilds", heldN, "heldFilled", heldFilled, "tMs", time.Now().UnixMilli())
+		"capped", gw.capped, "hurried", gw.hurried, "heldBuilds", heldN, "heldFilled", heldFilled,
+		"storePinned", ss.Pending, "storeCommitted", ss.Committed, "storeWithSenders", ss.WithSenders, "storeBytes", ss.Bytes,
+		"scanned", gw.scanned, "skipped", gw.skipped, "tMs", time.Now().UnixMilli())
 
 	select {
 	case w.taskCh <- &task{block: iblock, createdAt: time.Now(), lagged: true, buildBeginAt: start, triggerAt: triggerAt}:

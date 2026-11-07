@@ -65,6 +65,10 @@ type framePick struct {
 	heldReady, heldUnready int
 	capped                 bool
 	hurried                int
+	// skipped: frames passed over because the parent's chain or an
+	// unwritten ancestor already holds them (inFlight); scanned: every frame
+	// the scan visited. Observability only.
+	skipped, scanned int
 }
 
 // EnvFrameFillHeld (N42_FRAME_FILL_HELD=1, default off): a build held on a
@@ -189,7 +193,9 @@ func pickFramesScan(st *store.Store, scan func(fn func(h types.Hash, e store.Ent
 	}
 	var hurry []types.Hash
 	scan(func(h types.Hash, e store.Entry, ready bool) bool {
+		p.scanned++
 		if inFlight != nil && inFlight(h) {
+			p.skipped++
 			return true
 		}
 		gw, gwOK := frame.GatewayOf(e.Raw)
