@@ -112,6 +112,24 @@ func (t *Tree) isHashOnly(slot uint64) bool {
 	return i < uint64(len(t.entries)) && t.entries[i].hashOnly
 }
 
+// hollowTwig reports whether twig id is pruned with no leaves anywhere: no
+// node heap and no leaf blob -- a whole-dead twig imported from a kind-3
+// record, after a reload. Its slots are hash-only for every purpose.
+func (t *Tree) hollowTwig(id int) bool {
+	if id >= len(t.twigs) || t.twigs[id] == nil {
+		return false
+	}
+	tw := t.twigs[id]
+	if !tw.pruned || tw.nodes != nil {
+		return false
+	}
+	if t.leafStore == nil {
+		return false // an in-memory tree: its hash-only slots carry the flag
+	}
+	_, ok := t.leafStore.Leaves(id)
+	return !ok
+}
+
 // HasHashOnlySlots reports whether any resident slot keeps only its leaf hash.
 func (t *Tree) HasHashOnlySlots() bool {
 	for i := range t.entries {
@@ -322,10 +340,16 @@ func (t *Tree) PortableSlotSource() PortableSlotSource {
 			return SlotEntry{}, &HashOnlySlotError{Slot: slot, Op: "a v1 portable export"}
 		}
 		keyHash, value, ok := t.slotRow(slot, t.cold)
+		active, _ := t.SlotActive(slot)
+		if !ok && !active {
+			// A dead slot whose row a leaf-store flush reclaimed (or that a
+			// reload of an imported tombstone left rowless): only its frozen
+			// leaf is left, as for a hash-only slot.
+			return SlotEntry{}, &HashOnlySlotError{Slot: slot, Op: "a v1 portable export"}
+		}
 		if !ok {
 			return SlotEntry{}, fmt.Errorf("qmdb: slot %d has no entry row for a v1 portable export", slot)
 		}
-		active, _ := t.SlotActive(slot)
 		return SlotEntry{Slot: slot, KeyHash: keyHash, Value: value, Active: active}, nil
 	}
 }

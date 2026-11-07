@@ -343,3 +343,143 @@ func TestPortableTombstoneRejections(t *testing.T) {
 		}
 	}
 }
+
+// reclaimedRows is a tombstone stream as a node that reclaimed its dead rows
+// writes it: every kind-0 record (a dead slot with its payload) becomes a
+// kind-2 tombstone carrying the leaf hash of that payload. A leaf-store
+// FlushTo drops dead slots' rows by design, so a reloaded tree has no other
+// form to give.
+func reclaimedRows(t *testing.T, data []byte) []byte {
+	t.Helper()
+	body := data[:len(data)-portableSnapshotDigestSize]
+	out := append([]byte{}, body[:portableTombstoneHeaderSize]...)
+	added := uint64(0)
+	for at := portableTombstoneHeaderSize; at < len(body); {
+		slot, kind := body[at:at+8], body[at+8]
+		switch kind {
+		case PortableKindDead, PortableKindLive:
+			var keyHash Hash
+			copy(keyHash[:], body[at+9:at+41])
+			n := int(binary.LittleEndian.Uint32(body[at+41 : at+45]))
+			value := body[at+45 : at+45+n]
+			if kind == PortableKindDead {
+				leaf := hashLeaf(keyHash, value)
+				out = append(out, slot...)
+				out = append(out, PortableKindTombstone)
+				out = append(out, leaf[:]...)
+				added++
+			} else {
+				out = append(out, body[at:at+45+n]...)
+			}
+			at += 45 + n
+		case PortableKindTombstone:
+			out = append(out, body[at:at+41]...)
+			at += 41
+		case PortableKindDeadTwig:
+			out = append(out, body[at:at+43]...)
+			at += 43
+		default:
+			t.Fatalf("record kind %d at %d", kind, at)
+		}
+	}
+	count := out[portableTombstoneHeaderSize-8 : portableTombstoneHeaderSize]
+	binary.LittleEndian.PutUint64(count, binary.LittleEndian.Uint64(count)+added)
+	return reseal(append(out, make([]byte, portableSnapshotDigestSize)...))
+}
+
+func exportTombstoneFrom(t *testing.T, tree *Tree, g Getter, whole bool) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if _, err := WritePortableSnapshotTombstone(&buf, tree.metadataForTest(), tree, g, whole); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// Each fixture import is flushed through a leaf store and reloaded: the same
+// root, the live keys served from the persisted log, v1 refused at the first
+// slot left without a row, the tombstone exports equal to the fixtures (dead
+// payload rows reclaimed), revival of a tombstoned slot refused, and the
+// reloaded tree extends to the same root as an in-memory one.
+func TestImportedTreesPersistThroughALeafStoreAndReload(t *testing.T) {
+	root := fixtureRoot(t)
+	wantWhole := reclaimedRows(t, readPortableV2Fixture(t, "v2.bin"))
+	wantKind2 := reclaimedRows(t, readPortableV2Fixture(t, "v2-tombstones.bin"))
+	if bytes.Equal(wantWhole, readPortableV2Fixture(t, "v2.bin")) {
+		t.Fatal("the fixture has no dead payload to reclaim")
+	}
+	for _, name := range []string{"v1.bin", "v2.bin", "v2-tombstones.bin"} {
+		tree, _, err := ImportPortableSnapshot(readPortableV2Fixture(t, name), fixtureChainID, fixtureGenesis)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := newMapStore()
+		tree.SetLeafStore(LeafStoreFromGetter(store))
+		if _, _, err := tree.FlushTo(store, 0); err != nil {
+			t.Fatalf("%s: flush with a leaf store: %v", name, err)
+		}
+		tree.CommitFlush()
+		for round := 0; round < 2; round++ {
+			reloaded := New()
+			if err := reloaded.LoadFrom(store); err != nil {
+				t.Fatalf("%s round %d: reload: %v", name, round, err)
+			}
+			if reloaded.Root() != root || reloaded.NextSlot() != 5470 || reloaded.LiveCount() != 2348 {
+				t.Fatalf("%s round %d: root %x next %d live %d", name, round, reloaded.Root(), reloaded.NextSlot(), reloaded.LiveCount())
+			}
+			for _, n := range []uint64{2049, 4300} {
+				if v, ok := reloaded.Get(fixtureKey(n)); !ok || !bytes.Equal(v, []byte{1, byte(n % 251)}) {
+					t.Fatalf("%s: key %d reads %x %v", name, n, v, ok)
+				}
+			}
+			if _, ok := reloaded.Get(fixtureKey(5)); ok {
+				t.Fatalf("%s: a key of the dead twig reads", name)
+			}
+			_, err = exportV1(reloaded)
+			var hashOnly *HashOnlySlotError
+			if !errors.As(err, &hashOnly) || hashOnly.Slot != 0 {
+				t.Fatalf("%s: v1 export after reload: %v", name, err)
+			}
+			if got := exportTombstoneFrom(t, reloaded, store, true); !bytes.Equal(got, wantWhole) {
+				t.Fatalf("%s round %d: whole-dead-twig export after reload differs", name, round)
+			}
+			want := wantKind2
+			if name == "v2.bin" {
+				want = wantWhole // twig 0 never had leaves here: kind 3 either way
+			}
+			if got := exportTombstoneFrom(t, reloaded, store, false); !bytes.Equal(got, want) {
+				t.Fatalf("%s round %d: tombstone-only export after reload differs", name, round)
+			}
+			undo := &BlockUndo{PrevNextSlot: reloaded.NextSlot(), Entries: []UndoEntry{{Slot: 5, KeyHash: fixtureKey(5), Value: []byte{0, 5}}}}
+			if name == "v2.bin" {
+				if err := reloaded.ApplyUndo(undo); !errors.Is(err, ErrHashOnlySlot) {
+					t.Fatalf("%s: revival in the hollow twig after reload: %v", name, err)
+				}
+				if reloaded.Root() != root {
+					t.Fatalf("%s: a refused undo changed the root", name)
+				}
+			}
+			// The reloaded tree flushes again (round 1 reloads that flush).
+			reloaded.SetLeafStore(LeafStoreFromGetter(store))
+			if _, _, err := reloaded.FlushTo(store, reloaded.NextSlot()); err != nil {
+				t.Fatalf("%s: flush after reload: %v", name, err)
+			}
+			reloaded.CommitFlush()
+		}
+		extended := New()
+		if err := extended.LoadFrom(store); err != nil {
+			t.Fatal(err)
+		}
+		plain, _, err := ImportPortableSnapshot(readPortableV2Fixture(t, "v1.bin"), fixtureChainID, fixtureGenesis)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range []*Tree{extended, plain} {
+			tr.Set(filledHash(0x77), []byte{1, 2, 3})
+			tr.Delete(fixtureKey(2049))
+		}
+		if extended.Root() != plain.Root() || extended.Root() == root {
+			t.Fatalf("%s: extended roots %x / %x", name, extended.Root(), plain.Root())
+		}
+	}
+}

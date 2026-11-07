@@ -59,7 +59,7 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 	// tombstone (portable_tombstone.go) has neither. Refused before any
 	// mutation.
 	for i := range u.Entries {
-		if s := u.Entries[i].Slot; s < u.PrevNextSlot && t.isHashOnly(s) {
+		if s := u.Entries[i].Slot; s < u.PrevNextSlot && (t.isHashOnly(s) || t.hollowTwig(int(s/TwigSize))) {
 			return &HashOnlySlotError{Slot: s, Op: "an undo revival"}
 		}
 	}
