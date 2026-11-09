@@ -22,8 +22,11 @@ import (
 // every slot a tombstone), a half-dead compacted twig (twig 1: 1024 live, 1024
 // tombstones) and an uncompacted partial twig (twig 2: 50 dead slots with
 // their payload). v1.bin is the uncompacted tree's v1 export, v2.bin the
-// compacted tree's tombstone export with twig 0 as one kind-3 record, and
-// v2-tombstones.bin the same with kind 2 only.
+// canonical tombstone export of the tree (twig 0 as one kind-3 record, every
+// other dead slot as kind 2; compacted or not, the same bytes), and
+// v2-tombstones.bin a frozen pre-canonical stream of the compacted tree
+// (twig 0 as 2048 tombstones, twig 2's dead slots as kind 0) that an
+// importer must still read.
 const portableV2Dir = "testdata/portable_v2"
 
 var (
@@ -83,7 +86,7 @@ func TestImportPortableV2FixturesToOneRoot(t *testing.T) {
 		tombstones uint64
 	}{
 		{"v1.bin", PortableFormatV1, 0},
-		{"v2.bin", PortableFormatTombstone, 1 + 1024},
+		{"v2.bin", PortableFormatTombstone, 1 + 1024 + 50},
 		{"v2-tombstones.bin", PortableFormatTombstone, 2048 + 1024},
 	}
 	for _, c := range cases {
@@ -136,10 +139,10 @@ func (t *Tree) metadataForTest() PortableSnapshotMetadata {
 	}
 }
 
-func exportTombstone(t *testing.T, tree *Tree, whole bool) []byte {
+func exportTombstone(t *testing.T, tree *Tree) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	n, err := WritePortableSnapshotTombstone(&buf, tree.metadataForTest(), tree, nil, whole)
+	n, err := WritePortableSnapshotTombstone(&buf, tree.metadataForTest(), tree, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,13 +169,10 @@ func TestPortableV2ExportsReproduceTheFixturesAndV1IsRefusedOnTombstones(t *test
 	if !bytes.Equal(again, v1) {
 		t.Fatal("v1 re-export differs from v1.bin")
 	}
-	// Its tombstone export carries no tombstones and imports to the root.
-	plainV2 := exportTombstone(t, plain, true)
-	if _, v, err := ImportPortableSnapshot(plainV2, fixtureChainID, fixtureGenesis); err != nil || v.Tombstones != 0 {
-		t.Fatalf("tombstone export of the uncompacted tree: %v %+v", err, v)
-	}
-	if len(plainV2) != len(v1)+8 {
-		t.Fatalf("tombstone export of the uncompacted tree is %d bytes, v1 %d", len(plainV2), len(v1))
+	// Its tombstone export is canonical: v2.bin, the compacted tree's
+	// export, although every dead payload is still held.
+	if got := exportTombstone(t, plain); !bytes.Equal(got, v2) {
+		t.Fatal("tombstone export of the uncompacted tree differs from v2.bin")
 	}
 
 	for _, c := range []struct {
@@ -189,17 +189,10 @@ func TestPortableV2ExportsReproduceTheFixturesAndV1IsRefusedOnTombstones(t *test
 		if !errors.Is(err, ErrHashOnlySlot) || !errors.As(err, &hashOnly) || hashOnly.Slot != 0 {
 			t.Fatalf("%s: v1 export of a tombstoned tree: %v", c.name, err)
 		}
-		// The tombstone exports reproduce the fixtures. A kind-3 twig has no
-		// leaves left, so it is written as kind 3 either way.
-		if got := exportTombstone(t, tree, true); !bytes.Equal(got, v2) {
-			t.Fatalf("%s: whole-dead-twig export differs from v2.bin", c.name)
-		}
-		want := v2Tombstones
-		if c.name == "v2.bin" {
-			want = v2
-		}
-		if got := exportTombstone(t, tree, false); !bytes.Equal(got, want) {
-			t.Fatalf("%s: tombstone-only export differs", c.name)
+		// The tombstone export is v2.bin, from the canonical stream and
+		// from the pre-canonical one alike.
+		if got := exportTombstone(t, tree); !bytes.Equal(got, v2) {
+			t.Fatalf("%s: tombstone export differs from v2.bin", c.name)
 		}
 	}
 }
@@ -284,6 +277,13 @@ func TestPortableTombstoneRejections(t *testing.T) {
 	if _, _, err := ImportPortableSnapshot(reseal(bad), fixtureChainID, fixtureGenesis); err == nil || !strings.Contains(err.Error(), "root") {
 		t.Fatalf("wrong leaf root: %v", err)
 	}
+	// A wrong tombstone in the canonical stream's partial twig, where the
+	// exporter held the payload.
+	bad = append([]byte{}, readPortableV2Fixture(t, "v2.bin")...)
+	bad[findRecord(t, bad, 4096, PortableKindTombstone)+9] ^= 1
+	if _, _, err := ImportPortableSnapshot(reseal(bad), fixtureChainID, fixtureGenesis); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Fatalf("wrong partial-twig tombstone: %v", err)
+	}
 	// The header's tombstone count must match the records.
 	bad = append([]byte{}, readPortableV2Fixture(t, "v2-tombstones.bin")...)
 	bad[portableSnapshotHeaderSize] ^= 1
@@ -344,53 +344,10 @@ func TestPortableTombstoneRejections(t *testing.T) {
 	}
 }
 
-// reclaimedRows is a tombstone stream as a node that reclaimed its dead rows
-// writes it: every kind-0 record (a dead slot with its payload) becomes a
-// kind-2 tombstone carrying the leaf hash of that payload. A leaf-store
-// FlushTo drops dead slots' rows by design, so a reloaded tree has no other
-// form to give.
-func reclaimedRows(t *testing.T, data []byte) []byte {
-	t.Helper()
-	body := data[:len(data)-portableSnapshotDigestSize]
-	out := append([]byte{}, body[:portableTombstoneHeaderSize]...)
-	added := uint64(0)
-	for at := portableTombstoneHeaderSize; at < len(body); {
-		slot, kind := body[at:at+8], body[at+8]
-		switch kind {
-		case PortableKindDead, PortableKindLive:
-			var keyHash Hash
-			copy(keyHash[:], body[at+9:at+41])
-			n := int(binary.LittleEndian.Uint32(body[at+41 : at+45]))
-			value := body[at+45 : at+45+n]
-			if kind == PortableKindDead {
-				leaf := hashLeaf(keyHash, value)
-				out = append(out, slot...)
-				out = append(out, PortableKindTombstone)
-				out = append(out, leaf[:]...)
-				added++
-			} else {
-				out = append(out, body[at:at+45+n]...)
-			}
-			at += 45 + n
-		case PortableKindTombstone:
-			out = append(out, body[at:at+41]...)
-			at += 41
-		case PortableKindDeadTwig:
-			out = append(out, body[at:at+43]...)
-			at += 43
-		default:
-			t.Fatalf("record kind %d at %d", kind, at)
-		}
-	}
-	count := out[portableTombstoneHeaderSize-8 : portableTombstoneHeaderSize]
-	binary.LittleEndian.PutUint64(count, binary.LittleEndian.Uint64(count)+added)
-	return reseal(append(out, make([]byte, portableSnapshotDigestSize)...))
-}
-
-func exportTombstoneFrom(t *testing.T, tree *Tree, g Getter, whole bool) []byte {
+func exportTombstoneFrom(t *testing.T, tree *Tree, g Getter) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	if _, err := WritePortableSnapshotTombstone(&buf, tree.metadataForTest(), tree, g, whole); err != nil {
+	if _, err := WritePortableSnapshotTombstone(&buf, tree.metadataForTest(), tree, g); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -398,16 +355,13 @@ func exportTombstoneFrom(t *testing.T, tree *Tree, g Getter, whole bool) []byte 
 
 // Each fixture import is flushed through a leaf store and reloaded: the same
 // root, the live keys served from the persisted log, v1 refused at the first
-// slot left without a row, the tombstone exports equal to the fixtures (dead
-// payload rows reclaimed), revival of a tombstoned slot refused, and the
+// slot left without a row, the tombstone export equal to v2.bin byte for byte
+// (the flush reclaimed the dead rows; the canonical layout never needed
+// them), revival of a tombstoned slot refused, and the
 // reloaded tree extends to the same root as an in-memory one.
 func TestImportedTreesPersistThroughALeafStoreAndReload(t *testing.T) {
 	root := fixtureRoot(t)
-	wantWhole := reclaimedRows(t, readPortableV2Fixture(t, "v2.bin"))
-	wantKind2 := reclaimedRows(t, readPortableV2Fixture(t, "v2-tombstones.bin"))
-	if bytes.Equal(wantWhole, readPortableV2Fixture(t, "v2.bin")) {
-		t.Fatal("the fixture has no dead payload to reclaim")
-	}
+	want := readPortableV2Fixture(t, "v2.bin")
 	for _, name := range []string{"v1.bin", "v2.bin", "v2-tombstones.bin"} {
 		tree, _, err := ImportPortableSnapshot(readPortableV2Fixture(t, name), fixtureChainID, fixtureGenesis)
 		if err != nil {
@@ -440,15 +394,8 @@ func TestImportedTreesPersistThroughALeafStoreAndReload(t *testing.T) {
 			if !errors.As(err, &hashOnly) || hashOnly.Slot != 0 {
 				t.Fatalf("%s: v1 export after reload: %v", name, err)
 			}
-			if got := exportTombstoneFrom(t, reloaded, store, true); !bytes.Equal(got, wantWhole) {
-				t.Fatalf("%s round %d: whole-dead-twig export after reload differs", name, round)
-			}
-			want := wantKind2
-			if name == "v2.bin" {
-				want = wantWhole // twig 0 never had leaves here: kind 3 either way
-			}
-			if got := exportTombstoneFrom(t, reloaded, store, false); !bytes.Equal(got, want) {
-				t.Fatalf("%s round %d: tombstone-only export after reload differs", name, round)
+			if got := exportTombstoneFrom(t, reloaded, store); !bytes.Equal(got, want) {
+				t.Fatalf("%s round %d: tombstone export after reload differs from v2.bin", name, round)
 			}
 			undo := &BlockUndo{PrevNextSlot: reloaded.NextSlot(), Entries: []UndoEntry{{Slot: 5, KeyHash: fixtureKey(5), Value: []byte{0, 5}}}}
 			if name == "v2.bin" {

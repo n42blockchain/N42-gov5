@@ -21,12 +21,22 @@ import (
 //	        entry_count (the number of kind-2 and kind-3 records)
 //	record  [slot u64][kind u8] then
 //	        kind 0  [key 32][len u32][value]  dead slot with its payload
+//	                (read, never written)
 //	        kind 1  [key 32][len u32][value]  live slot
 //	        kind 2  [leaf_hash 32]            dead slot, payload dropped
 //	        kind 3  [count u16][leaf_root 32] a whole dead twig of tombstones:
 //	                slot % 2048 == 0, count == 2048; the next record is at
 //	                slot + count
 //	trailer Blake3 of every byte before it
+//
+// The export is canonical (2026-11-09): every dead slot is written as kind 2
+// and every full twig without a live slot as one kind-3 record, whether or
+// not the exporter still holds the dead rows or the twig's leaves. A node
+// that imports at head H has no history below H, so no undo it runs revives
+// a slot dead at H and a dead payload is never needed; dropping it makes the
+// bytes a function of the tree alone -- the same on gov5 and n42-rs, before
+// or after a leaf-store FlushTo (which reclaims dead rows) and a reload.
+// Kind 0 is still imported, so an older stream stays readable.
 //
 // The version byte is 3, not 2: N42QMDB\x02 is the leaf-form layout
 // (portable_v2.go, WritePortableSnapshotV2), and two layouts must not share
@@ -376,15 +386,14 @@ func (t *Tree) slotRow(slot uint64, cold ColdReader) (keyHash Hash, value []byte
 	return cold.ColdEntry(slot)
 }
 
-// WritePortableSnapshotTombstone streams the tombstone layout of t, whose
-// root must equal metadata.Root. A slot with its row is written as kind 0/1;
-// a dead slot without one (hash-only, or a reclaimed row) as a tombstone
-// carrying its frozen leaf. A full, wholly dead twig whose slots all lack
-// rows is written as one kind-3 record when wholeDeadTwigs is set, and must
-// be when the node keeps no leaves for it (a hollow twig). g supplies cold
-// rows and leaf blobs and may be nil for an in-memory tree. The records are
-// produced twice -- once to count the tombstones the header carries.
-func WritePortableSnapshotTombstone(w io.Writer, metadata PortableSnapshotMetadata, t *Tree, g Getter, wholeDeadTwigs bool) (int64, error) {
+// WritePortableSnapshotTombstone streams the canonical tombstone layout of t,
+// whose root must equal metadata.Root: a live slot as kind 1 with its row, a
+// dead slot as a kind-2 tombstone carrying its leaf hash (from the twig's
+// leaves, else hashed from its row), and a full twig without a live slot as
+// one kind-3 record carrying its leaf root. g supplies cold rows and leaf
+// blobs and may be nil for an in-memory tree. The records are produced twice
+// -- once to count the tombstones the header carries.
+func WritePortableSnapshotTombstone(w io.Writer, metadata PortableSnapshotMetadata, t *Tree, g Getter) (int64, error) {
 	if t == nil {
 		return 0, errors.New("qmdb: nil tree for the tombstone portable snapshot")
 	}
@@ -395,7 +404,7 @@ func WritePortableSnapshotTombstone(w io.Writer, metadata PortableSnapshotMetada
 		return 0, fmt.Errorf("qmdb: tree next slot %d is not the snapshot next slot %d", t.nextSlot, metadata.NextSlot)
 	}
 	counter := &countingWriter{w: io.Discard}
-	tombstones, err := t.writeTombstoneRecords(counter, metadata, g, wholeDeadTwigs)
+	tombstones, err := t.writeTombstoneRecords(counter, metadata, g)
 	if err != nil {
 		return 0, err
 	}
@@ -414,14 +423,14 @@ func WritePortableSnapshotTombstone(w io.Writer, metadata PortableSnapshotMetada
 	if _, err := payload.Write(header); err != nil {
 		return payload.n, err
 	}
-	if _, err := t.writeTombstoneRecords(payload, metadata, g, wholeDeadTwigs); err != nil {
+	if _, err := t.writeTombstoneRecords(payload, metadata, g); err != nil {
 		return payload.n, err
 	}
 	n, err := w.Write(hasher.Sum(nil))
 	return payload.n + int64(n), err
 }
 
-func (t *Tree) writeTombstoneRecords(w io.Writer, metadata PortableSnapshotMetadata, g Getter, wholeDeadTwigs bool) (uint64, error) {
+func (t *Tree) writeTombstoneRecords(w io.Writer, metadata PortableSnapshotMetadata, g Getter) (uint64, error) {
 	var leafStore LeafStore = t.leafStore
 	if leafStore == nil && g != nil {
 		leafStore = LeafStoreFromGetter(g)
@@ -442,6 +451,23 @@ func (t *Tree) writeTombstoneRecords(w io.Writer, metadata PortableSnapshotMetad
 		appended := metadata.NextSlot - base
 		if appended > TwigSize {
 			appended = TwigSize
+		}
+		// A full twig without a live slot: one kind-3 record, its leaves
+		// and rows not consulted. Root() above left no twig dirty.
+		if appended == TwigSize && tw.live == 0 {
+			binary.LittleEndian.PutUint64(fixed[:8], base)
+			fixed[8] = PortableKindDeadTwig
+			binary.LittleEndian.PutUint16(fixed[9:11], TwigSize)
+			leafRoot := tw.leafRoot
+			if tw.nodes != nil && !tw.dirty {
+				leafRoot = tw.nodes[1]
+			}
+			copy(fixed[11:43], leafRoot[:])
+			if _, err := w.Write(fixed[:43]); err != nil {
+				return tombstones, err
+			}
+			tombstones++
+			continue
 		}
 		var leaves *[2 * TwigSize]Hash
 		switch {
@@ -466,42 +492,18 @@ func (t *Tree) writeTombstoneRecords(w io.Writer, metadata PortableSnapshotMetad
 				}
 			}
 		}
-		full := appended == TwigSize && tw.live == 0
-		if full && (leaves == nil || wholeDeadTwigs) {
-			rowless := true
-			for s := base; s < base+TwigSize && rowless; s++ {
-				_, _, has := t.slotRow(s, cold)
-				rowless = !has
-			}
-			if rowless || leaves == nil {
-				binary.LittleEndian.PutUint64(fixed[:8], base)
-				fixed[8] = PortableKindDeadTwig
-				binary.LittleEndian.PutUint16(fixed[9:11], TwigSize)
-				leafRoot := tw.leafRoot
-				if tw.nodes != nil && !tw.dirty {
-					leafRoot = tw.nodes[1]
-				}
-				copy(fixed[11:43], leafRoot[:])
-				if _, err := w.Write(fixed[:43]); err != nil {
-					return tombstones, err
-				}
-				tombstones++
-				continue
-			}
-		}
 		for local := uint64(0); local < appended; local++ {
 			slot := base + local
 			binary.LittleEndian.PutUint64(fixed[:8], slot)
-			live := tw.bit(local)
 			keyHash, value, has := t.slotRow(slot, cold)
-			if has {
+			if tw.bit(local) {
+				if !has {
+					return tombstones, fmt.Errorf("qmdb: live slot %d has no entry row", slot)
+				}
 				if len(value) > maxPortableValueSize {
 					return tombstones, fmt.Errorf("qmdb: portable slot %d value is too large: %d", slot, len(value))
 				}
-				fixed[8] = PortableKindDead
-				if live {
-					fixed[8] = PortableKindLive
-				}
+				fixed[8] = PortableKindLive
 				copy(fixed[9:41], keyHash[:])
 				binary.LittleEndian.PutUint32(fixed[41:45], uint32(len(value)))
 				if _, err := w.Write(fixed[:45]); err != nil {
@@ -512,14 +514,17 @@ func (t *Tree) writeTombstoneRecords(w io.Writer, metadata PortableSnapshotMetad
 				}
 				continue
 			}
-			if live {
-				return tombstones, fmt.Errorf("qmdb: live slot %d has no entry row", slot)
-			}
-			if leaves == nil {
+			var leaf Hash
+			switch {
+			case leaves != nil:
+				leaf = leaves[TwigSize+local]
+			case has:
+				leaf = hashLeaf(keyHash, value)
+			default:
 				return tombstones, fmt.Errorf("qmdb: dead slot %d has neither a row nor a leaf hash", slot)
 			}
 			fixed[8] = PortableKindTombstone
-			copy(fixed[9:41], leaves[TwigSize+local][:])
+			copy(fixed[9:41], leaf[:])
 			if _, err := w.Write(fixed[:41]); err != nil {
 				return tombstones, err
 			}
