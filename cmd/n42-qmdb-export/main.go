@@ -30,9 +30,27 @@ func main() {
 	outputPath := flag.String("out", "", "portable snapshot output file")
 	mapGB := flag.Int("map.gb", 512, "MDBX map size in GiB")
 	leafForm := flag.Bool("leaf-form", false, "write the v2 leaf-form snapshot (per-twig leaf hashes and live entries); the only form a node that reclaims dead entry rows can write")
+	format := flag.String("format", "v1", "portable layout: v1 (every slot's key and value), v2 (the canonical tombstone layout, N42QMDB\\x03: every dead slot as its leaf hash, every full twig without a live slot as its leaf root; the same tree writes the same bytes on gov5 and n42-rs; n42-rs docs/QMDB_COMPACTION_DESIGN.md section 6), or leaf-form (same as --leaf-form)")
+	wholeDeadTwigs := flag.Bool("whole-dead-twigs", false, "deprecated, no effect: --format v2 always writes a full twig without a live slot as one kind-3 record")
 	flag.Parse()
+	if *wholeDeadTwigs {
+		fmt.Fprintln(os.Stderr, "warning: --whole-dead-twigs is deprecated and has no effect; the v2 export always writes whole dead twigs as kind-3 records")
+	}
 	if *dbPath == "" || *outputPath == "" {
-		fatalf("usage: n42-qmdb-export --db <chaindata> --out <snapshot>")
+		fatalf("usage: n42-qmdb-export --db <chaindata> --out <snapshot> [--format v1|v2|leaf-form]")
+	}
+	tombstone := false
+	switch *format {
+	case "v1":
+	case "v2", "tombstone":
+		tombstone = true
+	case "leaf-form":
+		*leafForm = true
+	default:
+		fatalf("unknown --format %q (v1, v2 or leaf-form)", *format)
+	}
+	if tombstone && *leafForm {
+		fatalf("--format v2 and --leaf-form are different layouts; pick one")
 	}
 
 	modules.N42Init()
@@ -133,12 +151,15 @@ func main() {
 		if *leafForm {
 			return qmdb.WritePortableSnapshotV2(w, metadata, computer.Tree(), tx)
 		}
+		if tombstone {
+			return qmdb.WritePortableSnapshotTombstone(w, metadata, computer.Tree(), tx)
+		}
 		return qmdb.WritePortableSnapshot(w, metadata, source)
 	})
 	if err != nil {
 		fatalf("encode portable snapshot: %v", err)
 	}
-	if key != nil && !*leafForm {
+	if key != nil && !*leafForm && !tombstone {
 		fatalf("QMDB entry table contains rows beyond next slot %d", metadata.NextSlot)
 	}
 	if cursorErr != nil {

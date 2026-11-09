@@ -245,6 +245,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		if !e.active && t.leafStore != nil && t.hist == nil {
 			continue // dead at flush; blob carries its frozen leaf (non-archive)
 		}
+		if e.hashOnly {
+			// Imported from a tombstone: no row to write, and without a leaf
+			// store nothing else would carry its frozen leaf.
+			return flushedThrough, bytesW, &HashOnlySlotError{Slot: s, Op: "a flush without a leaf store"}
+		}
 		val := make([]byte, 0, 32+len(e.value))
 		val = append(val, e.keyHash[:]...)
 		val = append(val, e.value...)
@@ -655,6 +660,7 @@ func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, a
 		hydrated = true
 	}
 	lo := uint64(id) * TwigSize
+	rows := 0
 	for local := 0; local < TwigSize; local++ {
 		slot := lo + uint64(local)
 		if slot >= nextSlot {
@@ -678,6 +684,7 @@ func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, a
 			}
 			continue
 		}
+		rows++
 		var kh Hash
 		copy(kh[:], v[:32])
 		if !hydrated {
@@ -689,6 +696,23 @@ func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, a
 		if needKey {
 			t.idx.Put(kh, slot)
 		}
+	}
+	if !hydrated && rows == 0 && live == 0 && haveMeta && id < activeTwig {
+		// A hollow twig: sealed, wholly dead, and with neither a leaf blob nor
+		// a single entry row -- a twig imported from a portable whole-dead-twig
+		// record (kind 3), which never had leaves on this node. Its meta is
+		// the only record of it, so it is adopted as pruned, checked the same
+		// way the fast path checks a sealed twig's meta.
+		tw.nodes = nil
+		tw.leafRoot = storedLeafRoot
+		tw.bitsRoot = hashBits(&tw.bits)
+		tw.root = storedRoot
+		tw.dirty = false
+		tw.pruned = true
+		if hashNode(tw.leafRoot, tw.bitsRoot) != tw.root {
+			return errTwigMetaInconsistent
+		}
+		return nil
 	}
 	tw.recompute() // one full rebuild from the bulk-written leaves
 	if haveMeta && tw.root != storedRoot {
