@@ -202,7 +202,7 @@ func e1Fetch(ctx context.Context, source string, hash types.Hash) (rawdb.Execute
 // e1LightImport stores b, a block queued for the lag executor of a light
 // node, with the executor's result of it. done is false while the executor
 // has not produced the result or b's parent is not stored here yet.
-func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
+func (bc *BlockChain) e1LightImport(b *block.Block, tm *e1ImportTiming) (done bool, err error) {
 	n := b.Number64().Uint64()
 	if !bc.blockStored(b.ParentHash(), n-1) {
 		return false, nil
@@ -243,13 +243,17 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 	if err := bc.ResolveFrames(b); err != nil {
 		return false, err
 	}
+	tm.decode = time.Since(tDecode)
 	if lazyHeld && len(body.Txs) >= 1000 {
 		log.Info("e1 light: frames decoded at import (lazy)", "n", n, "txs", len(body.Txs),
 			"frames", len(body.FrameHashes), "decodeUs", time.Since(tDecode).Microseconds())
 	}
 	stored := bc.blockStored(b.Hash(), n)
 	var td *uint256.Int
+	tLock := time.Now()
 	bc.lock.Lock()
+	tm.lockWait = time.Since(tLock)
+	tUpdate := time.Now()
 	err = bc.ChainDB.Update(ctx, func(tx kv.RwTx) error {
 		if !stored {
 			ptd, err := rawdb.ReadTd(tx, b.ParentHash(), n-1)
@@ -272,10 +276,13 @@ func (bc *BlockChain) e1LightImport(b *block.Block) (done bool, err error) {
 		}
 		return rawdb.WriteExecutedResult(tx, b.Hash(), r)
 	})
+	tm.update = time.Since(tUpdate)
 	bc.lock.Unlock()
 	if err != nil {
 		return false, err
 	}
+	tPersist := time.Now()
+	defer func() { tm.persist = time.Since(tPersist) }()
 	if !stored {
 		bc.framesPersisted(b)
 		if bc.blockCache != nil {
@@ -428,9 +435,14 @@ func (bc *BlockChain) e1LightStep(list []*lagQueued, committedNum uint64) bool {
 			bc.lagForget(b.Hash())
 			return true
 		}
-		done, err := bc.e1LightImport(b)
+		var tm e1ImportTiming
+		tImport := time.Now()
+		done, err := bc.e1LightImport(b, &tm)
 		if done {
+			importDur := time.Since(tImport)
+			tDone := time.Now()
 			bc.lagDone(b, true)
+			e1LogImportTiming(b, n, q, len(list), committedNum, importDur, time.Since(tDone), &tm)
 			return true
 		}
 		if err != nil && !q.stuckLog && time.Since(q.since) > 5*time.Second {
@@ -471,4 +483,34 @@ func (bc *BlockChain) e1HasResult(hash types.Hash) bool {
 		return nil
 	})
 	return ok
+}
+
+// e1ImportTiming holds the phases of one light import (QS run 45
+// diagnosis: light nodes mark frames committed 10-20 blocks late).
+type e1ImportTiming struct {
+	decode, lockWait, update, persist time.Duration
+}
+
+// e1LastImportEnd is when the previous light import finished (unix ns).
+var e1LastImportEnd atomic.Int64
+
+// e1LogImportTiming logs one light import of a non-trivial block: the
+// time it waited in the queue, the gap since the previous import, the
+// import phases, and lagDone (which runs the commit hook).
+func e1LogImportTiming(b *block.Block, n uint64, q *lagQueued, queued int, committedNum uint64, importDur, doneDur time.Duration, tm *e1ImportTiming) {
+	now := time.Now()
+	prev := e1LastImportEnd.Swap(now.UnixNano())
+	body, _ := b.Body().(*block.Body)
+	if body == nil || len(body.Txs) < 1000 {
+		return
+	}
+	gapUs := int64(-1)
+	if prev != 0 {
+		gapUs = (now.UnixNano() - prev) / 1000
+	}
+	log.Info("e1 light: import timing", "n", n, "txs", len(body.Txs), "queued", queued,
+		"behindCommitted", int64(committedNum)-int64(n), "queueAgeUs", now.Sub(q.since).Microseconds(),
+		"gapUs", gapUs, "importUs", importDur.Microseconds(), "decodeUs", tm.decode.Microseconds(),
+		"lockWaitUs", tm.lockWait.Microseconds(), "updateUs", tm.update.Microseconds(),
+		"persistUs", tm.persist.Microseconds(), "doneUs", doneDur.Microseconds())
 }
