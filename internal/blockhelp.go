@@ -291,7 +291,7 @@ func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBl
 	if rules == nil || !rules.IsPrague {
 		return nil
 	}
-	registry := resolvePragueSystemContractRegistry(rules)
+	registry := resolvePragueSystemContractRegistry(chainConfig, rules, header.Time)
 
 	// EIP-2935 deployment may happen before, on, or after the fork block depending
 	// on the fixture. Only store history once the contract actually exists.
@@ -358,7 +358,7 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	if rules == nil || !rules.IsPrague {
 		return nil, nil
 	}
-	registry := resolvePragueSystemContractRegistry(rules)
+	registry := resolvePragueSystemContractRegistry(chainConfig, rules, header.Time)
 
 	noop := state.NewNoopWriter()
 	requests := make([]hexutil.Bytes, 0, 2)
