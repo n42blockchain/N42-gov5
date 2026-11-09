@@ -477,13 +477,18 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// Enforce the RLP shape on both sides of the boundary so a validator started
 	// without the mobile pipeline cannot silently produce nil-root blocks after
 	// activation, and a pre-fork producer cannot change historical wire form.
+	// The root is RLP element 24, behind the EIP-7843 slot number, so it is
+	// gated on both forks (params.IsMobileRegistryRootInHeader).
 	if cfg := chain.Config(); cfg != nil {
-		active := cfg.IsMobileAnchor(header.Time)
+		active := cfg.IsMobileRegistryRootInHeader(header.Time)
 		switch {
 		case active && header.MobileRegistryRoot == nil:
-			return fmt.Errorf("missing MobileRegistryRoot at block %s after MobileAnchor activation", header.Number)
+			return fmt.Errorf("missing MobileRegistryRoot at block %s after MobileAnchor and Glamsterdam activation", header.Number)
 		case !active && header.MobileRegistryRoot != nil:
-			return fmt.Errorf("unexpected MobileRegistryRoot at block %s before MobileAnchor activation", header.Number)
+			return fmt.Errorf("unexpected MobileRegistryRoot at block %s before MobileAnchor and Glamsterdam activation", header.Number)
+		}
+		if err := verifySlotNumber(cfg, header); err != nil {
+			return err
 		}
 	}
 
@@ -839,6 +844,11 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 			rq := hash.EmptyRootHash // keccak256(RLP([])): no EIP-7685 requests
 			header.RequestsHash = &rq
 		}
+		if cfg.IsGlamsterdam(header.Time) && header.SlotNumber == nil {
+			// EIP-7843 header element 23; see NativeSlotNumber.
+			slot := NativeSlotNumber(header)
+			header.SlotNumber = &slot
+		}
 	}
 
 	// Assemble the block with computed TxHash and ReceiptHash.
@@ -1115,4 +1125,31 @@ func sortedAddrs(m map[types.Address]*account.StateAccount) []types.Address {
 	}
 	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
 	return out
+}
+
+// NativeSlotNumber is the EIP-7843 slot number of a native-chain block: its
+// block number. EIP-7843 takes the slot from the consensus layer; a HotStuff
+// chain has views, not slots, and a view is not recoverable from the header
+// alone by an Ethereum client (it sits inside Extra). The block number is the
+// one monotonic index every member derives from the header itself, and it is
+// what the Rust client puts in the Engine API payload and its sealed header
+// (n42-rs crates/n42/h2-el-rpc/src/engine.rs, h2-consensus header_profile.rs).
+func NativeSlotNumber(header *block.Header) uint64 {
+	return header.Number.Uint64()
+}
+
+// verifySlotNumber enforces the EIP-7843 header field on the native chain:
+// present from Glamsterdam (gov5's Amsterdam fork) on and equal to the block
+// number, absent before. The same fork moves MobileRegistryRoot to element 24.
+func verifySlotNumber(cfg *params.ChainConfig, header *block.Header) error {
+	active := cfg.IsGlamsterdam(header.Time)
+	switch {
+	case active && header.SlotNumber == nil:
+		return fmt.Errorf("missing SlotNumber at block %s after Glamsterdam activation", header.Number)
+	case active && *header.SlotNumber != NativeSlotNumber(header):
+		return fmt.Errorf("SlotNumber %d at block %s, want the block number", *header.SlotNumber, header.Number)
+	case !active && header.SlotNumber != nil:
+		return fmt.Errorf("unexpected SlotNumber %d at block %s before Glamsterdam activation", *header.SlotNumber, header.Number)
+	}
+	return nil
 }
