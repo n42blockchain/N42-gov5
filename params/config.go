@@ -346,6 +346,22 @@ type ChainConfig struct {
 	// transactions are includable against that post-state. Nil = never.
 	DeferredExecutionTime *big.Int `json:"deferredExecutionTime,omitempty"`
 
+	// UnchangedAccountNoOpTime activates the unchanged-account rule for the
+	// state root: from a block whose timestamp is at or past it, an account
+	// the block touched but left as it was read -- same nonce, balance and
+	// code hash, no storage write, not created, not destroyed -- writes no
+	// leaf. Before it, such an account was written whenever its first access
+	// in the block was an AddBalance (the coinbase credited a zero tip, the
+	// recipient of a zero-value transfer not yet loaded), which re-appends an
+	// unchanged QMDB leaf and moves the positional root, while the parallel
+	// commit (zero CoinbaseDelta skipped) and an account loaded earlier in the
+	// block wrote nothing: one block could commit to two roots by path. With
+	// it the root is the function of the state change the Ethereum root
+	// already is, and the one n42-rs computes (audit R3-E2). N42 extension;
+	// a rebuilt base (replay-v2) carries the time it was rebuilt under.
+	// Nil = never.
+	UnchangedAccountNoOpTime *big.Int `json:"unchangedAccountNoOpTime,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.
