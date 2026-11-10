@@ -4049,6 +4049,18 @@ func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
 	opts := mdbx.NewMDBX(logger).WriteMergeThreshold(4 * 8192).Path(path).Label(kv.ChainDB).
 		WithTableCfg(rawdb.FrameStoreTables).
 		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	// BENCH ONLY: N42_FRAME_DB_SYNC=safe-nosync drops the frame store's
+	// per-commit fsync while the chain database stays durable. A crash can
+	// then leave a durable block whose frames were lost, which the node must
+	// fetch from its peers again. It exists to measure how much of the frame
+	// write is the fsync when seven nodes share one disk.
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("N42_FRAME_DB_SYNC"))); v == "safe-nosync" {
+		log.Warn("!!! FRAME STORE DURABILITY REDUCED (BENCH ONLY) !!! N42_FRAME_DB_SYNC=safe-nosync: " +
+			"a crash can lose frames of blocks that are already durable")
+		return opts.SafeNoSync().Open(ctx)
+	} else if v != "" && v != "durable" {
+		log.Warn("ignoring unknown N42_FRAME_DB_SYNC value", "value", v)
+	}
 	return mdbxSyncModeOr(opts, logger).Open(ctx)
 }
 
