@@ -1407,7 +1407,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	// two transaction-count-proportional steps (reading the block's bodies and
 	// writing one TxLookup row per transaction) are what set the block cycle at
 	// a high gas ceiling -- measured at 2.7 s mean of a 3.53 s cycle.
-	var dRead, dWalk, dLookup, dLock, dBody time.Duration
+	var dRead, dWalk, dLookup, dLock, dBody, dPreRead time.Duration
 	var indexed *block.Block
 	tCommit := time.Now()
 	// The committed block is two views old and almost always the instance
@@ -1421,6 +1421,22 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		if b, ok := bc.blockCache.Get(hash); ok && b != nil {
 			cached = b
 		}
+	}
+	if cached == nil && commitDupFast {
+		// The block is not cached: settle a duplicate commit, or read the
+		// block, on a read transaction instead of under the MDBX writer.
+		dup, dupNumber, blk, perr := bc.commitPreRead(hash)
+		if perr != nil {
+			return perr
+		}
+		if dup {
+			log.Info("commit-to-canonical phases",
+				"number", dupNumber, "dup", true, "total", time.Since(tCommit))
+			return nil
+		}
+		cached = blk
+		dPreRead = time.Since(tCommit)
+		tCommit = time.Now()
 	}
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		tEnter := time.Now()
@@ -1667,7 +1683,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	}
 	log.Info("commit-to-canonical phases",
 		"number", committedNumber, "lock", dLock, "read", dRead, "walk", dWalk,
-		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total)
+		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total, "preRead", dPreRead)
 	// HotStuff imports candidates as side blocks and advances the canonical
 	// head only here. Notify after the database transaction commits: the
 	// import-time canonical callback is intentionally bypassed on this path.
