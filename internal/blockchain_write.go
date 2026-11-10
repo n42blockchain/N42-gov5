@@ -305,6 +305,8 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// The write transactions that held the MDBX writer while this one
 		// waited to begin (N42_RW_HOLDER_DIAG=1; "" otherwise).
 		beginBehind string
+		// The BeginTxn wait alone (begin also holds the Go-side overhead).
+		dBeginWait time.Duration
 		// The frame store write (P11): its own run and the commit's wait.
 		dFrames, dFramesWait time.Duration
 		prepFast             bool
@@ -355,7 +357,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		if d, ok := tx.(interface {
 			RwBeginBehind() (time.Duration, string)
 		}); ok {
-			_, beginBehind = d.RwBeginBehind()
+			dBeginWait, beginBehind = d.RwBeginBehind()
 		}
 		if traceNativeCommit {
 			writeTxID = tx.ViewID()
@@ -889,7 +891,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
 		}
 		if beginBehind != "" {
-			fields = append(fields, "beginBehind", beginBehind)
+			fields = append(fields, "beginBehind", beginBehind, "beginWait", dBeginWait)
 		}
 		if traceNativeCommit {
 			// Join native stage timings to this exact block and write transaction.

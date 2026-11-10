@@ -79,6 +79,17 @@ func (l *rwHolderLog) behind(since, until time.Time) string {
 		b.WriteByte(':')
 		b.WriteString(strconv.FormatInt(r.held.Milliseconds(), 10))
 	}
+	if b.Len() == 0 && n > 0 {
+		// Nobody released during the wait: name the last release before it
+		// and how long before, so an unexplained wait is not left blank.
+		r := l.ring[(n-1)%rwReleaseRing]
+		b.WriteString("last=")
+		b.WriteString(r.tag)
+		b.WriteByte(':')
+		b.WriteString(strconv.FormatInt(r.held.Milliseconds(), 10))
+		b.WriteString("@-")
+		b.WriteString(strconv.FormatInt(since.Sub(r.releasedAt).Milliseconds(), 10))
+	}
 	return b.String()
 }
 
