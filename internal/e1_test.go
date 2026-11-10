@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/internal/frame/frametest"
 	"github.com/n42blockchain/N42/internal/frame/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
@@ -30,13 +31,20 @@ import (
 // stored results equal the executor's, its leader gate opens on them and
 // its availability check of the next header passes against them.
 func TestE1LightFollowsExecutor(t *testing.T) {
-	for _, mode := range []string{"stored", "early", "prefetch", "lazy", "lazycheck"} {
+	for _, mode := range []string{"stored", "early", "prefetch", "lazy", "lazycheck", "ahead", "aheadprefetch"} {
 		t.Run(mode, func(t *testing.T) {
 			defer SetE1EarlyForTest(mode != "stored")()
-			defer SetE1PrefetchForTest(mode == "prefetch")()
+			defer SetE1PrefetchForTest(mode == "prefetch" || mode == "aheadprefetch")()
+			ahead := mode == "ahead" || mode == "aheadprefetch"
+			defer SetE1FramesAheadForTest(ahead)()
+			if ahead {
+				fdb := memdb.New(t.TempDir())
+				defer fdb.Close()
+				defer rawdb.SetFrameStore(fdb)()
+			}
 			lazy := "off"
 			switch mode {
-			case "lazy":
+			case "lazy", "ahead":
 				lazy = "on"
 			case "lazycheck":
 				lazy = "check"
@@ -236,6 +244,21 @@ func testE1LightFollowsExecutor(t *testing.T, lazy string) {
 
 	imported, _, _, _ := E1LightStats()
 	require.GreaterOrEqual(t, imported, uint64(blocks))
+	if e1FramesAheadOn {
+		// The checked blocks' frames went through the ahead writer, and
+		// every stored block's frames are readable from the frame store.
+		require.GreaterOrEqual(t, light.bc.e1Ahead.blocks.Load(), uint64(1), "no block's frames written ahead")
+		require.NoError(t, light.db.View(context.Background(), func(tx kv.Tx) error {
+			for i, b := range chain {
+				for _, h := range b.Body().(*block.Body).FrameHashes {
+					raw, err := rawdb.ReadFrame(tx, h)
+					require.NoError(t, err)
+					require.NotEmpty(t, raw, "frame of block %d not stored", i+1)
+				}
+			}
+			return nil
+		}))
+	}
 	light.bc.e1Early.Range(func(k, _ any) bool {
 		t.Errorf("early result of %v kept after its block was stored", k)
 		return true

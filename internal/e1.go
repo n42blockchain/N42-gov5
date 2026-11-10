@@ -249,6 +249,15 @@ func (bc *BlockChain) e1LightImport(b *block.Block, tm *e1ImportTiming) (done bo
 			"frames", len(body.FrameHashes), "decodeUs", time.Since(tDecode).Microseconds())
 	}
 	stored := bc.blockStored(b.Hash(), n)
+	// N42_E1_LIGHT_FRAMES_AHEAD: the frames went to the frame store on the
+	// ahead writer; the block's write only has to wait for them.
+	framesStored := false
+	if fa := bc.e1Ahead.take(b.Hash()); fa != nil && !stored {
+		tWait := time.Now()
+		<-fa.done
+		tm.framesWait = time.Since(tWait)
+		framesStored = fa.err == nil
+	}
 	var td *uint256.Int
 	tLock := time.Now()
 	bc.lock.Lock()
@@ -267,7 +276,11 @@ func (bc *BlockChain) e1LightImport(b *block.Block, tm *e1ImportTiming) (done bo
 			if err := rawdb.WriteTd(tx, b.Hash(), n, td); err != nil {
 				return err
 			}
-			if err := rawdb.WriteBlock(tx, b); err != nil {
+			write := rawdb.WriteBlock
+			if framesStored {
+				write = rawdb.WriteBlockFramesStored
+			}
+			if err := write(tx, b); err != nil {
 				return err
 			}
 			if err := bc.writeConsensusEvidence(tx, b); err != nil {
@@ -424,6 +437,9 @@ func (bc *BlockChain) e1LightStep(list []*lagQueued, committedNum uint64) bool {
 	if e1Prefetch && e1Early {
 		bc.e1PrefetchQueued(list, committedNum)
 	}
+	if e1FramesAheadOn {
+		bc.e1Ahead.queue(bc, list, committedNum)
+	}
 	for _, q := range list {
 		b := q.blk
 		n := b.Number64().Uint64()
@@ -488,7 +504,7 @@ func (bc *BlockChain) e1HasResult(hash types.Hash) bool {
 // e1ImportTiming holds the phases of one light import (QS run 45
 // diagnosis: light nodes mark frames committed 10-20 blocks late).
 type e1ImportTiming struct {
-	decode, lockWait, update, persist time.Duration
+	decode, framesWait, lockWait, update, persist time.Duration
 }
 
 // e1LastImportEnd is when the previous light import finished (unix ns).
@@ -510,7 +526,7 @@ func e1LogImportTiming(b *block.Block, n uint64, q *lagQueued, queued int, commi
 	}
 	log.Info("e1 light: import timing", "n", n, "txs", len(body.Txs), "queued", queued,
 		"behindCommitted", int64(committedNum)-int64(n), "queueAgeUs", now.Sub(q.since).Microseconds(),
-		"gapUs", gapUs, "importUs", importDur.Microseconds(), "decodeUs", tm.decode.Microseconds(),
+		"gapUs", gapUs, "importUs", importDur.Microseconds(), "decodeUs", tm.decode.Microseconds(), "framesWaitUs", tm.framesWait.Microseconds(),
 		"lockWaitUs", tm.lockWait.Microseconds(), "updateUs", tm.update.Microseconds(),
 		"persistUs", tm.persist.Microseconds(), "doneUs", doneDur.Microseconds())
 }

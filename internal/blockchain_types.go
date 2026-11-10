@@ -301,6 +301,9 @@ type BlockChain struct {
 	// e1Prefetch holds the blocks a light node fetches results for ahead of
 	// its stores (N42_E1_PREFETCH; e1.go): hash -> block number.
 	e1Prefetch sync.Map
+	// e1Ahead writes a light node's queued frames to the frame store ahead
+	// of their blocks' imports (N42_E1_LIGHT_FRAMES_AHEAD; e1_frames_ahead.go).
+	e1Ahead e1FramesAhead
 }
 
 // CommitteeEvidenceBuilder builds the consensus evidence for a freshly persisted
