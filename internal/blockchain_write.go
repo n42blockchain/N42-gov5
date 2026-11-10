@@ -821,6 +821,12 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
 	// isolates the aggregate commit path from everything the closure did.
 	dUpdate := time.Since(tUpdateStart)
+	if commitDupFast && bc.blockCache != nil {
+		// A commit of this block may already be waiting for the writer just
+		// released: cache the instance now, not after the post-write work
+		// below (the deferred Add stays as the unconditional path).
+		bc.blockCache.Add(concreteBlock.Hash(), concreteBlock)
+	}
 	if lagTx {
 		lagBGGate.exit()
 	}

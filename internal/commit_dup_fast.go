@@ -51,6 +51,10 @@ func SetCommitDupFastForTest(on bool) func() {
 	return func() { commitDupFast = prev }
 }
 
+// commitAfterPreReadForTest, when set, runs between the pre-read and the
+// write transaction (tests: the block's own write landing in that gap).
+var commitAfterPreReadForTest func()
+
 // commitPreRead reports whether the commit of hash is a duplicate that needs
 // no write; otherwise it returns the block read from the database (nil when
 // it is not stored, which the write transaction reports as before).

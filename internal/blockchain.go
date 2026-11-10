@@ -1435,6 +1435,9 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 			return nil
 		}
 		cached = blk
+		if fn := commitAfterPreReadForTest; fn != nil {
+			fn()
+		}
 		dPreRead = time.Since(tCommit)
 		tCommit = time.Now()
 	}
@@ -1444,6 +1447,15 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		defer func() { dBody = time.Since(tEnter) }()
 		tRead := time.Now()
 		blk := cached
+		if blk == nil && commitDupFast && bc.blockCache != nil {
+			// The pre-read ran before the block was stored: this commit then
+			// queued for the writer behind the block's own write, which has
+			// cached the imported instance by now (E1N26 run 48 B1: 233 such
+			// commits decoded 326,000 transactions here, 55-516 ms each).
+			if b, ok := bc.blockCache.Get(hash); ok && b != nil {
+				blk = b
+			}
+		}
 		if blk == nil {
 			var err error
 			blk, err = rawdb.ReadBlockByHash(tx, hash)

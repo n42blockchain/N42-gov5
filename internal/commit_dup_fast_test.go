@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -108,5 +109,65 @@ func TestCommitPreReadDuplicate(t *testing.T) {
 	}
 	if dup, _, _, err := bc.commitPreRead(b9.Hash()); err != nil || !dup {
 		t.Fatalf("below head: dup=%v err=%v", dup, err)
+	}
+}
+
+// TestCommitUsesBlockCachedAfterPreRead covers a commit that arrives before
+// its block is stored: the pre-read misses, the block's write lands while the
+// commit waits for the writer, and the write transaction must then take the
+// cached instance (or, without one, still read the block from the database).
+func TestCommitUsesBlockCachedAfterPreRead(t *testing.T) {
+	defer SetCommitDupFastForTest(true)()
+	for _, withCache := range []bool{true, false} {
+		db := newRealignTestDB(t)
+		parent := block.NewBlock(&block.Header{
+			Number:     uint256.NewInt(8),
+			Difficulty: uint256.NewInt(1),
+			Root:       types.Hash{0x08},
+		}, nil).(*block.Block)
+		child := block.NewBlock(&block.Header{
+			Number:     uint256.NewInt(9),
+			ParentHash: parent.Hash(),
+			Difficulty: uint256.NewInt(1),
+			Root:       types.Hash{0x09},
+		}, nil).(*block.Block)
+		if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+			if err := rawdb.WriteBlock(tx, parent); err != nil {
+				return err
+			}
+			if err := rawdb.WriteCanonicalHash(tx, parent.Hash(), 8); err != nil {
+				return err
+			}
+			rawdb.WriteHeadBlockHash(tx, parent.Hash())
+			return rawdb.WriteHeadHeaderHash(tx, parent.Hash())
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cache, _ := lru.New[types.Hash, *block.Block](8)
+		bc := &BlockChain{ChainDB: db, ctx: context.Background(), blockCache: cache}
+		bc.currentBlock.Store(parent)
+		ran := 0
+		commitAfterPreReadForTest = func() {
+			ran++
+			if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+				return rawdb.WriteBlock(tx, child)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if withCache {
+				cache.Add(child.Hash(), child)
+			}
+		}
+		err := bc.CommitToCanonical(child.Hash())
+		commitAfterPreReadForTest = nil
+		if err != nil {
+			t.Fatalf("cache=%v: %v", withCache, err)
+		}
+		if ran != 1 {
+			t.Fatalf("cache=%v: pre-read hook ran %d times, want 1", withCache, ran)
+		}
+		if got := bc.CurrentBlock().Hash(); got != child.Hash() {
+			t.Fatalf("cache=%v: head = %s, want %s", withCache, got, child.Hash())
+		}
 	}
 }
