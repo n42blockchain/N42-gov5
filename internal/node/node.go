@@ -603,8 +603,26 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 	if frameKv != nil {
 		rawdb.SetFrameStore(frameKv)
+		if frameLogEnabled() {
+			// N42_FRAME_LOG=1: frame data goes to an append-only log in
+			// <datadir>/framelog; the frame store keeps its index.
+			keep := 0
+			if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("N42_FRAME_LOG_KEEP_SEGMENTS"))); err == nil && n > 0 {
+				keep = n
+				log.Warn("!!! FRAME LOG RETENTION ON (BENCH ONLY) !!! N42_FRAME_LOG_KEEP_SEGMENTS: older segments are "+
+					"deleted; this node cannot serve or re-read older blocks", "keepSegments", n)
+			}
+			dir := filepath.Join(cfg.NodeCfg.DataDir, "framelog")
+			if _, err := rawdb.OpenFrameLog(dir, keep); err != nil {
+				rawdb.SetFrameStore(nil)
+				frameKv.Close()
+				return nil, fmt.Errorf("opening the frame log: %w", err)
+			}
+			log.Info("Frame log open (N42_FRAME_LOG)", "path", dir)
+		}
 		defer func() {
 			if !success {
+				rawdb.CloseFrameLog()
 				rawdb.SetFrameStore(nil)
 				frameKv.Close()
 			}
@@ -3831,6 +3849,7 @@ func (n *Node) doClose(errs []error) error {
 		n.db.Close()
 	}
 	if n.frameDB != nil {
+		rawdb.CloseFrameLog()
 		rawdb.SetFrameStore(nil)
 		n.frameDB.Close()
 	}
@@ -4037,6 +4056,16 @@ func frameStoreEnabled() bool {
 	return false
 }
 
+// frameLogEnabled is N42_FRAME_LOG=1 (with N42_FRAME_DB=1): frame data is
+// appended to a log beside the frame store (rawdb/frame_log.go).
+func frameLogEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("N42_FRAME_LOG"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
 // openFrameStoreDB opens the frame store when enabled (nil otherwise), with
 // the chain database's map size and durability mode.
 func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
@@ -4047,7 +4076,7 @@ func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
 	path := filepath.Join(cfg.NodeCfg.DataDir, "frames")
 	log.Info("Opening the frame store (N42_FRAME_DB)", "path", path)
 	opts := mdbx.NewMDBX(logger).WriteMergeThreshold(4 * 8192).Path(path).Label(kv.ChainDB).
-		WithTableCfg(rawdb.FrameStoreTables).
+		WithTableCfg(func(c kv.TableCfg) kv.TableCfg { return rawdb.FrameLogIndexTables(rawdb.FrameStoreTables(c)) }).
 		MapSize(frameMapSize())
 	if n := rawdb.FramePruneBatches(); n > 0 {
 		log.Warn("!!! FRAME STORE PRUNING ON (BENCH ONLY) !!! N42_FRAME_DB_PRUNE_BATCHES: frames older than "+

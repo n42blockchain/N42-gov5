@@ -61,7 +61,10 @@ func frameBodyKey(number uint64, hash types.Hash) []byte {
 // chaindata Frames table keeps only what was stored before. Readers look in
 // the frame store first, then in the Frames table.
 
-type frameStoreHolder struct{ db kv.RwDB }
+type frameStoreHolder struct {
+	db  kv.RwDB
+	log *frameLog // nil unless a frame log is open (frame_log.go)
+}
 
 var frameStore atomic.Pointer[frameStoreHolder]
 
@@ -79,6 +82,38 @@ func SetFrameStore(db kv.RwDB) func() {
 	}
 	prev := frameStore.Swap(h)
 	return func() { frameStore.Store(prev) }
+}
+
+// OpenFrameLog opens the frame log in dir over the registered frame store,
+// whose table configuration must include FrameLogIndexTables, and returns
+// its close. From then on frame data is appended to the log and the store
+// keeps the index; frames stored before stay readable from the store.
+// keepSegments > 0 (BENCH ONLY) deletes all but the newest segments.
+func OpenFrameLog(dir string, keepSegments int) (func(), error) {
+	h := frameStore.Load()
+	if h == nil {
+		return nil, fmt.Errorf("frame log: no frame store registered")
+	}
+	l, err := openFrameLog(dir, h.db, keepSegments)
+	if err != nil {
+		return nil, err
+	}
+	frameStore.Store(&frameStoreHolder{db: h.db, log: l})
+	return func() {
+		if cur := frameStore.Load(); cur != nil && cur.log == l {
+			frameStore.Store(&frameStoreHolder{db: cur.db})
+		}
+		l.close()
+	}, nil
+}
+
+// CloseFrameLog closes the open frame log, if any; the frame store stays
+// registered.
+func CloseFrameLog() {
+	if cur := frameStore.Load(); cur != nil && cur.log != nil {
+		frameStore.Store(&frameStoreHolder{db: cur.db})
+		cur.log.close()
+	}
 }
 
 // FrameStore returns the registered frame store, or nil.
@@ -132,6 +167,9 @@ func WriteFramesToStore(ctx context.Context, hashes []types.Hash, raws [][]byte)
 	if fdb == nil {
 		return nil
 	}
+	if h := frameStore.Load(); h != nil && h.log != nil {
+		return h.log.write(ctx, hashes, raws)
+	}
 	var expired [][]types.Hash
 	var written []types.Hash
 	if framePruneBatches > 0 {
@@ -174,8 +212,17 @@ func WriteFramesToStore(ctx context.Context, hashes []types.Hash, raws [][]byte)
 // holds (nil entries for the others).
 func readFrameStore(fdb kv.RwDB, hashes []types.Hash) ([][]byte, error) {
 	out := make([][]byte, len(hashes))
+	if h := frameStore.Load(); h != nil && h.log != nil && h.db == fdb {
+		var err error
+		if out, err = h.log.read(hashes); err != nil {
+			return nil, err
+		}
+	}
 	err := fdb.View(context.Background(), func(tx kv.Tx) error {
 		for i, h := range hashes {
+			if out[i] != nil {
+				continue
+			}
 			v, err := tx.GetOne(modules.Frames, h[:])
 			if err != nil {
 				return err

@@ -116,6 +116,10 @@ const (
 	// (header || payload || signature). The block body record holds only the
 	// ordered hash list.
 	Frames = "Frames"
+	// FrameLogIndex: frame hash -> (segment, offset, length) in the frame
+	// log, plus the log position the index covers (rawdb/frame_log.go). It
+	// lives in the frame store only.
+	FrameLogIndex = "FrameLogIndex"
 
 	// Transaction senders - stored separately from the block bodies
 	Senders = "TxSender" // block_num_u64 + blockHash -> sendersList (no serialization format, every 20 bytes is new sender)
