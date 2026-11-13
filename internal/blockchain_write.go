@@ -887,6 +887,10 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 					"prepMerge", ph.Merge, "prepPending", ph.Pending, "prepLoaded", ph.Loaded)
 			}
 		}
+		if future.matches(blk.Hash(), receipts) {
+			resUs, rowUs := future.timings()
+			fields = append(fields, "resFutUs", resUs, "rowFutUs", rowUs)
+		}
 		if dFrames > 0 {
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
 		}

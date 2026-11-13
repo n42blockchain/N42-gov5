@@ -6,6 +6,10 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -212,23 +216,89 @@ type receiptsResultFuture struct {
 	done     chan struct{}
 	result   rawdb.ExecutedResult // Root unset
 
+	// encodedDone closes when encoded is set. With the split on it may close
+	// after (or before) done: nothing may assume one implies the other.
 	encodedDone chan struct{}
 	encoded     []byte // nil: encode inline
+
+	// startedAt and the durations (microseconds since it) at which done and
+	// encodedDone closed; 0 until they have.
+	startedAt time.Time
+	resUs     atomic.Int64
+	rowUs     atomic.Int64
+}
+
+// receiptsResultSplit (N42_RECEIPTS_RESULT_SPLIT) computes the receipts
+// result (root, bloom, gas used) and the storage row on separate goroutines,
+// so done no longer waits for the row, and builds root and bloom with
+// block.ReceiptsRootBloomParallel on the native path.
+var receiptsResultSplit = os.Getenv("N42_RECEIPTS_RESULT_SPLIT") == "1"
+
+// receiptsResultWorkers is the parallel root/bloom worker count
+// (N42_RECEIPTS_RESULT_WORKERS, default 8).
+var receiptsResultWorkers = func() int {
+	if n, err := strconv.Atoi(os.Getenv("N42_RECEIPTS_RESULT_WORKERS")); err == nil && n > 0 {
+		return n
+	}
+	return 8
+}()
+
+// SetReceiptsResultSplitForTest switches the split and returns the restore.
+func SetReceiptsResultSplitForTest(on bool) func() {
+	prev := receiptsResultSplit
+	receiptsResultSplit = on
+	return func() { receiptsResultSplit = prev }
 }
 
 // startReceiptsResult starts computing the receipts part of hash's result.
 // receipts must not change afterwards (they are final once execution and
 // collection are done; the write only reads them).
 func startReceiptsResult(config *params.ChainConfig, number uint64, hash types.Hash, receipts []*block.Receipt) *receiptsResultFuture {
-	f := &receiptsResultFuture{hash: hash, receipts: receipts, done: make(chan struct{}), encodedDone: make(chan struct{})}
+	f := &receiptsResultFuture{hash: hash, receipts: receipts, done: make(chan struct{}), encodedDone: make(chan struct{}), startedAt: time.Now()}
+	if receiptsResultSplit {
+		go f.runRow(config, number)
+		go f.runResult(config, number)
+		return f
+	}
 	go func() {
 		defer close(f.done)
 		// One pass yields the row, root and bloom together: three
 		// separate walks over 163k receipts were cache-miss bound.
 		f.result, f.encoded = receiptsResultAndRow(config, number, receipts, true)
+		us := time.Since(f.startedAt).Microseconds()
+		f.rowUs.Store(us)
 		close(f.encodedDone)
+		f.resUs.Store(us)
 	}()
 	return f
+}
+
+// runRow computes the storage row alone and closes encodedDone.
+func (f *receiptsResultFuture) runRow(config *params.ChainConfig, number uint64) {
+	if rawdb.CompactReceiptWrites {
+		_, _, f.encoded = block.ReceiptsDigest(f.receipts, false, true)
+	} else if enc, err := rawdb.EncodeReceiptsForStorage(f.receipts); err == nil {
+		f.encoded = enc
+	}
+	f.rowUs.Store(time.Since(f.startedAt).Microseconds())
+	close(f.encodedDone)
+}
+
+// runResult computes root, bloom and gas used and closes done.
+func (f *receiptsResultFuture) runResult(config *params.ChainConfig, number uint64) {
+	defer close(f.done)
+	var res rawdb.ExecutedResult
+	if ethereumReceiptRoot(config, number) {
+		res.ReceiptHash = block.EthereumReceiptRoot(f.receipts, true)
+		res.Bloom = block.CreateBloom(f.receipts)
+	} else {
+		res.ReceiptHash, res.Bloom = block.ReceiptsRootBloomParallel(f.receipts, receiptsResultWorkers)
+	}
+	if n := len(f.receipts); n > 0 {
+		res.GasUsed = f.receipts[n-1].CumulativeGasUsed
+	}
+	f.result = res
+	f.resUs.Store(time.Since(f.startedAt).Microseconds())
 }
 
 // encodedFor returns the encoded Receipts row when the future is for hash
@@ -239,6 +309,15 @@ func (f *receiptsResultFuture) encodedFor(hash types.Hash, receipts []*block.Rec
 	}
 	<-f.encodedDone
 	return f.encoded
+}
+
+// timings returns the microseconds from start to done and to encodedDone
+// (0 while either is pending, or for a nil future).
+func (f *receiptsResultFuture) timings() (resUs, rowUs int64) {
+	if f == nil {
+		return 0, 0
+	}
+	return f.resUs.Load(), f.rowUs.Load()
 }
 
 func (f *receiptsResultFuture) matches(hash types.Hash, receipts []*block.Receipt) bool {

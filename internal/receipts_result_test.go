@@ -83,3 +83,34 @@ func TestReceiptsResultAndRowMatchesSeparateDerivation(t *testing.T) {
 		}
 	}
 }
+
+// TestReceiptsResultSplitMatchesUnsplit: with the split on, the future's
+// result and row equal the switch-off future's, on the native and the
+// Ethereum receipt paths.
+func TestReceiptsResultSplitMatchesUnsplit(t *testing.T) {
+	ethCfg := &params.ChainConfig{StateScheme: string(params.StateCommitmentPresetEthereumMPT), ByzantiumBlock: big.NewInt(0)}
+	for name, cfg := range map[string]*params.ChainConfig{"native": nil, "ethereum": ethCfg} {
+		for _, rs := range [][]*block.Receipt{nil, receiptsForResultTest()} {
+			h, root := types.Hash{2}, types.Hash{3}
+			restore := SetReceiptsResultSplitForTest(false)
+			f0 := startReceiptsResult(cfg, 1, h, rs)
+			want, ok0 := f0.resultFor(h, root, rs)
+			wantRow := f0.encodedFor(h, rs)
+			restore()
+			restore = SetReceiptsResultSplitForTest(true)
+			f1 := startReceiptsResult(cfg, 1, h, rs)
+			got, ok1 := f1.resultFor(h, root, rs)
+			gotRow := f1.encodedFor(h, rs)
+			restore()
+			if !ok0 || !ok1 || got != want {
+				t.Fatalf("%s/%d: split result %+v, want %+v", name, len(rs), got, want)
+			}
+			if !bytes.Equal(gotRow, wantRow) {
+				t.Fatalf("%s/%d: split row differs", name, len(rs))
+			}
+			if a, b := f1.timings(); a < 0 || b < 0 || (len(rs) > 0 && (a == 0 || b == 0)) {
+				t.Fatalf("%s/%d: timings %d %d", name, len(rs), a, b)
+			}
+		}
+	}
+}
