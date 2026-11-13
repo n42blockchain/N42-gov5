@@ -375,6 +375,10 @@ type aheadExec struct {
 	es        *earlySnap
 	parPost   *state.PostState
 	parHeader *block.Header
+	// pub: the early snapshot this run published (set on its own
+	// goroutine). The run holds one of its refs until its goroutine ends:
+	// its fold and receipts still read the executor the snapshot took.
+	pub *earlySnap
 }
 
 // release closes the ahead execution's read transaction (once its goroutine
@@ -680,6 +684,11 @@ func (p *lagPipeline) newAheadLocked(child *block.Block, par *lagPipeParent, by 
 
 // runAhead executes a.blk on par's post-state.
 func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
+	defer func() {
+		if a.pub != nil {
+			a.pub.unref()
+		}
+	}()
 	if a.es != nil {
 		// After done: the run's readers are gone with it.
 		defer a.es.unref()

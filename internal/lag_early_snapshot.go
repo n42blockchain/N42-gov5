@@ -98,9 +98,11 @@ type earlySnap struct {
 	// done closes on publication).
 	ok atomic.Bool
 
-	// refs: one for the publisher until publication or drop, one per run
-	// reading it until that run's goroutine ends; free (the executor's
-	// Release) runs when the last goes.
+	// refs: one for the publisher until publication or drop, one for the
+	// publishing run until its goroutine ends (its fold and receipts read
+	// the executor after the offer), one per run reading it until that
+	// run's goroutine ends; free (the executor's Release) runs when the
+	// last goes.
 	refs atomic.Int32
 	free func()
 }
@@ -249,7 +251,8 @@ func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, 
 		done: make(chan struct{}), free: free}
 	es.hold = append(deferredFeeRecipients(bc.chainConfig, hdr), p.earlyHold...)
 	es.post = state.NewEarlyPostState(es)
-	es.refs.Store(1)
+	es.refs.Store(2)
+	a.pub = es
 	p.early = es
 	p.earlyStats.published.Add(1)
 	p.mu.Unlock()
