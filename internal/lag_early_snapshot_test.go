@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/frame/frametest"
+	"github.com/n42blockchain/N42/internal/parallel"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -38,9 +39,29 @@ func TestLagEarlySnapshot(t *testing.T) {
 		// discarded, the sender joins the hold set, and later children's
 		// reads of it wait for the complete post-state.
 		unsafe bool
-	}{{"inline", false, false}, {"orderedWriter", true, false}, {"writeAfterFold", false, true}} {
+		// fleet: the E1N26 bench's switches on top (ordered writer with its
+		// prepared and early-prepared writes, lean hand-off, early publish,
+		// ahead prep, lean exec, fast partition, and the finalize levers).
+		fleet bool
+	}{{"inline", false, false, false}, {"orderedWriter", true, false, false}, {"writeAfterFold", false, true, false},
+		{"fleetFlags", true, false, true}, {"fleetFlagsWriteAfterFold", true, true, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer SetLagEarlySnapshotForTest(true)()
+			if tc.fleet {
+				defer SetLagWritePrepareForTest(true)()
+				defer SetLagWriteEarlyPrepForTest(true)()
+				defer SetLagHandoffLeanForTest(true)()
+				defer SetLagWriteDeferBGForTest(true)()
+				defer SetLagEarlyPublishForTest(true)()
+				defer SetAheadPrepForTest(true)()
+				defer parallel.SetExecLeanForTest(true)()
+				defer parallel.SetWavePartitionFastForTest(true)()
+				defer state.SetFinalizeFastForTest(true)()
+				defer state.SetFoldNoJournalForTest(true)()
+				defer state.SetPrehookCutForTest(1)()
+				defer state.SetFinalizeHoistForTest(true)()
+				defer state.SetFoldObjectSlabForTest(true)()
+			}
 			if tc.ordered {
 				defer SetLagWriteAsyncForTest(true)()
 			}
