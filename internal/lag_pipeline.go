@@ -536,6 +536,11 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 	}
 	kick := le.kick
 	le.mu.Unlock()
+	if fresh && framesWriteEarlyOn {
+		// N42_FRAMES_WRITE_EARLY: the frames go to the store now, not at the
+		// hand-off (frames_early.go).
+		bc.framesEarly.start(b)
+	}
 	if fresh && !bc.E1Light() {
 		// Its senders are recovered from now on, not when it executes (P7).
 		if prep {

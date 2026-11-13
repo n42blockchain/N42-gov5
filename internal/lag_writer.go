@@ -431,6 +431,8 @@ type framesWrite struct {
 	done chan struct{}
 	err  error
 	took time.Duration
+	// early: started when the block was queued, not at its hand-off.
+	early bool
 }
 
 // startFramesWrite writes blk's frames to the frame store on its own
@@ -447,7 +449,7 @@ func startFramesWrite(blk *block.Block) *framesWrite {
 	hashes, raws := body.FrameHashes, body.FrameData
 	go func() {
 		t0 := time.Now()
-		fw.err = rawdb.WriteFramesToStore(context.Background(), hashes, raws)
+		fw.err = framesWriteFn(context.Background(), hashes, raws)
 		fw.took = time.Since(t0)
 		close(fw.done)
 	}()
@@ -624,7 +626,10 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	// So do its frames, which go to the frame store in their own durable
 	// transaction (a block that ends up not written leaves them there, as
 	// content-addressed rows nothing names).
-	frames := startFramesWrite(blk)
+	frames := bc.framesEarly.take(blk)
+	if frames == nil {
+		frames = startFramesWrite(blk)
+	}
 	var logs *logsPrep
 	if lagWritePrepare && len(receipts) > 0 {
 		logs = startLogsPrep(receipts)
