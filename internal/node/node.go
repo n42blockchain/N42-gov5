@@ -4048,7 +4048,7 @@ func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
 	log.Info("Opening the frame store (N42_FRAME_DB)", "path", path)
 	opts := mdbx.NewMDBX(logger).WriteMergeThreshold(4 * 8192).Path(path).Label(kv.ChainDB).
 		WithTableCfg(rawdb.FrameStoreTables).
-		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+		MapSize(frameMapSize())
 	if n := rawdb.FramePruneBatches(); n > 0 {
 		log.Warn("!!! FRAME STORE PRUNING ON (BENCH ONLY) !!! N42_FRAME_DB_PRUNE_BATCHES: frames older than "+
 			"the last writes are deleted; this node cannot serve or re-read older blocks", "keep", n)
@@ -4066,6 +4066,16 @@ func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
 		log.Warn("ignoring unknown N42_FRAME_DB_SYNC value", "value", v)
 	}
 	return mdbxSyncModeOr(opts, logger).Open(ctx)
+}
+
+// frameMapSize is the frame store's map size: N42_FRAME_DB_MAPSIZE_GB when
+// set (a pruned bench store on a small disk must fail with MAP_FULL rather
+// than fill it), else the chain database's.
+func frameMapSize() datasize.ByteSize {
+	if gb, err := strconv.ParseUint(strings.TrimSpace(os.Getenv("N42_FRAME_DB_MAPSIZE_GB")), 10, 64); err == nil && gb > 0 {
+		return datasize.ByteSize(gb) * datasize.GB
+	}
+	return mdbxMapSizeOr(8 * datasize.TB)
 }
 
 // openVoteJournalDB opens the separate HotStuff vote journal store
