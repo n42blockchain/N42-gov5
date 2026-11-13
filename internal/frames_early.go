@@ -54,6 +54,14 @@ type framesEarlyMap struct {
 	order []types.Hash
 }
 
+// onEnqueue is the queue's hook: with N42_FRAMES_WRITE_EARLY on, the frames
+// go to the store now, not at the hand-off.
+func (e *framesEarlyMap) onEnqueue(b *block.Block) {
+	if framesWriteEarlyOn {
+		e.start(b)
+	}
+}
+
 // start begins b's frames write unless one is remembered already or b has
 // no frames to write.
 func (e *framesEarlyMap) start(b *block.Block) {

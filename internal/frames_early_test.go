@@ -113,7 +113,21 @@ func TestFramesWriteEarlyOff(t *testing.T) {
 	bc := &BlockChain{}
 	b := framesEarlyTestBlock(3)
 	s0 := framesEarlyStarted.Load()
-	bc.enqueueLagImportTimed(b, false, 0)
+	bc.framesEarly.onEnqueue(b)
 	require.Nil(t, bc.framesEarly.take(b))
 	require.Equal(t, s0, framesEarlyStarted.Load())
+}
+
+// With the switch on the queue's hook starts the write.
+func TestFramesWriteEarlyOnEnqueue(t *testing.T) {
+	counts, restore := framesEarlyTestWrites(t, nil)
+	defer restore()
+	defer SetFramesWriteEarlyForTest(true)()
+	bc := &BlockChain{}
+	b := framesEarlyTestBlock(4)
+	bc.framesEarly.onEnqueue(b)
+	fw := bc.framesEarly.take(b)
+	require.NotNil(t, fw)
+	require.NoError(t, fw.wait())
+	require.Equal(t, int32(1), framesEarlyCount(counts, b))
 }
