@@ -89,6 +89,13 @@ func (bc *BlockChain) e1Result(hash types.Hash) (rawdb.ExecutedResult, bool, err
 	if r, ok := bc.inflightExecutedResult(hash); ok {
 		return r, true, nil
 	}
+	// N42_LAG_RESULT_EARLY: the import's validated result, published before
+	// its hand-off to the writer, is served to light nodes too (it was only
+	// visible to this node's own lag gate, so a light leader still waited
+	// for the hand-off).
+	if r, ok := bc.earlyExecutedResult(hash); ok {
+		return r, true, nil
+	}
 	var (
 		r  rawdb.ExecutedResult
 		ok bool
