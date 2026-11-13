@@ -224,3 +224,19 @@ func refDeriveSha(list hash.DerivableList) (h types.Hash) {
 	sha.Read(h[:]) //nolint:errcheck
 	return h
 }
+
+func TestReceiptsRootBloomParallelMatchesDigest(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 4095, 4096, 4097, 50000} {
+		rs := mixedReceipts(n, int64(n)+7)
+		wantRoot, wantBloom, _ := ReceiptsDigest(rs, true, false)
+		for _, w := range []int{1, 3, 8} {
+			root, bloom := ReceiptsRootBloomParallel(rs, w)
+			if root != wantRoot {
+				t.Fatalf("n=%d workers=%d: root %x, want %x", n, w, root, wantRoot)
+			}
+			if bloom != wantBloom || bloom != CreateBloom(rs) {
+				t.Fatalf("n=%d workers=%d: bloom differs", n, w)
+			}
+		}
+	}
+}
