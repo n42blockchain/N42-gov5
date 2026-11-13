@@ -4049,6 +4049,10 @@ func openFrameStoreDB(ctx context.Context, cfg *conf.Config) (kv.RwDB, error) {
 	opts := mdbx.NewMDBX(logger).WriteMergeThreshold(4 * 8192).Path(path).Label(kv.ChainDB).
 		WithTableCfg(rawdb.FrameStoreTables).
 		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	if n := rawdb.FramePruneBatches(); n > 0 {
+		log.Warn("!!! FRAME STORE PRUNING ON (BENCH ONLY) !!! N42_FRAME_DB_PRUNE_BATCHES: frames older than "+
+			"the last writes are deleted; this node cannot serve or re-read older blocks", "keep", n)
+	}
 	// BENCH ONLY: N42_FRAME_DB_SYNC=safe-nosync drops the frame store's
 	// per-commit fsync while the chain database stays durable. A crash can
 	// then leave a durable block whose frames were lost, which the node must

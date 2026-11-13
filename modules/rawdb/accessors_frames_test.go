@@ -104,3 +104,40 @@ func TestFrameBodyWriteReadBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestFrameStorePruneBatches: with the bench-only retention on, the store
+// keeps the frames of the last N writes and nothing older; off, it keeps all.
+func TestFrameStorePruneBatches(t *testing.T) {
+	has := func(db kv.RwDB, h types.Hash) bool {
+		var ok bool
+		if err := db.View(context.Background(), func(tx kv.Tx) error {
+			v, err := tx.GetOne(modules.Frames, h[:])
+			ok = len(v) > 0
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	batch := func(i byte) []types.Hash { return []types.Hash{{i, 1}, {i, 2}} }
+	for _, keep := range []int{0, 2} {
+		db := memdb.NewTestDB(t)
+		restoreStore := SetFrameStore(db)
+		restoreKeep := SetFramePruneBatchesForTest(keep)
+		for i := byte(1); i <= 5; i++ {
+			if err := WriteFramesToStore(context.Background(), batch(i), [][]byte{{i}, {i}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := byte(1); i <= 5; i++ {
+			want := keep == 0 || int(i) > 5-keep
+			for _, h := range batch(i) {
+				if got := has(db, h); got != want {
+					t.Fatalf("keep=%d batch %d: stored=%v, want %v", keep, i, got, want)
+				}
+			}
+		}
+		restoreKeep()
+		restoreStore()
+	}
+}

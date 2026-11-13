@@ -19,6 +19,10 @@ package rawdb
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -85,6 +89,42 @@ func FrameStore() kv.RwDB {
 	return nil
 }
 
+// framePruneBatches is N42_FRAME_DB_PRUNE_BATCHES (BENCH ONLY, 0 = off): the
+// frame store keeps the frames of the last N WriteFramesToStore calls (about
+// one block each) and deletes older ones in the same transaction. A node
+// run with it cannot serve or re-read older blocks' transactions. It exists
+// so a bench fleet's frame stores stay small enough to spread over a second
+// disk (E1N26 run 50: seven stores on one NVMe wrote 2.4 GB/s, the bound).
+var framePruneBatches = func() int {
+	n, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("N42_FRAME_DB_PRUNE_BATCHES")))
+	if n < 0 {
+		n = 0
+	}
+	return n
+}()
+
+// FramePruneBatches reports the bench-only frame store retention (0 = off).
+func FramePruneBatches() int { return framePruneBatches }
+
+// SetFramePruneBatchesForTest sets the retention, clears the window and
+// returns the restore.
+func SetFramePruneBatchesForTest(n int) func() {
+	framePruneMu.Lock()
+	prev := framePruneBatches
+	framePruneBatches, framePruneWindow = n, nil
+	framePruneMu.Unlock()
+	return func() {
+		framePruneMu.Lock()
+		framePruneBatches, framePruneWindow = prev, nil
+		framePruneMu.Unlock()
+	}
+}
+
+var (
+	framePruneMu     sync.Mutex
+	framePruneWindow [][]types.Hash // written batches, oldest first
+)
+
 // WriteFramesToStore stores the frames with data in the frame store in one
 // transaction, durable when it returns (nil: no frame store).
 func WriteFramesToStore(ctx context.Context, hashes []types.Hash, raws [][]byte) error {
@@ -92,7 +132,18 @@ func WriteFramesToStore(ctx context.Context, hashes []types.Hash, raws [][]byte)
 	if fdb == nil {
 		return nil
 	}
-	return fdb.Update(ctx, func(tx kv.RwTx) error {
+	var expired [][]types.Hash
+	var written []types.Hash
+	if framePruneBatches > 0 {
+		// One writer at a time: the window and the store move together.
+		framePruneMu.Lock()
+		defer framePruneMu.Unlock()
+		if over := len(framePruneWindow) + 1 - framePruneBatches; over > 0 {
+			expired = framePruneWindow[:over]
+		}
+		written = make([]types.Hash, 0, len(hashes))
+	}
+	err := fdb.Update(ctx, func(tx kv.RwTx) error {
 		for i, h := range hashes {
 			if i >= len(raws) || len(raws[i]) == 0 {
 				continue
@@ -100,9 +151,23 @@ func WriteFramesToStore(ctx context.Context, hashes []types.Hash, raws [][]byte)
 			if err := tx.Put(modules.Frames, h[:], raws[i]); err != nil {
 				return err
 			}
+			if written != nil {
+				written = append(written, h)
+			}
+		}
+		for _, batch := range expired {
+			for _, h := range batch {
+				if err := tx.Delete(modules.Frames, h[:]); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
+	if err == nil && framePruneBatches > 0 {
+		framePruneWindow = append(framePruneWindow[len(expired):], written)
+	}
+	return err
 }
 
 // readFrameStore returns copies of the frames of hashes the frame store
