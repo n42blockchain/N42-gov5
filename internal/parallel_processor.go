@@ -1330,6 +1330,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			SetupAffinity:   tAffinity.Sub(tBlockStart),
 			SetupBlockStart: tExecutorMade.Sub(tAffinity),
 			Exec:            tRunEnd.Sub(tRunStart),
+			StmEnd:          tRunEnd,
 			Collect:         time.Since(tRunEnd),
 			Skipped:         nSkipped,
 			// Collect's parts.

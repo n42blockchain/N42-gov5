@@ -309,6 +309,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		dBeginWait time.Duration
 		// The frame store write (P11): its own run and the commit's wait.
 		dFrames, dFramesWait time.Duration
+		framesW              *framesWrite
 		prepFast             bool
 		// Distinct accounts and slots the block changed, captured inside the
 		// write closure so the log line outside it can report them.
@@ -795,6 +796,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				return fmt.Errorf("writing the frames of block %d to the frame store: %w", blockNumber.Uint64(), err)
 			}
 			dFramesWait, dFrames = time.Since(tPhase), job.frames.took
+			framesW = job.frames
 		}
 		dInClosure = time.Since(tClosureStart)
 		return nil
@@ -870,6 +872,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			"root2", dRoot2,
 			"qflush", dQMDBFlush, "qmeta", dQMDBMeta, "snap", dSnapshot,
 			"commit", dCommit, "post", dPost, "total", dTotal,
+			"tMs", time.Now().UnixMilli(),
 		}
 		if dPrep > 0 {
 			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
@@ -893,6 +896,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		if dFrames > 0 {
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
+			if framesW != nil {
+				fields = append(fields, "framesStartTMs", framesW.startTMs, "framesEndTMs", framesW.endTMs, "framesEarly", framesW.early)
+			}
 		}
 		if beginBehind != "" {
 			fields = append(fields, "beginBehind", beginBehind, "beginWait", dBeginWait)

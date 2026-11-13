@@ -83,6 +83,8 @@ type ProcessPhases struct {
 	// CollectRcptRun: the receipts assembly's own time when it ran beside
 	// the fold (N42_LAG_EARLY_PUBLISH); zero otherwise.
 	CollectRcptRun time.Duration
+	// StmEnd: when the Block-STM wave ended (ahead runs; zero otherwise).
+	StmEnd time.Time
 	// CollectApply's parts: the final-versions walk, the account pass
 	// (wipes, accounts, credits) and the storage and code passes.
 	ApplyWalk, ApplyAccounts, ApplyStorage time.Duration

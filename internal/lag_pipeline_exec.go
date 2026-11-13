@@ -354,6 +354,9 @@ type aheadExec struct {
 	// claim stopped a prefill still reading (N42_AHEAD_PRE_EARLY).
 	preDrain, preFrames, preClaim, preFill time.Duration
 	preCut                                 bool
+	// prepStart and prepEnd: the claimed preparation's computation span
+	// (zero when the run had none).
+	prepStart, prepEnd time.Time
 
 	// Set by the executing goroutine before done closes.
 	ibs    *state.IntraBlockState
@@ -759,6 +762,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	}
 	claim.prep, claim.wait = bc.claimAheadPrepCut(a.blk.Hash(), cut)
 	a.preClaim = claim.wait
+	if claim.prep != nil {
+		a.prepStart, a.prepEnd = claim.prep.startedAt, claim.prep.computedAt
+	}
 	if ab := claim.prep.prefill(); ab != nil {
 		a.preFill, a.preCut = ab.claimWait, ab.cut.Load()
 		if cut {

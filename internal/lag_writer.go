@@ -200,6 +200,9 @@ type stateWritePrep struct {
 	// block's state root (N42_LAG_WRITE_EARLY_PREP), not at the hand-off.
 	start time.Time
 	early bool
+	// startTMs and endTMs: wall clock (ms since the epoch) when the write
+	// started and ended; endTMs is set before done closes.
+	startTMs, endTMs int64
 }
 
 // startStateWritePrep runs state.PrepareStateWrite on its own goroutine. It
@@ -449,8 +452,10 @@ func startFramesWrite(blk *block.Block) *framesWrite {
 	hashes, raws := body.FrameHashes, body.FrameData
 	go func() {
 		t0 := time.Now()
+		fw.startTMs = t0.UnixMilli()
 		fw.err = framesWriteFn(context.Background(), hashes, raws)
 		fw.took = time.Since(t0)
+		fw.endTMs = time.Now().UnixMilli()
 		close(fw.done)
 	}()
 	return fw

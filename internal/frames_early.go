@@ -4,6 +4,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -114,3 +115,10 @@ func (e *framesEarlyMap) take(b *block.Block) *framesWrite {
 	return fw
 }
 
+// tsMs is t as wall clock milliseconds, 0 for the zero time.
+func tsMs(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}

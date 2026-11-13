@@ -2873,6 +2873,8 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// collect's parts and the MVS fold's split.
 				fields = append(fields, "ahead", true, "aheadWait", dAheadWait, "aheadRun", ahead.took, "aheadPre", ahead.pre,
 					"queueWaitMs", ahead.queueWait.Milliseconds(),
+					"aheadStartTMs", ahead.started.UnixMilli(), "stmEndTMs", tsMs(procPhases.StmEnd),
+					"prepStartTMs", tsMs(ahead.prepStart), "prepEndTMs", tsMs(ahead.prepEnd),
 					"launchBy", lagLaunchName(ahead.launchBy), "launchLag", ahead.launchLag,
 					"childArriveAfterHook", ahead.queuedAfterHook, "childAvailCheck", ahead.availCheck,
 					"takeAfterHook", aheadTakeAfterHook(ahead, tAhead),
