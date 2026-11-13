@@ -4,6 +4,7 @@
 package internal
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/frame/frametest"
 	"github.com/n42blockchain/N42/internal/parallel"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -150,4 +152,61 @@ func TestLagEarlySnapshotReleasesStore(t *testing.T) {
 	}()
 	_, err = held.WaitFull()
 	require.ErrorIs(t, err, errEarlyDropped)
+}
+
+// TestEarlySnapshotKeepsStoreAfterRun: an ahead run whose early snapshot
+// took the executor's store returns without releasing it -- the child's run
+// reads the store after its parent's run returned, until the parent's root
+// hook -- and the snapshot's release hands it back, once. A run whose
+// snapshot was declined releases the store itself. (The run's deferred
+// release used to hand a taken store's version lists back for reuse under
+// the child's reads: the child read cleared or reused versions and the
+// block's result differed from the serial chain's.)
+func TestEarlySnapshotKeepsStoreAfterRun(t *testing.T) {
+	const txs, senders = 2000, 100
+	fx := newTransferBlockFixture(txs, senders, 300, 0, 0)
+	db := memdb.NewTestDB(t)
+	fundTransferBlockStateFiller(t, db, fx, 100)
+	bc := &BlockChain{ctx: context.Background(), ChainDB: db}
+	sp := NewStateProcessor(fx.cfg, bc, nil)
+	blk := block.NewBlock(fx.header, fx.txs).(*block.Block)
+	hashFn := func(uint64) types.Hash { return types.Hash{} }
+	run := func(take bool) {
+		tx, err := db.BeginRo(context.Background())
+		require.NoError(t, err)
+		defer tx.Rollback()
+		var mvs *parallel.MVS
+		var numTxs int
+		var free func()
+		var pooled bool
+		claim := &aheadClaim{early: func(m *parallel.MVS, n int, _ *state.PostState, f func()) bool {
+			mvs, numTxs, free, pooled = m, n, f, m.HoldsArenaForTest()
+			return take
+		}}
+		_, err = sp.executeParallelAhead(blk, newNJState(tx), hashFn, claim)
+		require.NoError(t, err)
+		require.NotNil(t, mvs, "the run did not offer its store")
+		require.Equal(t, txs, numTxs)
+		if !pooled {
+			// N42_BLOCK_SCRATCH_POOL=0: the store holds nothing to release.
+			t.Skip("the per-block scratch pool is off")
+		}
+		if !take {
+			require.False(t, mvs.HoldsArenaForTest(), "a declined store was not released by its run")
+			return
+		}
+		require.True(t, mvs.HoldsArenaForTest(), "the run released the store its early snapshot took")
+		// The store still answers the block's final writes.
+		full, _, _, found, _ := mvs.ReadAccount(parallel.LocationKey{Address: fx.senders[0], Field: parallel.FieldBalance}, numTxs)
+		require.True(t, found, "the taken store lost a sender's final write")
+		require.NotNil(t, full)
+		acc, err := parallel.DecodeAccount(full)
+		require.NoError(t, err)
+		require.Equal(t, uint64(txs/senders), acc.Nonce)
+		free()
+		require.False(t, mvs.HoldsArenaForTest(), "the snapshot's release kept the store")
+		free() // once
+	}
+	run(true)
+	run(false)
 }

@@ -219,6 +219,10 @@ func (m *MVS) growVersions(e *mvEntry, want int) {
 	e.versions = l
 }
 
+// HoldsArenaForTest reports whether the store still holds its version
+// arena: false once it was released (or with the scratch pool off).
+func (m *MVS) HoldsArenaForTest() bool { return m != nil && m.va != nil }
+
 // release hands the store's arena back for the next block's store; m
 // must not be used afterwards.
 func (m *MVS) release() {

@@ -897,6 +897,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, runTx)
 
+	// An executor whose store an early snapshot took (earlyOwned, set once
+	// the wave ended) is released by the snapshot, when nothing reads the
+	// store any more -- not here: the child's run reads it after this run
+	// returned.
+	earlyOwned := false
+	defer func() {
+		if !earlyOwned {
+			executor.Release()
+		}
+	}()
 	// Pin each sender's transactions to one worker, in index order: the
 	// nonce chain of a sender is then executed by the worker that already
 	// applied its predecessor, and only cross-sender conflicts (a recipient
@@ -905,7 +915,6 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// The executor computes the keys in parallel, in index order, before
 	// the wave starts; the key function also prepares each transaction's
 	// message and hash there (prepared, above).
-	defer func() { executor.Release() }()
 	affinity := func(txIndex int) uint64 {
 		return p.txAffinityKey(txs, prepared, txIndex, signer, concreteHeader.BaseFee, cfg.StatelessExec)
 	}
@@ -1122,7 +1131,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 
 	// The final writes are known: the early snapshot may publish them now.
-	earlyOwned := earlyOffer && failed == 0 && claim.early(executor.MVS(), numTxs, earlyStart, executor.Release)
+	earlyOwned = earlyOffer && failed == 0 && claim.early(executor.MVS(), numTxs, earlyStart, executor.Release)
 
 	// Collect receipts and logs, fixing cumulative gas.
 	usedGas := uint64(0)
