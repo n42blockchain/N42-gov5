@@ -4,10 +4,9 @@
 package state
 
 import (
-	"os"
-
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -51,7 +50,7 @@ import (
 //     dirty set; a journal reset unmarks them.
 //
 // Default off: the fold journals as before.
-var foldNoJournalOn = parseFinalizeFast(os.Getenv("N42_FOLD_NOJOURNAL"))
+var foldNoJournalOn = envswitch.OptIn("N42_FOLD_NOJOURNAL", envswitch.Perf, "The account fold skips the journal on a strict block.")
 
 // FoldNoJournalOn reports N42_FOLD_NOJOURNAL.
 func FoldNoJournalOn() bool { return foldNoJournalOn }

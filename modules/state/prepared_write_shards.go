@@ -17,12 +17,12 @@
 package state
 
 import (
-	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -45,7 +45,7 @@ import (
 // N42_STATE_WRITE_PREP_SHARDS sets the shard count (default 8; 0 or 1:
 // serial). Blocks with fewer than prepShardMinObjects objects stay serial.
 
-var prepShards = parsePrepShards(os.Getenv("N42_STATE_WRITE_PREP_SHARDS"))
+var prepShards = parsePrepShards(envswitch.Raw("N42_STATE_WRITE_PREP_SHARDS", envswitch.Perf, "Shards of the prepared write."))
 
 // prepDeferLoads is N42_STATE_WRITE_PREP_DEFER_LOADS (default on; "0" off,
 // E1N26 run 18). Under the no-journal fold an import's ~23k credited
@@ -54,7 +54,7 @@ var prepShards = parsePrepShards(os.Getenv("N42_STATE_WRITE_PREP_SHARDS"))
 // journal record -- took ~0.94 µs serially: ~21 ms of a 35 ms sharded
 // write in the benchmark, more on node0. With it on only the reads stay
 // serial; each shard builds its credited accounts' objects itself.
-var prepDeferLoads = os.Getenv("N42_STATE_WRITE_PREP_DEFER_LOADS") != "0"
+var prepDeferLoads = envswitch.Not0("N42_STATE_WRITE_PREP_DEFER_LOADS", envswitch.Perf, "Default on: defer the pending loads of the sharded prepared write.")
 
 // SetPrepDeferLoadsForTest switches the deferred credited loads and
 // returns the restore.

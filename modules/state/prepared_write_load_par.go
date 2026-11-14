@@ -17,13 +17,13 @@
 package state
 
 import (
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -56,7 +56,7 @@ import (
 //
 // The path is only taken when the state's reader is the prefetch layer
 // itself (no recorder above it); otherwise the serial loop runs.
-var prepLoadPar = parsePrepLoadPar(os.Getenv("N42_STATE_WRITE_PREP_LOAD_PAR"))
+var prepLoadPar = parsePrepLoadPar(envswitch.Raw("N42_STATE_WRITE_PREP_LOAD_PAR", envswitch.Perf, "Parallel pending loads for the sharded prepared write (r58a)."))
 
 func parsePrepLoadPar(v string) int {
 	if v == "" {

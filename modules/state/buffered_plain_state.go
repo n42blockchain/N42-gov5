@@ -23,6 +23,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -1163,7 +1164,7 @@ func (b *PlainStateBuffer) Stats() (accounts, storage int) {
 // is recorded to ./audit_nil.log with which tier returned the wrong
 // answer. Default off (zero overhead). Enable to diagnose the
 // non-deterministic "contract treated as EOA" gas-mismatch bug.
-var auditNilAccount = os.Getenv("N42_AUDIT_NIL_ACCT") == "1"
+var auditNilAccount = envswitch.Is1("N42_AUDIT_NIL_ACCT", envswitch.Diag, "Cross-check every nil account read of the buffered reader against the base.")
 
 var (
 	auditLogOnce sync.Once

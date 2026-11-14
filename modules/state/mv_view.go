@@ -33,6 +33,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -46,7 +47,7 @@ var vtraceAddrs = map[types.Address]bool{}
 var vtraceOn = false
 
 func init() {
-	raw := os.Getenv("N42_PEVM_VTRACE_ADDRS")
+	raw := envswitch.Raw("N42_PEVM_VTRACE_ADDRS", envswitch.Diag, "Address list for the multi-version view trace.")
 	if raw == "" {
 		return
 	}

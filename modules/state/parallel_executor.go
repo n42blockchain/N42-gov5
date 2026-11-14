@@ -18,6 +18,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // TxExecutor is the per-tx user-provided function that reads/writes
@@ -435,3 +437,7 @@ func nextPow2(v int) int {
 // placeholder; the PoC's naive retry will spin in that scenario —
 // Phase 3 adds a bounded retry counter.
 var ErrDependencyCycle = errors.New("parallel executor: dependency cycle")
+
+func init() {
+	envswitch.Declare("N42_PEVM_TRACE", envswitch.Diag, "Per-failing-transaction diagnostics of the parallel executor.")
+}

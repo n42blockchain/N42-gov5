@@ -4,13 +4,13 @@
 package state
 
 import (
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -48,7 +48,7 @@ import (
 //     the root, never at the hoist.
 //
 // Default off: the serial steps, unchanged.
-var finalizeHoistOn = parseFinalizeFast(os.Getenv("N42_FINALIZE_HOIST_DETACH"))
+var finalizeHoistOn = envswitch.OptIn("N42_FINALIZE_HOIST_DETACH", envswitch.Perf, "Hoist the root walk's pending credits and detach prefetch reads.")
 
 // FinalizeHoistOn reports N42_FINALIZE_HOIST_DETACH.
 func FinalizeHoistOn() bool { return finalizeHoistOn }

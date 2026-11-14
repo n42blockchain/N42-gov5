@@ -40,6 +40,7 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 )
@@ -306,4 +307,11 @@ func (c *HashedReadCache) PurgeAll() {
 	c.genMu.Lock()
 	c.gens = make(map[[32]byte]uint64)
 	c.genMu.Unlock()
+}
+
+func init() {
+	envswitch.Declare("N42_HASHED_ACC_CACHE", envswitch.Perf, "Entries of the hashed account read cache.")
+	envswitch.Declare("N42_HASHED_STO_CACHE", envswitch.Perf, "Entries of the hashed storage read cache.")
+	envswitch.Declare("N42_HASHED_KECCAK_CACHE", envswitch.Perf, "Entries of the hashed keccak read cache.")
+	envswitch.Declare("N42_HASHED_CODE_CACHE", envswitch.Perf, "Entries of the hashed code read cache.")
 }

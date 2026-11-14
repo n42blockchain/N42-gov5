@@ -4,7 +4,6 @@
 package state
 
 import (
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -39,15 +39,7 @@ import (
 // as the single loop's. Only the plain commitment path takes it (the LtHash
 // path, which also collects originals, keeps the single loop), and only
 // from finalizeFastMin dirty objects. Default off: the single loop.
-var finalizeFastOn = parseFinalizeFast(os.Getenv("N42_FINALIZE_FAST"))
-
-func parseFinalizeFast(v string) bool {
-	switch v {
-	case "1", "true", "TRUE", "on", "ON", "yes":
-		return true
-	}
-	return false
-}
+var finalizeFastOn = envswitch.OptIn("N42_FINALIZE_FAST", envswitch.Perf, "Fast dirty-object loop of the root walk's finalize.")
 
 // FinalizeFastOn reports N42_FINALIZE_FAST.
 func FinalizeFastOn() bool { return finalizeFastOn }

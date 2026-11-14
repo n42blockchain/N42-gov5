@@ -5,12 +5,12 @@ package state
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/params"
 )
@@ -28,7 +28,7 @@ import (
 //     syscallFinalizeParMin addresses runs in parallel (finalizeNoopParallel).
 //
 // Default off: per-call finalize and the serial walk.
-var syscallFinalizeOnceOn = parseFinalizeFast(os.Getenv("N42_SYSCALL_FINALIZE_ONCE"))
+var syscallFinalizeOnceOn = envswitch.OptIn("N42_SYSCALL_FINALIZE_ONCE", envswitch.Perf, "Prague block-end FinalizeTx work runs once.")
 
 // SyscallFinalizeOnceOn reports N42_SYSCALL_FINALIZE_ONCE.
 func SyscallFinalizeOnceOn() bool { return syscallFinalizeOnceOn }

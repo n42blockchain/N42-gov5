@@ -35,6 +35,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
@@ -668,4 +669,8 @@ func (so *stateObject) Nonce() uint64 {
 // Value returns zero. This method exists to satisfy the vm.ContractRef interface.
 func (so *stateObject) Value() *big.Int {
 	return big.NewInt(0)
+}
+
+func init() {
+	envswitch.Declare("N42_STATE_OBJECT_POOL", envswitch.Perf, "Recycle stateObject structs across blocks.")
 }

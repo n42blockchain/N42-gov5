@@ -4,13 +4,13 @@
 package state
 
 import (
-	"os"
 	"sync"
 	"time"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -51,7 +51,7 @@ import (
 //	   order and concatenated: the same result).
 //
 // Default 0: the walk as before.
-var prehookCutMode = parsePrehookCut(os.Getenv("N42_PREHOOK_CUT"))
+var prehookCutMode = parsePrehookCut(envswitch.Raw("N42_PREHOOK_CUT", envswitch.Perf, "Shorter root preamble before the lag pipeline's pre-hook."))
 
 func parsePrehookCut(v string) int {
 	switch v {

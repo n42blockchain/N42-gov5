@@ -4,12 +4,12 @@
 package state
 
 import (
-	"os"
 	"sync"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -242,7 +242,7 @@ func (sdb *IntraBlockState) prepareAccounts(pf *AccountPrefetch, entries []Accou
 // preparation there). The object a slab entry becomes is newObject's on a
 // zero struct -- exactly the struct New returns, and what
 // N42_STATE_OBJECT_POOL=off allocates -- so the state is the same.
-var foldObjectSlab = os.Getenv("N42_AHEAD_COLLECT_CUT") == "1"
+var foldObjectSlab = envswitch.Is1("N42_AHEAD_COLLECT_CUT", envswitch.Perf, "Account fold object slab: prepared objects of the fold share one slab (r68a).")
 
 // SetFoldObjectSlabForTest switches the fold's object slab and returns the
 // restore.

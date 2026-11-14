@@ -3,6 +3,8 @@ package state
 import (
 	"os"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // N42_NO_HISTORY_INDEX makes a node skip the AccountHistory/StorageHistory
@@ -98,4 +100,9 @@ func SetHistoryIndexDeferredForTest(on bool) func() {
 	prev := historyDeferred
 	historyDeferred = on
 	return func() { historyDeferred = prev }
+}
+
+func init() {
+	envswitch.Declare("N42_NO_HISTORY_INDEX", envswitch.Config, "Skip the history index.")
+	envswitch.Declare("N42_HISTORY_INDEX_DEFERRED", envswitch.Perf, "Run history index maintenance off the block commit path.")
 }

@@ -22,9 +22,9 @@ package state
 
 import (
 	"bytes"
-	"os"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -38,7 +38,7 @@ import (
 // execute against empty code → under-counted gas + divergent state, while the
 // state root (which only commits the codeHash in the account leaf, not the code
 // bytes) still matches. Used to pin block-161-class gas under-counts.
-var codeTrace = os.Getenv("N42_CODETRACE") != ""
+var codeTrace = envswitch.Raw("N42_CODETRACE", envswitch.Diag, "Log EVM code reads where the account carries a code hash but no code.") != ""
 
 // HashedCanonicalWriter is the commit writer for hashed-canonical mode. It does
 // two things on top of the forward state (which the incremental IntermediateRoot

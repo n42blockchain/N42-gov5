@@ -26,11 +26,11 @@ package state
 import (
 	"bytes"
 	"fmt"
-	"os"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -391,7 +391,7 @@ func appendDupRows(tx kv.RwTx, table string, rows []ChangeSetRow) error {
 // when that is provably the same insert: the rows strictly ascending as
 // (key, value) pairs, and the first key above every key already in the
 // table. Anything else takes the AppendDup path, which is what ran before.
-var chgSetAppend = os.Getenv("N42_CHGSET_APPEND") == "1"
+var chgSetAppend = envswitch.Is1("N42_CHGSET_APPEND", envswitch.Config, "appendDupRows puts rows with the cursor's APPEND flag (r58a).")
 
 // SetChgSetAppendForTest switches chgSetAppend and returns the restore.
 func SetChgSetAppendForTest(on bool) func() {
