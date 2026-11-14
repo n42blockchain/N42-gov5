@@ -25,8 +25,8 @@ package misc
 import (
 	"errors"
 	"fmt"
-	"os"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -34,7 +34,7 @@ import (
 // a stress test can jump the gas limit straight to the miner's ceiling. Paired with
 // miner.CalcGasLimit's instant-jump; ALL validators must run the same env or they
 // reject each other's blocks. Min-floor is still enforced. NOT for production.
-var stressGasLimit = os.Getenv("N42_STRESS_GASLIMIT") == "1"
+var stressGasLimit = envswitch.Is1("N42_STRESS_GASLIMIT", envswitch.BenchOnly, "Lets the miner jump the block gas limit for a stress run.")
 
 // VerifyGaslimit verifies the header gas limit according increase/decrease
 // in relation to the parent gas limit.
