@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // Execution off the consensus path (docs/QS_MULTI_MILLION_DESIGN.md P2a).
@@ -185,4 +187,15 @@ func SetVoteOnAvailabilityForTest(on bool) func() {
 	prev := availability.Load()
 	availability.Store(on)
 	return func() { availability.Store(prev) }
+}
+
+func init() {
+	envswitch.Declare("N42_FRAME_BLOCKS", envswitch.Consensus, "Frame-referenced block production (leader side).")
+}
+
+func init() {
+	envswitch.Declare(EnvDeferredDepth, envswitch.Consensus, "Deferred execution depth k (default 1).")
+	envswitch.Declare(EnvDeferredDepthPrev, envswitch.Consensus, "Deferred depth of the blocks below N42_DEFERRED_DEPTH_FROM.")
+	envswitch.Declare(EnvDeferredDepthFrom, envswitch.Consensus, "First block number the deferred depth applies to.")
+	envswitch.Declare(EnvVoteOnAvailability, envswitch.Consensus, "The availability vote.")
 }
