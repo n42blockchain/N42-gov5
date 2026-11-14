@@ -163,12 +163,18 @@ var (
 // WriteFramesToStore stores the frames with data in the frame store in one
 // transaction, durable when it returns (nil: no frame store).
 func WriteFramesToStore(ctx context.Context, hashes []types.Hash, raws [][]byte) error {
+	return WriteFramesToStoreTimed(ctx, hashes, raws, nil)
+}
+
+// WriteFramesToStoreTimed is WriteFramesToStore filling times (when set)
+// with a frame log write's split; without a frame log it stays zero.
+func WriteFramesToStoreTimed(ctx context.Context, hashes []types.Hash, raws [][]byte, times *FrameWriteTimes) error {
 	fdb := FrameStore()
 	if fdb == nil {
 		return nil
 	}
 	if h := frameStore.Load(); h != nil && h.log != nil {
-		return h.log.write(ctx, hashes, raws)
+		return h.log.write(ctx, hashes, raws, times)
 	}
 	var expired [][]types.Hash
 	var written []types.Hash

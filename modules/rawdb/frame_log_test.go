@@ -6,6 +6,8 @@ package rawdb
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -162,12 +164,21 @@ func TestFrameLogRollAndKeepSegments(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		rolls0, pre0 := frameLogRolls.Load(), frameLogRollsPre.Load()
 		for i := 0; i < 12; i++ {
 			writeLogFrames(t, i, i+1) // ~350-390 bytes each: 5 a segment
+		}
+		cur := settleFrameLog(t)
+		if rolls, pre := frameLogRolls.Load()-rolls0, frameLogRollsPre.Load()-pre0; rolls < 2 || pre == 0 {
+			t.Fatalf("keep=%d: %d rolls, %d of them on a preallocated segment", keep, rolls, pre)
 		}
 		segs, err := frameLogSegments(dir)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// The next segment, preallocated in the background, is not one yet.
+		for len(segs) > 0 && segs[len(segs)-1] > cur {
+			segs = segs[:len(segs)-1]
 		}
 		if keep == 0 {
 			if len(segs) < 3 {
@@ -182,6 +193,16 @@ func TestFrameLogRollAndKeepSegments(t *testing.T) {
 			mustReadFrames(t, db, 11, 12, true)
 		}
 		closeLog()
+		if keep > 0 {
+			// A crash before the background deletion: the dropped segment
+			// is still on disk, below the index position. Its record of
+			// frame 11 carries other data, which must never be indexed.
+			h, raw := frameLogTestFrame(11)
+			stale := append(frameLogTestRecord(h, bytes.Repeat([]byte{0xbd}, len(raw))), make([]byte, 64)...)
+			if err := os.WriteFile(filepath.Join(dir, frameLogSegmentName(0)), stale, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 		// Reopen over removed segments: appends continue and stay readable.
 		closeLog, err = OpenFrameLog(dir, keep)
 		if err != nil {
@@ -192,4 +213,146 @@ func TestFrameLogRollAndKeepSegments(t *testing.T) {
 		closeLog()
 		restore()
 	}
+}
+
+// settleFrameLog waits for the open frame log's background preallocation
+// and deletions and returns its current segment.
+func settleFrameLog(t *testing.T) uint32 {
+	t.Helper()
+	h := frameStore.Load()
+	if h == nil || h.log == nil {
+		t.Fatal("no frame log open")
+	}
+	l := h.log
+	l.mu.Lock()
+	if pre := l.pre; pre != nil {
+		<-pre.done
+	}
+	seg := l.seg
+	l.mu.Unlock()
+	l.bg.Wait()
+	return seg
+}
+
+// frameLogTestRecord is one encoded log record.
+func frameLogTestRecord(h types.Hash, data []byte) []byte {
+	rec := make([]byte, frameLogHeaderSize, frameLogHeaderSize+len(data))
+	binary.BigEndian.PutUint32(rec, frameLogMagic)
+	binary.LittleEndian.PutUint32(rec[4:], uint32(len(data)))
+	copy(rec[8:], h[:])
+	binary.LittleEndian.PutUint32(rec[8+types.HashLength:], crc32.Checksum(data, frameLogCRC))
+	return append(rec, data...)
+}
+
+// A crash after the next segment was preallocated in the background leaves
+// an empty (or, where preallocation writes zeros, zero-filled) segment after
+// the last one, and the index may be behind with a torn record in the last
+// written segment. A reopen indexes every complete record, ignores the torn
+// one, appends to the new segment from offset 0, and every frame reads back
+// (also after another reopen).
+func TestFrameLogRecoversPreallocatedNextSegment(t *testing.T) {
+	for _, zeroFilled := range []bool{false, true} {
+		db := newFrameLogTestStore(t)
+		restore := SetFrameStore(db)
+		dir := t.TempDir()
+		closeLog, err := OpenFrameLog(dir, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeLogFrames(t, 0, 6)
+		closeLog()
+		if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+			return tx.ClearBucket(modules.FrameLogIndex)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(filepath.Join(dir, frameLogSegmentName(0)), os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, raw := frameLogTestFrame(6)
+		if _, err := f.Write(frameLogTestRecord(h, raw)[:frameLogHeaderSize+10]); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		var next []byte
+		if zeroFilled {
+			next = make([]byte, 4096)
+		}
+		nextPath := filepath.Join(dir, frameLogSegmentName(1))
+		if err := os.WriteFile(nextPath, next, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		closeLog, err = OpenFrameLog(dir, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st, err := os.Stat(nextPath); err != nil || st.Size() != 0 {
+			t.Fatalf("zeroFilled=%v: the preallocated segment was not cut to its records: %v %v", zeroFilled, st, err)
+		}
+		mustReadFrames(t, db, 0, 6, true)
+		writeLogFrames(t, 6, 9)
+		mustReadFrames(t, db, 0, 9, true)
+		if st, err := os.Stat(nextPath); err != nil || st.Size() == 0 {
+			t.Fatalf("zeroFilled=%v: appends did not go to the preallocated segment", zeroFilled)
+		}
+		closeLog()
+		closeLog, err = OpenFrameLog(dir, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustReadFrames(t, db, 0, 9, true)
+		closeLog()
+		restore()
+	}
+}
+
+// The next segment is preallocated in the background once the current one
+// is half full and taken by the roll; one still unused at close is removed,
+// so a reopen appends to the current segment as before.
+func TestFrameLogPreallocatesNextSegment(t *testing.T) {
+	prev := frameLogSegmentBytes
+	frameLogSegmentBytes = 2000
+	defer func() { frameLogSegmentBytes = prev }()
+	db := newFrameLogTestStore(t)
+	defer SetFrameStore(db)()
+	dir := t.TempDir()
+	closeLog, err := OpenFrameLog(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLogFrames(t, 0, 1)
+	settleFrameLog(t)
+	if _, err := os.Stat(filepath.Join(dir, frameLogSegmentName(1))); !os.IsNotExist(err) {
+		t.Fatalf("next segment created before the current one is half full: %v", err)
+	}
+	writeLogFrames(t, 1, 3) // over half of 2000 bytes
+	settleFrameLog(t)
+	nextPath := filepath.Join(dir, frameLogSegmentName(1))
+	if st, err := os.Stat(nextPath); err != nil || st.Size() != 0 {
+		t.Fatalf("next segment not preallocated (empty) at half: %v %v", st, err)
+	}
+	closeLog()
+	if _, err := os.Stat(nextPath); !os.IsNotExist(err) {
+		t.Fatalf("unused preallocated segment kept at close: %v", err)
+	}
+	closeLog, err = OpenFrameLog(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLog()
+	pre0 := frameLogRollsPre.Load()
+	for i := 3; i < 12; i++ {
+		writeLogFrames(t, i, i+1)
+	}
+	if cur := settleFrameLog(t); cur < 1 {
+		t.Fatalf("no roll: segment %d", cur)
+	}
+	if frameLogRollsPre.Load() == pre0 {
+		t.Fatal("no roll took the preallocated segment")
+	}
+	if us, rolls, _ := FrameLogRollStats(); rolls == 0 || us < 0 {
+		t.Fatalf("roll stats: %d us, %d rolls", us, rolls)
+	}
+	mustReadFrames(t, db, 0, 12, true)
 }

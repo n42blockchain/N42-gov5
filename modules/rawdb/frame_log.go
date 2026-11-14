@@ -27,9 +27,12 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -79,14 +82,48 @@ type frameLog struct {
 	// (BENCH ONLY, N42_FRAME_LOG_KEEP_SEGMENTS).
 	keepSegments int
 
-	mu  sync.Mutex // the writer: seg, f, off, buf
+	mu  sync.Mutex // the writer: seg, f, off, buf, pre
 	seg uint32
 	f   *os.File
 	off int64
 	buf []byte
+	// pre: the next segment's file, created and preallocated on its own
+	// goroutine once the current segment is half full, so that the roll
+	// under mu only swaps the handles (nil: none started for seg+1).
+	pre *frameLogPrealloc
+	// bg: the preallocations and segment deletions in flight (close waits).
+	bg sync.WaitGroup
 
 	rmu     sync.RWMutex
 	readers map[uint32]*os.File
+}
+
+// frameLogPrealloc is the next segment being made ready off the writer's
+// mutex. f and err are set before done closes.
+type frameLogPrealloc struct {
+	seg  uint32
+	done chan struct{}
+	f    *os.File
+	err  error
+}
+
+// Segment rolls since start, those that took a preallocated file, and the
+// time the last one held the writer's mutex.
+var frameLogRolls, frameLogRollsPre atomic.Uint64
+var frameLogLastRollNanos atomic.Int64
+
+// FrameLogRollStats returns the duration of the last segment roll under the
+// frame log's mutex (µs), the rolls since start and how many of them took a
+// segment preallocated in the background.
+func FrameLogRollStats() (lastUs int64, rolls, preallocated uint64) {
+	return frameLogLastRollNanos.Load() / 1e3, frameLogRolls.Load(), frameLogRollsPre.Load()
+}
+
+// FrameWriteTimes splits one frame log write: the wait for the log's mutex,
+// the append and its data sync, the index update, and the segment roll it
+// did (zero for a write that did not roll, or without a frame log).
+type FrameWriteTimes struct {
+	LockWait, IO, Index, Roll time.Duration
 }
 
 func frameLogSegmentName(seg uint32) string { return fmt.Sprintf("frames-%08d.log", seg) }
@@ -242,22 +279,58 @@ func (l *frameLog) openSegment(seg uint32, off int64) error {
 		return err
 	}
 	if off == 0 {
-		frameLogPreallocate(f, frameLogSegmentBytes)
-		// A new file is durable only once its directory entry is.
-		if d, err := os.Open(l.dir); err == nil {
-			_ = d.Sync()
-			d.Close()
-		}
+		l.prepareSegment(f)
 	}
 	l.seg, l.f, l.off = seg, f, off
 	return nil
 }
 
+// prepareSegment reserves a new segment's blocks and makes its directory
+// entry durable (a new file is durable only once its entry is).
+func (l *frameLog) prepareSegment(f *os.File) {
+	frameLogPreallocate(f, frameLogSegmentBytes)
+	if d, err := os.Open(l.dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+}
+
+// startPreallocLocked starts making the next segment ready once the current
+// one is half full (l.mu held). The file is created under its final name
+// with its size left at zero: a crash leaves an empty last segment, which
+// recovery scans to offset 0 and appends to (openFrameLog). It is created
+// exclusively; a name that exists already is left to the roll's inline
+// path.
+func (l *frameLog) startPreallocLocked() {
+	if l.pre != nil || l.off*2 < frameLogSegmentBytes {
+		return
+	}
+	pre := &frameLogPrealloc{seg: l.seg + 1, done: make(chan struct{})}
+	l.pre = pre
+	path := filepath.Join(l.dir, frameLogSegmentName(pre.seg))
+	l.bg.Add(1)
+	go func() {
+		defer l.bg.Done()
+		defer close(pre.done)
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			pre.err = err
+			return
+		}
+		l.prepareSegment(f)
+		pre.f = f
+	}()
+}
+
 // write appends the frames with data and returns once they are durable and
-// indexed.
-func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte) error {
+// indexed; times, when set, receives the write's split.
+func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte, times *FrameWriteTimes) error {
+	tLock := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if times != nil {
+		times.LockWait = time.Since(tLock)
+	}
 	if l.f == nil {
 		return errors.New("frame log is closed")
 	}
@@ -290,10 +363,16 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 		return nil
 	}
 	if l.off > 0 && l.off+int64(len(buf)) > frameLogSegmentBytes {
-		if err := l.roll(); err != nil {
+		tRoll := time.Now()
+		err := l.roll()
+		if times != nil {
+			times.Roll = time.Since(tRoll)
+		}
+		if err != nil {
 			return err
 		}
 	}
+	tIO := time.Now()
 	if _, err := l.f.WriteAt(buf, l.off); err != nil {
 		return err
 	}
@@ -302,6 +381,11 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 	}
 	seg, base := l.seg, l.off
 	end := base + int64(len(buf))
+	tIdx := time.Now()
+	if times != nil {
+		times.IO = tIdx.Sub(tIO)
+		defer func() { times.Index = time.Since(tIdx) }()
+	}
 	// The index needs no sync of its own: it is rebuilt from the log.
 	if err := l.db.UpdateNosync(ctx, func(tx kv.RwTx) error {
 		for _, c := range locs {
@@ -314,29 +398,61 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 		return err
 	}
 	l.off = end
+	l.startPreallocLocked()
 	return nil
 }
 
-// roll starts the next segment. The index position moves with the next
-// write; recovery scans a finished segment to its end either way.
+// roll starts the next segment (l.mu held). The index position moves with
+// the next write; recovery scans a finished segment to its end either way.
+//
+// The next segment normally comes preallocated (startPreallocLocked): the
+// roll then only swaps the file handles. One still being prepared is waited
+// for (it does what the inline path would); without one, or when it failed,
+// the segment is created and preallocated here as before. The dropped
+// segment of the bench-only retention is deleted on its own goroutine: a
+// crash before that leaves it on disk below the index position, where
+// recovery never scans.
 func (l *frameLog) roll() error {
-	old := l.f
+	t0 := time.Now()
+	old, oldSeg := l.f, l.seg
 	next := l.seg + 1
-	if err := l.openSegment(next, 0); err != nil {
-		l.f = old
+	pre := l.pre
+	l.pre = nil
+	var f *os.File
+	if pre != nil {
+		<-pre.done
+		if pre.seg == next && pre.err == nil {
+			f = pre.f
+		} else if pre.f != nil {
+			pre.f.Close()
+		}
+	}
+	if f != nil {
+		l.seg, l.f, l.off = next, f, 0
+		frameLogRollsPre.Add(1)
+	} else if err := l.openSegment(next, 0); err != nil {
+		l.seg, l.f = oldSeg, old
 		return err
 	}
 	old.Close()
 	if l.keepSegments > 0 && next >= uint32(l.keepSegments) {
 		drop := next - uint32(l.keepSegments)
-		l.rmu.Lock()
-		if r := l.readers[drop]; r != nil {
-			r.Close()
-			delete(l.readers, drop)
-		}
-		l.rmu.Unlock()
-		_ = os.Remove(filepath.Join(l.dir, frameLogSegmentName(drop)))
+		l.bg.Add(1)
+		go func() {
+			defer l.bg.Done()
+			l.rmu.Lock()
+			if r := l.readers[drop]; r != nil {
+				r.Close()
+				delete(l.readers, drop)
+			}
+			l.rmu.Unlock()
+			_ = os.Remove(filepath.Join(l.dir, frameLogSegmentName(drop)))
+		}()
 	}
+	took := time.Since(t0)
+	frameLogRolls.Add(1)
+	frameLogLastRollNanos.Store(int64(took))
+	log.Info("frame log segment rolled", "seg", next, "rollUs", took.Microseconds(), "preallocated", f != nil)
 	return nil
 }
 
@@ -410,7 +526,19 @@ func (l *frameLog) close() {
 		l.f.Close()
 		l.f = nil
 	}
+	if pre := l.pre; pre != nil {
+		// Never written: removed, so a reopen appends to the current
+		// segment as before (a crash leaves it empty, which recovery
+		// tolerates).
+		l.pre = nil
+		<-pre.done
+		if pre.f != nil {
+			pre.f.Close()
+			_ = os.Remove(filepath.Join(l.dir, frameLogSegmentName(pre.seg)))
+		}
+	}
 	l.mu.Unlock()
+	l.bg.Wait()
 	l.rmu.Lock()
 	for seg, f := range l.readers {
 		f.Close()
