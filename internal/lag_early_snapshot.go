@@ -98,10 +98,6 @@ func SetLagEarlyRetryForTest(on bool) func() {
 	return func() { lagEarlyRetryOn = prev }
 }
 
-// lagEarlyParkedForTest runs when an early offer was parked (tests: hold
-// the parent's hook until it happened).
-var lagEarlyParkedForTest func(hash types.Hash)
-
 // lagEarlyAfterFoldForTest runs on a block whose early snapshot was
 // published, right after its fold (tests: a write after the fold).
 var lagEarlyAfterFoldForTest func(ibs *state.IntraBlockState, txs []*transaction.Transaction)
@@ -309,9 +305,6 @@ func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, 
 		p.parked, p.parkedRun = es, a
 		p.earlyStats.parked.Add(1)
 		p.mu.Unlock()
-		if fn := lagEarlyParkedForTest; fn != nil {
-			fn(es.hash)
-		}
 		return true
 	}
 	if (p.spec != a && p.taken != a) || p.early != nil || p.next != nil {
