@@ -4,9 +4,10 @@
 package parallel
 
 import (
-	"os"
 	"runtime"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // N42_WAVE_PARTITION_FAST=1 (r65a): the LPT wave partition and its steal
@@ -39,7 +40,7 @@ import (
 //     goroutines.
 //
 // Default off: partitionFor runs the serial code.
-var wavePartitionFast = os.Getenv("N42_WAVE_PARTITION_FAST") == "1"
+var wavePartitionFast = envswitch.Is1("N42_WAVE_PARTITION_FAST", envswitch.Perf, "Compute the LPT wave partition and steal chains faster (r65a).")
 
 // WavePartitionFastOn reports N42_WAVE_PARTITION_FAST.
 func WavePartitionFastOn() bool { return wavePartitionFast }

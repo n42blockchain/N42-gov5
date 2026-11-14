@@ -18,11 +18,11 @@ package parallel
 
 import (
 	"encoding/binary"
-	"os"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -411,7 +411,7 @@ func encodeAccount(acc *account.StateAccount) ([]byte, error) {
 // side: an account's store entry remembers the base-cache entry its first
 // base read found, so later reads of the account through the entry skip
 // the cache's lookup.
-var fast2 = os.Getenv("N42_TRANSFER_FAST2") != "0"
+var fast2 = envswitch.Not0("N42_TRANSFER_FAST2", envswitch.Perf, "Default on: second transfer fast path.")
 
 // SetFast2ForTest sets the reader's N42_TRANSFER_FAST2 switch and returns
 // the restore.

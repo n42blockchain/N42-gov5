@@ -24,13 +24,13 @@ package parallel
 
 import (
 	"encoding/binary"
-	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -43,7 +43,9 @@ import (
 // SetExecLeanForTest does not race workers left running by another test.
 var execLean atomic.Bool
 
-func init() { execLean.Store(os.Getenv("N42_EXEC_LEAN") == "1") }
+func init() {
+	execLean.Store(envswitch.Is1("N42_EXEC_LEAN", envswitch.Perf, "Lean Block-STM execution (EXEC_LEAN)."))
+}
 
 // ExecLean reports N42_EXEC_LEAN.
 func ExecLean() bool { return execLean.Load() }

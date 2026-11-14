@@ -18,14 +18,15 @@ package parallel
 
 import (
 	"math/bits"
-	"os"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // scratchPool is N42_BLOCK_SCRATCH_POOL (default on; "0" allocates every
 // block's scratch fresh, the old behaviour): an executor's store keeps its
 // version lists in a versionArena reused across blocks.
-var scratchPool = os.Getenv("N42_BLOCK_SCRATCH_POOL") != "0"
+var scratchPool = envswitch.Not0("N42_BLOCK_SCRATCH_POOL", envswitch.Perf, "Default on: per-block scratch reused across blocks; 0 allocates fresh (r31a).")
 
 // SetScratchPoolForTest switches the scratch reuse and returns the restore.
 func SetScratchPoolForTest(on bool) func() {

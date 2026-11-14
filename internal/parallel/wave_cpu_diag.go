@@ -1,8 +1,9 @@
 package parallel
 
 import (
-	"os"
 	"runtime"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // waveCPUDiag (N42_WAVE_CPU_DIAG=1, default off) measures each wave worker's
@@ -13,7 +14,7 @@ import (
 // a locked goroutine that blocks hands its P to another thread and needs a
 // full thread switch to resume. Compare wave timings against a flag-off leg
 // before reading them as the undisturbed cost.
-var waveCPUDiag = os.Getenv("N42_WAVE_CPU_DIAG") == "1"
+var waveCPUDiag = envswitch.Is1("N42_WAVE_CPU_DIAG", envswitch.Diag, "Measure each wave worker's thread CPU time.")
 
 // Topology of the bench box: 256 threads, SMT siblings n and n+128, 16 CCXs of
 // 8 cores each. On any other host the core and CCX counts are not meaningful.

@@ -26,6 +26,7 @@ import (
 	"time"
 	_ "unsafe" // go:linkname
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -162,7 +163,7 @@ type stealQueue struct {
 
 // waveSteal (N42_WAVE_STEAL=1) lets a worker that ran out of chains take
 // whole not-yet-started chains from the busiest worker (LPT mode only).
-var waveSteal = os.Getenv("N42_WAVE_STEAL") == "1"
+var waveSteal = envswitch.Is1("N42_WAVE_STEAL", envswitch.Perf, "A worker that ran out of chains steals not-yet-started ones.")
 
 // buildChains groups each queue into per-key chains ordered as LPT assigned
 // them: by length descending, ties by first appearance.
@@ -256,7 +257,7 @@ func stealFrom(sqs []stealQueue, self int) *waveChain {
 
 // waveLPT (N42_WAVE_LPT=1) replaces the modulo sender-to-worker assignment
 // with longest-processing-time greedy assignment (S83). Read once at init.
-var waveLPT = os.Getenv("N42_WAVE_LPT") == "1"
+var waveLPT = envswitch.Is1("N42_WAVE_LPT", envswitch.Perf, "Longest-processing-time sender-to-worker assignment.")
 
 // SetWaveModesForTest sets N42_WAVE_LPT and N42_WAVE_STEAL and returns the
 // restore.
@@ -1021,7 +1022,7 @@ func partitionForSerial(txIndices []int, workers int, keys []uint64) *wavePartit
 
 // presizeVersions is N42_MV_PRESIZE (default on; "0" disables): see
 // workerStat.keyCount.
-var presizeVersions = os.Getenv("N42_MV_PRESIZE") != "0"
+var presizeVersions = envswitch.Not0("N42_MV_PRESIZE", envswitch.Perf, "Default on: presize the multi-version maps; 0 disables.")
 
 // incarnationsZero reports whether every transaction of q runs for the
 // first time (the first wave): only then do the key counts size lists.
@@ -1422,4 +1423,8 @@ func (e *Executor) Stats() (executions, aborts int64) {
 // S81's waveBusyMs).
 func (e *Executor) BusyNanos() int64 {
 	return e.busyNanos.Load()
+}
+
+func init() {
+	envswitch.Declare("N42_PARALLEL_TRACE", envswitch.Diag, "Trace the failed transactions of the wave executor.")
 }
