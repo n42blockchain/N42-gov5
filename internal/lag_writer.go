@@ -176,6 +176,13 @@ type lagWriteJob struct {
 	capture *commitment.FlushCapture
 	gen     uint64
 
+	// qCapWait: the QMDB flush's wait for the hand-off's capture inside the
+	// transaction; qPrepBusy: the state preparation was still running when
+	// the flush started (the flush shared the cores with it).
+	qCapWait  time.Duration
+	qPrepBusy bool
+	qFirst    bool
+
 	// marks: when the writer entered each phase (zero: never), end: when
 	// the job finished; written by the writer goroutine before done closes.
 	marks [lwpCount]time.Time
@@ -860,7 +867,7 @@ func (bc *BlockChain) recoverLagWrite(j *lagWriteJob) {
 	rc := bc.qmdbRootComputer
 	rc.AbortFlushed()
 	rc.TakeUndo()
-	if err := bc.ChainDB.Update(bc.headWriteContext(), func(tx kv.RwTx) error {
+	if err := bc.ChainDB.Update(kv.WithRwTag(bc.headWriteContext(), "lagReload"), func(tx kv.RwTx) error {
 		rc.SetCold(tx)
 		lerr := rc.LoadFrom(tx)
 		rc.SetCold(nil)

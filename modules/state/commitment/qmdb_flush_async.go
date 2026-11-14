@@ -36,6 +36,9 @@ func (c *FlushCapture) Wait() (int, error) {
 	return c.n, c.err
 }
 
+// Done is closed once the flush finished.
+func (c *FlushCapture) Done() <-chan struct{} { return c.done }
+
 // Took is how long the flush (and the eviction before it) ran; valid
 // after Wait.
 func (c *FlushCapture) Took() time.Duration {

@@ -307,9 +307,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// dPrepLead before the hand-off.
 		prepEarly bool
 		dPrepLead time.Duration
-		// The write transactions that held the MDBX writer while this one
-		// waited to begin (N42_RW_HOLDER_DIAG=1; "" otherwise).
+		// The write transactions that released the MDBX writer while this
+		// one waited to begin, and the one holding it when the wait began
+		// ("tag:heldMs"; "" when the writer was free).
 		beginBehind string
+		beginHolder string
 		// The BeginTxn wait alone (begin also holds the Go-side overhead).
 		dBeginWait time.Duration
 		// The frame store write (P11): its own run and the commit's wait.
@@ -380,13 +382,19 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		lagBGGate.enter()
 	}
 	var commitStats mdbx.CommitStats
-	if err := bc.ChainDB.Update(writeCtx, func(tx kv.RwTx) error {
+	writeTag := "blockWrite"
+	if job == nil {
+		writeTag = "blockWriteSync"
+	}
+	if err := bc.ChainDB.Update(kv.WithRwTag(writeCtx, writeTag), func(tx kv.RwTx) error {
 		tClosureStart = time.Now()
 		job.mark(lwpBody)
 		if d, ok := tx.(interface {
 			RwBeginBehind() (time.Duration, string)
+			RwWaitHolder() string
 		}); ok {
 			dBeginWait, beginBehind = d.RwBeginBehind()
+			beginHolder = d.RwWaitHolder()
 		}
 		if native, ok := tx.(*mdbx.MdbxTx); ok && job != nil {
 			native.RecordCommitStats(&commitStats)
@@ -725,10 +733,15 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				if job != nil {
 					// The rows the hand-off captured from the tree at this block
 					// (N42_LAG_HANDOFF_LEAN: once its capture is done).
+					if job.prep != nil && !chanClosed(job.prep.done) {
+						job.qPrepBusy = true
+					}
 					if job.capture != nil {
+						tCap := time.Now()
 						if _, err := job.capture.Wait(); err != nil {
 							return fmt.Errorf("capturing QMDB rows of block %d: %w", blockNumber.Uint64(), err)
 						}
+						job.qCapWait = time.Since(tCap)
 					}
 					if err := job.flush.replay(tx); err != nil {
 						return fmt.Errorf("writing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
@@ -819,7 +832,49 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			return nil
 		}
 
-		if txnEarly {
+		if txnEarly && lagWriteQFlushReady {
+			// N42_LAG_WRITE_QFLUSH_READY (lag_write_qflush_ready.go): the
+			// block rows and the receipts, then the QMDB rows and the state
+			// in the order their inputs are ready. Same rows, disjoint
+			// tables, one transaction.
+			if err := writeBlockRows(); err != nil {
+				return err
+			}
+			if err := writeReceipts(); err != nil {
+				return err
+			}
+			if fn := lagWriteTxnEarlyMidForTest; fn != nil {
+				if err := fn(blockNumber.Uint64()); err != nil {
+					return err
+				}
+			}
+			waitState := func() error {
+				job.mark(lwpPrepWaitTxn)
+				tSub := time.Now()
+				if err := waitPrep(); err != nil {
+					return err
+				}
+				dPrepWaitTxn += time.Since(tSub)
+				job.mark(lwpBody)
+				return writeStateRows()
+			}
+			if lagQFlushFirst(job) {
+				job.qFirst = true
+				if err := writeQMDBRows(); err != nil {
+					return err
+				}
+				if err := waitState(); err != nil {
+					return err
+				}
+			} else {
+				if err := waitState(); err != nil {
+					return err
+				}
+				if err := writeQMDBRows(); err != nil {
+					return err
+				}
+			}
+		} else if txnEarly {
 			// The rows that need no preparation, then the receipts (their
 			// Log rows), then the state once its preparation is done. The
 			// tables each group writes are disjoint from the other's, so the
@@ -1032,8 +1087,20 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 					"framesIdxUs", ft.Index.Microseconds(), "framesRollUs", ft.Roll.Microseconds(), "frameLogRollUs", rollUs)
 			}
 		}
-		if beginBehind != "" {
-			fields = append(fields, "beginBehind", beginBehind, "beginWait", dBeginWait)
+		if job != nil {
+			// The QMDB flush's wait for the hand-off's capture, whether the
+			// state preparation still ran beside it, and (QFLUSH_READY)
+			// whether it ran before the state rows.
+			fields = append(fields, "qCapWaitUs", job.qCapWait.Microseconds(), "qPrepBusy", job.qPrepBusy)
+			if job.capture != nil {
+				fields = append(fields, "qCapTookUs", job.capture.Took().Microseconds())
+			}
+			if txnEarly && lagWriteQFlushReady {
+				fields = append(fields, "qFirst", job.qFirst)
+			}
+		}
+		if dBeginWait >= time.Millisecond && (beginBehind != "" || beginHolder != "") {
+			fields = append(fields, "beginBehind", beginBehind, "beginWait", dBeginWait, "beginHolder", beginHolder)
 		}
 		if traceNativeCommit {
 			// Join native stage timings to this exact block and write transaction.
