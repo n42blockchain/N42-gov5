@@ -159,7 +159,12 @@ type blockWritePhases struct {
 	// PrepWait the write's wait for the preparations before its
 	// transaction opened (part of Total, not of any phase).
 	Prep, PrepWait time.Duration
-	PrepFast       bool // applied from prepared rows (not a replay)
+	// PrepWaitTxn is the part of PrepWait spent inside the transaction
+	// (N42_LAG_WRITE_TXN_EARLY), not before it.
+	PrepWaitTxn time.Duration
+	// TxnEarly: the write took N42_LAG_WRITE_TXN_EARLY's order.
+	TxnEarly bool
+	PrepFast bool // applied from prepared rows (not a replay)
 	// PrepEarly: the preparation started inside the block's root
 	// (N42_LAG_WRITE_EARLY_PREP); PrepLead is how long before the hand-off
 	// it started.
@@ -326,39 +331,65 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		prepared     *state.PreparedStateWrite
 		preparedLogs *rawdb.PreparedLogs
 	)
+	// N42_LAG_WRITE_TXN_EARLY (lag_write_txn_early.go): the transaction
+	// opens without waiting for the preparations; the rows that need neither
+	// are written first and each preparation is waited for where its rows go.
+	txnEarly := job != nil && lagWriteTxnEarly && job.prep != nil && ibs != nil
+	// dPrepWaitTxn: the wait for the state preparation inside the
+	// transaction (txnEarly only; part of the closure, not of a phase).
+	var dPrepWaitTxn time.Duration
+	waitPrep := func() error {
+		p, err := job.prep.wait()
+		if err != nil {
+			return fmt.Errorf("preparing the state write of block %d: %w", blockNumber.Uint64(), err)
+		}
+		prepared, dPrep = p, job.prep.took
+		prepEarly = job.prep.early
+		if prepEarly {
+			dPrepLead = job.handAt.Sub(job.prep.start)
+		}
+		return nil
+	}
+	waitLogs := func() error {
+		l, err := job.logs.wait()
+		if err != nil {
+			return fmt.Errorf("preparing the logs of block %d: %w", blockNumber.Uint64(), err)
+		}
+		preparedLogs = l
+		return nil
+	}
 	if job != nil {
+		job.mark(lwpPrepWait)
 		tWait := time.Now()
-		if job.prep != nil && ibs != nil {
-			p, err := job.prep.wait()
-			if err != nil {
-				return NonStatTy, fmt.Errorf("preparing the state write of block %d: %w", blockNumber.Uint64(), err)
-			}
-			prepared, dPrep = p, job.prep.took
-			prepEarly = job.prep.early
-			if prepEarly {
-				dPrepLead = job.handAt.Sub(job.prep.start)
+		if job.prep != nil && ibs != nil && !txnEarly {
+			if err := waitPrep(); err != nil {
+				return NonStatTy, err
 			}
 		}
-		if job.logs != nil && len(receipts) > 0 {
-			l, err := job.logs.wait()
-			if err != nil {
-				return NonStatTy, fmt.Errorf("preparing the logs of block %d: %w", blockNumber.Uint64(), err)
+		if job.logs != nil && len(receipts) > 0 && !txnEarly {
+			if err := waitLogs(); err != nil {
+				return NonStatTy, err
 			}
-			preparedLogs = l
 		}
 		dPrepWait = time.Since(tWait)
+		job.mark(lwpBegin)
 	}
 
 	lagTx := job != nil && lagWriteDeferBG
 	if lagTx {
 		lagBGGate.enter()
 	}
+	var commitStats mdbx.CommitStats
 	if err := bc.ChainDB.Update(writeCtx, func(tx kv.RwTx) error {
 		tClosureStart = time.Now()
+		job.mark(lwpBody)
 		if d, ok := tx.(interface {
 			RwBeginBehind() (time.Duration, string)
 		}); ok {
 			dBeginWait, beginBehind = d.RwBeginBehind()
+		}
+		if native, ok := tx.(*mdbx.MdbxTx); ok && job != nil {
+			native.RecordCommitStats(&commitStats)
 		}
 		if traceNativeCommit {
 			writeTxID = tx.ViewID()
@@ -404,60 +435,74 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		}
 		log.Trace("writeTd:", "number", blockNumber.Uint64(), "hash", blk.Hash(), "td", externTd.Uint64())
 
-		if len(receipts) > 0 {
+		writeReceipts := func() error {
+			if len(receipts) == 0 {
+				return nil
+			}
+			if txnEarly && job.logs != nil {
+				if err := waitLogs(); err != nil {
+					return err
+				}
+			}
+			{
+				tPhase = time.Now()
+				encoded := future.encodedFor(blk.Hash(), receipts)
+				logs := preparedLogs
+				if logs != nil {
+					err = rawdb.AppendReceiptsPrepared(tx, blockNumber.Uint64(), receipts, encoded, logs)
+				} else {
+					err = rawdb.AppendReceiptsEncoded(tx, blockNumber.Uint64(), receipts, encoded)
+				}
+				if err != nil {
+					log.Errorf("rawdb.AppendReceipts failed err= %v", err)
+					return err
+				}
+				if logs != nil {
+					err = rawdb.WriteLogIndexPrepared(tx, blockNumber.Uint64(), logs)
+				} else {
+					err = rawdb.WriteLogIndex(tx, blockNumber.Uint64(), receipts)
+				}
+				if err != nil {
+					log.Errorf("rawdb.WriteLogIndex failed err= %v", err)
+					return err
+				}
+				dReceipts = time.Since(tPhase)
+			}
+			return nil
+		}
+		writeBlockRows := func() error {
 			tPhase = time.Now()
-			encoded := future.encodedFor(blk.Hash(), receipts)
-			logs := preparedLogs
-			if logs != nil {
-				err = rawdb.AppendReceiptsPrepared(tx, blockNumber.Uint64(), receipts, encoded, logs)
-			} else {
-				err = rawdb.AppendReceiptsEncoded(tx, blockNumber.Uint64(), receipts, encoded)
-			}
-			if err != nil {
-				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
+			if job != nil && job.frames != nil {
+				// The frames are on their way to the frame store; the commit
+				// below waits for them.
+				if err := rawdb.WriteBlockFramesStored(tx, concreteBlock); err != nil {
+					return err
+				}
+			} else if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 				return err
 			}
-			if logs != nil {
-				err = rawdb.WriteLogIndexPrepared(tx, blockNumber.Uint64(), logs)
-			} else {
-				err = rawdb.WriteLogIndex(tx, blockNumber.Uint64(), receipts)
-			}
-			if err != nil {
-				log.Errorf("rawdb.WriteLogIndex failed err= %v", err)
-				return err
-			}
-			dReceipts = time.Since(tPhase)
-		}
-		tPhase = time.Now()
-		if job != nil && job.frames != nil {
-			// The frames are on their way to the frame store; the commit
-			// below waits for them.
-			if err := rawdb.WriteBlockFramesStored(tx, concreteBlock); err != nil {
-				return err
-			}
-		} else if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
-			return err
-		}
-		// Frames named by the block are in this batch's Frames rows. Dropping
-		// them from the store before the batch commits is safe: the block is
-		// already in memory, and a failed commit fails the import, whose
-		// retry resolves the frames from the block it still holds.
-		bc.framesPersisted(concreteBlock)
-		dBlock = time.Since(tPhase)
+			// Frames named by the block are in this batch's Frames rows. Dropping
+			// them from the store before the batch commits is safe: the block is
+			// already in memory, and a failed commit fails the import, whose
+			// retry resolves the frames from the block it still holds.
+			bc.framesPersisted(concreteBlock)
+			dBlock = time.Since(tPhase)
 
-		// Persist the per-block BLS committee evidence in the same atomic batch —
-		// on EVERY node, not just the producing leader. The simulated pool is
-		// deterministic (same seed on all nodes), so followers regenerate the
-		// byte-identical CE at import. Without this, only each block's leader
-		// held its own CE; under leader rotation the NEXT leader had no parent
-		// CE to derive ParentBeaconRoot from and the resealed chain's evidence
-		// chain broke at the first live block (7-node smoke, blocks 1001+).
-		if bc.committeePool != nil {
-			tPhase = time.Now()
-			if err := bc.writeConsensusEvidence(tx, concreteBlock); err != nil {
-				return err
+			// Persist the per-block BLS committee evidence in the same atomic batch —
+			// on EVERY node, not just the producing leader. The simulated pool is
+			// deterministic (same seed on all nodes), so followers regenerate the
+			// byte-identical CE at import. Without this, only each block's leader
+			// held its own CE; under leader rotation the NEXT leader had no parent
+			// CE to derive ParentBeaconRoot from and the resealed chain's evidence
+			// chain broke at the first live block (7-node smoke, blocks 1001+).
+			if bc.committeePool != nil {
+				tPhase = time.Now()
+				if err := bc.writeConsensusEvidence(tx, concreteBlock); err != nil {
+					return err
+				}
+				dEvidence = time.Since(tPhase)
 			}
-			dEvidence = time.Since(tPhase)
+			return nil
 		}
 
 		plainWriter := state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
@@ -479,283 +524,343 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		// The ordered writer's block arrives with its CommitBlock done off
 		// this transaction (lag_writer.go stateWritePrep); applying it is the
 		// state phase.
-		if prepared != nil && (diffCollector != nil || stateWriter != state.WriterWithChangeSets(plainWriter)) {
-			// lagWriteUsable admits no snapshot tree or read-through cache,
-			// the writers prepared rows would bypass.
-			return fmt.Errorf("prepared state write of block %d under a wrapped state writer", blockNumber.Uint64())
-		}
-		if ibs != nil {
-			tPhase = time.Now()
-			if prepared != nil {
-				if err := prepared.WriteState(tx, stateWriter); err != nil {
+		writeStateRows := func() error {
+			if prepared != nil && (diffCollector != nil || stateWriter != state.WriterWithChangeSets(plainWriter)) {
+				// lagWriteUsable admits no snapshot tree or read-through cache,
+				// the writers prepared rows would bypass.
+				return fmt.Errorf("prepared state write of block %d under a wrapped state writer", blockNumber.Uint64())
+			}
+			if ibs != nil {
+				tPhase = time.Now()
+				if prepared != nil {
+					if err := prepared.WriteState(tx, stateWriter); err != nil {
+						return err
+					}
+					prepFast = prepared.Fast()
+				} else if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
 					return err
 				}
-				prepFast = prepared.Fast()
-			} else if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
-				return err
+				dState = time.Since(tPhase)
+				if prepared != nil {
+					nAccts, nSlots = prepared.ChangedCounts(plainWriter)
+				} else {
+					nAccts, nSlots = plainWriter.ChangedCounts()
+				}
+				if err := startWriteback(); err != nil {
+					return err
+				}
+				tPhase = time.Now()
+				job.mark(lwpChgset)
+				// A prior attempt at this height (hotstuff view-change re-production,
+				// a competing same-height proposal, or a reorg re-import) may have
+				// already written AccountChangeSet/StorageChangeSet rows for this
+				// blockNum. Those tables are AppendDup (strictly-increasing key,data);
+				// re-writing the same height collides → MDBX_EKEYMISMATCH and the node
+				// wedges. Clear any rows ≥ this height first — a no-op on the
+				// strictly-forward happy path, and safe (same tx as the re-append).
+				tSub := time.Now()
+				if err := changeset.Truncate(tx, blockNumber.Uint64()); err != nil {
+					return fmt.Errorf("truncating stale changesets for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				dChgTruncate = time.Since(tSub)
+				tSub = time.Now()
+				if prepared != nil {
+					err = prepared.WriteChangeSets(tx, stateWriter)
+				} else {
+					err = stateWriter.WriteChangeSets()
+				}
+				if err != nil {
+					return fmt.Errorf("writing changesets for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				dChgSets = time.Since(tSub)
+				tSub = time.Now()
+				if prepared != nil {
+					err = prepared.WriteHistory(stateWriter)
+				} else {
+					err = stateWriter.WriteHistory()
+				}
+				if err != nil {
+					return fmt.Errorf("writing history for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				dChgHistory = time.Since(tSub)
+				dChangeset = time.Since(tPhase)
+				if err := startWriteback(); err != nil {
+					return err
+				}
 			}
-			dState = time.Since(tPhase)
-			if prepared != nil {
-				nAccts, nSlots = prepared.ChangedCounts(plainWriter)
-			} else {
-				nAccts, nSlots = plainWriter.ChangedCounts()
-			}
-			if err := startWriteback(); err != nil {
-				return err
-			}
-			tPhase = time.Now()
-			// A prior attempt at this height (hotstuff view-change re-production,
-			// a competing same-height proposal, or a reorg re-import) may have
-			// already written AccountChangeSet/StorageChangeSet rows for this
-			// blockNum. Those tables are AppendDup (strictly-increasing key,data);
-			// re-writing the same height collides → MDBX_EKEYMISMATCH and the node
-			// wedges. Clear any rows ≥ this height first — a no-op on the
-			// strictly-forward happy path, and safe (same tx as the re-append).
-			tSub := time.Now()
-			if err := changeset.Truncate(tx, blockNumber.Uint64()); err != nil {
-				return fmt.Errorf("truncating stale changesets for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			dChgTruncate = time.Since(tSub)
-			tSub = time.Now()
-			if prepared != nil {
-				err = prepared.WriteChangeSets(tx, stateWriter)
-			} else {
-				err = stateWriter.WriteChangeSets()
-			}
-			if err != nil {
-				return fmt.Errorf("writing changesets for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			dChgSets = time.Since(tSub)
-			tSub = time.Now()
-			if prepared != nil {
-				err = prepared.WriteHistory(stateWriter)
-			} else {
-				err = stateWriter.WriteHistory()
-			}
-			if err != nil {
-				return fmt.Errorf("writing history for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			dChgHistory = time.Since(tSub)
-			dChangeset = time.Since(tPhase)
-			if err := startWriteback(); err != nil {
-				return err
-			}
-		}
 
-		// Flush JMT dirty nodes into the current MDBX transaction and persist root.
-		// Skip when ibs is nil (ZK fast path): no EVM was executed, so no JMT
-		// updates occurred. Writing the JMT root here would incorrectly persist
-		// the parent's root as the current block's root.
-		if ibs != nil && bc.jmtEnabled && bc.jmtCommitment != nil {
-			mdbxNodeStore := jmtstore.NewMDBXStore(tx, jmtstore.JMTNodeTable)
-			if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
-				return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
+			// Flush JMT dirty nodes into the current MDBX transaction and persist root.
+			// Skip when ibs is nil (ZK fast path): no EVM was executed, so no JMT
+			// updates occurred. Writing the JMT root here would incorrectly persist
+			// the parent's root as the current block's root.
+			if ibs != nil && bc.jmtEnabled && bc.jmtCommitment != nil {
+				mdbxNodeStore := jmtstore.NewMDBXStore(tx, jmtstore.JMTNodeTable)
+				if err := bc.jmtCommitment.Tree().FlushTo(mdbxNodeStore); err != nil {
+					return fmt.Errorf("flushing JMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				jmtRoot := jmt.Hash(bc.jmtCommitment.Root())
+				if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
+					return fmt.Errorf("writing JMT root for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				if err := jmtstore.WriteJMTVersion(tx, blockNumber.Uint64()); err != nil {
+					return fmt.Errorf("writing JMT version for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				// Update in-memory version after all DB writes succeed within this tx.
+				bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
 			}
-			jmtRoot := jmt.Hash(bc.jmtCommitment.Root())
-			if err := jmtstore.WriteJMTRoot(tx, jmtRoot); err != nil {
-				return fmt.Errorf("writing JMT root for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			if err := jmtstore.WriteJMTVersion(tx, blockNumber.Uint64()); err != nil {
-				return fmt.Errorf("writing JMT version for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			// Update in-memory version after all DB writes succeed within this tx.
-			bc.jmtCommitment.Tree().SetVersion(blockNumber.Uint64())
-		}
 
-		// Flush BMT dirty nodes into the current MDBX transaction.
-		if ibs != nil && bc.bmtEnabled && bc.bmtCommitment != nil {
-			bmtNodeStore := bmtstore.NewMDBXStore(tx, bmtstore.BMTNodeTable)
-			if err := bc.bmtCommitment.Tree().FlushTo(bmtNodeStore); err != nil {
-				return fmt.Errorf("flushing BMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
+			// Flush BMT dirty nodes into the current MDBX transaction.
+			if ibs != nil && bc.bmtEnabled && bc.bmtCommitment != nil {
+				bmtNodeStore := bmtstore.NewMDBXStore(tx, bmtstore.BMTNodeTable)
+				if err := bc.bmtCommitment.Tree().FlushTo(bmtNodeStore); err != nil {
+					return fmt.Errorf("flushing BMT nodes for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				bmtRoot := bc.bmtCommitment.Root()
+				if err := bmtstore.WriteBMTRoot(tx, bmtRoot); err != nil {
+					return fmt.Errorf("writing BMT root for block %d failed: %w", blockNumber.Uint64(), err)
+				}
 			}
-			bmtRoot := bc.bmtCommitment.Root()
-			if err := bmtstore.WriteBMTRoot(tx, bmtRoot); err != nil {
-				return fmt.Errorf("writing BMT root for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-		}
 
-		// Flush Verkle dirty nodes into the current MDBX transaction.
-		if ibs != nil && bc.verkleEnabled && bc.verkleCommitment != nil {
-			verkleNodeStore := verklestore.NewMDBXStore(tx, verklestore.VerkleNodeTable)
-			if _, _, err := bc.verkleCommitment.FlushTo(verkleNodeStore); err != nil {
-				return fmt.Errorf("flushing Verkle nodes for block %d failed: %w", blockNumber.Uint64(), err)
+			// Flush Verkle dirty nodes into the current MDBX transaction.
+			if ibs != nil && bc.verkleEnabled && bc.verkleCommitment != nil {
+				verkleNodeStore := verklestore.NewMDBXStore(tx, verklestore.VerkleNodeTable)
+				if _, _, err := bc.verkleCommitment.FlushTo(verkleNodeStore); err != nil {
+					return fmt.Errorf("flushing Verkle nodes for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				if err := verklestore.WriteVerkleVersion(tx, blockNumber.Uint64()); err != nil {
+					return fmt.Errorf("writing Verkle version for block %d failed: %w", blockNumber.Uint64(), err)
+				}
 			}
-			if err := verklestore.WriteVerkleVersion(tx, blockNumber.Uint64()); err != nil {
-				return fmt.Errorf("writing Verkle version for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-		}
 
-		// Flush MPT branches + trie state checkpoint for crash recovery.
-		if ibs != nil && bc.mptEnabled && bc.mptRootComputer != nil {
-			if err := bc.mptRootComputer.SaveCheckpoint(tx, blockNumber.Uint64(), blk.StateRoot()); err != nil {
-				return fmt.Errorf("MPT checkpoint for block %d failed: %w", blockNumber.Uint64(), err)
+			// Flush MPT branches + trie state checkpoint for crash recovery.
+			if ibs != nil && bc.mptEnabled && bc.mptRootComputer != nil {
+				if err := bc.mptRootComputer.SaveCheckpoint(tx, blockNumber.Uint64(), blk.StateRoot()); err != nil {
+					return fmt.Errorf("MPT checkpoint for block %d failed: %w", blockNumber.Uint64(), err)
+				}
 			}
+			return nil
 		}
 
 		// Flush QMDB positional entry log + twig meta into the current MDBX tx,
 		// evict the just-flushed window from RAM, and record the per-block undo
 		// for the recent-blocks eth_getProof window. The world root is carried by
 		// header.Root (ComputeRoot returned it), so no separate root row is needed.
-		if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
-			// Leader path: the miner computes the sealed root on an ISOLATED
-			// computer (speculative builds must not touch the live tree), so
-			// at this point the live tree has NOT applied the block — flushing
-			// would be a no-op, the undo row would be synthesized empty, and
-			// the applied marker would advance over state the tree never saw
-			// (the zero-receipts fingerprint; every block this node led then
-			// desynced its committed state from the importing majority).
-			// Replay the SNAPSHOTTED dirty set (the exact ops the sealed root
-			// was computed from) on the live computer: it must reproduce the
-			// sealed header root byte-for-byte — a mismatch aborts the write
-			// before anything is persisted. Re-collecting from the ibs is NOT
-			// equivalent: collection faults objects and merges journal
-			// dirties, and on an append-only commitment one extra no-op entry
-			// shifts the root (observed live: isolated and live instances of
-			// the same store agreed on synthetic ops but the second
-			// IntermediateRoot collection diverged).
-			if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
-				// Stale-seal gate: the sealed block extends its PARENT, but the
-				// applied head may have moved past it while the seal was in
-				// flight (a competing same-height candidate imported first —
-				// observed live as a burst of reproduce-guard trips: the
-				// replay ran on a tree already holding the sibling, failed
-				// deterministically, and burned the leader's view with a
-				// scary error for a block that had simply lost the race).
-				// A seal whose parent is no longer the applied head has lost;
-				// drop it quietly instead of replaying onto the wrong base.
-				if err := checkQMDBLeaderSealParent(tx, blockNumber.Uint64(), blk.ParentHash()); err != nil {
-					return err
-				}
-				accts, stor := ibs.LastRootDirtySet()
-				if accts == nil && stor == nil {
-					return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
-				}
-				sealedRoot := blk.StateRoot()
-				if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
-					// The header carries the parent's root; the build's own
-					// root is what the live tree must reproduce.
-					own, ok := ibs.LastIntermediateRoot()
-					if !ok {
-						return fmt.Errorf("deferred execution: sealed block %d has no computed root", blockNumber.Uint64())
+		writeQMDBRows := func() error {
+			if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+				// Leader path: the miner computes the sealed root on an ISOLATED
+				// computer (speculative builds must not touch the live tree), so
+				// at this point the live tree has NOT applied the block — flushing
+				// would be a no-op, the undo row would be synthesized empty, and
+				// the applied marker would advance over state the tree never saw
+				// (the zero-receipts fingerprint; every block this node led then
+				// desynced its committed state from the importing majority).
+				// Replay the SNAPSHOTTED dirty set (the exact ops the sealed root
+				// was computed from) on the live computer: it must reproduce the
+				// sealed header root byte-for-byte — a mismatch aborts the write
+				// before anything is persisted. Re-collecting from the ibs is NOT
+				// equivalent: collection faults objects and merges journal
+				// dirties, and on an append-only commitment one extra no-op entry
+				// shifts the root (observed live: isolated and live instances of
+				// the same store agreed on synthetic ops but the second
+				// IntermediateRoot collection diverged).
+				if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
+					// Stale-seal gate: the sealed block extends its PARENT, but the
+					// applied head may have moved past it while the seal was in
+					// flight (a competing same-height candidate imported first —
+					// observed live as a burst of reproduce-guard trips: the
+					// replay ran on a tree already holding the sibling, failed
+					// deterministically, and burned the leader's view with a
+					// scary error for a block that had simply lost the race).
+					// A seal whose parent is no longer the applied head has lost;
+					// drop it quietly instead of replaying onto the wrong base.
+					if err := checkQMDBLeaderSealParent(tx, blockNumber.Uint64(), blk.ParentHash()); err != nil {
+						return err
 					}
-					sealedRoot = own
+					accts, stor := ibs.LastRootDirtySet()
+					if accts == nil && stor == nil {
+						return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
+					}
+					sealedRoot := blk.StateRoot()
+					if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
+						// The header carries the parent's root; the build's own
+						// root is what the live tree must reproduce.
+						own, ok := ibs.LastIntermediateRoot()
+						if !ok {
+							return fmt.Errorf("deferred execution: sealed block %d has no computed root", blockNumber.Uint64())
+						}
+						sealedRoot = own
+					}
+					tPhase = time.Now()
+					bc.qmdbRootComputer.SetCold(tx)
+					// S58 (docs/QS_BLOCK_TIME_BUDGET.md 6f9): N42_QMDB_SINGLE_FOLD
+					// routes this replay through ComputeRootShared's own explicit
+					// matched/mismatched counters instead of the inline comparison
+					// below; v1 still applies AND folds on the live tree (see its
+					// own doc comment) -- byte-for-byte the same cost as today,
+					// proving equivalence before a later round trusts sealedRoot
+					// alone and skips the live fold for the real ~59ms/block.
+					var liveRoot types.Hash
+					var cerr error
+					if QMDBSingleFoldEnabled() {
+						var matched bool
+						liveRoot, matched, cerr = bc.qmdbRootComputer.ComputeRootShared(accts, stor, sealedRoot)
+						if cerr == nil && !matched {
+							return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+								liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+						}
+					} else {
+						liveRoot, cerr = bc.qmdbRootComputer.ComputeRoot(accts, stor)
+						if cerr == nil && liveRoot != sealedRoot {
+							return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+								liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+						}
+					}
+					if cerr != nil {
+						return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
+					}
+					dRoot2 = time.Since(tPhase)
 				}
 				tPhase = time.Now()
-				bc.qmdbRootComputer.SetCold(tx)
-				// S58 (docs/QS_BLOCK_TIME_BUDGET.md 6f9): N42_QMDB_SINGLE_FOLD
-				// routes this replay through ComputeRootShared's own explicit
-				// matched/mismatched counters instead of the inline comparison
-				// below; v1 still applies AND folds on the live tree (see its
-				// own doc comment) -- byte-for-byte the same cost as today,
-				// proving equivalence before a later round trusts sealedRoot
-				// alone and skips the live fold for the real ~59ms/block.
-				var liveRoot types.Hash
-				var cerr error
-				if QMDBSingleFoldEnabled() {
-					var matched bool
-					liveRoot, matched, cerr = bc.qmdbRootComputer.ComputeRootShared(accts, stor, sealedRoot)
-					if cerr == nil && !matched {
-						return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
-							liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+				job.mark(lwpQFlush)
+				if job != nil {
+					// The rows the hand-off captured from the tree at this block
+					// (N42_LAG_HANDOFF_LEAN: once its capture is done).
+					if job.capture != nil {
+						if _, err := job.capture.Wait(); err != nil {
+							return fmt.Errorf("capturing QMDB rows of block %d: %w", blockNumber.Uint64(), err)
+						}
 					}
-				} else {
-					liveRoot, cerr = bc.qmdbRootComputer.ComputeRoot(accts, stor)
-					if cerr == nil && liveRoot != sealedRoot {
-						return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
-							liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+					if err := job.flush.replay(tx); err != nil {
+						return fmt.Errorf("writing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
+					}
+				} else if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
+					return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				dQMDBFlush = time.Since(tPhase)
+				if err := startWriteback(); err != nil {
+					return err
+				}
+				tPhase = time.Now()
+				// EvictFlushed / TakeUndo / CommitFlushed run AFTER this tx commits
+				// (below, outside the Update): running them here consumed the undo
+				// and dropped the flushed window from RAM while the tx could still
+				// roll back — a late failure then had no undo to peel with, a flush
+				// cursor pointing past rows that never reached disk, and evicted
+				// entries recoverable from nowhere. Peek at the undo without
+				// consuming it; the failure path needs it intact.
+				var undo *qmdb.BlockUndo
+				if job != nil {
+					undo = job.undo
+				} else if undo = bc.qmdbRootComputer.LastUndo(); undo == nil {
+					undo = &qmdb.BlockUndo{PrevNextSlot: bc.qmdbRootComputer.Tree().NextSlot()}
+				}
+				if err := rawdb.WriteQMDBUndo(tx, blockNumber.Uint64(), undo); err != nil {
+					return fmt.Errorf("writing QMDB undo for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				// Track the applied-chain head (which block's state the world state
+				// reflects) — the branch-switch unwind reverts to this marker's
+				// lineage until it matches an incoming block's parent.
+				// FINGERPRINT: a tx-bearing block advancing the marker with zero
+				// receipts is exactly the live-fire divergence signature (marker
+				// ahead of the executed state → permanent nonce-too-high replay
+				// wedge). Root cause under investigation — this line identifies
+				// the guilty code path the moment it happens again.
+				if len(blk.Transactions()) > 0 && len(receipts) == 0 {
+					log.Warn("applied marker advancing over a tx-bearing block with ZERO receipts",
+						"number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:14],
+						"txs", len(blk.Transactions()))
+				}
+				if err := rawdb.WriteQMDBApplied(tx, blockNumber.Uint64(), blk.Hash()); err != nil {
+					return fmt.Errorf("writing QMDB applied marker for block %d failed: %w", blockNumber.Uint64(), err)
+				}
+				if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
+					var root types.Hash
+					var ok bool
+					if txnEarly {
+						// The state preparation may still own ibs: the root the
+						// hand-off read from it (the same value, read once).
+						root, ok = job.execRoot, job.execRootOK
+					} else {
+						root, ok = ibs.LastIntermediateRoot()
+					}
+					if !ok {
+						return fmt.Errorf("deferred execution: block %d has no computed root to store", blockNumber.Uint64())
+					}
+					// The leader's build already computed this block's result (the
+					// receipts root and bloom over every receipt): the same state and
+					// the same receipts. Take it when its root agrees; otherwise
+					// derive it here as a follower does.
+					result, hinted := bc.takeExecutedResultHint(blk.Hash())
+					if !hinted || result.Root != root {
+						var ok bool
+						if result, ok = future.resultFor(blk.Hash(), root, receipts); !ok {
+							result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
+						}
+					}
+					if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
+						return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)
 					}
 				}
-				if cerr != nil {
-					return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
+				if isolatedQMDBSeal {
+					// Own build, unverified by anyone yet: keep it out of the
+					// sibling convergence until the fleet commits it.
+					if err := rawdb.WriteOwnUnverifiedMark(tx, blk.Hash(), blockNumber.Uint64()); err != nil {
+						return fmt.Errorf("marking own block %d unverified: %w", blockNumber.Uint64(), err)
+					}
 				}
-				dRoot2 = time.Since(tPhase)
+				const qmdbUndoWindow = 256
+				if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {
+					if err := rawdb.PruneQMDBUndoBelow(tx, bn-qmdbUndoWindow); err != nil {
+						return fmt.Errorf("pruning QMDB undo window for block %d failed: %w", bn, err)
+					}
+				}
+				dQMDBMeta = time.Since(tPhase)
 			}
-			tPhase = time.Now()
-			if job != nil {
-				// The rows the hand-off captured from the tree at this block
-				// (N42_LAG_HANDOFF_LEAN: once its capture is done).
-				if job.capture != nil {
-					if _, err := job.capture.Wait(); err != nil {
-						return fmt.Errorf("capturing QMDB rows of block %d: %w", blockNumber.Uint64(), err)
-					}
-				}
-				if err := job.flush.replay(tx); err != nil {
-					return fmt.Errorf("writing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
-				}
-			} else if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
-				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			dQMDBFlush = time.Since(tPhase)
-			if err := startWriteback(); err != nil {
+			return nil
+		}
+
+		if txnEarly {
+			// The rows that need no preparation, then the receipts (their
+			// Log rows), then the state once its preparation is done. The
+			// tables each group writes are disjoint from the other's, so the
+			// transaction's rows are the default order's.
+			if err := writeBlockRows(); err != nil {
 				return err
 			}
-			tPhase = time.Now()
-			// EvictFlushed / TakeUndo / CommitFlushed run AFTER this tx commits
-			// (below, outside the Update): running them here consumed the undo
-			// and dropped the flushed window from RAM while the tx could still
-			// roll back — a late failure then had no undo to peel with, a flush
-			// cursor pointing past rows that never reached disk, and evicted
-			// entries recoverable from nowhere. Peek at the undo without
-			// consuming it; the failure path needs it intact.
-			var undo *qmdb.BlockUndo
-			if job != nil {
-				undo = job.undo
-			} else if undo = bc.qmdbRootComputer.LastUndo(); undo == nil {
-				undo = &qmdb.BlockUndo{PrevNextSlot: bc.qmdbRootComputer.Tree().NextSlot()}
+			if err := writeQMDBRows(); err != nil {
+				return err
 			}
-			if err := rawdb.WriteQMDBUndo(tx, blockNumber.Uint64(), undo); err != nil {
-				return fmt.Errorf("writing QMDB undo for block %d failed: %w", blockNumber.Uint64(), err)
+			if err := writeReceipts(); err != nil {
+				return err
 			}
-			// Track the applied-chain head (which block's state the world state
-			// reflects) — the branch-switch unwind reverts to this marker's
-			// lineage until it matches an incoming block's parent.
-			// FINGERPRINT: a tx-bearing block advancing the marker with zero
-			// receipts is exactly the live-fire divergence signature (marker
-			// ahead of the executed state → permanent nonce-too-high replay
-			// wedge). Root cause under investigation — this line identifies
-			// the guilty code path the moment it happens again.
-			if len(blk.Transactions()) > 0 && len(receipts) == 0 {
-				log.Warn("applied marker advancing over a tx-bearing block with ZERO receipts",
-					"number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:14],
-					"txs", len(blk.Transactions()))
-			}
-			if err := rawdb.WriteQMDBApplied(tx, blockNumber.Uint64(), blk.Hash()); err != nil {
-				return fmt.Errorf("writing QMDB applied marker for block %d failed: %w", blockNumber.Uint64(), err)
-			}
-			if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
-				root, ok := ibs.LastIntermediateRoot()
-				if !ok {
-					return fmt.Errorf("deferred execution: block %d has no computed root to store", blockNumber.Uint64())
-				}
-				// The leader's build already computed this block's result (the
-				// receipts root and bloom over every receipt): the same state and
-				// the same receipts. Take it when its root agrees; otherwise
-				// derive it here as a follower does.
-				result, hinted := bc.takeExecutedResultHint(blk.Hash())
-				if !hinted || result.Root != root {
-					var ok bool
-					if result, ok = future.resultFor(blk.Hash(), root, receipts); !ok {
-						result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
-					}
-				}
-				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
-					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)
+			if fn := lagWriteTxnEarlyMidForTest; fn != nil {
+				if err := fn(blockNumber.Uint64()); err != nil {
+					return err
 				}
 			}
-			if isolatedQMDBSeal {
-				// Own build, unverified by anyone yet: keep it out of the
-				// sibling convergence until the fleet commits it.
-				if err := rawdb.WriteOwnUnverifiedMark(tx, blk.Hash(), blockNumber.Uint64()); err != nil {
-					return fmt.Errorf("marking own block %d unverified: %w", blockNumber.Uint64(), err)
-				}
+			job.mark(lwpPrepWaitTxn)
+			tSub := time.Now()
+			if err := waitPrep(); err != nil {
+				return err
 			}
-			const qmdbUndoWindow = 256
-			if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {
-				if err := rawdb.PruneQMDBUndoBelow(tx, bn-qmdbUndoWindow); err != nil {
-					return fmt.Errorf("pruning QMDB undo window for block %d failed: %w", bn, err)
-				}
+			dPrepWaitTxn = time.Since(tSub)
+			job.mark(lwpBody)
+			if err := writeStateRows(); err != nil {
+				return err
 			}
-			dQMDBMeta = time.Since(tPhase)
+		} else {
+			if err := writeReceipts(); err != nil {
+				return err
+			}
+			if err := writeBlockRows(); err != nil {
+				return err
+			}
+			if err := writeStateRows(); err != nil {
+				return err
+			}
+			if err := writeQMDBRows(); err != nil {
+				return err
+			}
 		}
 
 		// Persist LtHash digest alongside JMT root.
@@ -792,6 +897,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		if job != nil && job.frames != nil {
 			// Imported = durable: the block's frames commit before it does.
 			tPhase = time.Now()
+			job.mark(lwpFramesWait)
 			if err := job.frames.wait(); err != nil {
 				return fmt.Errorf("writing the frames of block %d to the frame store: %w", blockNumber.Uint64(), err)
 			}
@@ -799,6 +905,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			framesW = job.frames
 		}
 		dInClosure = time.Since(tClosureStart)
+		job.mark(lwpCommit)
 		return nil
 	}); err != nil {
 		if lagTx {
@@ -825,6 +932,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
 	// isolates the aggregate commit path from everything the closure did.
 	dUpdate := time.Since(tUpdateStart)
+	job.mark(lwpPost)
 	if commitDupFast && bc.blockCache != nil {
 		// A commit of this block may already be waiting for the writer just
 		// released: cache the instance now, not after the post-write work
@@ -874,8 +982,24 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			"commit", dCommit, "post", dPost, "total", dTotal,
 			"tMs", time.Now().UnixMilli(),
 		}
+		if txnEarly {
+			fields = append(fields, "txnEarly", 1, "prepWaitTxn", dPrepWaitTxn)
+		}
+		if commitStats.OK {
+			// The commit's own split (libmdbx): preparation, GC update,
+			// audit, page write, sync, ending, and the dirty volume written.
+			cl := &commitStats.Latency
+			fields = append(fields, "cPrep", cl.Preparation, "cGc", cl.GCWallClock, "cAudit", cl.Audit,
+				"cWrite", cl.Write, "cSync", cl.Sync, "cEnd", cl.Ending, "cWhole", cl.Whole,
+				"dirtyKB", commitStats.DirtyBytes>>10)
+		}
+		if job != nil {
+			// The QMDB rows the hand-off captured, by kind.
+			ent, del, twig, leaf, other := job.flush.counts()
+			fields = append(fields, "qEnt", ent, "qDel", del, "qTwig", twig, "qLeaf", leaf, "qOther", other)
+		}
 		if dPrep > 0 {
-			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait)
+			fields = append(fields, "prep", dPrep, "prepWait", dPrepWait+dPrepWaitTxn)
 			if prepEarly {
 				fields = append(fields, "prepEarly", 1, "prepLead", dPrepLead)
 				if lagWriteEarlyPrepDelay {
@@ -887,7 +1011,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			if ph := prepared.Phases(); ph.Commit > 0 {
 				fields = append(fields, "prepLoad", ph.Load, "prepMark", ph.Mark,
 					"prepCommit", ph.Commit, "prepReset", ph.Reset, "prepEncode", ph.Encode,
-					"prepMerge", ph.Merge, "prepPending", ph.Pending, "prepLoaded", ph.Loaded)
+					"prepMerge", ph.Merge, "prepTail", ph.Tail, "prepPending", ph.Pending, "prepLoaded", ph.Loaded)
 			}
 		}
 		if future.matches(blk.Hash(), receipts) {
@@ -931,7 +1055,8 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				Begin: dBegin, Receipts: dReceipts, Block: dBlock, Evidence: dEvidence,
 				State: dState, ChgTruncate: dChgTruncate, ChgSets: dChgSets, ChgHistory: dChgHistory,
 				Root2: dRoot2, QMDBFlush: dQMDBFlush, QMDBMeta: dQMDBMeta, Snapshot: dSnapshot,
-				Commit: dCommit, Post: dPost, Total: dTotal, Prep: dPrep, PrepWait: dPrepWait, PrepFast: prepFast,
+				Commit: dCommit, Post: dPost, Total: dTotal, Prep: dPrep, PrepWait: dPrepWait + dPrepWaitTxn, PrepFast: prepFast,
+				PrepWaitTxn: dPrepWaitTxn, TxnEarly: txnEarly,
 				PrepEarly: prepEarly, PrepLead: dPrepLead, Frames: dFrames, FramesWait: dFramesWait,
 				PrepSharded: prepared != nil && prepared.Phases().Commit > 0,
 			})
