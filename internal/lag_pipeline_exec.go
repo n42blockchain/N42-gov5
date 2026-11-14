@@ -154,7 +154,12 @@ type lagPipeline struct {
 	next  *aheadExec
 	// taken: the ahead run an import took and waits for (it may still
 	// publish its early snapshot).
-	taken      *aheadExec
+	taken *aheadExec
+	// parked: the next run's early snapshot, offered before its parent's
+	// hook and held until it (N42_LAG_EARLY_RETRY); parkedRun: that run,
+	// always p.next while parked is set.
+	parked     *earlySnap
+	parkedRun  *aheadExec
 	earlyHold  []types.Address
 	earlyStats lagEarlyStats
 	// older: the snapshots of the last written parents before parent,
@@ -515,7 +520,7 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState, w
 	p.mu.Lock()
 	p.dropParentLocked()
 	p.parent = &lagPipeParent{hash: h, number: hdr.Number.Uint64(), header: hdr, post: post, hookAt: time.Now()}
-	p.earlyPublishLocked(h, post, written)
+	parkedPub := p.earlyPublishLocked(h, post, written)
 	if s := p.spec; s != nil && s.parent == h {
 		// The child already runs ahead, started on the early snapshot.
 		p.parent.launched = true
@@ -533,6 +538,11 @@ func (bc *BlockChain) lagPipePublish(hdr *block.Header, post *state.PostState, w
 		}
 	}
 	bc.lagPipeLaunch(lagLaunchHook)
+	if parkedPub {
+		// The spec's parked early snapshot was just published: its child
+		// starts on it now, at this (its grandparent's) hook.
+		bc.lagPipeLaunchEarly(lagLaunchHook)
+	}
 	if fn := lagPipeAfterPublishForTest; fn != nil {
 		fn(h)
 	}
@@ -959,6 +969,7 @@ func (p *lagPipeline) discardLocked(a *aheadExec, reason *atomic.Uint64) {
 	if es := p.early; es != nil && es.hash == a.blk.Hash() {
 		p.dropEarlyLocked()
 	}
+	p.dropParkedOfLocked(a)
 	p.discarded.Add(1)
 	reason.Add(1)
 	p.draining = append(p.draining, a)

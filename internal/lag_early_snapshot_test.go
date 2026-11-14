@@ -5,6 +5,8 @@ package internal
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,10 +47,17 @@ func TestLagEarlySnapshot(t *testing.T) {
 		// prepared and early-prepared writes, lean hand-off, early publish,
 		// ahead prep, lean exec, fast partition, and the finalize levers).
 		fleet bool
-	}{{"inline", false, false, false}, {"orderedWriter", true, false, false}, {"writeAfterFold", false, true, false},
-		{"fleetFlags", true, false, true}, {"fleetFlagsWriteAfterFold", true, true, true}} {
+		// retry: N42_LAG_EARLY_RETRY on (else the environment's).
+		retry bool
+	}{{"inline", false, false, false, false}, {"orderedWriter", true, false, false, false}, {"writeAfterFold", false, true, false, false},
+		{"fleetFlags", true, false, true, false}, {"fleetFlagsWriteAfterFold", true, true, true, false},
+		{"retry", false, false, false, true}, {"fleetFlagsRetry", true, false, true, true},
+		{"fleetFlagsRetryWriteAfterFold", true, true, true, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer SetLagEarlySnapshotForTest(true)()
+			if tc.retry {
+				defer SetLagEarlyRetryForTest(true)()
+			}
 			if tc.fleet {
 				defer SetLagWritePrepareForTest(true)()
 				defer SetLagWriteEarlyPrepForTest(true)()
@@ -209,4 +218,279 @@ func TestEarlySnapshotKeepsStoreAfterRun(t *testing.T) {
 	}
 	run(true)
 	run(false)
+}
+
+// TestLagEarlyRetryParksUntilGrandparentHook forces the order the fleet
+// refuses one early offer in nine with (N42_LAG_EARLY_RETRY off): block N's
+// run, the next run on N-1's early snapshot, ends its Block-STM before
+// N-1's root hook. Each hook of N-1 waits until N's run offered its
+// snapshot. With the retry the offer is parked, published at N-1's hook on
+// N-1's complete post-state, and N+1 launches there. Every block equals
+// the serial chain's (the harness), and every early snapshot's store is
+// released exactly once.
+func TestLagEarlyRetryParksUntilGrandparentHook(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fleet bool
+	}{{"inline", false}, {"fleetFlags", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer SetLagEarlySnapshotForTest(true)()
+			defer SetLagEarlyRetryForTest(true)()
+			if tc.fleet {
+				defer SetLagWriteAsyncForTest(true)()
+				defer SetLagWritePrepareForTest(true)()
+				defer SetLagWriteEarlyPrepForTest(true)()
+				defer SetLagHandoffLeanForTest(true)()
+				defer SetLagWriteDeferBGForTest(true)()
+				defer SetLagEarlyPublishForTest(true)()
+				defer SetAheadPrepForTest(true)()
+				defer SetAheadPreEarlyForTest(true)()
+				defer parallel.SetExecLeanForTest(true)()
+				defer parallel.SetWavePartitionFastForTest(true)()
+				defer state.SetFinalizeFastForTest(true)()
+				defer state.SetFoldNoJournalForTest(true)()
+				defer state.SetPrehookCutForTest(1)()
+				defer state.SetFinalizeHoistForTest(true)()
+				defer state.SetFoldObjectSlabForTest(true)()
+			}
+			lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 3, true, 2
+			defer func() { lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 0, false, 0 }()
+
+			var piped atomic.Pointer[BlockChain]
+			lagPipeAheadClaimedForTest = func(bc *BlockChain, b *block.Block) {
+				piped.Store(bc)
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+					if bc.lagQueuedChild(b.Hash()) != nil {
+						return
+					}
+				}
+			}
+			defer func() { lagPipeAheadClaimedForTest = nil }()
+
+			// Every early snapshot's references: the count left after each
+			// drop, and how often it reached zero (the store's release).
+			var refMu sync.Mutex
+			released := map[*earlySnap]int{}
+			negative := 0
+			lagEarlyUnrefForTest = func(es *earlySnap, left int32) {
+				refMu.Lock()
+				defer refMu.Unlock()
+				switch {
+				case left == 0:
+					released[es]++
+				case left < 0:
+					negative++
+				default:
+					if _, ok := released[es]; !ok {
+						released[es] = 0
+					}
+				}
+			}
+			defer func() { lagEarlyUnrefForTest = nil }()
+
+			// N-1's hook waits for N's run (the next run on N-1's early
+			// snapshot) to end its Block-STM and offer.
+			var forced atomic.Int32
+			lagPipeBeforePublishForTest = func(h types.Hash) {
+				bc := piped.Load()
+				if bc == nil {
+					return
+				}
+				p := &bc.lagPipe
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+					p.mu.Lock()
+					a, parked := p.next, p.parked != nil && p.parkedRun == p.next
+					p.mu.Unlock()
+					if a == nil || a.parent != h {
+						return
+					}
+					if parked {
+						forced.Add(1)
+						return
+					}
+					select {
+					case <-a.done:
+						return
+					default:
+					}
+				}
+			}
+			defer func() { lagPipeBeforePublishForTest = nil }()
+			// After N-1's hook: N's snapshot is published and N+1 runs on it.
+			var atGrand atomic.Int32
+			lagPipeAfterPublishForTest = func(h types.Hash) {
+				bc := piped.Load()
+				if bc == nil {
+					return
+				}
+				p := &bc.lagPipe
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				if es := p.early; es != nil && es.header.ParentHash == h && p.next != nil && p.next.es == es {
+					atGrand.Add(1)
+				}
+			}
+			defer func() { lagPipeAfterPublishForTest = nil }()
+
+			var parked, parkedPub, parkedDrop, used uint64
+			lagPipeEngineDoneForTest = func(lc *lagChain) {
+				s := &lc.bc.lagPipe.earlyStats
+				lc.bc.lagPipe.mu.Lock()
+				require.Nil(t, lc.bc.lagPipe.next, "a next run outlived its blocks")
+				require.Nil(t, lc.bc.lagPipe.parked, "a parked snapshot outlived its blocks")
+				lc.bc.lagPipe.mu.Unlock()
+				parked, parkedPub, parkedDrop, used = s.parked.Load(), s.parkedPublished.Load(), s.parkedDropped.Load(), s.used.Load()
+			}
+			defer func() { lagPipeEngineDoneForTest = nil }()
+
+			testLagPipelineAheadEngine(t, false, arrivalAny, tc.fleet)
+			t.Logf("forced %d, parked %d, published %d, dropped %d, launched at the grandparent's hook %d, early used %d",
+				forced.Load(), parked, parkedPub, parkedDrop, atGrand.Load(), used)
+			require.NotZero(t, forced.Load(), "no early offer came before its grandparent's hook")
+			require.Equal(t, parked, parkedPub+parkedDrop, "a parked snapshot was neither published nor dropped")
+			require.NotZero(t, parkedPub, "no parked snapshot was published")
+			require.NotZero(t, atGrand.Load(), "no child launched at its grandparent's hook")
+			require.GreaterOrEqual(t, used, uint64(6), "children started early were not used")
+
+			// Every snapshot ends released once (discarded runs may still be
+			// draining for a moment).
+			require.Eventually(t, func() bool {
+				refMu.Lock()
+				defer refMu.Unlock()
+				for _, n := range released {
+					if n != 1 {
+						return false
+					}
+				}
+				return true
+			}, 10*time.Second, time.Millisecond, "an early snapshot's store was not released exactly once")
+			refMu.Lock()
+			require.Zero(t, negative, "an early snapshot dropped more references than it held")
+			require.NotEmpty(t, released)
+			refMu.Unlock()
+		})
+	}
+}
+
+// TestLagEarlyRetryParkedReleasesOnce drives a parked offer through each
+// of its outcomes on a bare pipeline and checks that the store is released
+// exactly once, after both the parked slot and the run let it go:
+// published at the grandparent's hook (released after the parent's hook),
+// dropped by the parent's own hook arriving first, by a reset, by the run
+// being superseded, and by an unsafe grandparent.
+func TestLagEarlyRetryParkedReleasesOnce(t *testing.T) {
+	defer SetLagEarlySnapshotForTest(true)()
+	defer SetLagEarlyRetryForTest(true)()
+	grandHash, parentHash := types.Hash{0x01}, types.Hash{0x02}
+	setup := func(t *testing.T) (*BlockChain, *aheadExec, *int) {
+		bc := &BlockChain{}
+		p := &bc.lagPipe
+		gp := &earlySnap{hash: grandHash, number: 1, header: &block.Header{Number: uint256.NewInt(1)}, done: make(chan struct{})}
+		gp.post = state.NewEarlyPostState(gp)
+		gp.refs.Store(1)
+		p.early = gp
+		hdr := &block.Header{Number: uint256.NewInt(2), ParentHash: grandHash}
+		a := &aheadExec{blk: block.NewBlock(hdr, nil).(*block.Block), parent: grandHash, done: make(chan struct{}), pipe: p,
+			es: gp, parPost: gp.post, parHeader: gp.header}
+		p.next = a
+		freed := new(int)
+		require.True(t, bc.lagPipeEarly(a, nil, 0, nil, func() { *freed++ }), "the refused offer was not parked")
+		p.mu.Lock()
+		require.NotNil(t, p.parked)
+		require.Nil(t, p.early.full.Load())
+		p.mu.Unlock()
+		require.Equal(t, uint64(1), p.earlyStats.parked.Load())
+		return bc, a, freed
+	}
+	// runEnds is the run's goroutine ending (runAhead's deferred unref).
+	runEnds := func(a *aheadExec) {
+		close(a.done)
+		a.pub.unref()
+	}
+	full := state.NewEarlyPostState(&earlySnap{done: make(chan struct{})})
+
+	t.Run("publishedAtGrandparentHook", func(t *testing.T) {
+		bc, a, freed := setup(t)
+		p := &bc.lagPipe
+		p.mu.Lock()
+		pub := p.earlyPublishLocked(grandHash, full, map[types.Address]struct{}{})
+		es := p.early
+		p.mu.Unlock()
+		require.True(t, pub)
+		require.Same(t, a, p.spec, "the next run was not promoted")
+		require.NotNil(t, es)
+		require.Same(t, a.pub, es, "the published snapshot is not the parked one")
+		require.Same(t, full, es.below, "the parked snapshot does not sit on the complete post-state")
+		require.Nil(t, p.parked)
+		require.Equal(t, uint64(1), p.earlyStats.parkedPublished.Load())
+		runEnds(a)
+		require.Zero(t, *freed, "released while still published")
+		// The parent's own hook switches it.
+		p.mu.Lock()
+		require.False(t, p.earlyPublishLocked(parentHash, full, map[types.Address]struct{}{}))
+		p.mu.Unlock()
+		require.Equal(t, 1, *freed)
+	})
+	t.Run("droppedByParentHookFirst", func(t *testing.T) {
+		bc, a, freed := setup(t)
+		p := &bc.lagPipe
+		p.mu.Lock()
+		require.False(t, p.earlyPublishLocked(parentHash, full, map[types.Address]struct{}{}))
+		p.mu.Unlock()
+		require.Nil(t, p.parked)
+		require.Equal(t, uint64(1), p.earlyStats.parkedDropped.Load())
+		require.Zero(t, *freed, "released while its run still reads it")
+		runEnds(a)
+		require.Equal(t, 1, *freed)
+	})
+	t.Run("droppedByReset", func(t *testing.T) {
+		bc, a, freed := setup(t)
+		runEnds(a) // the run may also end first
+		require.Zero(t, *freed)
+		bc.lagPipeReset()
+		require.Nil(t, bc.lagPipe.parked)
+		require.Nil(t, bc.lagPipe.next)
+		require.Equal(t, uint64(1), bc.lagPipe.earlyStats.parkedDropped.Load())
+		require.Equal(t, 1, *freed)
+	})
+	t.Run("droppedSuperseded", func(t *testing.T) {
+		bc, a, freed := setup(t)
+		p := &bc.lagPipe
+		other := &aheadExec{blk: a.blk, parent: grandHash, done: make(chan struct{}), pipe: p}
+		close(other.done)
+		p.mu.Lock()
+		p.spec = other
+		require.False(t, p.earlyPublishLocked(grandHash, full, map[types.Address]struct{}{}))
+		p.mu.Unlock()
+		require.Nil(t, p.parked)
+		require.Equal(t, uint64(1), p.earlyStats.parkedDropped.Load())
+		runEnds(a)
+		require.Equal(t, 1, *freed)
+	})
+	t.Run("droppedUnsafeGrandparent", func(t *testing.T) {
+		bc, a, freed := setup(t)
+		p := &bc.lagPipe
+		p.mu.Lock()
+		require.False(t, p.earlyPublishLocked(grandHash, full, map[types.Address]struct{}{{0x99}: {}}))
+		p.mu.Unlock()
+		require.Same(t, a, p.spec)
+		require.Nil(t, p.early)
+		require.Equal(t, uint64(1), p.earlyStats.parkedDropped.Load())
+		runEnds(a)
+		require.Equal(t, 1, *freed)
+	})
+	t.Run("retryOff", func(t *testing.T) {
+		defer SetLagEarlyRetryForTest(false)()
+		bc := &BlockChain{}
+		p := &bc.lagPipe
+		gp := &earlySnap{hash: grandHash, done: make(chan struct{})}
+		p.early = gp
+		hdr := &block.Header{Number: uint256.NewInt(2), ParentHash: grandHash}
+		a := &aheadExec{blk: block.NewBlock(hdr, nil).(*block.Block), parent: grandHash, done: make(chan struct{}), pipe: p, es: gp,
+			parHeader: &block.Header{Number: uint256.NewInt(1)}}
+		p.next = a
+		require.False(t, bc.lagPipeEarly(a, nil, 0, nil, func() { t.Fatal("a refused store was released by the snapshot") }))
+		require.Nil(t, p.parked)
+		require.Nil(t, a.pub)
+	})
 }

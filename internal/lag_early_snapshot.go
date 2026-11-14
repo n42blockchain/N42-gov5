@@ -62,6 +62,46 @@ func SetLagEarlySnapshotForTest(on bool) func() {
 	return func() { lagEarlySnapOn = prev }
 }
 
+// N42_LAG_EARLY_RETRY=1 (default off; only meaningful with
+// N42_LAG_EARLY_SNAPSHOT=1): an early offer refused only because the
+// block's parent has not reached its root hook yet is parked and published
+// at that hook instead of being lost.
+//
+// The refusal protects the bounded layer stack. A next run (the child of
+// the early snapshot's block) reads early(N) / start(N) / complete(N-1) /
+// pending write of N-2: the layer under an early snapshot must be a
+// complete post-state, never another early snapshot, so that no chain of
+// early snapshots (and of the executors they keep alive) builds up, and
+// the pipeline holds one early snapshot and one next run at a time. When
+// N's own run is still the next run on N-1's early snapshot as its
+// Block-STM ends (N-1 has not hooked), N's snapshot would have to sit on
+// N-1's early layer, so it is refused. Without the retry the child N+1
+// then launches only at N's own hook, ~130 ms later on the fleet.
+//
+// Parked, the offer keeps the run's store (it counts as taken: the run
+// does not release the executor, the parked snapshot does). At N-1's hook
+// (earlyPublishLocked), when N's run is promoted to the spec, the parked
+// snapshot is published exactly as a fresh offer would be at that moment
+// -- on N-1's complete post-state -- and N+1 launches on it. In every other
+// outcome (N's run discarded or superseded, N-1 settled without its hook,
+// the pipeline reset or the block forgotten, N's take before the
+// promotion) the parked snapshot is dropped with the next run: the drop
+// releases its publisher reference once, the run its own when its
+// goroutine ends.
+var lagEarlyRetryOn = parseOptIn(os.Getenv("N42_LAG_EARLY_RETRY"))
+
+// SetLagEarlyRetryForTest switches N42_LAG_EARLY_RETRY and returns the
+// restore.
+func SetLagEarlyRetryForTest(on bool) func() {
+	prev := lagEarlyRetryOn
+	lagEarlyRetryOn = on
+	return func() { lagEarlyRetryOn = prev }
+}
+
+// lagEarlyParkedForTest runs when an early offer was parked (tests: hold
+// the parent's hook until it happened).
+var lagEarlyParkedForTest func(hash types.Hash)
+
 // lagEarlyAfterFoldForTest runs on a block whose early snapshot was
 // published, right after its fold (tests: a write after the fold).
 var lagEarlyAfterFoldForTest func(ibs *state.IntraBlockState, txs []*transaction.Transaction)
@@ -112,10 +152,18 @@ type earlySnap struct {
 var earlyHoldWaits atomic.Uint64
 
 func (es *earlySnap) unref() {
-	if es.refs.Add(-1) == 0 && es.free != nil {
+	n := es.refs.Add(-1)
+	if fn := lagEarlyUnrefForTest; fn != nil {
+		fn(es, n)
+	}
+	if n == 0 && es.free != nil {
 		es.free()
 	}
 }
+
+// lagEarlyUnrefForTest sees every reference an early snapshot drops, with
+// the count left (tests: the store is released exactly once).
+var lagEarlyUnrefForTest func(es *earlySnap, left int32)
 
 // end publishes the complete post-state (full non-nil) or drops the
 // snapshot; once.
@@ -222,8 +270,11 @@ func (es *earlySnap) WaitFull() (*state.PostState, error) {
 // lagEarlyStats: early snapshots published, next runs launched on them,
 // next runs used by their import, discarded because the block wrote
 // outside the hold set, early snapshots dropped.
+// parked, parkedPublished, parkedDropped: offers parked
+// (N42_LAG_EARLY_RETRY), and how they ended.
 type lagEarlyStats struct {
 	published, launched, used, unsafe, dropped atomic.Uint64
+	parked, parkedPublished, parkedDropped     atomic.Uint64
 }
 
 // lagPipeEarly publishes the early snapshot of a's block (a is the spec or
@@ -233,6 +284,26 @@ type lagEarlyStats struct {
 func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, start *state.PostState, free func()) bool {
 	p := &bc.lagPipe
 	p.mu.Lock()
+	if lagEarlyRetryOn && p.next == a && a.es != nil && p.early == a.es && p.parked == nil {
+		// a still reads its parent's early snapshot: the parent has not
+		// hooked, and a snapshot of a's block would have to sit on an early
+		// layer. Park it until the parent's hook promotes a.
+		hdr := a.blk.Header().(*block.Header)
+		es := &earlySnap{hash: a.blk.Hash(), number: hdr.Number.Uint64(), header: hdr,
+			mvs: mvs, numTxs: numTxs, start: start, belowParent: a.parHeader.ParentHash,
+			done: make(chan struct{}), free: free}
+		es.hold = deferredFeeRecipients(bc.chainConfig, hdr)
+		// The parked slot (the publisher once published) and the run.
+		es.refs.Store(2)
+		a.pub = es
+		p.parked, p.parkedRun = es, a
+		p.earlyStats.parked.Add(1)
+		p.mu.Unlock()
+		if fn := lagEarlyParkedForTest; fn != nil {
+			fn(es.hash)
+		}
+		return true
+	}
 	if (p.spec != a && p.taken != a) || p.early != nil || p.next != nil {
 		p.mu.Unlock()
 		return false
@@ -258,6 +329,46 @@ func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, 
 	p.mu.Unlock()
 	bc.lagPipeLaunchEarly(lagLaunchHook)
 	return true
+}
+
+// publishParkedLocked publishes the parked early snapshot of a, just
+// promoted to the spec at its parent's hook, on the parent's complete
+// post-state full (p.mu held). It reports whether it published; the caller
+// launches the child after unlocking (lagPipeLaunchEarly).
+func (p *lagPipeline) publishParkedLocked(a *aheadExec, full *state.PostState) bool {
+	es := p.parked
+	if es == nil || p.parkedRun != a {
+		return false
+	}
+	p.parked, p.parkedRun = nil, nil
+	if p.early != nil || full == nil {
+		// Not reachable from earlyPublishLocked (it cleared early and passes
+		// the published post-state); dropped rather than stacked.
+		p.earlyStats.parkedDropped.Add(1)
+		es.end(nil, false)
+		return false
+	}
+	es.below = full
+	es.at = time.Now()
+	es.hold = append(es.hold, p.earlyHold...)
+	es.post = state.NewEarlyPostState(es)
+	p.early = es
+	p.earlyStats.published.Add(1)
+	p.earlyStats.parkedPublished.Add(1)
+	return true
+}
+
+// dropParkedOfLocked drops the parked early snapshot of run a (p.mu held):
+// its publisher reference is released here, the run's when its goroutine
+// ends.
+func (p *lagPipeline) dropParkedOfLocked(a *aheadExec) {
+	es := p.parked
+	if es == nil || p.parkedRun != a {
+		return
+	}
+	p.parked, p.parkedRun = nil, nil
+	p.earlyStats.parkedDropped.Add(1)
+	es.end(nil, false)
 }
 
 // lagPipeLaunchEarly starts the next run: the queued child of the early
@@ -314,17 +425,19 @@ func (p *lagPipeline) dropEarlyOfLocked(hash types.Hash) {
 // earlyPublishLocked switches the early snapshot of the block h whose
 // complete post-state is being published (p.mu held): written holds the
 // addresses the block wrote after its fold. The next run becomes the spec.
-// An early snapshot of another block is dropped.
-func (p *lagPipeline) earlyPublishLocked(h types.Hash, post *state.PostState, written map[types.Address]struct{}) {
+// An early snapshot of another block is dropped. It reports whether the
+// next run's parked early snapshot was published (N42_LAG_EARLY_RETRY): the
+// caller then launches its child (lagPipeLaunchEarly) after unlocking.
+func (p *lagPipeline) earlyPublishLocked(h types.Hash, post *state.PostState, written map[types.Address]struct{}) bool {
 	es := p.early
 	if es == nil {
-		return
+		return false
 	}
 	if es.hash != h || written == nil {
 		// Not this block's, or its import did not record its writes
 		// (another path imported it).
 		p.dropEarlyLocked()
-		return
+		return false
 	}
 	ok := true
 	for addr := range written {
@@ -344,10 +457,19 @@ func (p *lagPipeline) earlyPublishLocked(h types.Hash, post *state.PostState, wr
 		if p.spec == nil {
 			a.parentOK = false
 			p.spec = a
-		} else {
-			p.discardLocked(a, &p.discSuperseded)
+			// A parked snapshot of a's block now sits on h's complete
+			// post-state, as an offer made from here on would. Unless a
+			// read h's early snapshot unsafely: its take discards it.
+			if !ok {
+				p.dropParkedOfLocked(a)
+				return false
+			}
+			return p.publishParkedLocked(a, post)
 		}
+		// Drops a's parked snapshot with it.
+		p.discardLocked(a, &p.discSuperseded)
 	}
+	return false
 }
 
 func (es *earlySnap) holds(addr types.Address) bool {
@@ -375,6 +497,11 @@ func (p *lagPipeline) learnHoldLocked(addr types.Address) {
 // line.
 func (bc *BlockChain) lagEarlyLogFields() []interface{} {
 	s := &bc.lagPipe.earlyStats
-	return []interface{}{"earlyPub", s.published.Load(), "earlyLaunch", s.launched.Load(), "earlyUsed", s.used.Load(),
+	f := []interface{}{"earlyPub", s.published.Load(), "earlyLaunch", s.launched.Load(), "earlyUsed", s.used.Load(),
 		"earlyUnsafe", s.unsafe.Load(), "earlyDropped", s.dropped.Load(), "earlyHeldReads", earlyHoldWaits.Load()}
+	if lagEarlyRetryOn {
+		f = append(f, "earlyParked", s.parked.Load(), "earlyParkedPublished", s.parkedPublished.Load(),
+			"earlyParkedDropped", s.parkedDropped.Load())
+	}
+	return f
 }
