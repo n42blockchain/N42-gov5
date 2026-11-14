@@ -33,7 +33,7 @@ func framesEarlyTestWrites(t *testing.T, err error) (*sync.Map, func()) {
 	counts := &sync.Map{}
 	restoreStore := rawdb.SetFrameStore(memdb.NewTestDB(t))
 	prev := framesWriteFn
-	framesWriteFn = func(_ context.Context, hashes []types.Hash, _ [][]byte) error {
+	framesWriteFn = func(_ context.Context, hashes []types.Hash, _ [][]byte, _ *rawdb.FrameWriteTimes) error {
 		c, _ := counts.LoadOrStore(hashes[0], new(atomic.Int32))
 		c.(*atomic.Int32).Add(1)
 		return err

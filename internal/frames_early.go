@@ -36,8 +36,9 @@ func SetFramesWriteEarlyForTest(on bool) func() {
 	return func() { framesWriteEarlyOn = prev }
 }
 
-// framesWriteFn writes the frames to the store (tests count and fail it).
-var framesWriteFn = rawdb.WriteFramesToStore
+// framesWriteFn writes the frames to the store, filling the frame log
+// write's split (tests count and fail it).
+var framesWriteFn = rawdb.WriteFramesToStoreTimed
 
 // framesEarlyStarted and framesEarlyReused count the early writes started
 // and the ones a hand-off took (since start).

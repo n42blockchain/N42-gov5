@@ -351,6 +351,15 @@ func TestFrameLogPreallocatesNextSegment(t *testing.T) {
 	if frameLogRollsPre.Load() == pre0 {
 		t.Fatal("no roll took the preallocated segment")
 	}
+	// A write's split: it waited for no one, appended and indexed.
+	var times FrameWriteTimes
+	h, raw := frameLogTestFrame(12)
+	if err := WriteFramesToStoreTimed(context.Background(), []types.Hash{h}, [][]byte{raw}, &times); err != nil {
+		t.Fatal(err)
+	}
+	if times.IO <= 0 || times.Index <= 0 || times.LockWait < 0 {
+		t.Fatalf("write split not recorded: %+v", times)
+	}
 	if us, rolls, _ := FrameLogRollStats(); rolls == 0 || us < 0 {
 		t.Fatalf("roll stats: %d us, %d rolls", us, rolls)
 	}

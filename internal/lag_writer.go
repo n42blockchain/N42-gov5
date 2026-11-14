@@ -436,6 +436,9 @@ type framesWrite struct {
 	// startTMs and endTMs: wall clock (ms since the epoch) when the write
 	// started and ended; endTMs is set before done closes.
 	startTMs, endTMs int64
+	// times: the frame log write's split (zero without a frame log), set
+	// before done closes.
+	times rawdb.FrameWriteTimes
 }
 
 // startFramesWrite writes blk's frames to the frame store on its own
@@ -454,7 +457,7 @@ func startFramesWrite(blk *block.Block) *framesWrite {
 	go func() {
 		t0 := time.Now()
 		fw.startTMs = t0.UnixMilli()
-		fw.err = write(context.Background(), hashes, raws)
+		fw.err = write(context.Background(), hashes, raws, &fw.times)
 		fw.took = time.Since(t0)
 		fw.endTMs = time.Now().UnixMilli()
 		close(fw.done)

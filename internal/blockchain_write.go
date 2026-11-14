@@ -898,6 +898,14 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			fields = append(fields, "frames", dFrames, "framesWait", dFramesWait)
 			if framesW != nil {
 				fields = append(fields, "framesStartTMs", framesW.startTMs, "framesEndTMs", framesW.endTMs, "framesEarly", framesW.early)
+				// The frame log write's split: the wait for the log's mutex,
+				// the append with its data sync, the index update, and the
+				// segment roll this write did; frameLogRollUs is the last
+				// roll's time under the mutex.
+				ft := &framesW.times
+				rollUs, _, _ := rawdb.FrameLogRollStats()
+				fields = append(fields, "framesLockUs", ft.LockWait.Microseconds(), "framesIoUs", ft.IO.Microseconds(),
+					"framesIdxUs", ft.Index.Microseconds(), "framesRollUs", ft.Roll.Microseconds(), "frameLogRollUs", rollUs)
 			}
 		}
 		if beginBehind != "" {
