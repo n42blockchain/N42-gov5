@@ -24,9 +24,9 @@ package builder
 
 import (
 	"container/heap"
-	"os"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -34,7 +34,7 @@ import (
 // senderRotate enables deterministic round-robin across senders whose head
 // transactions have equal effective tip. Read once at start-up; off keeps the
 // historical ordering byte-identical.
-var senderRotate = os.Getenv("N42_MINER_SENDER_ROTATE") == "1"
+var senderRotate = envswitch.Is1("N42_MINER_SENDER_ROTATE", envswitch.Config, "Deterministic round-robin across senders whose head transactions tie.")
 
 // TxByPriceAndNonce implements a transaction ordering where transactions
 // from the same account are ordered by nonce, and across accounts ordered
