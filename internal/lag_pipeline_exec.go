@@ -387,6 +387,8 @@ type aheadExec struct {
 	// goroutine). The run holds one of its refs until its goroutine ends:
 	// its fold and receipts still read the executor the snapshot took.
 	pub *earlySnap
+	// treeTiming: the tree lookups of the run's state source (sysProbe).
+	treeTiming commitment.LookupTiming
 }
 
 // release closes the ahead execution's read transaction (once its goroutine
@@ -810,6 +812,14 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 			return bc.lagPipeEarly(a, mvs, numTxs, start, free)
 		}
 	}
+	es := a.es
+	claim.sysProbe = func() (uint64, int64, int64) {
+		var held int64
+		if es != nil {
+			held = es.heldNanos.Load()
+		}
+		return a.treeTiming.N.Load(), a.treeTiming.Nanos.Load(), held
+	}
 	if fn := lagPipeAheadClaimedForTest; fn != nil {
 		fn(bc, a.blk)
 	}
@@ -829,6 +839,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 			src.SetPrefill(ab.pf)
 		}
+		src.SetTiming(&a.treeTiming)
 		base = commitment.NewQMDBStateReader(src, base, mode)
 	}
 	prefetch := state.NewAccountPrefetch(state.LayerPostStates(layers, base))

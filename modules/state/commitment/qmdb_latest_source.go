@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -128,6 +129,22 @@ type LookupSource struct {
 	fresh kv.RoDB
 	// prefill, when set, answers the keys it holds (SetPrefill, P15).
 	prefill *BasePrefill
+	// timing, when set, accumulates the lookups that reached the tree and
+	// their time, reader lock wait included (SetTiming; diagnostics).
+	timing *LookupTiming
+}
+
+// LookupTiming counts a source's lookups that reached the tree and their
+// total time (the reader lock wait, the tree and any cold read).
+type LookupTiming struct {
+	N     atomic.Uint64
+	Nanos atomic.Int64
+}
+
+// SetTiming makes the source accumulate its tree lookups into t.
+func (s *LookupSource) SetTiming(t *LookupTiming) *LookupSource {
+	s.timing = t
+	return s
 }
 
 // NewLookupSourceRefreshing is NewLookupSource for a reader whose
@@ -162,6 +179,17 @@ func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
 			return v, found
 		}
 	}
+	if t := s.timing; t != nil {
+		t0 := time.Now()
+		v, found := s.lookup(keyHash)
+		t.N.Add(1)
+		t.Nanos.Add(int64(time.Since(t0)))
+		return v, found
+	}
+	return s.lookup(keyHash)
+}
+
+func (s *LookupSource) lookup(keyHash qmdb.Hash) ([]byte, bool) {
 	var v []byte
 	var found, evicted bool
 	if s.locked {

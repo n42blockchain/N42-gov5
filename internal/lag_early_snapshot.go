@@ -138,6 +138,10 @@ type earlySnap struct {
 	// done closes on publication).
 	ok atomic.Bool
 
+	// heldNanos: the time reads spent waiting for the complete post-state
+	// (WaitFull; diagnostics).
+	heldNanos atomic.Int64
+
 	// refs: one for the publisher until publication or drop, one for the
 	// publishing run until its goroutine ends (its fold and receipts read
 	// the executor after the offer), one per run reading it until that
@@ -260,7 +264,13 @@ func (es *earlySnap) Hold(addr types.Address) bool {
 func (es *earlySnap) Full() *state.PostState { return es.full.Load() }
 
 func (es *earlySnap) WaitFull() (*state.PostState, error) {
-	<-es.done
+	select {
+	case <-es.done:
+	default:
+		t0 := time.Now()
+		<-es.done
+		es.heldNanos.Add(int64(time.Since(t0)))
+	}
 	if f := es.full.Load(); f != nil {
 		return f, nil
 	}

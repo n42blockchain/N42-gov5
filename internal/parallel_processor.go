@@ -423,6 +423,11 @@ type aheadClaim struct {
 	// transaction count, the block-start writes and the executor's
 	// release. True: the snapshot took the store and releases it.
 	early func(mvs *parallel.MVS, numTxs int, start *state.PostState, free func()) bool
+	// sysProbe, when set, reports the run's state source's tree lookups so
+	// far (count and time, reader lock wait included) and its reads' wait
+	// for the parent's complete post-state (an early snapshot's held reads):
+	// sampled around the block-start system calls (diagnostics).
+	sysProbe func() (treeReads uint64, treeNs, heldNs int64)
 }
 
 // FinishParallel is the second half: the gas check, block end and Finalize
@@ -940,9 +945,24 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 	prep = nil
 	tAffinity := time.Now()
+	// sysStartMs's split (diagnostics): the system calls, the capture below,
+	// and within the calls the tree lookups and the held reads.
+	var sysTreeReads0 uint64
+	var sysTreeNs0, sysHeldNs0 int64
+	probe := ahead && claim != nil && claim.sysProbe != nil
+	if probe {
+		sysTreeReads0, sysTreeNs0, sysHeldNs0 = claim.sysProbe()
+	}
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		executor.Release()
 		return nil, err
+	}
+	tSysCalls := time.Now()
+	var sysTreeReads uint64
+	var sysTreeNs, sysHeldNs int64
+	if probe {
+		r, tn, hn := claim.sysProbe()
+		sysTreeReads, sysTreeNs, sysHeldNs = r-sysTreeReads0, tn-sysTreeNs0, hn-sysHeldNs0
 	}
 	// An early snapshot answers the block-start writes from this capture
 	// (the state holds nothing else yet).
@@ -1380,7 +1400,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		blockLog := []any{"n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "prepKeysUs", prepKeys.Microseconds(), "prepPartUs", prepPart.Microseconds(), "partFast", parallel.WavePartitionFastOn(), "baseKeysUs", baseKeys.Microseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "sysCallUs", tSysCalls.Sub(tAffinity).Microseconds(), "sysCaptureUs", tExecutorMade.Sub(tSysCalls).Microseconds(), "sysTreeReads", sysTreeReads, "sysTreeUs", sysTreeNs/1e3, "sysHeldUs", sysHeldNs/1e3, "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "prepKeysUs", prepKeys.Microseconds(), "prepPartUs", prepPart.Microseconds(), "partFast", parallel.WavePartitionFastOn(), "baseKeysUs", baseKeys.Microseconds(),
 			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillDepth", baseDepth, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillTreeWaitMs", baseTreeWait.Milliseconds(), "basePrefillCut", baseCut, "basePrefillSkip", baseSkip,
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),

@@ -161,6 +161,7 @@ func TestLagEarlySnapshotReleasesStore(t *testing.T) {
 	}()
 	_, err = held.WaitFull()
 	require.ErrorIs(t, err, errEarlyDropped)
+	require.NotZero(t, held.heldNanos.Load(), "the held read's wait was not recorded")
 }
 
 // TestEarlySnapshotKeepsStoreAfterRun: an ahead run whose early snapshot
