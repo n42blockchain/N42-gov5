@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 var writeProbeEnabled = func() bool {
@@ -170,4 +172,8 @@ func ratio(dirty uint64, payload int64) string {
 		return "n/a"
 	}
 	return strconv.FormatFloat(float64(dirty)/float64(payload), 'f', 1, 64)
+}
+
+func init() {
+	envswitch.Declare("N42_WRITE_PROBE", envswitch.Diag, "Write probe of the MDBX layer.")
 }

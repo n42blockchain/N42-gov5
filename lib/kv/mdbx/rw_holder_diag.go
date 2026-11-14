@@ -15,15 +15,16 @@
 package mdbx
 
 import (
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
-var rwHolderDiag = os.Getenv("N42_RW_HOLDER_DIAG") == "1"
+var rwHolderDiag = envswitch.Is1("N42_RW_HOLDER_DIAG", envswitch.Diag, "Diagnose the holder of the MDBX read-write lock.")
 
 // SetRwHolderDiagForTest switches the holder diagnostics and returns the
 // restore.

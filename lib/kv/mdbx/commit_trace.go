@@ -5,6 +5,8 @@ import (
 	"strconv"
 
 	mdbxlib "github.com/erigontech/mdbx-go/mdbx"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // Native commit timings already come back from Commit. Keep their optional
@@ -35,4 +37,8 @@ func (tx *MdbxTx) logCommitTrace(txID uint64, latency mdbxlib.CommitLatency) {
 		"syncNs", latency.Sync.Nanoseconds(),
 		"endingNs", latency.Ending.Nanoseconds(),
 		"wholeNs", latency.Whole.Nanoseconds())
+}
+
+func init() {
+	envswitch.Declare("N42_MDBX_COMMIT_TRACE", envswitch.Diag, "Log MDBX commit timings.")
 }
