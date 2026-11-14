@@ -32,6 +32,8 @@ package qmdb
 import (
 	"os"
 	"strconv"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // keyPrefix is the leading bytes of a key hash retained by truncIndex.
@@ -267,4 +269,8 @@ func IndexOverflowReasons(idx Index) (collisions, unverified int) {
 		return t.OverflowReasons()
 	}
 	return -1, -1
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_TRUNC_INDEX", envswitch.Perf, "New QMDB indexes store key prefixes.")
 }

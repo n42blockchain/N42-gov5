@@ -41,6 +41,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // ShardApplyWorkers is the worker count for ApplyOps' sharded path; 0 (the
@@ -439,4 +441,8 @@ func (t *Tree) recordDeactivationCold(slot uint64, keyHash Hash) {
 	cp := make([]byte, len(v))
 	copy(cp, v)
 	t.rec.Entries = append(t.rec.Entries, UndoEntry{Slot: slot, KeyHash: keyHash, Value: cp})
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_SHARD_APPLY", envswitch.Perf, "Worker count of ApplyOps' sharded path (0 = off).")
 }

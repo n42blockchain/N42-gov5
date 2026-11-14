@@ -29,6 +29,8 @@ import (
 	"os"
 	"strconv"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // ParallelApplyWorkers is the worker count for ApplyOps' parallel pre-pass;
@@ -166,4 +168,8 @@ func (t *Tree) appendLive(keyHash Hash, value []byte, leaf Hash) {
 		}
 	}
 	t.rootDirty = true
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_PARALLEL_APPLY", envswitch.Perf, "Worker count of ApplyOps' parallel pre-pass (0 = off).")
 }

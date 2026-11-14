@@ -20,6 +20,8 @@ import (
 	"os"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // Index maps a live key's hash to the global slot of its current entry. It is the
@@ -172,4 +174,8 @@ func (t *Tree) IndexRange(fn func(keyHash Hash, slot uint64) bool) bool {
 	}
 	it.Range(fn)
 	return true
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_INDEX_PRESIZE", envswitch.Perf, "Default on: presize the QMDB index; false keeps grow-from-empty.")
 }
