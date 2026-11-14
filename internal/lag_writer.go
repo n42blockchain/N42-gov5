@@ -200,9 +200,6 @@ type stateWritePrep struct {
 	// block's state root (N42_LAG_WRITE_EARLY_PREP), not at the hand-off.
 	start time.Time
 	early bool
-	// startTMs and endTMs: wall clock (ms since the epoch) when the write
-	// started and ended; endTMs is set before done closes.
-	startTMs, endTMs int64
 }
 
 // startStateWritePrep runs state.PrepareStateWrite on its own goroutine. It
@@ -436,6 +433,9 @@ type framesWrite struct {
 	took time.Duration
 	// early: started when the block was queued, not at its hand-off.
 	early bool
+	// startTMs and endTMs: wall clock (ms since the epoch) when the write
+	// started and ended; endTMs is set before done closes.
+	startTMs, endTMs int64
 }
 
 // startFramesWrite writes blk's frames to the frame store on its own
