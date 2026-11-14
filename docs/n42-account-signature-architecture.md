@@ -79,7 +79,7 @@
 ### 2.4 Post-Quantum —— [已落地]（可用，SQIsign 除外）
 
 - 算法库：`crypto/falcon`（Falcon-512）、`crypto/dilithium`（mode2/mode3）、
-  另有 `crypto/kyber`、`crypto/csidh`、`crypto/kem`、`crypto/pke`（KEM/加密方向，非签名）
+  另有 `crypto/csidh`、`crypto/kem`、`crypto/pke`（含 Kyber）（KEM/加密方向，非签名）
 - 预编译：`internal/vm/pq_contracts.go`，`0x14` Falcon-512、`0x15` Dilithium2、`0x16` Dilithium3、
   `0x17` SQIsign（**占位**）。gas：3500 / 4000 / 5000。
   **激活受 `ChainConfig.PQPrecompilesTime` 单独控制，刻意不进标准分叉表**——保持 N42 扩展与

@@ -15,17 +15,16 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	legacy "github.com/n42blockchain/N42/crypto/kyber/kyber512"
 	pke "github.com/n42blockchain/N42/crypto/pke/kyber/kyber512"
 )
 
-// kyberSelftestCommand exercises crypto/kyber/kyber512 (the Kyber512.CPAPKE
-// public key encryption of the NIST PQC round 3 submission). The package
-// has no other importer; this command is its only entry point and checks
-// it against crypto/pke/kyber/kyber512, the copy the KEM is built on.
+// kyberSelftestCommand exercises crypto/pke/kyber/kyber512 (the
+// Kyber512.CPAPKE public key encryption of the NIST PQC round 3 submission,
+// which crypto/kem/kyber is built on). Nothing in the node uses Kyber yet;
+// this command is its entry point outside the crypto tree.
 var kyberSelftestCommand = &cli.Command{
 	Name:  "kyber-selftest",
-	Usage: "Self-test of crypto/kyber/kyber512 (Kyber512 CPA-PKE): round trips and cross-check with crypto/pke/kyber",
+	Usage: "Self-test of crypto/pke/kyber/kyber512 (Kyber512 CPA-PKE): key, encrypt/decrypt and pack/unpack round trips",
 	Flags: []cli.Flag{
 		&cli.IntFlag{
 			Name:  "rounds",
@@ -35,11 +34,6 @@ var kyberSelftestCommand = &cli.Command{
 		&cli.StringFlag{
 			Name:  "seed",
 			Usage: "Hex seed the round seeds are derived from (default: random)",
-		},
-		&cli.BoolFlag{
-			Name:  "compare",
-			Usage: "Also check byte equality with crypto/pke/kyber/kyber512 and decrypt across the two",
-			Value: true,
 		},
 	},
 	Action: func(ctx *cli.Context) error {
@@ -60,13 +54,13 @@ var kyberSelftestCommand = &cli.Command{
 				return err
 			}
 		}
-		st, err := kyberSelftest(master, rounds, ctx.Bool("compare"))
+		st, err := kyberSelftest(master, rounds)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("kyber512 CPA-PKE self-test passed: rounds=%d compare=%v seed=%s\n", rounds, ctx.Bool("compare"), hex.EncodeToString(master))
+		fmt.Printf("kyber512 CPA-PKE self-test passed: rounds=%d seed=%s\n", rounds, hex.EncodeToString(master))
 		fmt.Printf("sizes: public key %d, private key %d, ciphertext %d, plaintext %d bytes\n",
-			legacy.PublicKeySize, legacy.PrivateKeySize, legacy.CiphertextSize, legacy.PlaintextSize)
+			pke.PublicKeySize, pke.PrivateKeySize, pke.CiphertextSize, pke.PlaintextSize)
 		fmt.Printf("per operation: keygen %v, encrypt %v, decrypt %v\n",
 			st.keygen/time.Duration(rounds), st.encrypt/time.Duration(rounds), st.decrypt/time.Duration(rounds))
 		return nil
@@ -94,26 +88,25 @@ func kyberDerive(master []byte, i int, label byte, n int) []byte {
 }
 
 // kyberSelftest runs rounds key generations, encryptions and decryptions
-// of crypto/kyber/kyber512 from master, and with compare checks that
-// crypto/pke/kyber/kyber512 produces the same keys and ciphertexts and
-// that each decrypts the other's ciphertext.
-func kyberSelftest(master []byte, rounds int, compare bool) (kyberSelftestStats, error) {
+// of crypto/pke/kyber/kyber512 from master, and checks that keys are
+// deterministic in their seed and survive pack/unpack.
+func kyberSelftest(master []byte, rounds int) (kyberSelftestStats, error) {
 	var st kyberSelftestStats
 	for i := 0; i < rounds; i++ {
-		keySeed := kyberDerive(master, i, 'k', legacy.KeySeedSize)
-		encSeed := kyberDerive(master, i, 'e', legacy.EncryptionSeedSize)
-		pt := kyberDerive(master, i, 'm', legacy.PlaintextSize)
+		keySeed := kyberDerive(master, i, 'k', pke.KeySeedSize)
+		encSeed := kyberDerive(master, i, 'e', pke.EncryptionSeedSize)
+		pt := kyberDerive(master, i, 'm', pke.PlaintextSize)
 
 		t0 := time.Now()
-		pk, sk := legacy.NewKeyFromSeed(keySeed)
+		pk, sk := pke.NewKeyFromSeed(keySeed)
 		st.keygen += time.Since(t0)
 
-		ct := make([]byte, legacy.CiphertextSize)
+		ct := make([]byte, pke.CiphertextSize)
 		t0 = time.Now()
 		pk.EncryptTo(ct, pt, encSeed)
 		st.encrypt += time.Since(t0)
 
-		got := make([]byte, legacy.PlaintextSize)
+		got := make([]byte, pke.PlaintextSize)
 		t0 = time.Now()
 		sk.DecryptTo(got, ct)
 		st.decrypt += time.Since(t0)
@@ -122,15 +115,15 @@ func kyberSelftest(master []byte, rounds int, compare bool) (kyberSelftestStats,
 		}
 
 		// Pack / unpack round trip.
-		pkb := make([]byte, legacy.PublicKeySize)
-		skb := make([]byte, legacy.PrivateKeySize)
+		pkb := make([]byte, pke.PublicKeySize)
+		skb := make([]byte, pke.PrivateKeySize)
 		pk.Pack(pkb)
 		sk.Pack(skb)
-		var pk2 legacy.PublicKey
-		var sk2 legacy.PrivateKey
+		var pk2 pke.PublicKey
+		var sk2 pke.PrivateKey
 		pk2.Unpack(pkb)
 		sk2.Unpack(skb)
-		ct2 := make([]byte, legacy.CiphertextSize)
+		ct2 := make([]byte, pke.CiphertextSize)
 		pk2.EncryptTo(ct2, pt, encSeed)
 		if !bytes.Equal(ct2, ct) {
 			return st, fmt.Errorf("kyber-selftest: round %d: unpacked public key encrypts differently", i)
@@ -142,7 +135,7 @@ func kyberSelftest(master []byte, rounds int, compare bool) (kyberSelftestStats,
 
 		// A different encryption seed must give a different ciphertext
 		// that still decrypts.
-		other := kyberDerive(master, i, 'o', legacy.EncryptionSeedSize)
+		other := kyberDerive(master, i, 'o', pke.EncryptionSeedSize)
 		pk.EncryptTo(ct2, pt, other)
 		if bytes.Equal(ct2, ct) {
 			return st, fmt.Errorf("kyber-selftest: round %d: ciphertext does not depend on the encryption seed", i)
@@ -152,33 +145,14 @@ func kyberSelftest(master []byte, rounds int, compare bool) (kyberSelftestStats,
 			return st, fmt.Errorf("kyber-selftest: round %d: second ciphertext decrypts differently", i)
 		}
 
-		if !compare {
-			continue
-		}
-		if legacy.PublicKeySize != pke.PublicKeySize || legacy.PrivateKeySize != pke.PrivateKeySize ||
-			legacy.CiphertextSize != pke.CiphertextSize || legacy.PlaintextSize != pke.PlaintextSize {
-			return st, errors.New("kyber-selftest: parameter sizes differ from crypto/pke/kyber/kyber512")
-		}
-		rpk, rsk := pke.NewKeyFromSeed(keySeed)
-		rpkb := make([]byte, pke.PublicKeySize)
-		rskb := make([]byte, pke.PrivateKeySize)
-		rpk.Pack(rpkb)
-		rsk.Pack(rskb)
-		if !bytes.Equal(rpkb, pkb) || !bytes.Equal(rskb, skb) {
-			return st, fmt.Errorf("kyber-selftest: round %d: key pair differs from crypto/pke/kyber/kyber512", i)
-		}
-		rct := make([]byte, pke.CiphertextSize)
-		rpk.EncryptTo(rct, pt, encSeed)
-		if !bytes.Equal(rct, ct) {
-			return st, fmt.Errorf("kyber-selftest: round %d: ciphertext differs from crypto/pke/kyber/kyber512", i)
-		}
-		rsk.DecryptTo(got, ct)
-		if !bytes.Equal(got, pt) {
-			return st, fmt.Errorf("kyber-selftest: round %d: crypto/pke/kyber/kyber512 does not decrypt this ciphertext", i)
-		}
-		sk.DecryptTo(got, rct)
-		if !bytes.Equal(got, pt) {
-			return st, fmt.Errorf("kyber-selftest: round %d: this package does not decrypt crypto/pke/kyber/kyber512's ciphertext", i)
+		// The same seed must give the same key pair.
+		pk3, sk3 := pke.NewKeyFromSeed(keySeed)
+		pkb3 := make([]byte, pke.PublicKeySize)
+		skb3 := make([]byte, pke.PrivateKeySize)
+		pk3.Pack(pkb3)
+		sk3.Pack(skb3)
+		if !bytes.Equal(pkb3, pkb) || !bytes.Equal(skb3, skb) {
+			return st, fmt.Errorf("kyber-selftest: round %d: key pair is not deterministic in its seed", i)
 		}
 	}
 	return st, nil
