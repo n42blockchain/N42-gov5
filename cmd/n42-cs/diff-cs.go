@@ -2,16 +2,18 @@
 // StorageChangeSets + AccountChangeSets over a block range.
 //
 // Two-level comparison:
-//   1. Key presence: which (addr, slot) pairs each side records as changed
-//      this block. Mismatch ⇒ one side missed a write or wiped extra slots.
-//   2. OldValue bytes: the per-block "value at start of block" for each
-//      (addr, slot). Mismatch with same key set ⇒ the two clients disagree
-//      about what the slot held at block start, i.e. some prior block
-//      already diverged. This is the bisect signal we want.
+//  1. Key presence: which (addr, slot) pairs each side records as changed
+//     this block. Mismatch ⇒ one side missed a write or wiped extra slots.
+//  2. OldValue bytes: the per-block "value at start of block" for each
+//     (addr, slot). Mismatch with same key set ⇒ the two clients disagree
+//     about what the slot held at block start, i.e. some prior block
+//     already diverged. This is the bisect signal we want.
 //
 // Reth StorageChangeSets layout (DupSort):
-//   key = block#(8B BE) || addr(20B)        // 28B
-//   value = slot(32B) || compact-BE U256    // 32B + 0..32B
+//
+//	key = block#(8B BE) || addr(20B)        // 28B
+//	value = slot(32B) || compact-BE U256    // 32B + 0..32B
+//
 // Reth's `Compact for U256` writes `to_be_bytes()[32-size..]` — i.e. the
 // trailing N bytes of the 32-byte big-endian representation, with leading
 // zero bytes trimmed. So the bytes are already BE-minimal; do not reverse.
@@ -81,7 +83,8 @@ func setBETrimmed(dst *[32]byte, src []byte) uint8 {
 	return uint8(n)
 }
 
-func main() {
+func runDiffCs(args []string) {
+	fs := flag.NewFlagSet("n42-cs diff-cs", flag.ExitOnError)
 	// Always print exit reason so silent exits are diagnosable. Panics
 	// also stop here so the stack trace gets flushed before the deferred
 	// closes run.
@@ -94,19 +97,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[exit] %s\n", exitReason)
 	}()
 	_ = exitReason
-	n42Dir := flag.String("n42", "", "n42 freezer dir (contains acctcs/storcs), e.g. d:\\N42-rerun\\chain\\freezer — REQUIRED")
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	fromBlock := flag.Uint64("from", 0, "start block (inclusive)")
-	toBlock := flag.Uint64("to", 0, "end block (inclusive); 0 = scan to n42 freezer's safe end")
-	showAll := flag.Bool("show-all", false, "show every diff slot, not just summary")
-	firstDiff := flag.Bool("first-diff", true, "stop at the first divergent block")
-	maxPrintPerBlock := flag.Int("max-print", 10, "max divergent slots to print per block")
-	skipKeyOnly := flag.Bool("skip-key-only", false, "ignore key-set mismatches (e.g. account-deletion-only blocks); only flag oldVal mismatches")
-	stopOnAcctCount := flag.Bool("stop-on-acct-count", false, "let account-count mismatches trigger first-diff stop (default: account count is noisy — different clients track 'touched' differently — so off by default)")
-	skipZeroOldMissing := flag.Bool("skip-zero-old-missing", false, "ignore MISSING entries whose reth_old==0 (zero-pre-value 'first-write' records — clients differ on whether to emit these, not necessarily a state bug; keep scanning until a VAL DIFF or non-zero MISSING surfaces)")
-	skipWipeStale := flag.Bool("skip-wipe-stale", false, "ignore EXTRA entries that look like 'wipe-stale' (n42 deletes a slot mainnet never knew about — symptom of a prior incomplete SELFDESTRUCT; doesn't usually move root if MPT delete folds correctly, so suppress to find the real signal downstream)")
-	progressEvery := flag.Uint64("progress", 20000, "log progress every N blocks (0 = silent)")
-	flag.Parse()
+	n42Dir := fs.String("n42", "", "n42 freezer dir (contains acctcs/storcs), e.g. d:\\N42-rerun\\chain\\freezer — REQUIRED")
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	fromBlock := fs.Uint64("from", 0, "start block (inclusive)")
+	toBlock := fs.Uint64("to", 0, "end block (inclusive); 0 = scan to n42 freezer's safe end")
+	showAll := fs.Bool("show-all", false, "show every diff slot, not just summary")
+	firstDiff := fs.Bool("first-diff", true, "stop at the first divergent block")
+	maxPrintPerBlock := fs.Int("max-print", 10, "max divergent slots to print per block")
+	skipKeyOnly := fs.Bool("skip-key-only", false, "ignore key-set mismatches (e.g. account-deletion-only blocks); only flag oldVal mismatches")
+	stopOnAcctCount := fs.Bool("stop-on-acct-count", false, "let account-count mismatches trigger first-diff stop (default: account count is noisy — different clients track 'touched' differently — so off by default)")
+	skipZeroOldMissing := fs.Bool("skip-zero-old-missing", false, "ignore MISSING entries whose reth_old==0 (zero-pre-value 'first-write' records — clients differ on whether to emit these, not necessarily a state bug; keep scanning until a VAL DIFF or non-zero MISSING surfaces)")
+	skipWipeStale := fs.Bool("skip-wipe-stale", false, "ignore EXTRA entries that look like 'wipe-stale' (n42 deletes a slot mainnet never knew about — symptom of a prior incomplete SELFDESTRUCT; doesn't usually move root if MPT delete folds correctly, so suppress to find the real signal downstream)")
+	progressEvery := fs.Uint64("progress", 20000, "log progress every N blocks (0 = silent)")
+	fs.Parse(args)
 
 	// pprof on :6062 (avoids :6060 ethexec / :6061 witness-replay).
 	go func() { _ = http.ListenAndServe("localhost:6062", nil) }()

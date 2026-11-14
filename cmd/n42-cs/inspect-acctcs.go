@@ -10,12 +10,13 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
-	src := flag.String("acctcs-dir", "", "freezer dir")
-	from := flag.Uint64("from", 0, "start block")
-	to := flag.Uint64("to", 0, "end block exclusive, 0 = items")
-	limit := flag.Int("limit", 10, "max entries with codeHash bit to print")
-	flag.Parse()
+func runInspectAcctcs(args []string) {
+	fs := flag.NewFlagSet("n42-cs inspect-acctcs", flag.ExitOnError)
+	src := fs.String("acctcs-dir", "", "freezer dir")
+	from := fs.Uint64("from", 0, "start block")
+	to := fs.Uint64("to", 0, "end block exclusive, 0 = items")
+	limit := fs.Int("limit", 10, "max entries with codeHash bit to print")
+	fs.Parse(args)
 
 	tbl, _ := freezer.NewFreezerTableCompressedReadOnly(*src, freezer.TableAccountChanges, "c")
 	defer tbl.Close()

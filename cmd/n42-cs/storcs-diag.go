@@ -12,15 +12,16 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
-	dir := flag.String("dir", "", "freezer directory")
-	table := flag.String("table", "storcs", "table name (storcs / acctcs)")
-	block := flag.Uint64("block", 0, "block number")
-	dump := flag.Bool("dump", false, "dump the raw bytes as hex")
-	scanAll := flag.Bool("scan-all", false, "scan every block, report any with >32B slot values")
-	scanFrom := flag.Uint64("scan-from", 0, "scan-all start block (default 0)")
-	scanTo := flag.Uint64("scan-to", 0, "scan-all end block (0 = all)")
-	flag.Parse()
+func runStorcsDiag(args []string) {
+	fs := flag.NewFlagSet("n42-cs storcs-diag", flag.ExitOnError)
+	dir := fs.String("dir", "", "freezer directory")
+	table := fs.String("table", "storcs", "table name (storcs / acctcs)")
+	block := fs.Uint64("block", 0, "block number")
+	dump := fs.Bool("dump", false, "dump the raw bytes as hex")
+	scanAll := fs.Bool("scan-all", false, "scan every block, report any with >32B slot values")
+	scanFrom := fs.Uint64("scan-from", 0, "scan-all start block (default 0)")
+	scanTo := fs.Uint64("scan-to", 0, "scan-all end block (0 = all)")
+	fs.Parse(args)
 
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: storcs-diag --dir <path> --block N [--table storcs] [--dump]")

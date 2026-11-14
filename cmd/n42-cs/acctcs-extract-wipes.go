@@ -23,37 +23,37 @@
 //
 // Signal (cross-referenced via account codeHash):
 //
-//   forward-replay calls stateWriter.CreateContract(addr) — which is
-//   what triggers collectPreWipeSlots — from TWO paths in
-//   intra_block_state.updateAccountWithWipe:
+//	forward-replay calls stateWriter.CreateContract(addr) — which is
+//	what triggers collectPreWipeSlots — from TWO paths in
+//	intra_block_state.updateAccountWithWipe:
 //
-//     path 1  shouldDelete    (SELFDESTRUCT, no recreate same block)
-//             → acctcs: newValue=empty
-//     path 2  needsWipe       (SELFDESTRUCT + CREATE2 same block)
-//             → acctcs: oldValue != newValue, both non-empty, with the
-//               contract codeHash CHANGING (CREATE2 redeploys at the
-//               same address with new code) — and the redeployed
-//               account's nonce typically resets to 0.
+//	  path 1  shouldDelete    (SELFDESTRUCT, no recreate same block)
+//	          → acctcs: newValue=empty
+//	  path 2  needsWipe       (SELFDESTRUCT + CREATE2 same block)
+//	          → acctcs: oldValue != newValue, both non-empty, with the
+//	            contract codeHash CHANGING (CREATE2 redeploys at the
+//	            same address with new code) — and the redeployed
+//	            account's nonce typically resets to 0.
 //
-//   We decode the account-storage v2 fieldBits to extract codeHash from
-//   both oldValue and newValue, then flag addr iff EITHER:
+//	We decode the account-storage v2 fieldBits to extract codeHash from
+//	both oldValue and newValue, then flag addr iff EITHER:
 //
-//     Signal A (path 1): newValue=empty AND old.codeHash != emptyHash
-//                        i.e. a non-EOA account was deleted.
-//                        The "non-EOA" filter is critical: EIP-161
-//                        empty-account cleanups (Spurious Dragon+) fire
-//                        DeleteAccount on touched empty EOAs across
-//                        millions of blocks, but those have empty
-//                        codeHash and never had any storage rows — so
-//                        flagging them inflates the sidecar by ~1000×
-//                        with no correctness benefit (prefix-scan
-//                        finds nothing to delete at apply time).
+//	  Signal A (path 1): newValue=empty AND old.codeHash != emptyHash
+//	                     i.e. a non-EOA account was deleted.
+//	                     The "non-EOA" filter is critical: EIP-161
+//	                     empty-account cleanups (Spurious Dragon+) fire
+//	                     DeleteAccount on touched empty EOAs across
+//	                     millions of blocks, but those have empty
+//	                     codeHash and never had any storage rows — so
+//	                     flagging them inflates the sidecar by ~1000×
+//	                     with no correctness benefit (prefix-scan
+//	                     finds nothing to delete at apply time).
 //
-//     Signal B (path 2): old.codeHash != emptyHash AND
-//                        new.codeHash != emptyHash AND
-//                        old.codeHash != new.codeHash
-//                        i.e. a contract was destroyed and replaced
-//                        with a different contract in the same block.
+//	  Signal B (path 2): old.codeHash != emptyHash AND
+//	                     new.codeHash != emptyHash AND
+//	                     old.codeHash != new.codeHash
+//	                     i.e. a contract was destroyed and replaced
+//	                     with a different contract in the same block.
 //
 // No external comparison or threshold needed — the signal is exact
 // because codeHash is part of the account's canonical encoding and
@@ -144,13 +144,14 @@ func isContractCodeHash(ch types.Hash) bool {
 	return ch != (types.Hash{}) && ch != emptyCodeHash
 }
 
-func main() {
-	src := flag.String("acctcs-dir", "", "freezer dir containing witness-replay acctcs.cdat (REQUIRED)")
-	dst := flag.String("dst", "", "destination freezer dir for the addr-only wipes sidecar (REQUIRED)")
-	fromBlock := flag.Uint64("from", 0, "start block (inclusive); 0 = auto-resume from dst's existing items")
-	toBlock := flag.Uint64("to", 0, "end block (exclusive); 0 = acctcs.Items()")
-	progressEvery := flag.Uint64("progress", 100000, "log progress every N blocks (0 = silent)")
-	flag.Parse()
+func runAcctcsExtractWipes(args []string) {
+	fs := flag.NewFlagSet("n42-cs acctcs-extract-wipes", flag.ExitOnError)
+	src := fs.String("acctcs-dir", "", "freezer dir containing witness-replay acctcs.cdat (REQUIRED)")
+	dst := fs.String("dst", "", "destination freezer dir for the addr-only wipes sidecar (REQUIRED)")
+	fromBlock := fs.Uint64("from", 0, "start block (inclusive); 0 = auto-resume from dst's existing items")
+	toBlock := fs.Uint64("to", 0, "end block (exclusive); 0 = acctcs.Items()")
+	progressEvery := fs.Uint64("progress", 100000, "log progress every N blocks (0 = silent)")
+	fs.Parse(args)
 
 	if *src == "" || *dst == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: --acctcs-dir and --dst are required")

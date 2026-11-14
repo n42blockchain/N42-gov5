@@ -15,13 +15,14 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
-	frDir := flag.String("freezer", "", "freezer dir with storcs")
-	samples := flag.Int("samples", 5000, "number of blocks to sample")
-	startBlk := flag.Uint64("start", 0, "start block (default 0)")
-	endBlk := flag.Uint64("end", 0, "end block (default head)")
-	seed := flag.Int64("seed", 0, "RNG seed (0=time)")
-	flag.Parse()
+func runStorcsBytesBreakdown(args []string) {
+	fs := flag.NewFlagSet("n42-cs storcs-bytes-breakdown", flag.ExitOnError)
+	frDir := fs.String("freezer", "", "freezer dir with storcs")
+	samples := fs.Int("samples", 5000, "number of blocks to sample")
+	startBlk := fs.Uint64("start", 0, "start block (default 0)")
+	endBlk := fs.Uint64("end", 0, "end block (default head)")
+	seed := fs.Int64("seed", 0, "RNG seed (0=time)")
+	fs.Parse(args)
 
 	if *frDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: storcs-bytes-breakdown --freezer <dir> [--samples N --start B --end B]")

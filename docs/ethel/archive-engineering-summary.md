@@ -84,7 +84,7 @@ Three orthogonal tiers, each with its own commitment + access pattern:
 
 ## 3. The MPHF+fp insight (the core compression win)
 
-Naive history layout stores `(addr+slot, block, value)` × all changes ≈ 80B/entry. Discovered via `cmd/storcs-bytes-breakdown` that **52B addr+slot key is 55% of storcs total bytes** (much more than the values themselves).
+Naive history layout stores `(addr+slot, block, value)` × all changes ≈ 80B/entry. Discovered via `n42-cs storcs-bytes-breakdown` that **52B addr+slot key is 55% of storcs total bytes** (much more than the values themselves).
 
 Swapping the 52B key for **(4B XXHash64 fingerprint + per-key MPHF index)** drops on-disk per-entry cost from 18.41 B/entry (v1 plain) to **9.69 B/entry (v1.5 MPHF) — 47% smaller**. RecSplit MPHF maps every ever-seen `(addr,slot)` to an ordinal in `[0, N)` at 1.71 bit/key; pages sorted by ordinal lay entries out implicitly; the 4B fp guards against phantom keys MPHF returns for non-members (≤1/2³² false positive).
 
@@ -102,7 +102,7 @@ The same trick applied to account history is much smaller (~5% gain) because per
 | `n42-cs-prune` | Build warm-tier freezer with last N blocks; --swap atomic; --loop scheduler |
 | `n42-cs-prune-verify` | Round-trip warm vs full freezer for sample blocks |
 | `n42-bundle-rehash` | Migrate existing BLAKE2b manifests to BLAKE3 atomically |
-| `storcs-bytes-breakdown` | Measure CS field-byte distribution (informed MPHF design) |
+| `n42-cs storcs-bytes-breakdown` | Measure CS field-byte distribution (informed MPHF design) |
 | `n42-reth snapshot-export --n42` | Build snapshot from N42 PlainState MDBX (pre-existing, extended) |
 | `ethexec bundle-hash --include-all --algo` | Generate manifest for non-freezer dirs / explicit algo |
 | `ethexec bundle-verify` | Verify any manifest against on-disk data |
@@ -307,7 +307,7 @@ Concurrent qps (peak):    91–122K
 | Bench `sourceKeys` map OOM on 25M-block scale | low | Documented workaround = use smaller range; future fix = lazy block sampling |
 | Warm-tier live node restart required for new tier | low | V2 = admin RPC reload endpoint or hot-reload via meta.json mtime watch |
 | Snapshot reader exposed only via lib (no CLI wrapper) | low | All current callers (archive node, RPC) integrate at library level |
-| `cmd/inspect-acctcs/` untracked dir | trivial | Leftover from earlier debug work; safe to ignore or remove |
+| `cmd/inspect-acctcs/` untracked dir (now `n42-cs inspect-acctcs`) | trivial | Leftover from earlier debug work; safe to ignore |
 | Snapshot tier requires intermediate `.val` (uncompressed) during build | minor | Delete `.val` post-build saves 28 GB; doc'd in `archive-reduction-honest-targets.md` |
 | History verify tool requires `--start 0` for complete ground truth | low | Future fix: seed GT with `history.AsOf(key, start-1)` for late-range verify |
 

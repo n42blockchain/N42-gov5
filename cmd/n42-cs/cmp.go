@@ -30,15 +30,16 @@ func openTbl(dir, name string) (*freezer.FreezerTable, error) {
 	return tbl, nil
 }
 
-func main() {
-	aDir := flag.String("a", "", "freezer dir A (REQUIRED)")
-	bDir := flag.String("b", "", "freezer dir B (REQUIRED)")
-	table := flag.String("table", "acctcs", "table to compare: acctcs / storcs / witness")
-	from := flag.Uint64("from", 0, "start block (inclusive)")
-	to := flag.Uint64("to", 0, "end block (inclusive); 0 = min(a.Items, b.Items)-1")
-	maxDiffs := flag.Int("max-diffs", 5, "stop after printing this many diffs")
-	progressEvery := flag.Uint64("progress", 100000, "log progress every N blocks (0 = silent)")
-	flag.Parse()
+func runCmp(args []string) {
+	fs := flag.NewFlagSet("n42-cs cmp", flag.ExitOnError)
+	aDir := fs.String("a", "", "freezer dir A (REQUIRED)")
+	bDir := fs.String("b", "", "freezer dir B (REQUIRED)")
+	table := fs.String("table", "acctcs", "table to compare: acctcs / storcs / witness")
+	from := fs.Uint64("from", 0, "start block (inclusive)")
+	to := fs.Uint64("to", 0, "end block (inclusive); 0 = min(a.Items, b.Items)-1")
+	maxDiffs := fs.Int("max-diffs", 5, "stop after printing this many diffs")
+	progressEvery := fs.Uint64("progress", 100000, "log progress every N blocks (0 = silent)")
+	fs.Parse(args)
 	if *aDir == "" || *bDir == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: --a and --b are required")
 		os.Exit(2)
@@ -126,5 +127,5 @@ func main() {
 		}
 	}
 	fmt.Printf("\n=== done === blocks scanned=%d diffs=%d elapsed=%v\n",
-		(end-*from+1), diffs, time.Since(t0).Truncate(time.Millisecond))
+		(end - *from + 1), diffs, time.Since(t0).Truncate(time.Millisecond))
 }

@@ -41,13 +41,14 @@ import (
 // flag-help and log lines stable if the registered constant ever moves.
 var sidecarTable = freezer.TableWipes
 
-func main() {
-	src := flag.String("src", "", "source freezer dir (containing ethexec storcs.cdat) — REQUIRED")
-	dst := flag.String("dst", "", "destination freezer dir for wipes sidecar — REQUIRED")
-	fromBlock := flag.Uint64("from", 0, "start block (inclusive); 0 = auto-resume from dst's existing items")
-	toBlock := flag.Uint64("to", 0, "end block (exclusive); 0 = src.Items()")
-	progressEvery := flag.Uint64("progress", 100000, "log progress every N blocks (0 = silent)")
-	flag.Parse()
+func runStorcsExtractWipes(args []string) {
+	fs := flag.NewFlagSet("n42-cs storcs-extract-wipes", flag.ExitOnError)
+	src := fs.String("src", "", "source freezer dir (containing ethexec storcs.cdat) — REQUIRED")
+	dst := fs.String("dst", "", "destination freezer dir for wipes sidecar — REQUIRED")
+	fromBlock := fs.Uint64("from", 0, "start block (inclusive); 0 = auto-resume from dst's existing items")
+	toBlock := fs.Uint64("to", 0, "end block (exclusive); 0 = src.Items()")
+	progressEvery := fs.Uint64("progress", 100000, "log progress every N blocks (0 = silent)")
+	fs.Parse(args)
 
 	if *src == "" || *dst == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: --src and --dst are required")

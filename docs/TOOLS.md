@@ -108,3 +108,19 @@ Spot-check readers for N42 PlainState / Storage / header MDBX data.
 | `read-header-root` | `n42-kv header-root` | print header.Root (stateRoot) of a block from an MDBX chaindata |
 | `acct-probe` | `n42-kv acct-probe` | dump one address's account state from N42 and reth side by side |
 | `sto-probe` | `n42-kv sto-probe` | read one storage slot from N42's Storage table (DupSort+AutoConv) |
+
+## n42-cs
+
+Changeset (acctcs/storcs freezer table) grep, extract, inspect and compare tools; `diff-cs` compares against a reth MDBX.
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `storcs-grep` | `n42-cs storcs-grep` | grep a hex byte pattern across all storcs freezer blobs |
+| `storcs-diag` | `n42-cs storcs-diag` | extract and inspect one block's storcs entry from a compressed freezer |
+| `storcs-extract-wipes` | `n42-cs storcs-extract-wipes` | extract per-block storage 'wipe' entries from a storcs freezer table |
+| `storcs-bytes-breakdown` | `n42-cs storcs-bytes-breakdown` | sample storcs blocks, break physical bytes down by component |
+| `acctcs-grep` | `n42-cs acctcs-grep` | grep a hex byte pattern across all acctcs freezer blobs |
+| `acctcs-extract-wipes` | `n42-cs acctcs-extract-wipes` | list contract addresses whose storage must be prefix-wiped, per block |
+| `inspect-acctcs` | `n42-cs inspect-acctcs` | scan acctcs to find entries with codeHash bit set |
+| `n42-cs-cmp` | `n42-cs cmp` | compare two n42 freezer dirs block-by-block on acctcs/storcs/witness |
+| `diff-cs` | `n42-cs diff-cs` | compare n42 freezer changesets against reth Storage/AccountChangeSets |
