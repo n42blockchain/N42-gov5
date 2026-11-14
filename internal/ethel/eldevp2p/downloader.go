@@ -54,6 +54,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -102,7 +103,7 @@ const bodyChunk = 32
 // via N42_INFLIGHT: when only a few peers are retained (mainnet churn often
 // leaves ~7), raising it pulls more headers/bodies per held peer to keep the
 // prefetch pipeline fed — at the cost of leaning harder on each peer.
-var maxInflightPerPeer = envInt("N42_INFLIGHT", 4)
+var maxInflightPerPeer = envswitch.Int("N42_INFLIGHT", 4, envswitch.Perf, "Concurrent requests per peer of the eth-el downloader.")
 
 // reorgLag is the confirmation depth for live-follow: the coordinator imports
 // only blocks that are at least this many below the peers' tip, so a shallow
@@ -1945,7 +1946,7 @@ type merkleAsyncJob struct {
 
 // asyncMerkleEnabled gates the async pipeline (default on; N42_ASYNC_MERKLE=0
 // reverts to the synchronous stage).
-var asyncMerkleEnabled = os.Getenv("N42_ASYNC_MERKLE") != "0"
+var asyncMerkleEnabled = envswitch.Not0("N42_ASYNC_MERKLE", envswitch.Perf, "Default on: async merkle pipeline of the eth-el downloader; 0 reverts to the synchronous stage.")
 
 // asyncMerkleMinWindow: below this the window is cheap enough that pipelining
 // buys nothing — run synchronously (also keeps the near-tip/live path, which
@@ -2507,4 +2508,19 @@ func decodeWithdrawals(raw []rlp.RawValue) ([]*api.Withdrawal, error) {
 		}
 	}
 	return out, nil
+}
+
+func init() {
+	envswitch.Declare("N42_REORG_LAG", envswitch.Config, "Confirmation depth of live-follow in the eth-el downloader.")
+	envswitch.Declare("N42_REORG_JOURNAL", envswitch.Perf, "Recent committed blocks that keep an in-memory reverse diff.")
+	envswitch.Declare("N42_STAGED", envswitch.Config, "Staged catch-up mode of the eth-el downloader.")
+	envswitch.Declare("N42_SUBBATCH", envswitch.Perf, "Sub-batch size of the staged eth-el catch-up.")
+	envswitch.Declare("N42_ANCHOR_DIR", envswitch.Config, "Directory of consensus anchors an eth-el catch-up verifies against.")
+	envswitch.Declare("N42_MPT_VERIFY_INTERVAL", envswitch.Perf, "Interval of the MPT verification of the eth-el downloader.")
+	envswitch.Declare("N42_ATTEST_KEY", envswitch.Config, "Attestation signing key of an eth-el node.")
+	envswitch.Declare("N42_ATTEST_AGGREGATOR", envswitch.Config, "URL of the attestation aggregator an eth-el node posts to.")
+	envswitch.Declare("N42_CS_FREEZER", envswitch.Config, "Default on: per-block changesets append to freezer segment files instead of MDBX.")
+	envswitch.Declare("N42_PIPELINE", envswitch.Perf, "Default on: download pipeline of the eth-el downloader; 0 reverts to serial.")
+	envswitch.Declare("N42_COMMIT_INTERVAL", envswitch.Config, "Commit interval of the eth-el downloader.")
+	envswitch.Declare("N42_RCPTDIFF", envswitch.Diag, "Diff receipts against the reference.")
 }
