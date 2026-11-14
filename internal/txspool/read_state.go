@@ -8,6 +8,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -177,4 +178,8 @@ func (c *StateCli) GetAccountsInfo(addrs []types.Address) map[types.Address]*Acc
 		log.Warn("Failed to batch read accounts from database", "err", err)
 	}
 	return result
+}
+
+func init() {
+	envswitch.Declare("N42_TXPOOL_READ_BUDGET", envswitch.Perf, "Concurrent txpool reads (default GOMAXPROCS clamped to [4, 64]).")
 }

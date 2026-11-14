@@ -34,6 +34,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/contracts/deposit"
@@ -1277,4 +1278,8 @@ func (pool *TxsPool) txDifference(a, b []*transaction.Transaction) []*transactio
 		}
 	}
 	return keep
+}
+
+func init() {
+	envswitch.Declare("N42_POOL_PENDING_SNAPSHOT", envswitch.Perf, "Default on: Pending(false) reads the reorg-published snapshot.")
 }

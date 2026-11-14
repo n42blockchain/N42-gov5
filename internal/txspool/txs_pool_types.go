@@ -34,6 +34,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -286,3 +287,14 @@ type addressesByHeartbeat []addressByHeartbeat
 func (a addressesByHeartbeat) Len() int           { return len(a) }
 func (a addressesByHeartbeat) Less(i, j int) bool { return a[i].heartbeat.Before(a[j].heartbeat) }
 func (a addressesByHeartbeat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+func init() {
+	envswitch.Declare("N42_TXPOOL_NOLOCALS", envswitch.Config, "Treat RPC-submitted transactions as remote.")
+}
+
+func init() {
+	envswitch.Declare("N42_TXPOOL_ACCOUNT_QUEUE", envswitch.Perf, "Raises the per-account queue capacity of the pool.")
+	envswitch.Declare("N42_TXPOOL_ACCOUNT_SLOTS", envswitch.Perf, "Raises the per-account slot capacity of the pool.")
+	envswitch.Declare("N42_TXPOOL_GLOBAL_QUEUE", envswitch.Perf, "Raises the global queue capacity of the pool.")
+	envswitch.Declare("N42_TXPOOL_GLOBAL_SLOTS", envswitch.Perf, "Raises the global slot capacity of the pool.")
+}
