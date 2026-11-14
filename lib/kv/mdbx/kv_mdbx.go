@@ -109,6 +109,9 @@ type MdbxTx struct {
 	// rwTag is the holder diagnostics' name for this write transaction's
 	// caller (rw_holder_diag.go), "" while they are off.
 	rwTag string
+	// commitStats, when set (RecordCommitStats), receives this write
+	// transaction's commit breakdown.
+	commitStats *CommitStats
 }
 
 func (db *MdbxKV) Path() string     { return db.opts.path }
