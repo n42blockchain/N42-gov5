@@ -2,8 +2,7 @@ package crypto
 
 import (
 	"encoding/binary"
-	"os"
-
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/keccakf1600"
 	"github.com/n42blockchain/N42/crypto/sha3"
@@ -15,7 +14,7 @@ const keccak256Rate = 136
 // KeccakOneBlockEnabled gates the single-block Keccak-256 fast path
 // (N42_KECCAK_ONEBLOCK, default on; "0" restores the pooled sponge for
 // every input). Read once at start-up.
-var KeccakOneBlockEnabled = os.Getenv("N42_KECCAK_ONEBLOCK") != "0"
+var KeccakOneBlockEnabled = envswitch.Not0("N42_KECCAK_ONEBLOCK", envswitch.Perf, "Default on: single-block Keccak-256 fast path.")
 
 // Keccak256OneBlock returns Keccak256Hash(data) computed with a single
 // Keccak-f[1600] permutation on a stack state, and true, when data is

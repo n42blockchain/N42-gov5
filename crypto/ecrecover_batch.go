@@ -6,10 +6,9 @@
 package crypto
 
 import (
-	"os"
-
 	"github.com/erigontech/secp256k1"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/crypto/secp256k1x8"
 )
 
@@ -18,7 +17,7 @@ import (
 // has AVX-512 IFMA, off with N42_ECRECOVER_IFMA=0. Results are those of
 // libsecp256k1 either way; the kernel hands every lane it does not handle
 // back to libsecp256k1.
-var EcrecoverIFMAEnabled = secp256k1x8.Supported && os.Getenv("N42_ECRECOVER_IFMA") != "0"
+var EcrecoverIFMAEnabled = envswitch.Not0("N42_ECRECOVER_IFMA", envswitch.Perf, "Default on: eight-way AVX-512 IFMA ecrecover kernel.") && secp256k1x8.Supported
 
 // ifmaMinLanes is the smallest group the kernel is given. A group costs
 // the same with any number of live lanes, about 2.5 libsecp256k1
