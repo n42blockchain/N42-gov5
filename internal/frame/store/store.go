@@ -42,6 +42,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -801,4 +802,9 @@ func (s *Store) Stats() Stats {
 	st.Misses = s.misses.Load()
 	st.Removed = s.removed.Load()
 	return st
+}
+
+func init() {
+	envswitch.Declare(EnvBudget, envswitch.Perf, "Byte budget of the frame store.")
+	envswitch.Declare(EnvKeepBlocks, envswitch.Config, "Overrides KeepBlocks of the frame store.")
 }
