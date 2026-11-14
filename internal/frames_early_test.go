@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
@@ -101,7 +102,13 @@ func TestFramesWriteEarlyBounded(t *testing.T) {
 	fb := startFramesWrite(blocks[0])
 	require.NoError(t, fb.wait())
 	require.False(t, fb.early)
-	require.Equal(t, int32(2), framesEarlyCount(counts, blocks[0]))
+	require.Eventually(t, func() bool { return framesEarlyCount(counts, blocks[0]) == 2 }, 5*time.Second, time.Millisecond)
+	// Let every remembered write finish before the store is restored.
+	for _, b := range blocks[1 : len(blocks)-1] {
+		if w := bc.framesEarly.take(b); w != nil {
+			require.NoError(t, w.wait())
+		}
+	}
 }
 
 // With the switch off the enqueue starts nothing (the hand-off starts its

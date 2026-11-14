@@ -450,10 +450,11 @@ func startFramesWrite(blk *block.Block) *framesWrite {
 	}
 	fw := &framesWrite{done: make(chan struct{})}
 	hashes, raws := body.FrameHashes, body.FrameData
+	write := framesWriteFn
 	go func() {
 		t0 := time.Now()
 		fw.startTMs = t0.UnixMilli()
-		fw.err = framesWriteFn(context.Background(), hashes, raws)
+		fw.err = write(context.Background(), hashes, raws)
 		fw.took = time.Since(t0)
 		fw.endTMs = time.Now().UnixMilli()
 		close(fw.done)
