@@ -16,10 +16,11 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
-	dir := flag.String("dir", `D:/N42-eth1177-test/chaindata`, "chaindata MDBX path")
-	table := flag.String("table", "CommitmentBranches", "table name to clear")
-	flag.Parse()
+func runClear(args []string) {
+	fs := flag.NewFlagSet("n42-table clear", flag.ExitOnError)
+	dir := fs.String("dir", `D:/N42-eth1177-test/chaindata`, "chaindata MDBX path")
+	table := fs.String("table", "CommitmentBranches", "table name to clear")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).Path(*dir).Label(kv.ChainDB).

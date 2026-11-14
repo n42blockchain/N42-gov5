@@ -50,11 +50,12 @@ func tableCfg(tables []string) func(kv.TableCfg) kv.TableCfg {
 	}
 }
 
-func main() {
-	dbPath := flag.String("db", `D:\reth2k\db`, "MDBX database directory")
-	tablesCSV := flag.String("tables", strings.Join(defaultTables, ","), "comma-separated tables")
-	mapSizeGB := flag.Int("mapsize-gb", 4096, "MDBX MapSize cap (must >= actual db size)")
-	flag.Parse()
+func runMdbxStat(args []string) {
+	fs := flag.NewFlagSet("n42-table mdbx-stat", flag.ExitOnError)
+	dbPath := fs.String("db", `D:\reth2k\db`, "MDBX database directory")
+	tablesCSV := fs.String("tables", strings.Join(defaultTables, ","), "comma-separated tables")
+	mapSizeGB := fs.Int("mapsize-gb", 4096, "MDBX MapSize cap (must >= actual db size)")
+	fs.Parse(args)
 
 	tables := strings.Split(*tablesCSV, ",")
 	for i := range tables {

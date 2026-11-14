@@ -13,7 +13,8 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func main() {
+func runStat(args []string) {
+	os.Args = append([]string{"n42-table stat"}, args...)
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
 	db, err := mdbxkv.NewMDBX(log.New()).Path(os.Args[1]).Label(kv.ChainDB).MapSize(4096 * datasize.GB).Accede().Readonly().Open(context.Background())

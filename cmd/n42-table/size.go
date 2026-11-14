@@ -34,10 +34,11 @@ func count(tx kv.Tx, t string) (uint64, error) {
 	return n, nil
 }
 
-func main() {
-	dir := flag.String("dir", `D:/N42-eth1177-test/chaindata`, "chaindata path")
-	tables := flag.String("tables", "CommitmentBranches,Code,SyncStage", "comma list")
-	flag.Parse()
+func runSize(args []string) {
+	fs := flag.NewFlagSet("n42-table size", flag.ExitOnError)
+	dir := fs.String("dir", `D:/N42-eth1177-test/chaindata`, "chaindata path")
+	tables := fs.String("tables", "CommitmentBranches,Code,SyncStage", "comma list")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).Path(*dir).Label(kv.ChainDB).

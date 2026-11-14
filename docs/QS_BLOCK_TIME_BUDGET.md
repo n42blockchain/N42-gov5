@@ -425,7 +425,7 @@ across 193 blocks. `N42_TXINDEX_TAIL=1` moved it to memory plus RecSplit
 segments and was worth 2.5x. The fleet runs with it ON, so those 22,857
 random-keyed rows are already off the commit path.
 
-**A note on the instrument.** `mdbx-table-stat` returns an identical placeholder
+**A note on the instrument.** `n42-table mdbx-stat` returns an identical placeholder
 (7,004 entries / 202 leaf pages / 11.0 MB) for every table it cannot open with
 its assumed flags -- PlainState and three deliberately misspelled names all
 returned it, while a genuinely empty table returned 0 B. Nothing about a table's

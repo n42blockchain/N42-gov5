@@ -186,7 +186,7 @@ the backlogged "minimal snapshot regen, needs >60GB free" item from
 (confirmed via `n42-reth-head.exe`: `BlockBodyIndices lastKey block = 25439434` — i.e. this
 IS current chain tip, not the older H₀=25,188,781 checkpoint the backlog note mentioned;
 user explicitly OK'd using whatever reth has now instead of insisting on the old
-checkpoint). Table sizes confirmed via `mdbx-table-stat.exe`:
+checkpoint). Table sizes confirmed via `n42-table mdbx-stat.exe`:
 `PlainAccountState=398,785,792 entries (24.0GB)`, `PlainStorageState=1,602,375,128 entries
 (132.5GB)` — matches the memory note's "3亿账户+10亿槽" estimate closely.
 

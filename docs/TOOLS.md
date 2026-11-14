@@ -53,3 +53,17 @@ Read/write the ethel progress markers stored in MDBX. `show` and `set` keep thei
 | `set-progress` | `n42-progress set` | write the ethel progress marker to MDBX (--datadir D --block N [--key K]) |
 | `write-progress` | `n42-progress write` | set the ethel progress marker for a datadir (flags) |
 | `n42-read-ethel-progress` | `n42-progress read-ethel` | print all known progress markers in an MDBX env (read-only) |
+
+## n42-table
+
+MDBX table inspection (counts, sizes, diffs, checksums) plus `clear`, which wipes a table. diff/keydiff/stat/sum take positional arguments and have no `-h`.
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `tabdiff` | `n42-table diff` | compare one table between two MDBX dirs (positional: dirA dirB table) |
+| `tabkeydiff` | `n42-table keydiff` | compare key sets of a table between two MDBX dirs (positional) |
+| `tabstat` | `n42-table stat` | per-table entry/size stats of an MDBX dir (positional: dir) |
+| `tabsum` | `n42-table sum` | checksum of the named tables of an MDBX dir (positional: dir table...) |
+| `table-size` | `n42-table size` | chaindata table entry counts via cursor walk |
+| `mdbx-table-stat` | `n42-table mdbx-stat` | read-only entries / page-count / byte-size per table of an MDBX database |
+| `clear-table` | `n42-table clear` | ClearBucket a named table in a chaindata MDBX env (writes) |

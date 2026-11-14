@@ -1,18 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"os"
-
 	"github.com/c2h5oh/datasize"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
+	"os"
 )
 
-func loadKeys(dir, table string) map[string]struct{} {
+func load(dir, table string) map[string][]byte {
 	db, err := mdbxkv.NewMDBX(log.New()).Path(dir).Label(kv.ChainDB).MapSize(512 * datasize.GB).Accede().Readonly().Open(context.Background())
 	if err != nil {
 		panic(err)
@@ -20,36 +20,38 @@ func loadKeys(dir, table string) map[string]struct{} {
 	defer db.Close()
 	tx, _ := db.BeginRo(context.Background())
 	defer tx.Rollback()
-	out := map[string]struct{}{}
-	c, err := tx.Cursor(table)
-	if err != nil {
-		panic(err)
-	}
-	for k, _, _ := c.First(); k != nil; k, _, _ = c.Next() {
-		out[string(k)] = struct{}{}
+	out := map[string][]byte{}
+	c, _ := tx.Cursor(table)
+	for k, v, _ := c.First(); k != nil; k, v, _ = c.Next() {
+		out[string(k)] = append([]byte(nil), v...)
 	}
 	c.Close()
 	return out
 }
-
-// tabkeydiff <dirA> <dirB> <table>: print keys only in A / only in B (hex), plus counts.
-func main() {
+func runDiff(args []string) {
+	os.Args = append([]string{"n42-table diff"}, args...)
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
-	a := loadKeys(os.Args[1], os.Args[3])
-	b := loadKeys(os.Args[2], os.Args[3])
-	na, nb := 0, 0
-	for k := range a {
-		if _, ok := b[k]; !ok {
+	a := load(os.Args[1], os.Args[3])
+	b := load(os.Args[2], os.Args[3])
+	n := 0
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
 			fmt.Printf("only-A %x\n", k)
-			na++
+			n++
+			continue
+		}
+		if !bytes.Equal(av, bv) {
+			fmt.Printf("DIFF key=%x\n  A=%x\n  B=%x\n", k, av, bv)
+			n++
 		}
 	}
 	for k := range b {
 		if _, ok := a[k]; !ok {
 			fmt.Printf("only-B %x\n", k)
-			nb++
+			n++
 		}
 	}
-	fmt.Printf("total: rowsA=%d rowsB=%d only-A=%d only-B=%d\n", len(a), len(b), na, nb)
+	fmt.Println("diffs:", n)
 }
