@@ -44,6 +44,9 @@ import (
 
 var errMnTNotAHeader = errors.New("mnT fixture: header is not *block.Header")
 
+// mnTFixtureCoinbase is the fixture chain's coinbase.
+var mnTFixtureCoinbase = types.HexToAddress("0x2222222222222222222222222222222222222222")
+
 // mnTFakerEngine is a minimal stand-in consensus engine for miner tests: it
 // accepts everything, issues no rewards, and — unlike
 // internal/consensus/apos.Faker (which leaves Root/ReceiptHash/Bloom to the
@@ -138,7 +141,7 @@ type mnTChainFixture struct {
 	DB     kv.RwDB
 	Chain  *internal.BlockChain
 	Config *params.ChainConfig
-	Engine mnTFakerEngine
+	Engine consensus.Engine
 	Signer transaction.Signer
 
 	Coinbase types.Address
@@ -162,6 +165,13 @@ func mnTNewChainFixture(tb testing.TB) *mnTChainFixture {
 // mnTNewChainFixtureWith is mnTNewChainFixture with a hook that can change
 // the chain config and add genesis accounts before the genesis is written.
 func mnTNewChainFixtureWith(tb testing.TB, customize func(*params.ChainConfig, conf.GenesisAlloc)) *mnTChainFixture {
+	tb.Helper()
+	return mnTNewChainFixtureWithEngine(tb, mnTFakerEngine{}, customize)
+}
+
+// mnTNewChainFixtureWithEngine is mnTNewChainFixtureWith over engine, which
+// both the chain's import path and the fixture's block builders use.
+func mnTNewChainFixtureWithEngine(tb testing.TB, engine consensus.Engine, customize func(*params.ChainConfig, conf.GenesisAlloc)) *mnTChainFixture {
 	tb.Helper()
 	ctx := context.Background()
 
@@ -204,7 +214,7 @@ func mnTNewChainFixtureWith(tb testing.TB, customize func(*params.ChainConfig, c
 		customize(cfg, alloc)
 	}
 
-	coinbase := types.HexToAddress("0x2222222222222222222222222222222222222222")
+	coinbase := mnTFixtureCoinbase
 	genesis := &internal.GenesisBlock{
 		GenesisConfig: &conf.Genesis{
 			Config:     cfg,
@@ -230,7 +240,6 @@ func mnTNewChainFixtureWith(tb testing.TB, customize func(*params.ChainConfig, c
 	require.NoError(tb, err)
 	require.NotNil(tb, genesisBlock)
 
-	engine := mnTFakerEngine{}
 	bcIface, err := internal.NewBlockChain(ctx, genesisBlock, engine, db, nil, cfg)
 	require.NoError(tb, err)
 	bc := bcIface.(*internal.BlockChain)

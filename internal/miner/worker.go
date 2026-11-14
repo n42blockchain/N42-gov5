@@ -1758,6 +1758,10 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			ibs.SetRootComputer(rc)
 		}
 	}
+	// The unchanged-account rule (UnchangedAccountNoOpTime) for the block
+	// being built, decided as block import, HotStuff's Finalize and replay
+	// decide it, so the sealed root is the one an importer computes.
+	ibs.ApplyUnchangedAccountRule(w.chainConfig, current.header.Time)
 	tReload := time.Since(start)
 	ibs.BeginWriteSnapshot()
 	ibs.BeginWriteCodes()

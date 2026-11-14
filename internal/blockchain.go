@@ -2198,7 +2198,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 	}
 
 	// Process blocks
-	evmRecord := func(ctx context.Context, db kv.RwDB, blockNr uint64, f func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error)) (*state.IntraBlockState, map[types.Address]*uint256.Int, error) {
+	evmRecord := func(ctx context.Context, db kv.RwDB, blockNr uint64, blockTime uint64, f func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error)) (*state.IntraBlockState, map[types.Address]*uint256.Int, error) {
 		tx, err := db.BeginRo(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -2255,6 +2255,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			bc.qmdbRootComputer.SetCold(tx)
 			ibs.SetRootComputer(bc.qmdbRootComputer)
 		}
+		// The unchanged-account rule (UnchangedAccountNoOpTime) for this
+		// block, decided as block production, HotStuff's Finalize and replay
+		// decide it, so an APoS engine's Finalize computes the same root.
+		ibs.ApplyUnchangedAccountRule(bc.chainConfig, blockTime)
 		stateWriter := state.NewNoopWriter()
 
 		nopay, err := f(tx, ibs, stateReader, stateWriter)
@@ -2428,7 +2432,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			continue
 		}
 		dAlign = time.Since(tAlign)
-		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
+		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), blk.Time(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
 			}
