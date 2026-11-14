@@ -13,6 +13,8 @@ package sync
 import (
 	"os"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 var (
@@ -37,4 +39,8 @@ func parseBlockDecodeReusePool(v string) bool {
 	default:
 		return false
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_BLOCK_DECODE_REUSE_POOL", envswitch.Perf, "Block-push receive path reuses pool-resident transaction objects.")
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	block "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -455,4 +456,8 @@ func (s *Service) catchUpTick() {
 		return
 	}
 	s.CatchUp()
+}
+
+func init() {
+	envswitch.Declare(catchUpGraceEnvVar, envswitch.Config, "Grace to withhold a lag-exactly-1 catch-up, in ms.")
 }

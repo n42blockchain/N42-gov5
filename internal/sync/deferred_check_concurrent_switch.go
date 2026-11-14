@@ -20,6 +20,8 @@ package sync
 import (
 	"os"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 var (
@@ -44,4 +46,8 @@ func parseDeferredCheckConcurrent(v string) bool {
 	default:
 		return false
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_DEFERRED_CHECK_CONCURRENT", envswitch.Perf, "Block-push receive path dispatches InsertChain without waiting for the deferred check.")
 }
