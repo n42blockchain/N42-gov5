@@ -157,8 +157,8 @@ back via `CodesFreezerReader.GetCodeByHash`, and check `keccak(code) == key`.
 ### 3c. state snapshot — the basis for minimal/full (from reth2k PlainState)
 
 ```powershell
-Start-Process C:\N42\N42-gov5\build\bin\n42-reth snapshot-export.exe -ArgumentList `
-  '-db','d:/reth2k/db','-out','d:/n42-snapshot-<reth-head>',
+Start-Process C:\N42\N42-gov5\build\bin\n42-reth.exe -ArgumentList `
+  'snapshot-export','-db','d:/reth2k/db','-out','d:/n42-snapshot-<reth-head>',
   '-end-block','<reth-head>','-table','both','-shards','16' `
   -RedirectStandardOutput D:\weekly-<date>-snapshot.log -RedirectStandardError D:\weekly-<date>-snapshot.err.log
 ```
