@@ -401,7 +401,18 @@ func (p *StateProcessor) ExecuteParallelAhead(b *block.Block, ibs *state.IntraBl
 // executeParallelAhead is ExecuteParallelAhead with the block's preparation
 // already claimed (nil: the run claims it).
 func (p *StateProcessor) executeParallelAhead(b *block.Block, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, claim *aheadClaim) (*parallelRun, error) {
-	if !p.ParallelApplicable(b) {
+	t0 := time.Now()
+	applicable := false
+	if s := claim.prepScan(b, p.config); s != nil {
+		// N42_AHEAD_PREP_SCAN: the preparation scanned these transactions.
+		applicable = s.applicable
+	} else {
+		applicable = p.ParallelApplicable(b)
+	}
+	if claim != nil {
+		claim.applicNs = time.Since(t0)
+	}
+	if !applicable {
 		return nil, ErrParallelNotApplicable
 	}
 	hdr := b.Header().(*block.Header)
@@ -423,11 +434,34 @@ type aheadClaim struct {
 	// transaction count, the block-start writes and the executor's
 	// release. True: the snapshot took the store and releases it.
 	early func(mvs *parallel.MVS, numTxs int, start *state.PostState, free func()) bool
+	// applicNs: executeParallelAhead's ParallelApplicable (or its adoption
+	// from the preparation's scan), stamped for the "parallel block" line.
+	applicNs time.Duration
 	// sysProbe, when set, reports the run's state source's tree lookups so
 	// far (count and time, reader lock wait included) and its reads' wait
 	// for the parent's complete post-state (an early snapshot's held reads):
 	// sampled around the block-start system calls (diagnostics).
 	sysProbe func() (treeReads uint64, treeNs, heldNs int64)
+}
+
+// prepScan returns the claimed preparation's scans of txs, or nil.
+func (c *aheadClaim) prepScan(b *block.Block, cfg *params.ChainConfig) *prepScan {
+	if c == nil {
+		return nil
+	}
+	hdr, ok := b.Header().(*block.Header)
+	if !ok || hdr.Number == nil {
+		return nil
+	}
+	return c.prep.scanFor(b.Transactions(), transaction.MakeSignerWithTimestamp(cfg, hdr.Number.ToBig(), hdr.Time))
+}
+
+// applicDur is applicNs (zero without a claim).
+func (c *aheadClaim) applicDur() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.applicNs
 }
 
 // FinishParallel is the second half: the gas check, block end and Finalize
@@ -660,8 +694,19 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// later, overlapping the preparation); a recipient with code is detected
 	// by the workers (feeCodeSeen), and the run is then executed again with
 	// deferFees off.
-	deferFees := canDeferParallelFeesStatic(txs, feeRecipients,
-		vm2.ActivePrecompiles(chainConfig.RulesWithTimestamp(concreteHeader.Number.Uint64(), concreteHeader.Time)), signer)
+	tDeferScan := time.Now()
+	var deferFees bool
+	scanHit := false
+	if s := prep.scanFor(txs, signer); ahead && s != nil && s.applicable {
+		// N42_AHEAD_PREP_SCAN: the preparation scanned these transactions
+		// with every sender attached (ahead_prep_scan.go).
+		deferFees, scanHit = s.deferStatic, true
+		aheadPrepScanHits.Add(1)
+	} else {
+		deferFees = canDeferParallelFeesStatic(txs, feeRecipients,
+			vm2.ActivePrecompiles(chainConfig.RulesWithTimestamp(concreteHeader.Number.Uint64(), concreteHeader.Time)), signer)
+	}
+	deferScan := time.Since(tDeferScan)
 	var feeCodeSeen atomic.Bool
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
@@ -669,6 +714,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
 	tBlockStart := time.Now()
 	txResults := takeTxResults(numTxs)
+	tTxResults := time.Now()
 	// Cleared and put back off this goroutine: clearing a 163k block's
 	// results (~30 MB) was ~3 ms at the end of every run (P10). Nothing
 	// reads them after the run returns.
@@ -762,7 +808,16 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// One base-read cache for this block, shared by every worker (see
 	// parallel.BaseCache). Sized for the distinct accounts a block touches:
 	// the bench's blocks are ~163k transfers over ~23k recipients.
+	tCacheStart := time.Now()
 	baseCache := parallel.NewBaseCache(len(txs)/4 + 64)
+	dCache := time.Since(tCacheStart)
+	// An ahead run's workers' tree lookups (count and time, the tree's
+	// reader lock wait included), one slot per worker (diagnostics: the
+	// exec's wait on a parent's root apply).
+	var wkTree []commitment.LookupTiming
+	if ahead {
+		wkTree = make([]commitment.LookupTiming, parallelWorkers()+1)
+	}
 	// The QMDB run holds the tree's reader lock (span below): its workers
 	// open their transactions under the span's permit, taken before the
 	// lock, and never wait on the limiter while the lock is held.
@@ -778,7 +833,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		if err != nil {
 			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
 		}
-		base := p.parallelBaseReader(tx, useQMDB, ahead, mode, postLayers, basePF)
+		var timing *commitment.LookupTiming
+		if workerID >= 0 && workerID < len(wkTree) {
+			timing = &wkTree[workerID]
+		}
+		base := p.parallelBaseReaderTimed(tx, useQMDB, ahead, mode, postLayers, basePF, timing)
 		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
 		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
 		// One base-read cache for the whole block, shared by every worker: the
@@ -900,7 +959,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 
 		return err
 	}
+	tExecStart := time.Now()
 	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, runTx)
+	tExecMade := time.Now()
 
 	// An executor whose store an early snapshot took (earlyOwned, set once
 	// the wave ended) is released by the snapshot, when nothing reads the
@@ -932,6 +993,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	//
 	// An adopted preparation computed them already, for this executor's
 	// worker count and wave modes (AdoptAffinity checks).
+	tAdopt := time.Now()
 	prepHit := prepAdopted && executor.AdoptAffinity(prep.aff)
 	if !prepHit {
 		executor.PrepareAffinity()
@@ -1395,15 +1457,27 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 				baseDepth = int64(base.depth)
 			}
 		}
+		var wkTreeReads uint64
+		var wkTreeNs int64
+		for i := range wkTree {
+			wkTreeReads += wkTree[i].N.Load()
+			wkTreeNs += wkTree[i].Nanos.Load()
+		}
 		if lenient && failed > 0 {
 			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		blockLog := []any{"n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "sysCallUs", tSysCalls.Sub(tAffinity).Microseconds(), "sysCaptureUs", tExecutorMade.Sub(tSysCalls).Microseconds(), "sysTreeReads", sysTreeReads, "sysTreeUs", sysTreeNs/1e3, "sysHeldUs", sysHeldNs/1e3, "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "prepKeysUs", prepKeys.Microseconds(), "prepPartUs", prepPart.Microseconds(), "partFast", parallel.WavePartitionFastOn(), "baseKeysUs", baseKeys.Microseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "sysCallUs", tSysCalls.Sub(tAffinity).Microseconds(), "sysCaptureUs", tExecutorMade.Sub(tSysCalls).Microseconds(), "sysTreeReads", sysTreeReads, "sysTreeUs", sysTreeNs / 1e3, "sysHeldUs", sysHeldNs / 1e3, "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "prepKeysUs", prepKeys.Microseconds(), "prepPartUs", prepPart.Microseconds(), "partFast", parallel.WavePartitionFastOn(), "baseKeysUs", baseKeys.Microseconds(),
+			"applicUs", claim.applicDur().Microseconds(), "deferScanUs", deferScan.Microseconds(), "prepScanHit", scanHit,
+			// affinityMs's split: the result slots, the base cache, the
+			// executor, the adoption (or computation) of the affinity pass.
+			"affResUs", tTxResults.Sub(tBlockStart).Microseconds(), "affCacheUs", dCache.Microseconds(),
+			"affExecUs", tExecMade.Sub(tExecStart).Microseconds(), "affAdoptUs", tAffinity.Sub(tAdopt).Microseconds(),
+			"execTreeReads", wkTreeReads, "execTreeUs", wkTreeNs / 1e3,
 			"basePrefill", basePF.Len(), "basePrefillHits", baseHits, "basePrefillMisses", baseMisses, "basePrefillMs", baseTook.Milliseconds(), "basePrefillAt", baseAt, "basePrefillDepth", baseDepth, "basePrefillWaitMs", baseClaimWait.Milliseconds(), "basePrefillTreeWaitMs", baseTreeWait.Milliseconds(), "basePrefillCut", baseCut, "basePrefillSkip", baseSkip,
 			"runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
-			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
+			"execMs", execNs / 1e6, "validateMs", valNs / 1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain}
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
@@ -1418,6 +1492,12 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 // holds the tree's reader lock for its span; an ahead run takes it per
 // lookup and retries an evicted entry through a fresh transaction.
 func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState, basePF *commitment.BasePrefill) state.StateReader {
+	return p.parallelBaseReaderTimed(tx, useQMDB, ahead, mode, postLayers, basePF, nil)
+}
+
+// parallelBaseReaderTimed is parallelBaseReader accumulating an ahead
+// reader's tree lookups into timing (nil: not timed).
+func (p *StateProcessor) parallelBaseReaderTimed(tx kv.Tx, useQMDB, ahead bool, mode commitment.QMDBReadMode, postLayers []*state.PostState, basePF *commitment.BasePrefill, timing *commitment.LookupTiming) state.StateReader {
 	var base state.StateReader = state.NewPlainStateReader(tx)
 	if useQMDB {
 		var src *commitment.LookupSource
@@ -1425,6 +1505,9 @@ func (p *StateProcessor) parallelBaseReader(tx kv.Tx, useQMDB, ahead bool, mode 
 			src = commitment.NewLookupSourceRefreshing(p.bc.qmdbRootComputer, tx, p.bc.ChainDB)
 			if basePF != nil {
 				src.SetPrefill(basePF)
+			}
+			if timing != nil {
+				src.SetTiming(timing)
 			}
 		} else {
 			src = commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx)

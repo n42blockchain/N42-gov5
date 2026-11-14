@@ -100,6 +100,9 @@ type aheadPrep struct {
 	// dropping: the block will not use the preparation; its base prefill
 	// stops reading at the next key.
 	dropping atomic.Bool
+	// scan: the run's state-free scans (N42_AHEAD_PREP_SCAN), nil when not
+	// computed; set before done closes.
+	scan *prepScan
 
 	// Timings for the "parallel block" line: registered (the block was
 	// queued), its senders settled (the computation started) and the
@@ -265,7 +268,17 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if !ok || hdr.Number == nil {
 		return
 	}
-	if !sp.ParallelApplicable(b) {
+	if aheadPrepScanOn {
+		scanSigner := transaction.MakeSignerWithTimestamp(sp.config, hdr.Number.ToBig(), hdr.Time)
+		if s := sp.prepStaticScan(b, hdr, scanSigner); s != nil {
+			if !s.applicable {
+				// The block runs serially.
+				return
+			}
+			pr.scan = s
+		}
+	}
+	if pr.scan == nil && !sp.ParallelApplicable(b) {
 		// The block runs serially.
 		return
 	}
