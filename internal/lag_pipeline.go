@@ -536,10 +536,22 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 	}
 	kick := le.kick
 	le.mu.Unlock()
-	if fresh {
-		bc.framesEarly.onEnqueue(b)
+	if fresh && bc.E1Light() && e1Prefetch && e1Early {
+		// The result fetch starts here, not from the light import loop: a
+		// loop blocked in an import (waiting for its frames) delayed the
+		// fetch a light leader's lag gate waits for (run 61: started a
+		// median 191 ms after the executor had the result on long gaps).
+		if _, running := bc.e1Prefetch.LoadOrStore(b.Hash(), b.Number64().Uint64()); !running {
+			go bc.e1PrefetchOne(b, b.Number64().Uint64())
+		}
 	}
 	if fresh && !bc.E1Light() {
+		// Not on a light node: its ahead writer (e1_frames_ahead.go) writes
+		// every queued block's frames already, and the frame log appends
+		// without looking at its index, so an early write there is a second
+		// fsynced copy of the same frames that nothing takes (run 61: light
+		// imports waited 50-100 ms for frames, the floods were throttled).
+		bc.framesEarly.onEnqueue(b)
 		// Its senders are recovered from now on, not when it executes (P7).
 		if prep {
 			// The availability check may have started it already.
