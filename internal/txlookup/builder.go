@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/lib/recsplit"
@@ -346,4 +347,8 @@ func partialTailSegments(dir string) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func init() {
+	envswitch.Declare("N42_ETL_TMPDIR", envswitch.Config, "Directory for ETL and RecSplit spill files.")
 }
