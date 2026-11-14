@@ -349,6 +349,22 @@ func (sdb *IntraBlockState) SetSkipUnchangedAccounts(on bool) {
 	sdb.skipUnchanged = on
 }
 
+// ApplyUnchangedAccountRule sets SetSkipUnchangedAccounts for a block at
+// blockTime on the chain config describes: on from
+// ChainConfig.UnchangedAccountNoOpTime, off before it and whenever the time
+// is unset (or there is no config). It is the one decision every path that
+// computes a block's state root takes -- block import, block production,
+// HotStuff's Finalize and replay -- so they cannot disagree on the rule.
+func (sdb *IntraBlockState) ApplyUnchangedAccountRule(config *params.ChainConfig, blockTime uint64) {
+	sdb.SetSkipUnchangedAccounts(config != nil && config.IsUnchangedAccountNoOp(blockTime))
+}
+
+// SkipUnchangedAccounts reports whether the state root leaves out touched but
+// unchanged accounts (SetSkipUnchangedAccounts).
+func (sdb *IntraBlockState) SkipUnchangedAccounts() bool {
+	return sdb.skipUnchanged
+}
+
 func (sdb *IntraBlockState) HasRootComputer() bool {
 	return sdb.rootComputer != nil
 }

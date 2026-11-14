@@ -107,3 +107,32 @@ func TestIsUnchangedAccountNoOp(t *testing.T) {
 		t.Fatal("activation time")
 	}
 }
+
+// TestApplyUnchangedAccountRule: the helper every root path calls decides the
+// flag exactly as ChainConfig.IsUnchangedAccountNoOp does at the block's time,
+// off without a config or an activation time, and overrides an earlier value.
+func TestApplyUnchangedAccountRule(t *testing.T) {
+	ibs := New(unchangedReader{})
+	ibs.SetSkipUnchangedAccounts(true)
+	ibs.ApplyUnchangedAccountRule(nil, 1<<40)
+	if ibs.SkipUnchangedAccounts() {
+		t.Fatal("a nil config activates the rule")
+	}
+	unset := &params.ChainConfig{}
+	set := &params.ChainConfig{UnchangedAccountNoOpTime: uint256.NewInt(100).ToBig()}
+	for _, c := range []*params.ChainConfig{unset, set} {
+		for _, time := range []uint64{0, 99, 100, 101, 1 << 40} {
+			ibs.SetSkipUnchangedAccounts(!c.IsUnchangedAccountNoOp(time))
+			ibs.ApplyUnchangedAccountRule(c, time)
+			if got, want := ibs.SkipUnchangedAccounts(), c.IsUnchangedAccountNoOp(time); got != want {
+				t.Errorf("time %d (activation %v): rule = %v, want %v", time, c.UnchangedAccountNoOpTime, got, want)
+			}
+		}
+	}
+	if ibs.ApplyUnchangedAccountRule(set, 99); ibs.SkipUnchangedAccounts() {
+		t.Fatal("the block before the activation time takes the rule")
+	}
+	if ibs.ApplyUnchangedAccountRule(set, 100); !ibs.SkipUnchangedAccounts() {
+		t.Fatal("the activation block does not take the rule")
+	}
+}
