@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -172,4 +173,8 @@ func (p *Pusher) run(ctx context.Context, peer string, q chan []byte) {
 		}
 		p.sent.Add(1)
 	}
+}
+
+func init() {
+	envswitch.Declare(EnvPeers, envswitch.Config, "Ingest addresses attestations are pushed to.")
 }

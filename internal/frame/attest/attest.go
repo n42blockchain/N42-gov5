@@ -33,6 +33,7 @@ import (
 	"strconv"
 	"unsafe"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/frame"
@@ -254,4 +255,10 @@ func DecodeBody(body []byte) (*Batch, error) {
 	}
 	b.Sig = append([]byte(nil), p...)
 	return b, nil
+}
+
+func init() {
+	envswitch.Declare(EnvEnable, envswitch.Config, "Enable frame attestations.")
+	envswitch.Declare(EnvCommittee, envswitch.Consensus, "Attestation committee size (default 3; raised to f+1).")
+	envswitch.Declare(EnvTestCommittee, envswitch.BenchOnly, "TEST ONLY: committee size k and attestations needed, for private benchmark fleets.")
 }
