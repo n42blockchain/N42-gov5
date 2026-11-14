@@ -121,6 +121,29 @@ func SetAheadBaseClaimWaitForTest(wait bool) func() {
 // hold the fill until the claim).
 var aheadBaseBeforeFillForTest func(ab *aheadBase)
 
+// N42_AHEAD_KEYS_CUT=1 (default off): a claim that cuts its base prefill
+// (N42_AHEAD_PRE_EARLY, or N42_AHEAD_BASE_CLAIM_WAIT=0) also stops one still
+// collecting its keys, instead of waiting for the collection and stopping
+// the fill at its first key. Run 67 (B2, full blocks): the key collection
+// took 21-24 ms mean (two key hashes per transaction, plus the block-start
+// calls' tree reads), the fill 31-35 ms in all, and an early-snapshot
+// launch's claim waited 5.2 ms mean (15 ms p90) for it -- aheadPreFill,
+// nearly all of aheadPre. A prefill stopped while collecting reads nothing
+// (skip "cut while collecting the keys"): the run reads every key through
+// the tree, as without a prefill.
+var aheadKeysCutOn = parseOptIn(os.Getenv("N42_AHEAD_KEYS_CUT"))
+
+// aheadKeysCuts counts prefills a claim stopped while they collected their
+// keys (process-wide).
+var aheadKeysCuts atomic.Uint64
+
+// SetAheadKeysCutForTest switches N42_AHEAD_KEYS_CUT and returns the restore.
+func SetAheadKeysCutForTest(on bool) func() {
+	prev := aheadKeysCutOn
+	aheadKeysCutOn = on
+	return func() { aheadKeysCutOn = prev }
+}
+
 // aheadBaseMaxWait bounds a prefill's wait for the tree to reach the
 // child's grandparent (the claim of the preparation ends it sooner).
 var aheadBaseMaxWait = 10 * time.Second
@@ -361,8 +384,23 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 		fn(ab)
 	}
 	tFill := time.Now()
-	keys := bc.aheadBaseKeys(hdr, txs, prepared, sp)
+	var keysHalt func() bool
+	if aheadKeysCutOn {
+		keysHalt = stop
+	}
+	keys, whole := bc.aheadBaseKeysHalt(hdr, txs, prepared, sp, keysHalt)
 	ab.keys = time.Since(tFill)
+	if !whole {
+		// N42_AHEAD_KEYS_CUT: the claim (or the block's drop) came while
+		// the keys were collected; nothing was read.
+		releaseAheadBaseKeys(keys)
+		ab.took = time.Since(tFill)
+		ab.skip = "cut while collecting the keys"
+		if ab.cut.Load() {
+			aheadKeysCuts.Add(1)
+		}
+		return
+	}
 	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
 	// The fill copied what it read and its workers are done: nothing reads
 	// the key lists any more.
@@ -406,9 +444,36 @@ func releaseAheadBaseKeys(keys [][]qmdb.Hash) {
 // transaction's sender and recipient come from its prepared message (the
 // preparation's, read-only here), else from the transaction.
 func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor) [][]qmdb.Hash {
+	keys, _ := bc.aheadBaseKeysHalt(hdr, txs, prepared, sp, nil)
+	return keys
+}
+
+// aheadKeysHaltEvery is how many transactions a key goroutine collects
+// between two checks of halt.
+const aheadKeysHaltEvery = 1024
+
+// aheadBaseKeysHalt is aheadBaseKeys stopping early once halt (nil: never)
+// reports true, checked every aheadKeysHaltEvery transactions per goroutine
+// and before the block-start calls' tree reads; whole is false when it
+// stopped (keys is then partial, for release only).
+func (bc *BlockChain) aheadBaseKeysHalt(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, halt func() bool) (_ [][]qmdb.Hash, whole bool) {
 	workers := aheadPrepWorkers()
 	keys := make([][]qmdb.Hash, workers+1)
 	per := (len(txs) + workers - 1) / workers
+	var halted atomic.Bool
+	check := func() bool {
+		if halt == nil {
+			return false
+		}
+		if halted.Load() {
+			return true
+		}
+		if halt() {
+			halted.Store(true)
+			return true
+		}
+		return false
+	}
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		lo, hi := w*per, (w+1)*per
@@ -423,6 +488,9 @@ func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transa
 			defer wg.Done()
 			ks := aheadKeysFree.take(2 * (hi - lo))[:0]
 			for i := lo; i < hi; i++ {
+				if (i-lo)%aheadKeysHaltEvery == 0 && check() {
+					break
+				}
 				if i < prepared.len() && prepared.txs[i].ok {
 					// A planned transfer's sender and recipient are its
 					// message's; any other prepared transaction kept its
@@ -454,10 +522,12 @@ func (bc *BlockChain) aheadBaseKeys(hdr *block.Header, txs []*transaction.Transa
 	for _, a := range deferredFeeRecipients(sp.config, hdr) {
 		extra = append(extra, qmdb.Hash(commitment.AccountKeyHash(a)))
 	}
-	extra = append(extra, bc.blockStartKeys(hdr, sp)...)
+	if !check() {
+		extra = append(extra, bc.blockStartKeys(hdr, sp)...)
+	}
 	wg.Wait()
 	keys[workers] = extra
-	return keys
+	return keys, !check()
 }
 
 // blockStartKeys runs the block-start system calls on a throwaway state over
