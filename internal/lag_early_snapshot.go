@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/holiman/uint256"
 
@@ -115,7 +116,11 @@ type earlySnap struct {
 	header *block.Header
 	at     time.Time
 
-	mvs    *parallel.MVS
+	// mvs: the block's store, cleared with start, below and free once the
+	// last reference goes (release): nothing that still reaches this
+	// snapshot -- the next block's state layers its post -- may keep the
+	// store or the executor reachable (run 66, see release).
+	mvs    atomic.Pointer[parallel.MVS]
 	numTxs int
 	// start: the block-start system calls' writes; below: the complete
 	// post-state of the block's parent, the next run's layer under start;
@@ -156,9 +161,72 @@ func (es *earlySnap) unref() {
 	if fn := lagEarlyUnrefForTest; fn != nil {
 		fn(es, n)
 	}
-	if n == 0 && es.free != nil {
-		es.free()
+	if n == 0 {
+		es.release()
 	}
+}
+
+// release runs when the last reference goes: the snapshot has ended (its
+// complete post-state is published, or it was dropped) and no run reads it
+// any more. It hands the executor back and drops every reference to the
+// block's run.
+//
+// The snapshot itself stays reachable: the next block's run layers its post
+// (a.parPost, the run's state), and that state lives as long as the block's
+// import, write and the executor that ran it -- whose Block-STM closures
+// reach the run's state. A snapshot that kept its executor (free is the
+// executor's bound Release) or its store therefore kept the previous
+// block's run reachable, its state the snapshot below, and so on: with
+// every block on its parent's early snapshot (N42_LAG_EARLY_RETRY, run 66)
+// an unbounded chain of stores, ~130 MB a block; without the retry a chain
+// as long as the run of consecutive early launches. Reads after this point
+// are answered by the complete post-state (every early read checks Full
+// first, and again after the layers below); a dropped snapshot's readers
+// are discarded.
+func (es *earlySnap) release() {
+	if free := es.free; free != nil {
+		es.free = nil
+		free()
+	}
+	es.mvs.Store(nil)
+	es.start, es.below = nil, nil
+	earlySnapsLive.Add(-1)
+}
+
+// earlySnapsLive counts the early snapshots made (published or parked)
+// whose store is not released yet; earlyRecent holds the last ones weakly,
+// to count how many are still reachable (lagEarlyLogFields).
+var earlySnapsLive atomic.Int64
+
+const earlyRecentN = 64
+
+var earlyRecent struct {
+	mu   sync.Mutex
+	next int
+	ring [earlyRecentN]weak.Pointer[earlySnap]
+}
+
+// noteEarlySnap counts a new snapshot (its refs set).
+func noteEarlySnap(es *earlySnap) {
+	earlySnapsLive.Add(1)
+	earlyRecent.mu.Lock()
+	earlyRecent.ring[earlyRecent.next%earlyRecentN] = weak.Make(es)
+	earlyRecent.next++
+	earlyRecent.mu.Unlock()
+}
+
+// earlyReachable counts the last snapshots made that are still reachable
+// (not collected yet: a few are expected, a chain shows as nearly all).
+func earlyReachable() int {
+	earlyRecent.mu.Lock()
+	defer earlyRecent.mu.Unlock()
+	n := 0
+	for i := range earlyRecent.ring {
+		if earlyRecent.ring[i].Value() != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // lagEarlyUnrefForTest sees every reference an early snapshot drops, with
@@ -185,7 +253,13 @@ func (es *earlySnap) end(full *state.PostState, ok bool) {
 }
 
 func (es *earlySnap) EarlyAccount(addr types.Address) (*account.StateAccount, *uint256.Int, bool, bool) {
-	full, _, _, found, delta := es.mvs.ReadAccount(parallel.LocationKey{Address: addr, Field: parallel.FieldBalance}, es.numTxs)
+	mvs := es.mvs.Load()
+	if mvs == nil {
+		// Released: the reader's check of Full after the layers below
+		// answers it from the complete post-state.
+		return nil, nil, false, false
+	}
+	full, _, _, found, delta := mvs.ReadAccount(parallel.LocationKey{Address: addr, Field: parallel.FieldBalance}, es.numTxs)
 	if !found {
 		if delta == nil {
 			return nil, nil, false, false
@@ -231,17 +305,25 @@ func (es *earlySnap) EarlyStorage(addr types.Address, key *types.Hash) ([]byte, 
 		// Removed: its storage reads zero, as the fold leaves it.
 		return nil, true
 	}
-	if v, _, _, ok := es.mvs.Read(parallel.LocationKey{Address: addr, Field: parallel.FieldStorage, Slot: *key}, es.numTxs); ok {
+	mvs := es.mvs.Load()
+	if mvs == nil {
+		return nil, false // released: see EarlyAccount
+	}
+	if v, _, _, ok := mvs.Read(parallel.LocationKey{Address: addr, Field: parallel.FieldStorage, Slot: *key}, es.numTxs); ok {
 		return v, true
 	}
-	if w, _, _, ok := es.mvs.Read(parallel.LocationKey{Address: addr, Field: parallel.FieldStorageWipe}, es.numTxs); ok && w != nil {
+	if w, _, _, ok := mvs.Read(parallel.LocationKey{Address: addr, Field: parallel.FieldStorageWipe}, es.numTxs); ok && w != nil {
 		return nil, true
 	}
 	return nil, false
 }
 
 func (es *earlySnap) EarlyCode(addr types.Address, _ types.Hash) ([]byte, bool) {
-	if c, _, _, ok := es.mvs.Read(parallel.LocationKey{Address: addr, Field: parallel.FieldCode}, es.numTxs); ok && c != nil {
+	mvs := es.mvs.Load()
+	if mvs == nil {
+		return nil, false // released: see EarlyAccount
+	}
+	if c, _, _, ok := mvs.Read(parallel.LocationKey{Address: addr, Field: parallel.FieldCode}, es.numTxs); ok && c != nil {
 		return c, true
 	}
 	return nil, false
@@ -296,11 +378,13 @@ func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, 
 		// layer. Park it until the parent's hook promotes a.
 		hdr := a.blk.Header().(*block.Header)
 		es := &earlySnap{hash: a.blk.Hash(), number: hdr.Number.Uint64(), header: hdr,
-			mvs: mvs, numTxs: numTxs, start: start, belowParent: a.parHeader.ParentHash,
+			numTxs: numTxs, start: start, belowParent: a.parHeader.ParentHash,
 			done: make(chan struct{}), free: free}
+		es.mvs.Store(mvs)
 		es.hold = deferredFeeRecipients(bc.chainConfig, hdr)
 		// The parked slot (the publisher once published) and the run.
 		es.refs.Store(2)
+		noteEarlySnap(es)
 		a.pub = es
 		p.parked, p.parkedRun = es, a
 		p.earlyStats.parked.Add(1)
@@ -321,11 +405,13 @@ func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, 
 		}
 	}
 	es := &earlySnap{hash: a.blk.Hash(), number: hdr.Number.Uint64(), header: hdr, at: time.Now(),
-		mvs: mvs, numTxs: numTxs, start: start, below: below, belowParent: a.parHeader.ParentHash,
+		numTxs: numTxs, start: start, below: below, belowParent: a.parHeader.ParentHash,
 		done: make(chan struct{}), free: free}
+	es.mvs.Store(mvs)
 	es.hold = append(deferredFeeRecipients(bc.chainConfig, hdr), p.earlyHold...)
 	es.post = state.NewEarlyPostState(es)
 	es.refs.Store(2)
+	noteEarlySnap(es)
 	a.pub = es
 	p.early = es
 	p.earlyStats.published.Add(1)
@@ -501,7 +587,10 @@ func (p *lagPipeline) learnHoldLocked(addr types.Address) {
 func (bc *BlockChain) lagEarlyLogFields() []interface{} {
 	s := &bc.lagPipe.earlyStats
 	f := []interface{}{"earlyPub", s.published.Load(), "earlyLaunch", s.launched.Load(), "earlyUsed", s.used.Load(),
-		"earlyUnsafe", s.unsafe.Load(), "earlyDropped", s.dropped.Load(), "earlyHeldReads", earlyHoldWaits.Load()}
+		"earlyUnsafe", s.unsafe.Load(), "earlyDropped", s.dropped.Load(), "earlyHeldReads", earlyHoldWaits.Load(),
+		// Snapshots not released yet, and of the last 64 made, how many are
+		// still reachable (a chain of stores shows as ~64).
+		"earlyLive", earlySnapsLive.Load(), "earlyReach", earlyReachable()}
 	if lagEarlyRetryOn {
 		f = append(f, "earlyParked", s.parked.Load(), "earlyParkedPublished", s.parkedPublished.Load(),
 			"earlyParkedDropped", s.parkedDropped.Load())

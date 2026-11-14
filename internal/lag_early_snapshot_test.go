@@ -5,10 +5,12 @@ package internal
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/stretchr/testify/require"
 
@@ -540,6 +542,108 @@ func TestAheadPreEarlyCutsEarlySnapshotLaunches(t *testing.T) {
 			}
 			require.NotZero(t, early, "no early-snapshot launch claimed with the cut")
 			require.NotZero(t, cuts, "no early-snapshot launch cut a fill still reading")
+		})
+	}
+}
+
+// TestLagEarlySnapshotsDoNotChain (run 66: anon RSS 1.9 -> 79 GB in two
+// minutes with N42_LAG_EARLY_RETRY=1): with every block early-published,
+// each block's run starts on its parent's early snapshot. Nothing may keep
+// a finished snapshot's store reachable through the next one: after a
+// stretch of consecutive early blocks only the last few snapshots may still
+// be reachable, and every snapshot's store is released.
+func TestLagEarlySnapshotsDoNotChain(t *testing.T) {
+	for _, retry := range []bool{false, true} {
+		name := "retryOff"
+		if retry {
+			name = "retryOn"
+		}
+		t.Run(name, func(t *testing.T) {
+			const blocks = 30
+			defer SetLagEarlySnapshotForTest(true)()
+			defer SetLagEarlyRetryForTest(retry)()
+			lagPipeBlocksForTest = blocks
+			lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 3, true, 2
+			defer func() {
+				lagPipeBlocksForTest = 0
+				lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 0, false, 0
+			}()
+			var piped atomic.Pointer[BlockChain]
+			lagPipeAheadClaimedForTest = func(bc *BlockChain, b *block.Block) {
+				piped.Store(bc)
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+					if bc.lagQueuedChild(b.Hash()) != nil {
+						return
+					}
+				}
+			}
+			defer func() { lagPipeAheadClaimedForTest = nil }()
+			if retry {
+				// Every offer comes before its parent's hook: parked, then
+				// published there (the chain run 66 built every block).
+				lagPipeBeforePublishForTest = func(h types.Hash) {
+					bc := piped.Load()
+					if bc == nil {
+						return
+					}
+					p := &bc.lagPipe
+					for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+						p.mu.Lock()
+						a, parked := p.next, p.parked != nil && p.parkedRun == p.next
+						p.mu.Unlock()
+						if a == nil || a.parent != h || parked {
+							return
+						}
+						select {
+						case <-a.done:
+							return
+						default:
+						}
+					}
+				}
+				defer func() { lagPipeBeforePublishForTest = nil }()
+			}
+
+			// Every snapshot, weakly; and how many were freed.
+			var mu sync.Mutex
+			seen := map[weak.Pointer[earlySnap]]bool{}
+			var freed int
+			lagEarlyUnrefForTest = func(es *earlySnap, left int32) {
+				mu.Lock()
+				defer mu.Unlock()
+				seen[weak.Make(es)] = true
+				if left == 0 {
+					freed++
+				}
+			}
+			defer func() { lagEarlyUnrefForTest = nil }()
+			// Near the end, while the pipeline still runs: which snapshots
+			// are still reachable.
+			var hooks, live, total int
+			lagPipeAfterPublishForTest = func(types.Hash) {
+				if hooks++; hooks != blocks-3 {
+					return
+				}
+				runtime.GC()
+				runtime.GC()
+				mu.Lock()
+				defer mu.Unlock()
+				total = len(seen)
+				for w := range seen {
+					if w.Value() != nil {
+						live++
+					}
+				}
+			}
+			defer func() { lagPipeAfterPublishForTest = nil }()
+
+			testLagPipelineAheadEngine(t, false, arrivalAny, false)
+			mu.Lock()
+			defer mu.Unlock()
+			t.Logf("snapshots seen %d at the check, reachable %d; seen in all %d, freed %d", total, live, len(seen), freed)
+			require.GreaterOrEqual(t, total, blocks/2, "too few early snapshots to check a chain")
+			require.LessOrEqual(t, live, 6, "finished early snapshots stay reachable: a chain of stores")
+			require.GreaterOrEqual(t, freed, len(seen)-2, "early snapshots whose store was never released")
 		})
 	}
 }

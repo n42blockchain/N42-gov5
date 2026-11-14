@@ -81,6 +81,10 @@ const (
 	arrivalAfterParent
 )
 
+// lagPipeBlocksForTest, when set, is the number of blocks the harness
+// imports (12 otherwise).
+var lagPipeBlocksForTest int
+
 // lagPipeEngineDoneForTest, when set, inspects the pipelined chain once the
 // harness's blocks are all imported and compared.
 var lagPipeEngineDoneForTest func(lc *lagChain)
@@ -108,10 +112,11 @@ func TestLagPipelineAheadOrderedWriter(t *testing.T) {
 }
 
 func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, ordered bool) {
-	const (
-		blocks = 12
-		failAt = 5
-	)
+	const failAt = 5
+	blocks := 12
+	if lagPipeBlocksForTest > 0 {
+		blocks = lagPipeBlocksForTest
+	}
 	frames, perFrame := 4, 100
 	if lagPipePerFrameForTest > 0 {
 		frames, perFrame = lagPipeFramesForTest, lagPipePerFrameForTest
@@ -292,7 +297,7 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 	}
 	parent := piped.bc.genesisBlock.Header().(*block.Header)
 	wire := make([]*block.Block, 0, blocks)
-	for n := uint64(1); n <= blocks; n++ {
+	for n := uint64(1); n <= uint64(blocks); n++ {
 		if lagPipeRotateToForTest {
 			// A recipient the parent did not write: the child reads it
 			// from the base (written two blocks earlier).
@@ -368,7 +373,7 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		wire = append(wire, w)
 		parent = w.Header().(*block.Header)
 	}
-	waitLag(piped, blocks)
+	waitLag(piped, uint64(blocks))
 	pushWG.Wait()
 	require.Nil(t, lagPipeFailWriteForTest.Load(), "the injected write failure never fired")
 	if arrival == arrivalPushPath {
@@ -387,7 +392,7 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		require.False(t, retry)
 		require.NoError(t, err, "serial availability check of block %d", w.Number64().Uint64())
 	}
-	waitLag(serial, blocks)
+	waitLag(serial, uint64(blocks))
 
 	for _, w := range wire {
 		n := w.Number64().Uint64()
