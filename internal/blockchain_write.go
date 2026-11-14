@@ -314,6 +314,10 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		beginHolder string
 		// The BeginTxn wait alone (begin also holds the Go-side overhead).
 		dBeginWait time.Duration
+		// N42_CANON_FOLD: canonical commits folded into this transaction and
+		// the time their rows took.
+		nCanonFolded int
+		dCanonFold   time.Duration
 		// The frame store write (P11): its own run and the commit's wait.
 		dFrames, dFramesWait time.Duration
 		framesW              *framesWrite
@@ -959,6 +963,21 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			dFramesWait, dFrames = time.Since(tPhase), job.frames.took
 			framesW = job.frames
 		}
+		if job != nil && job.canonOpened {
+			// N42_CANON_FOLD: the canonical commits handed to this write,
+			// and the remembered ones it makes applied (canon_fold.go).
+			tPhase = time.Now()
+			n, err := bc.canonFoldDrain(tx, job)
+			if err != nil {
+				return fmt.Errorf("folding canonical commits into block %d: %w", blockNumber.Uint64(), err)
+			}
+			nCanonFolded, dCanonFold = n, time.Since(tPhase)
+			if fn := canonFoldAfterDrainForTest; fn != nil {
+				if err := fn(blockNumber.Uint64(), n); err != nil {
+					return err
+				}
+			}
+		}
 		dInClosure = time.Since(tClosureStart)
 		job.mark(lwpCommit)
 		return nil
@@ -1097,6 +1116,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			}
 			if txnEarly && lagWriteQFlushReady {
 				fields = append(fields, "qFirst", job.qFirst)
+			}
+			if job.canonOpened {
+				fields = append(fields, "canonFolded", nCanonFolded, "canonFoldUs", dCanonFold.Microseconds())
 			}
 		}
 		if dBeginWait >= time.Millisecond && (beginBehind != "" || beginHolder != "") {

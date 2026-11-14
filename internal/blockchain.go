@@ -1400,6 +1400,13 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 // bookkeeping write did, which is exactly what the separate transaction
 // guaranteed before.
 func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error) error {
+	if canonFoldOn && bc.qmdbEnabled && !bc.E1Light() {
+		// N42_CANON_FOLD (canon_fold.go): into the ordered write in flight,
+		// or refused without the writer when not applied yet.
+		if handled, err := bc.commitToCanonicalFold(hash, inTx); handled {
+			return err
+		}
+	}
 	var committedNumber uint64
 	var notify bool
 	var committedBlk *block.Block
@@ -1441,7 +1448,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 		dPreRead = time.Since(tCommit)
 		tCommit = time.Now()
 	}
-	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+	err := bc.ChainDB.Update(kv.WithRwTag(bc.ctx, "canon"), func(tx kv.RwTx) error {
 		tEnter := time.Now()
 		dLock = tEnter.Sub(tCommit)
 		defer func() { dBody = time.Since(tEnter) }()

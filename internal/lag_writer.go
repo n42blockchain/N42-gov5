@@ -176,6 +176,10 @@ type lagWriteJob struct {
 	capture *commitment.FlushCapture
 	gen     uint64
 
+	// canon: the canonical commits its transaction folded or tried to
+	// (N42_CANON_FOLD); canonOpened: the job accepted folds.
+	canon       []*canonFoldReq
+	canonOpened bool
 	// qCapWait: the QMDB flush's wait for the hand-off's capture inside the
 	// transaction; qPrepBusy: the state preparation was still running when
 	// the flush started (the flush shared the cores with it).
@@ -789,11 +793,20 @@ func (bc *BlockChain) LagHandoffStats() time.Duration {
 // runLagWrite is the writer goroutine of one block.
 func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 	j.mark(lwpStart)
+	if canonFoldOn {
+		j.canonOpened = true
+		bc.canonFoldOpen(j)
+	}
 	if fn := lagWriteBeforeCommitForTest; fn != nil {
 		j.err = fn(j.number)
 	}
 	if j.err == nil {
 		_, j.err = bc.writeBlockWithStateJob(j)
+	}
+	if j.canonOpened {
+		// Before the job reports done: a folded commit's effects follow
+		// its durable write, and a commit handed to a failed write retries.
+		bc.canonFoldSettle(j, j.err)
 	}
 	if j.capture != nil {
 		// Not done before the rows are captured, whatever the write did.

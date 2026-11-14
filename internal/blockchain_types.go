@@ -186,6 +186,9 @@ type BlockChain struct {
 	lagPipe lagPipeline
 	// lagWrite: the lag executor's ordered writer (lag_writer.go).
 	lagWrite lagWriter
+	// canonFold: canonical commits folded into the ordered writer's
+	// transactions (N42_CANON_FOLD, canon_fold.go).
+	canonFold canonFoldState
 
 	// framesEarly holds the frames writes started when a block was queued
 	// (N42_FRAMES_WRITE_EARLY, frames_early.go).
