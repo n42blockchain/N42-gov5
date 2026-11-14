@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"os"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/rlp"
@@ -934,4 +935,8 @@ func (hb *HashBuilder) root() node {
 
 func (hb *HashBuilder) hasRoot() bool {
 	return len(hb.nodeStack) > 0
+}
+
+func init() {
+	envswitch.Declare("N42_LEAFTRACE", envswitch.Diag, "Dump every account leaf input of the hash builder.")
 }

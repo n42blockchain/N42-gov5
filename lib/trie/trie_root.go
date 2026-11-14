@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/crypto"
 	"math/bits"
 	"os"
@@ -1999,4 +2000,8 @@ func isSequenceOld(prev []byte, next []byte) bool {
 	}
 
 	return isSequence
+}
+
+func init() {
+	envswitch.Declare("N42_TRACE_STORCOLL_TOP", envswitch.Diag, "Print the HashBuilder stack top when the storage collector finishes.")
 }
