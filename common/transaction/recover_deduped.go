@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -109,4 +110,8 @@ func RecoverOnPool(recover func()) {
 		close(done)
 	}
 	<-done
+}
+
+func init() {
+	envswitch.Declare("N42_HINT_RECOVERY_POOL", envswitch.Perf, "Worker count of the hinted sender recovery pool (0 = off).")
 }

@@ -49,10 +49,10 @@ package transaction
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
 	"strconv"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -106,7 +106,7 @@ const defaultSenderCacheSlots = 1 << 20
 
 func init() {
 	slots := defaultSenderCacheSlots
-	if v := os.Getenv("N42_SENDER_CACHE_SLOTS"); v != "" {
+	if v := envswitch.Raw("N42_SENDER_CACHE_SLOTS", envswitch.Perf, "Slots of the transaction sender cache."); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			slots = n
 		}

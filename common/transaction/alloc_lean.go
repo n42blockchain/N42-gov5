@@ -17,11 +17,11 @@
 package transaction
 
 import (
-	"os"
 	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -30,7 +30,9 @@ import (
 // decoded values, hash and encoding are those of the default path.
 var allocLean atomic.Bool
 
-func init() { allocLean.Store(os.Getenv("N42_ALLOC_LEAN") == "1") }
+func init() {
+	allocLean.Store(envswitch.Is1("N42_ALLOC_LEAN", envswitch.Perf, "Lean transaction allocation: fewer per-transaction allocations on decode."))
+}
 
 // AllocLean reports N42_ALLOC_LEAN.
 func AllocLean() bool { return allocLean.Load() }
