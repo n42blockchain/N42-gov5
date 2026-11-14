@@ -31,6 +31,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/mmap"
@@ -424,4 +425,8 @@ func (s *Segment) Close() {
 	}
 	s.acc.Close()
 	s.sto.Close()
+}
+
+func init() {
+	envswitch.Declare("N42_SNAP_MMAP", envswitch.Perf, "Default on: read snapshot files through mmap; 0 reads them into the heap.")
 }

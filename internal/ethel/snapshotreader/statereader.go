@@ -7,6 +7,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -160,3 +161,8 @@ func (r *StateReader) ReadAccountCodeSize(addr types.Address, codeHash types.Has
 }
 
 var _ state.StateReader = (*StateReader)(nil)
+
+func init() {
+	envswitch.Declare("N42_SNAP_ACC_CACHE", envswitch.Perf, "Entries of the snapshot reader's account cache.")
+	envswitch.Declare("N42_SNAP_STO_CACHE", envswitch.Perf, "Entries of the snapshot reader's storage cache.")
+}
