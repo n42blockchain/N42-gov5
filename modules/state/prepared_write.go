@@ -236,6 +236,12 @@ func (r *stateRows) replay(tx kv.RwTx) error {
 // WriteChangeSets, then WriteHistory.
 type PreparedStateWrite struct {
 	log *StateWriteLog
+	// shardLogs: the sharded preparation's per-shard logs, not yet merged
+	// into log (N42_STATE_WRITE_PREP_LAZY_LOG); creates is their created
+	// addresses in log order. log is built from them only when the fast
+	// path is refused and the calls must be replayed.
+	shardLogs []*StateWriteLog
+	creates   []types.Address
 	// fast: the rows below are the block's whole state write.
 	fast       bool
 	rows       stateRows
@@ -330,10 +336,14 @@ func (p *PreparedStateWrite) Fast() bool { return p.fast }
 // WriteState is CommitBlock's part of the write: the prepared plain rows,
 // or the recorded calls replayed on w (the block's writer over tx).
 func (p *PreparedStateWrite) WriteState(tx kv.RwTx, w StateWriter) error {
-	if p.fast && p.log != nil {
+	creates := p.creates
+	if p.log != nil {
+		creates = p.log.creates
+	}
+	if p.fast && (p.log != nil || p.shardLogs != nil) {
 		// Created addresses: the prepared rows assumed the store holds no
 		// Storage row of theirs.
-		for _, addr := range p.log.creates {
+		for _, addr := range creates {
 			has, err := storeHasStorage(tx, addr)
 			if err != nil {
 				return err
@@ -346,6 +356,9 @@ func (p *PreparedStateWrite) WriteState(tx kv.RwTx, w StateWriter) error {
 	}
 	if p.fast {
 		return p.rows.replay(tx)
+	}
+	if p.log == nil && p.shardLogs != nil {
+		p.log = mergeShardLogs(p.shardLogs)
 	}
 	return p.log.Replay(w)
 }
