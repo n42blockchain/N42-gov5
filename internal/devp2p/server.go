@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/nat"
 	gethparams "github.com/ethereum/go-ethereum/params"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	n42types "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
@@ -323,4 +324,8 @@ func (s *Server) RemovePeer(rawURL string) error {
 	}
 	s.srv.RemovePeer(node)
 	return nil
+}
+
+func init() {
+	envswitch.Declare("N42_MAX_PEERS", envswitch.Config, "Peer limit of the devp2p server.")
 }
