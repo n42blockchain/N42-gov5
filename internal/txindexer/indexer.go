@@ -40,6 +40,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/txlookup"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -543,4 +544,14 @@ func (x *Indexer) Stop() {
 		svc.Close()
 	}
 	x.txIndexMu.Unlock()
+}
+
+func init() {
+	envswitch.Declare("N42_TXINDEX_TAIL", envswitch.Config, "Tail tier of the tx index.")
+}
+
+func init() {
+	envswitch.Declare("N42_TXINDEX_KEEP_BLOCKS", envswitch.Perf, "Blocks the tx index keeps hot.")
+	envswitch.Declare("N42_TXINDEX_SEAL_MIN_TX", envswitch.Perf, "Minimum transactions before the tx index seals a segment.")
+	envswitch.Declare("N42_TXINDEX_SEAL_WORKERS", envswitch.Perf, "Worker count of the tx index sealing.")
 }
