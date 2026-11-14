@@ -16,11 +16,12 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func main() {
-	dir := flag.String("dir", "", "n42 datadir")
-	addrCSV := flag.String("addrs", "", "comma-separated 20-byte addresses (hex)")
-	hashCSV := flag.String("hashes", "", "comma-separated 32-byte codeHashes (hex) to look up directly")
-	flag.Parse()
+func runGet(args []string) {
+	fs := flag.NewFlagSet("n42-code get", flag.ExitOnError)
+	dir := fs.String("dir", "", "n42 datadir")
+	addrCSV := fs.String("addrs", "", "comma-separated 20-byte addresses (hex)")
+	hashCSV := fs.String("hashes", "", "comma-separated 32-byte codeHashes (hex) to look up directly")
+	fs.Parse(args)
 
 	if *dir == "" || (*addrCSV == "" && *hashCSV == "") {
 		fmt.Fprintln(os.Stderr, "usage: get-code --dir <DATADIR> [--addrs ADDR,...] [--hashes HASH,...]")
@@ -98,11 +99,4 @@ func main() {
 			fmt.Println()
 		}
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

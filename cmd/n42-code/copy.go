@@ -13,7 +13,8 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func main() {
+func runCopy(args []string) {
+	os.Args = append([]string{"n42-code copy"}, args...)
 	if len(os.Args) < 5 || os.Args[1] != "--src" || os.Args[3] != "--dst" {
 		fmt.Fprintln(os.Stderr, "usage: copy-code --src SRC_MDBX_DIR --dst DST_MDBX_DIR")
 		os.Exit(1)

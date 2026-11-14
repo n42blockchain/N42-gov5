@@ -13,9 +13,10 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func main() {
-	dir := flag.String("dir", "", "datadir (MDBX path)")
-	flag.Parse()
+func runCheck(args []string) {
+	fs := flag.NewFlagSet("n42-code check", flag.ExitOnError)
+	dir := fs.String("dir", "", "datadir (MDBX path)")
+	fs.Parse(args)
 
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: check-code --dir <MDBX_DIR>")

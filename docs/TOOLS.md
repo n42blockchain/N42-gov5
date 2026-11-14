@@ -81,3 +81,16 @@ Readers for freezer (ancient) directories; `retrim` rewrites a table index. head
 | `block-senders-list` | `n42-freezer block-senders-list` | ecrecover a geth-ancient block's txs and print (idx, sender, nonce) |
 | `receipts-probe` | `n42-freezer receipts-probe` | time reading N receipts from a compressed freezer table |
 | `dump-tx` | `n42-freezer dump-tx` | print a single tx from a geth ancient block body |
+
+## n42-code
+
+Code-table inspection and repair tools (`copy` and `fix` write). `copy` takes positional arguments and has no `-h`.
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `check-code` | `n42-code check` | print the Code table row count of a datadir's MDBX |
+| `check-account-code` | `n42-code check-account` | look up an account's codeHash and check its bytecode in the Code table |
+| `get-code` | `n42-code get` | look up bytecode by codeHash or via an account in PlainState |
+| `copy-code` | `n42-code copy` | copy the Code table from one MDBX to another (writes; positional --src/--dst) |
+| `code-fix` | `n42-code fix` | detect and unwrap reth LegacyAnalyzedBytecode wrappers in the Code table (writes) |
+| `n42-check-code` | `n42-code check-hashed` | verify every HashedAccount codeHash has a Code-table entry |

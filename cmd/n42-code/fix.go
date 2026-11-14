@@ -27,10 +27,11 @@ func keccak(b []byte) []byte {
 	return h.Sum(nil)
 }
 
-func main() {
-	dir := flag.String("dir", "", "n42 datadir")
-	dryRun := flag.Bool("dry-run", false, "report only, do not write")
-	flag.Parse()
+func runFix(args []string) {
+	fs := flag.NewFlagSet("n42-code fix", flag.ExitOnError)
+	dir := fs.String("dir", "", "n42 datadir")
+	dryRun := fs.Bool("dry-run", false, "report only, do not write")
+	fs.Parse(args)
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: code-fix --dir <DATADIR> [--dry-run]")
 		os.Exit(1)
@@ -229,11 +230,4 @@ func equalBytes(a, b []byte) bool {
 		}
 	}
 	return true
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

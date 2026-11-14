@@ -25,10 +25,11 @@ var emptyCodeHash = []byte{
 	0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
 }
 
-func main() {
-	dir := flag.String("dir", "", "datadir")
-	addrHex := flag.String("addr", "", "20B addr hex")
-	flag.Parse()
+func runCheckAccount(args []string) {
+	fs := flag.NewFlagSet("n42-code check-account", flag.ExitOnError)
+	dir := fs.String("dir", "", "datadir")
+	addrHex := fs.String("addr", "", "20B addr hex")
+	fs.Parse(args)
 	if *dir == "" || *addrHex == "" {
 		fmt.Fprintln(os.Stderr, "usage: check-account-code --dir <MDBX> --addr <20B hex>")
 		os.Exit(1)

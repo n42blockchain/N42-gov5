@@ -29,7 +29,7 @@ NOT a freezer table. Defined in `internal/ethel/codes_freezer_reader.go` + `cmd/
 |-------|---------|-------|------|--------|---------|
 | `codes.cidx` + `codes.NNNN.cdat` | ~2.25M contracts (58.6 MB / 26 B − 16 B hdr) | 4 (0000..0003) | ~6.2 GB | `code-import2fz` from reth `Bytecodes` table (or equivalent MDBX) | `ethexec` executor, `witness-replay` when MDBX `Code` is incomplete |
 
-⚠ Earlier `code-import` runs may have stored `keccak(value) ≠ key` entries (fixed in commit `9187100c`). `codes.cidx` here was rebuilt cleanly after that fix, but verify with `check-account-code` before trusting.
+⚠ Earlier `code-import` runs may have stored `keccak(value) ≠ key` entries (fixed in commit `9187100c`). `codes.cidx` here was rebuilt cleanly after that fix, but verify with `n42-code check-account` before trusting.
 
 ## Format C — N42 columnar (header/body)
 

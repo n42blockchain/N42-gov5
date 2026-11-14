@@ -9,26 +9,27 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"strings"
 	"flag"
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/c2h5oh/datasize"
 
 	"github.com/n42blockchain/N42/common/account"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
-	dir := flag.String("dir", `D:/N42-hashed/chaindata`, "hashed-canonical chaindata dir")
-	addr := flag.String("addr", "", "if set, look up just this 0x address's account+code (skip full scan)")
-	flag.Parse()
+func runCheckHashed(args []string) {
+	fs := flag.NewFlagSet("n42-code check-hashed", flag.ExitOnError)
+	dir := fs.String("dir", `D:/N42-hashed/chaindata`, "hashed-canonical chaindata dir")
+	addr := fs.String("addr", "", "if set, look up just this 0x address's account+code (skip full scan)")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).Path(*dir).Label(kv.ChainDB).Accede().Readonly().
