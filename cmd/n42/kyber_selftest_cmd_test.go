@@ -6,10 +6,10 @@ package main
 import "testing"
 
 func TestKyberSelftest(t *testing.T) {
-	if _, err := kyberSelftest([]byte("n42 kyber selftest"), 25, true); err != nil {
+	if _, err := kyberSelftest([]byte("n42 kyber selftest"), 25); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kyberSelftest(nil, 3, false); err != nil {
+	if _, err := kyberSelftest(nil, 3); err != nil {
 		t.Fatal(err)
 	}
 }
