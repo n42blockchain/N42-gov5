@@ -27,6 +27,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
@@ -386,7 +387,7 @@ func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
 // on values, plus their twig heaps; this is a slot limit, not a byte limit.
 const maxQMDBRetainedEntries = uint64(4 * 1024 * 1024)
 
-var qmdbRetainedEntries = parseQMDBRetainedEntries(os.Getenv("N42_QMDB_RETAIN_ENTRIES"))
+var qmdbRetainedEntries = parseQMDBRetainedEntries(envswitch.Raw("N42_QMDB_RETAIN_ENTRIES", envswitch.Perf, "Entries the QMDB root computer retains."))
 
 func parseQMDBRetainedEntries(value string) uint64 {
 	n, err := strconv.ParseUint(value, 10, 64)
@@ -465,7 +466,7 @@ func (r *QMDBRootComputer) loadFromLocked(g qmdb.Getter) error {
 // reloadVerify enables the paranoid cross-check: after every fast reload, run an
 // INDEPENDENT full rebuild and assert the two agree. Costs a multi-second full
 // load per build — diagnostic only, never on by default.
-var reloadVerify = os.Getenv("N42_QMDB_RELOAD_VERIFY") == "1"
+var reloadVerify = envswitch.Is1("N42_QMDB_RELOAD_VERIFY", envswitch.Diag, "Cross-check every fast QMDB reload against an independent rebuild.")
 
 // ReloadForBuild reloads a PERSISTENT speculative-build computer against the
 // store's current layout. A fresh computer pays a full index rescan on every
@@ -1013,4 +1014,8 @@ func (r *QMDBRootComputer) ComputeRootShared(
 		log.Info("qmdb single-fold guard", "matched", matched, "matches", m, "mismatches", mm)
 	}
 	return root, matched, nil
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_EVICT_LAG_BLOCKS", envswitch.Config, "Blocks of lag before QMDB evicts (0 = today's behaviour).")
 }

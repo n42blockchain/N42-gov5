@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -921,4 +922,10 @@ func (t *TrieRootComputer) keccakHash(h types.Hash) types.Hash {
 	var out types.Hash
 	t.hasher.Sum(out[:0])
 	return out
+}
+
+func init() {
+	envswitch.Declare("N42_DROP_STALE_ADDR", envswitch.Diag, "Drop the stale root cache of one address (debug).")
+	envswitch.Declare("N42_DUMP160", envswitch.Diag, "Dump the dirty account set of a root computation (debug).")
+	envswitch.Declare("N42_TRACE_STORCOLL", envswitch.Diag, "Trace the storage collector.")
 }

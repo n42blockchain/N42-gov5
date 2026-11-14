@@ -19,6 +19,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules"
@@ -233,4 +234,8 @@ func (t *TrieRootComputer) resetStorageRootHook() {
 	if t.denseNodeHook != nil {
 		t.denseNodeHook(nil, nil, 0, 0, nil)
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_CROOT_DEBUG", envswitch.Diag, "Dump the concurrent root computation on mismatch or when set.")
 }

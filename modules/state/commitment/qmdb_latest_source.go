@@ -35,6 +35,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
@@ -191,3 +192,7 @@ var lookupRefreshes atomic.Uint64
 // LookupRefreshes reports how many lookups a refreshing source retried
 // (process-wide, since start).
 func LookupRefreshes() uint64 { return lookupRefreshes.Load() }
+
+func init() {
+	envswitch.Declare("N42_STATE_WRITE_QMDB_ONLY", envswitch.Config, "Account writes go to QMDB only.")
+}

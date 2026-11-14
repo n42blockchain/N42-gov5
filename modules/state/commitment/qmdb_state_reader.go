@@ -35,6 +35,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/log"
@@ -313,4 +314,8 @@ func sameAccount(a, b *account.StateAccount) bool {
 		a.Balance.Eq(&b.Balance) &&
 		a.Root == b.Root &&
 		a.CodeHash == b.CodeHash
+}
+
+func init() {
+	envswitch.Declare("N42_STATE_READ_QMDB", envswitch.Config, "QMDB state read mode.")
 }

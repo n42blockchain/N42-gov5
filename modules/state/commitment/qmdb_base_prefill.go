@@ -29,10 +29,10 @@ package commitment
 
 import (
 	"context"
-	"os"
 	"sync"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
@@ -190,7 +190,7 @@ func (p *BasePrefill) Stats() (hits, misses uint64) {
 // prefillScratchPool is N42_BLOCK_SCRATCH_POOL (default on; "0" allocates
 // every prefill's maps fresh): a released prefill's maps and value arenas
 // are cleared and kept for the next block's fill.
-var prefillScratchPool = os.Getenv("N42_BLOCK_SCRATCH_POOL") != "0"
+var prefillScratchPool = envswitch.Not0("N42_BLOCK_SCRATCH_POOL", envswitch.Perf, "Default on: per-block scratch reused across blocks; 0 allocates fresh (r31a).")
 
 // SetPrefillScratchPoolForTest switches the reuse and returns the restore.
 func SetPrefillScratchPoolForTest(on bool) func() {
