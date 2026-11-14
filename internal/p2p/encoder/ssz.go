@@ -10,6 +10,8 @@ import (
 
 	"github.com/golang/snappy"
 	fastssz "github.com/prysmaticlabs/fastssz"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 var _ NetworkEncoding = (*SszNetworkEncoder)(nil)
@@ -263,4 +265,8 @@ func newBufferedWriter(w io.Writer) *snappy.Writer {
 		}
 	}
 	return snappy.NewBufferedWriter(w)
+}
+
+func init() {
+	envswitch.Declare("N42_MAX_GOSSIP_MB", envswitch.Config, "Maximum gossip message size, in MiB.")
 }
