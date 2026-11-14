@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
@@ -375,4 +376,11 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+func init() {
+	envswitch.Declare("N42_BLS_POOL_SIZE", envswitch.Config, "Size of the benchmark BLS voter pool.")
+	envswitch.Declare("N42_BLS_COMMITTEE", envswitch.Config, "Committee size of the benchmark BLS voter pool.")
+	envswitch.Declare("N42_BLS_RAMP_BLOCKS", envswitch.Config, "Blocks over which the benchmark BLS pool ramps up.")
+	envswitch.Declare("N42_BLS_POOL_SEED", envswitch.Config, "Master seed of the benchmark BLS voter pool (hex).")
 }
