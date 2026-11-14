@@ -28,7 +28,7 @@ import (
 	"github.com/n42blockchain/N42/lib/trie"
 )
 
-func cfg(d kv.TableCfg) kv.TableCfg {
+func recorddiffCfg(d kv.TableCfg) kv.TableCfg {
 	d["HashedAccount"] = kv.TableCfgItem{}
 	d["HashedStorage"] = kv.TableCfgItem{
 		Flags:                     kv.DupSort,
@@ -56,11 +56,12 @@ type rec struct {
 	rootHash                   []byte // 32B or empty
 }
 
-func main() {
-	datadir := flag.String("datadir", `D:/N42-hashed/chaindata`, "chaindata (RO)")
-	acct := flag.String("acct", "6c9d57be05dd69371c4dd2e871bce6e9f4124236825bb612ee18a45e5675be51", "addrHash (64 hex)")
-	maxDepth := flag.Int("max-depth", 2, "max path depth to print diffs for")
-	flag.Parse()
+func runRecorddiff(args []string) {
+	fs := flag.NewFlagSet("n42-trie recorddiff", flag.ExitOnError)
+	datadir := fs.String("datadir", `D:/N42-hashed/chaindata`, "chaindata (RO)")
+	acct := fs.String("acct", "6c9d57be05dd69371c4dd2e871bce6e9f4124236825bb612ee18a45e5675be51", "addrHash (64 hex)")
+	maxDepth := fs.Int("max-depth", 2, "max path depth to print diffs for")
+	fs.Parse(args)
 
 	ah, err := hex.DecodeString(*acct)
 	if err != nil || len(ah) != 32 {
@@ -71,7 +72,7 @@ func main() {
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).Path(*datadir).Label(kv.ChainDB).
 		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(recorddiffCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

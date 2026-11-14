@@ -20,7 +20,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func cfg(d kv.TableCfg) kv.TableCfg {
+func probeCfg(d kv.TableCfg) kv.TableCfg {
 	d["HashedAccount"] = kv.TableCfgItem{}
 	d["HashedStorage"] = kv.TableCfgItem{Flags: kv.DupSort, AutoDupSortKeysConversion: true, DupFromLen: 64, DupToLen: 32}
 	d["TrieAccount"] = kv.TableCfgItem{}
@@ -60,14 +60,15 @@ func histo(tx kv.Tx, table string, max int) (map[int]uint64, uint64) {
 	return h, total
 }
 
-func main() {
-	dir := flag.String("dir", `D:/N42-hashed/chaindata`, "N42 chaindata dir")
-	max := flag.Int("max", 0, "stop after N entries per table (0 = all)")
-	flag.Parse()
+func runProbe(args []string) {
+	fs := flag.NewFlagSet("n42-trie probe", flag.ExitOnError)
+	dir := fs.String("dir", `D:/N42-hashed/chaindata`, "N42 chaindata dir")
+	max := fs.Int("max", 0, "stop after N entries per table (0 = all)")
+	fs.Parse(args)
 
 	db, err := mdbx.NewMDBX(log.New()).Path(*dir).Label(kv.ChainDB).
 		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(probeCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

@@ -19,7 +19,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func cfg(d kv.TableCfg) kv.TableCfg {
+func statCfg(d kv.TableCfg) kv.TableCfg {
 	d["HashedAccount"] = kv.TableCfgItem{}
 	d["HashedStorage"] = kv.TableCfgItem{Flags: kv.DupSort, AutoDupSortKeysConversion: true, DupFromLen: 64, DupToLen: 32}
 	d["TrieAccount"] = kv.TableCfgItem{}
@@ -27,11 +27,12 @@ func cfg(d kv.TableCfg) kv.TableCfg {
 	return d
 }
 
-func main() {
-	dir := flag.String("dir", `D:/N42-hashed/chaindata`, "chaindata dir")
-	flag.Parse()
+func runStat(args []string) {
+	fs := flag.NewFlagSet("n42-trie stat", flag.ExitOnError)
+	dir := fs.String("dir", `D:/N42-hashed/chaindata`, "chaindata dir")
+	fs.Parse(args)
 	db, err := mdbx.NewMDBX(log.New()).Path(*dir).Label(kv.ChainDB).
-		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().WithTableCfg(cfg).Open(context.Background())
+		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().WithTableCfg(statCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

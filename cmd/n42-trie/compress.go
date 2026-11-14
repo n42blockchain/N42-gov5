@@ -28,24 +28,18 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func tableCfg(table string) func(kv.TableCfg) kv.TableCfg {
-	return func(d kv.TableCfg) kv.TableCfg {
-		d[table] = kv.TableCfgItem{}
-		return d
-	}
-}
-
-func main() {
-	dbPath := flag.String("db", `D:\reth2k\db`, "source reth/erigon MDBX dir (readonly)")
-	table := flag.String("table", "AccountsTrie", "source table (AccountsTrie | StoragesTrie)")
-	out := flag.String("out", "", "output dir for <prefix>.mphf/idx/kv (required)")
-	prefix := flag.String("prefix", "", "file prefix; default = lowercased table")
-	pageSize := flag.Int("page", 64, "entries per kv page")
-	tmpDir := flag.String("tmp", "", "ETL spill dir (default <out>/etl-tmp)")
-	mapSizeGB := flag.Int("mapsize-gb", 4096, "source DB mapsize cap")
-	keyCount := flag.Int("key-count", 0, "expected key count (0 = use BucketStat first)")
-	etlBufMB := flag.Uint64("etl-buf-mb", 2048, "ETL buffer size MB")
-	flag.Parse()
+func runCompress(args []string) {
+	fs := flag.NewFlagSet("n42-trie compress", flag.ExitOnError)
+	dbPath := fs.String("db", `D:\reth2k\db`, "source reth/erigon MDBX dir (readonly)")
+	table := fs.String("table", "AccountsTrie", "source table (AccountsTrie | StoragesTrie)")
+	out := fs.String("out", "", "output dir for <prefix>.mphf/idx/kv (required)")
+	prefix := fs.String("prefix", "", "file prefix; default = lowercased table")
+	pageSize := fs.Int("page", 64, "entries per kv page")
+	tmpDir := fs.String("tmp", "", "ETL spill dir (default <out>/etl-tmp)")
+	mapSizeGB := fs.Int("mapsize-gb", 4096, "source DB mapsize cap")
+	keyCount := fs.Int("key-count", 0, "expected key count (0 = use BucketStat first)")
+	etlBufMB := fs.Uint64("etl-buf-mb", 2048, "ETL buffer size MB")
+	fs.Parse(args)
 
 	if *out == "" {
 		fmt.Fprintln(os.Stderr, "usage: n42-trie-compress --db <reth-dir> --table AccountsTrie --out <dir> [--prefix name]")
@@ -177,9 +171,4 @@ func main() {
 			100*(1-float64(totalOut)/float64(bytesIn)))
 	}
 	fmt.Printf("  total elapsed      %s\n", time.Since(t0).Truncate(time.Second))
-}
-
-func fatal(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "FATAL: "+format+"\n", a...)
-	os.Exit(1)
 }

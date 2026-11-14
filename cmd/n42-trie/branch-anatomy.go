@@ -33,7 +33,6 @@ import (
 	"flag"
 	"fmt"
 	"math/bits"
-	"os"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -43,19 +42,13 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func tableCfg(table string) func(kv.TableCfg) kv.TableCfg {
-	return func(d kv.TableCfg) kv.TableCfg {
-		d[table] = kv.TableCfgItem{}
-		return d
-	}
-}
-
-func main() {
-	dbPath := flag.String("db", `D:\reth2k\db`, "reth MDBX dir (readonly)")
-	table := flag.String("table", "AccountsTrie", "AccountsTrie | StoragesTrie")
-	samples := flag.Int("samples", 200_000, "branch nodes to analyse")
-	mapSizeGB := flag.Int("mapsize-gb", 4096, "DB mapsize cap")
-	flag.Parse()
+func runBranchAnatomy(args []string) {
+	fs := flag.NewFlagSet("n42-trie branch-anatomy", flag.ExitOnError)
+	dbPath := fs.String("db", `D:\reth2k\db`, "reth MDBX dir (readonly)")
+	table := fs.String("table", "AccountsTrie", "AccountsTrie | StoragesTrie")
+	samples := fs.Int("samples", 200_000, "branch nodes to analyse")
+	mapSizeGB := fs.Int("mapsize-gb", 4096, "DB mapsize cap")
+	fs.Parse(args)
 
 	logger := log.New()
 	t0 := time.Now()
@@ -163,9 +156,4 @@ func main() {
 		float64(totalEntries)*float64(minBranchBytes)/float64(n)/1e9, overheadPct)
 	fmt.Println()
 	fmt.Printf("Duration: %s\n", time.Since(t0).Truncate(time.Millisecond))
-}
-
-func fatal(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, "FATAL: "+format+"\n", a...)
-	os.Exit(1)
 }

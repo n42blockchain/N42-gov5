@@ -27,7 +27,7 @@ import (
 	"github.com/n42blockchain/N42/lib/trie"
 )
 
-func cfg(d kv.TableCfg) kv.TableCfg {
+func fulldiffCfg(d kv.TableCfg) kv.TableCfg {
 	d["HashedAccount"] = kv.TableCfgItem{}
 	d["HashedStorage"] = kv.TableCfgItem{Flags: kv.DupSort, AutoDupSortKeysConversion: true, DupFromLen: 64, DupToLen: 32}
 	d["TrieAccount"] = kv.TableCfgItem{}
@@ -51,13 +51,14 @@ func cmpNode(rethVal []byte, hasState, hasTree, hasHash uint16, hashes []byte) i
 	return 0
 }
 
-func main() {
-	dir := flag.String("dir", `D:/N42-hashed/chaindata`, "reth-migrated N42 chaindata")
-	maxLog := flag.Int("maxlog", 20, "max example diffs to log per table")
-	flag.Parse()
+func runFulldiff(args []string) {
+	fs := flag.NewFlagSet("n42-trie fulldiff", flag.ExitOnError)
+	dir := fs.String("dir", `D:/N42-hashed/chaindata`, "reth-migrated N42 chaindata")
+	maxLog := fs.Int("maxlog", 20, "max example diffs to log per table")
+	fs.Parse(args)
 
 	db, err := mdbx.NewMDBX(log.New()).Path(*dir).Label(kv.ChainDB).
-		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().WithTableCfg(cfg).Open(context.Background())
+		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().WithTableCfg(fulldiffCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

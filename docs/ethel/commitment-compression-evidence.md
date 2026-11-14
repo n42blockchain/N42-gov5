@@ -56,7 +56,7 @@ JMT/BMT's real value is in **historical proof dedup** (versioned trees with stal
 **Hypothesis:** Erigon's HPH commitment branches contain plaintext account/slot keys. The `ReplaceKeysInValues` optimization replaces these with 8-byte file-offset refs into adjacent segment files, saving ~12-24 bytes per occurrence. Erigon empirical: 1.5-2× total commitment savings.
 
 **Result (commit `<this commit>`):**
-- Measured: `cmd/n42-trie-branch-anatomy` dissecting reth's `AccountsTrie` branch encoding (200K samples).
+- Measured: `cmd/n42-trie` dissecting reth's `AccountsTrie` branch encoding (200K samples).
 
 | Metric | Value |
 |---|---|
@@ -178,10 +178,10 @@ A-track is settled by evidence. B-track Round 1 shows pure-Go ceiling is ~2%. Th
 2. Either commit to libzstd CGo (B1 proper) or schema-aware encoding (B2) for the real bottleneck (bodyc, ChangeSets, history).
 
 Spike artifacts kept as regression evidence:
-- `cmd/n42-trie-compress` (commit `f68d0125`)
+- `cmd/n42-trie` (commit `f68d0125`)
 - `cmd/n42-zstd-dict-spike` (commit `e9a3cac2`)
 - `cmd/n42-jmt-from-reth` (commit `3ca647e2`)
-- `cmd/n42-trie-branch-anatomy` (this commit)
+- `cmd/n42-trie` (this commit)
 
 Cross-reference:
 - [`docs/bench_state_report.md`](../bench_state_report.md) — synthetic 1M-block comparison of 5 commitment engines (note: synthetic, doesn't reflect mainnet density)

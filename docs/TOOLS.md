@@ -28,3 +28,16 @@ Analysis probes for a reth MDBX database (codehash-rewrite and snapshot-export w
 | `reth-tables-list` | `n42-reth tables-list` | list every MDBX table with entry counts |
 | `reth-value-stats` | `n42-reth value-stats` | value-length histograms and layout size estimates |
 | `scan-reth-cs` | `n42-reth scan-cs` | changeset update-count distribution (hot data threshold) |
+
+## n42-trie
+
+MDBX trie-table analysis and rebuild/diff probes (commitment-compression research).
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `n42-trie-stat` | `n42-trie stat` | TrieAccount/TrieStorage record counts, bytes and node-shape classes |
+| `n42-trie-probe` | `n42-trie probe` | structural shape of a migrated chaindata's TrieOfAccounts/TrieOfStorage |
+| `n42-trie-fulldiff` | `n42-trie fulldiff` | full N42-native trie rebuild over a reth-migrated DB, diff vs stored nodes |
+| `n42-trie-recorddiff` | `n42-trie recorddiff` | rebuild one account's storage subtree from HashedStorage, diff records |
+| `n42-trie-compress` | `n42-trie compress` | measure compressibility of reth AccountsTrie/StoragesTrie tables |
+| `n42-trie-branch-anatomy` | `n42-trie branch-anatomy` | byte-level dissection of reth trie branch nodes |
