@@ -494,3 +494,51 @@ func TestLagEarlyRetryParkedReleasesOnce(t *testing.T) {
 		require.Nil(t, a.pub)
 	})
 }
+
+// TestAheadPreEarlyCutsEarlySnapshotLaunches: with N42_AHEAD_PRE_EARLY a
+// child launched on its parent's early snapshot (launchBy hook, a.es set)
+// claims its preparation without waiting for a base prefill still reading;
+// off, nothing is cut. Every base prefill is held until its claim, so each
+// early run's claim finds its fill reading. Every block equals the serial
+// chain's (the harness).
+func TestAheadPreEarlyCutsEarlySnapshotLaunches(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		name := "off"
+		if on {
+			name = "on"
+		}
+		t.Run(name, func(t *testing.T) {
+			defer SetLagEarlySnapshotForTest(true)()
+			defer SetAheadPreEarlyForTest(on)()
+			defer SetLagWriteAsyncForTest(true)()
+			defer SetLagWritePrepareForTest(true)()
+			defer SetAheadBaseClaimWaitForTest(true)()
+			defer r69aHoldFills()()
+			lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 3, true, 2
+			defer func() { lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 0, false, 0 }()
+			lagPipeAheadClaimedForTest = func(bc *BlockChain, b *block.Block) {
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+					if bc.lagQueuedChild(b.Hash()) != nil {
+						return
+					}
+				}
+			}
+			defer func() { lagPipeAheadClaimedForTest = nil }()
+			var launched uint64
+			lagPipeEngineDoneForTest = func(lc *lagChain) { launched = lc.bc.lagPipe.earlyStats.launched.Load() }
+			defer func() { lagPipeEngineDoneForTest = nil }()
+			c0, e0, k0 := aheadPreCutClaims.Load(), aheadPreCutEarlyClaims.Load(), aheadPreCuts.Load()
+			testLagPipelineAheadEngine(t, false, arrivalAny, true)
+			claims, early, cuts := aheadPreCutClaims.Load()-c0, aheadPreCutEarlyClaims.Load()-e0, aheadPreCuts.Load()-k0
+			t.Logf("preEarly=%v: early launches %d, cut claims %d (on an early snapshot %d), fills cut %d", on, launched, claims, early, cuts)
+			require.NotZero(t, launched, "no child started on an early snapshot")
+			if !on {
+				require.Zero(t, claims)
+				require.Zero(t, cuts)
+				return
+			}
+			require.NotZero(t, early, "no early-snapshot launch claimed with the cut")
+			require.NotZero(t, cuts, "no early-snapshot launch cut a fill still reading")
+		})
+	}
+}

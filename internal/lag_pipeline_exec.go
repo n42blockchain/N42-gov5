@@ -655,7 +655,13 @@ func (bc *BlockChain) lagPipeLaunch(by int) {
 // at its next key and keeps what it read -- the N42_AHEAD_BASE_CLAIM_WAIT=0
 // semantics, for late children only: the run reads the remaining keys
 // through the tree, the same values. A hook launch is unchanged (its child
-// waited for the hook anyway, so its prefill usually finished).
+// waited for the hook anyway, so its prefill usually finished) -- a
+// performance choice, not a correctness one. A launch on an early snapshot
+// (N42_LAG_EARLY_SNAPSHOT, a.es set, whatever its launchBy) is cut too: it
+// starts ~1 ms after its parent's Block-STM end, well before its prefill
+// finishes (r65: aheadPre 8 ms mean, 23 ms p90, all of it this wait), and it
+// drops the prefill it claimed anyway (it reads below a block not folded
+// yet, runAhead), so the cut only ends the wait.
 var aheadPreEarlyOn = parseOptIn(os.Getenv("N42_AHEAD_PRE_EARLY"))
 
 // SetAheadPreEarlyForTest switches N42_AHEAD_PRE_EARLY and returns the
@@ -668,8 +674,9 @@ func SetAheadPreEarlyForTest(on bool) func() {
 
 // aheadPreCutClaims counts late claims made with N42_AHEAD_PRE_EARLY on a
 // preparation with a base prefill, aheadPreCuts those that stopped a fill
-// still reading (process-wide, since start).
-var aheadPreCutClaims, aheadPreCuts atomic.Uint64
+// still reading (process-wide, since start); aheadPreCutEarlyClaims those
+// of the claims made by runs on an early snapshot.
+var aheadPreCutClaims, aheadPreCuts, aheadPreCutEarlyClaims atomic.Uint64
 
 // newAheadLocked creates the ahead execution of child on par's snapshot
 // (p.mu held); the caller starts runAhead.
@@ -765,8 +772,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		claim.execStart = func() { bc.lagEarlyPrepChildStarted(parent) }
 	}
 	// N42_AHEAD_PRE_EARLY: a late child (launched after its parent's hook)
-	// does not wait for a base prefill still reading; it keeps what was read.
-	cut := aheadPreEarlyOn && a.launchBy != lagLaunchHook
+	// or one launched on its parent's early snapshot does not wait for a
+	// base prefill still reading; it keeps what was read.
+	cut := aheadPreEarlyOn && (a.launchBy != lagLaunchHook || a.es != nil)
 	if fn := lagPipeBeforeClaimForTest; fn != nil {
 		fn(bc, a.blk)
 	}
@@ -779,6 +787,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		a.preFill, a.preCut = ab.claimWait, ab.cut.Load()
 		if cut {
 			aheadPreCutClaims.Add(1)
+			if a.es != nil {
+				aheadPreCutEarlyClaims.Add(1)
+			}
 			if a.preCut {
 				aheadPreCuts.Add(1)
 			}
