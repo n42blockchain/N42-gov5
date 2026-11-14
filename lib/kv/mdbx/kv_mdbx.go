@@ -106,9 +106,13 @@ type MdbxTx struct {
 	// a leg, with no writer named).
 	beganAt   time.Time
 	waitedFor time.Duration
-	// rwTag is the holder diagnostics' name for this write transaction's
-	// caller (rw_holder_diag.go), "" while they are off.
-	rwTag string
+	// rwTag is the writer-lock accounting's name for this write transaction
+	// (rw_holder_diag.go); waitHolder names the holder when its begin started
+	// to wait ("" when the writer was free); rwReleased: its release is
+	// recorded.
+	rwTag      string
+	waitHolder string
+	rwReleased bool
 	// commitStats, when set (RecordCommitStats), receives this write
 	// transaction's commit breakdown.
 	commitStats *CommitStats
@@ -383,8 +387,16 @@ func (db *MdbxKV) beginRw(ctx context.Context, flags uint) (txn kv.RwTx, err err
 		return nil, fmt.Errorf("db closed")
 	}
 
+	tag := kv.RwTagFrom(ctx)
+	if tag == "" && rwHolderDiag {
+		tag = rwCallerTag()
+	}
+	if tag == "" {
+		tag = "other"
+	}
 	runtime.LockOSThread()
 	tWait := time.Now()
+	waitHolder := db.rwHolders.holder(tWait)
 	tx, err := db.env.BeginTxn(nil, flags)
 	if err != nil {
 		runtime.UnlockOSThread() // unlock only in case of error. normal flow is "defer .Rollback()"
@@ -392,17 +404,17 @@ func (db *MdbxKV) beginRw(ctx context.Context, flags uint) (txn kv.RwTx, err err
 		return nil, fmt.Errorf("%w, lable: %s, trace: %s", err, db.opts.label.String(), stack2.Trace().String())
 	}
 	began := time.Now()
+	db.rwHolders.acquired(tag, began)
 
 	t := &MdbxTx{
-		db:        db,
-		tx:        tx,
-		ctx:       ctx,
-		id:        db.leakDetector.Add(),
-		beganAt:   began,
-		waitedFor: began.Sub(tWait),
-	}
-	if rwHolderDiag {
-		t.rwTag = rwCallerTag()
+		db:         db,
+		tx:         tx,
+		ctx:        ctx,
+		id:         db.leakDetector.Add(),
+		beganAt:    began,
+		waitedFor:  began.Sub(tWait),
+		rwTag:      tag,
+		waitHolder: waitHolder,
 	}
 	return t, nil
 }

@@ -44,12 +44,44 @@ func TestRwBeginBehindNamesHolder(t *testing.T) {
 	require.Greater(t, wait, 20*time.Millisecond)
 	require.True(t, strings.Contains(behind, "rwHolderTestHold:"), "behind %q", behind)
 
-	// Off: nothing is named.
+	// Off: an untagged holder is accounted as "other", a tagged one by its
+	// tag, whatever the diagnostics switch says.
 	rw.Rollback()
 	defer SetRwHolderDiagForTest(false)()
+	started2 := make(chan struct{})
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		require.NoError(t, db.Update(kv.WithRwTag(context.Background(), "tagged"), func(tx kv.RwTx) error {
+			close(started2)
+			time.Sleep(60 * time.Millisecond)
+			return tx.Put("HolderT", []byte("a"), []byte("c"))
+		}))
+	}()
+	<-started2
 	rw2, err := db.BeginRw(context.Background())
 	require.NoError(t, err)
-	defer rw2.Rollback()
-	_, behind = rw2.(*MdbxTx).RwBeginBehind()
-	require.Empty(t, behind)
+	wait2, behind := rw2.(*MdbxTx).RwBeginBehind()
+	holder := rw2.(*MdbxTx).RwWaitHolder()
+	rw2.Rollback()
+	<-done2
+	require.Greater(t, wait2, 20*time.Millisecond)
+	require.True(t, strings.HasPrefix(behind, "tagged:"), "behind %q", behind)
+	require.True(t, strings.HasPrefix(holder, "tagged:"), "holder %q", holder)
+	st := db.(*MdbxKV).RwHolderStatsForTest()
+	require.Equal(t, int64(1), st["tagged"][0])
+	require.GreaterOrEqual(t, time.Duration(st["tagged"][1]), 50*time.Millisecond)
+	require.GreaterOrEqual(t, st["other"][0], int64(1))
+	require.GreaterOrEqual(t, time.Duration(st["other"][2]), 20*time.Millisecond, "the untagged begin's wait")
+}
+
+// The per-holder window renders by held time with the held share.
+func TestFormatRwHolders(t *testing.T) {
+	win := map[string]*rwHolderStat{
+		"blockWrite": {n: 2, held: 120 * time.Millisecond, wait: 30 * time.Millisecond},
+		"canon":      {n: 3, held: 30 * time.Millisecond},
+	}
+	s, share := formatRwHolders(win, time.Second)
+	require.Equal(t, "blockWrite=2/120.0/30.0 canon=3/30.0/0.0", s)
+	require.InDelta(t, 0.15, share, 1e-9)
 }

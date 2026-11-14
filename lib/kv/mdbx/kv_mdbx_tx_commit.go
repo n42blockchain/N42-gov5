@@ -38,9 +38,7 @@ func (tx *MdbxTx) cleanup() {
 			tx.db.roTxsLimiter.Release(1)
 		}
 	} else {
-		if tx.rwTag != "" {
-			tx.db.rwHolders.release(tx.rwTag, tx.beganAt)
-		}
+		tx.releaseWriter()
 		runtime.UnlockOSThread()
 	}
 	tx.db.leakDetector.Del(tx.id)
@@ -68,6 +66,9 @@ func (tx *MdbxTx) Commit() error {
 	}
 
 	latency, err := tx.tx.Commit()
+	// The writer is free again: record it before anything else (a waiter's
+	// begin returns now and looks for this release).
+	tx.releaseWriter()
 	if err != nil {
 		return fmt.Errorf("label: %s, %w", tx.db.opts.label, err)
 	}
@@ -117,6 +118,7 @@ func (tx *MdbxTx) Rollback() {
 	defer tx.cleanup()
 	tx.closeCursors()
 	tx.tx.Abort()
+	tx.releaseWriter()
 }
 
 func (tx *MdbxTx) SpaceDirty() (uint64, uint64, error) {
