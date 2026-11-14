@@ -239,6 +239,9 @@ func TestLagEarlyRetryParksUntilGrandparentHook(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			defer SetLagEarlySnapshotForTest(true)()
 			defer SetLagEarlyRetryForTest(true)()
+			// The parking path: a stacked snapshot (N42_LAG_EARLY_DEPTH2)
+			// takes the offers this test parks.
+			defer SetLagEarlyDepth2ForTest(false)()
 			if tc.fleet {
 				defer SetLagWriteAsyncForTest(true)()
 				defer SetLagWritePrepareForTest(true)()

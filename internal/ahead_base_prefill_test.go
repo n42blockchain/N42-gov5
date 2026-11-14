@@ -172,7 +172,10 @@ func TestLagPipelineAheadBasePrefill(t *testing.T) {
 	})
 	t.Run("deepMissingLayer", func(t *testing.T) {
 		// The grandparent's post-state is gone when the run looks for it:
-		// the prefill is dropped, the run reads per lookup.
+		// the prefill is dropped, the run reads per lookup. A run on an
+		// early snapshot reads its layers from the snapshot, not from
+		// p.older: N42_LAG_EARLY_PREFILL may keep its prefill.
+		defer SetLagEarlyPrefillForTest(false)()
 		lagPipeAheadLayersForTest = func(p *lagPipeline) {
 			p.mu.Lock()
 			p.older = nil
