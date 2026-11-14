@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -101,4 +102,8 @@ func logAboveHighWaterRateLimited(pending, queued int, mark uint64) {
 		log.Warn("txpool: above high water, rejecting new submissions without decoding",
 			"pending", pending, "queued", queued, "mark", mark)
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_TX_INGEST_HIGH_WATER", envswitch.Config, "Admission ceiling of the tx ingest (0 = no gate).")
 }

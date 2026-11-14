@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 )
@@ -119,4 +120,8 @@ func processBatchEntries(inputs []hexutil.Bytes, workers int, jobs chan func(), 
 	}
 	wg.Wait()
 	return results
+}
+
+func init() {
+	envswitch.Declare("N42_INGEST_WORKERS", envswitch.Perf, "Ingest worker count (0 = serial).")
 }

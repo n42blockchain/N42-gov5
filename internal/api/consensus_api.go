@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -442,4 +443,11 @@ func (c *ConsensusAPI) resolveBlockNumber(blockNr jsonrpc.BlockNumber) (uint64, 
 	default:
 		return uint64(blockNr.Int64()), nil
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_BLS_POOL_SIZE", envswitch.Config, "Size of the benchmark BLS voter pool.")
+	envswitch.Declare("N42_BLS_COMMITTEE", envswitch.Config, "Committee size of the benchmark BLS voter pool.")
+	envswitch.Declare("N42_BLS_RAMP_BLOCKS", envswitch.Config, "Blocks over which the benchmark BLS pool ramps up.")
+	envswitch.Declare("N42_BLS_POOL_SEED", envswitch.Config, "Master seed of the benchmark BLS voter pool (hex).")
 }

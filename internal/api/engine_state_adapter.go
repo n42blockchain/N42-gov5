@@ -28,6 +28,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -1613,4 +1614,21 @@ func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block, receipts block.Receip
 	}
 	rawdb.WriteTxLookupEntries(tx, blk)
 	return hash, nil
+}
+
+func init() {
+	envswitch.Declare("N42_NO_READCACHE", envswitch.Diag, "Bypass the cross-block hashed read cache.")
+	envswitch.Declare("N42_GAS161", envswitch.Diag, "Gas diagnostics of the engine state adapter.")
+	envswitch.Declare("N42_EXECPROF", envswitch.Diag, "Profile execution of the eth-el engine adapter.")
+	envswitch.Declare("N42_TXERR", envswitch.Diag, "Log transaction errors of the engine state adapter.")
+	envswitch.Declare("N42_PEVM_BENCH", envswitch.BenchOnly, "Shadow-run the Block-STM parallel EVM on this block's transactions and time it.")
+	envswitch.Declare("N42_PEVM_LAZYCB", envswitch.BenchOnly, "Lazy callback of the PEVM bench.")
+	envswitch.Declare("N42_PEVM_WORKERS", envswitch.BenchOnly, "Worker count of the PEVM bench.")
+	envswitch.Declare("N42_DUMP_DIRTY", envswitch.Diag, "Dump the dirty set at N42_DUMP_BLOCK.")
+	envswitch.Declare("N42_DUMP_BLOCK", envswitch.Diag, "Block number the N42_DUMP_* switches act on.")
+	envswitch.Declare("N42_DUMP_DIRTY_STORAGE", envswitch.Diag, "Include storage in the N42_DUMP_DIRTY dump.")
+	envswitch.Declare("N42_DUMP_ADDR", envswitch.Diag, "Address list to dump at N42_DUMP_BLOCK.")
+	envswitch.Declare("N42_DUMP_SLOTS", envswitch.Diag, "Storage slot list to dump at N42_DUMP_BLOCK.")
+	envswitch.Declare("N42_FULLROOT", envswitch.Diag, "Compute the full state root (debug).")
+	envswitch.Declare("N42_NOCOMMIT", envswitch.Diag, "Skip the commit of the engine state adapter (debug).")
 }
