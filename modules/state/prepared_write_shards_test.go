@@ -183,6 +183,12 @@ func testPrepareStateWriteShardsMatchSerialOn(t *testing.T, pending, withPrefetc
 			t.Fatalf("shards %d: phases not recorded: %+v", shards, ph)
 		}
 		got.phases = PrepPhases{}
+		if got.shardLogs != nil {
+			// N42_STATE_WRITE_PREP_LAZY_LOG: the calls stay per shard; merged
+			// they are the serial log.
+			got.log = mergeShardLogs(got.shardLogs)
+			got.shardLogs, got.creates = nil, nil
+		}
 		if !reflect.DeepEqual(serial, got) {
 			t.Fatalf("shards %d: prepared write differs (fast %v/%v rows %d/%d acct %d/%d stor %d/%d counts %d,%d/%d,%d)",
 				shards, serial.fast, got.fast, len(serial.rows.rows), len(got.rows.rows), len(serial.acct), len(got.acct),
