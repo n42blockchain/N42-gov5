@@ -28,6 +28,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/conf"
 	prefixed "github.com/n42blockchain/N42/log/logrus-prefixed-formatter"
 	"github.com/sirupsen/logrus"
@@ -482,4 +483,9 @@ type Logger interface {
 // screen.
 type TerminalStringer interface {
 	TerminalString() string
+}
+
+func init() {
+	envswitch.Declare("N42_LOG_STDOUT", envswitch.Diag, "Log to stdout even when it is not a terminal.")
+	envswitch.Declare("N42_LOG_COLOR", envswitch.Diag, "Force ANSI colours in the log.")
 }
