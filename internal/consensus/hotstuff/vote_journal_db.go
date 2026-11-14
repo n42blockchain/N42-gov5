@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
@@ -125,4 +126,8 @@ func (s *Service) anchorVoteJournal() error {
 	return s.db.Update(s.ctx, func(tx kv.RwTx) error {
 		return SaveConsensusState(tx, st)
 	})
+}
+
+func init() {
+	envswitch.Declare("N42_VOTE_JOURNAL_SEPARATE", envswitch.Config, "Journal votes in their own store.")
 }

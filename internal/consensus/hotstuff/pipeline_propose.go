@@ -8,9 +8,9 @@
 package hotstuff
 
 import (
-	"os"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
@@ -40,7 +40,7 @@ import (
 //
 // Off by default; not at an epoch boundary (the next epoch is activated
 // from the committed reconfiguration, which v's CommitQC stages).
-var pipelinePropose = os.Getenv("N42_PIPELINE_PROPOSE") == "1"
+var pipelinePropose = envswitch.Is1("N42_PIPELINE_PROPOSE", envswitch.Consensus, "A node holding the PrepareQC of its current view proposes the next block early.")
 
 // SetPipelineProposeForTest switches pipelinePropose and returns the restore.
 func SetPipelineProposeForTest(on bool) func() {

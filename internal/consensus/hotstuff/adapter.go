@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +27,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -743,7 +743,7 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 // receive the same epoch-based rewards regardless of which consensus engine is active.
 // finalizeTrace (N42_FINALIZE_TRACE=1) logs what an empty block reads and the
 // root each side computes -- round 26's build-versus-verify diagnostic.
-var finalizeTrace = os.Getenv("N42_FINALIZE_TRACE") == "1"
+var finalizeTrace = envswitch.Is1("N42_FINALIZE_TRACE", envswitch.Diag, "Trace the finalize step of the HotStuff adapter.")
 
 func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	header, ok := iHeader.(*block.Header)

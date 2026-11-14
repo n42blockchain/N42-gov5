@@ -23,6 +23,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -1415,7 +1416,7 @@ func (s *Service) subscribeMessages() {
 // votes found no mapping for the leader -- the prepare vote's successful send
 // had just dropped it -- and went gossip only (E1N26 run 7). On by default;
 // N42_ROTOR_MAP_FIX=0 restores the old behaviour.
-var rotorMapFix = os.Getenv("N42_ROTOR_MAP_FIX") != "0"
+var rotorMapFix = envswitch.Not0("N42_ROTOR_MAP_FIX", envswitch.Config, "Default on: keep a validator's Rotor peer mapping after a direct send succeeds.")
 
 // SetRotorMapFixForTest switches rotorMapFix and returns the restore.
 func SetRotorMapFixForTest(on bool) func() {
@@ -1437,7 +1438,7 @@ func SetRotorMapFixForTest(on bool) func() {
 // Votes need no order among themselves -- the Rotor path already delivers
 // them concurrently and out of order with the gossip copies -- so they get
 // a goroutine each; every other message stays on the loop, in order.
-var gossipVoteLane = os.Getenv("N42_GOSSIP_VOTE_LANE") == "1"
+var gossipVoteLane = envswitch.Is1("N42_GOSSIP_VOTE_LANE", envswitch.Perf, "Hand gossiped votes to their own goroutines.")
 
 // gossipVoteLaneMax bounds the vote goroutines in flight; past it a vote is
 // processed on the loop as before, which is the backpressure.
@@ -1642,7 +1643,7 @@ func (s *Service) pacemakerLoop() {
 	}
 }
 
-var journalTrace = os.Getenv("N42_JOURNAL_TRACE") == "1"
+var journalTrace = envswitch.Is1("N42_JOURNAL_TRACE", envswitch.Diag, "Trace the vote journal.")
 
 // JournalVote implements VoteJournal: it makes a vote commitment durable before
 // the engine releases the vote. Called on the ENGINE goroutine with the engine
@@ -2476,3 +2477,7 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 // block is somehow re-proposed after the engine evicted it, the next re-gossip
 // re-notifies and re-populates the engine instead of being deduped into a stall.
 const maxNotifiedImports = 32
+
+func init() {
+	envswitch.Declare("N42_PROPOSAL_PUSH_GRACE_MS", envswitch.Config, "Grace before a proposal is pushed, in ms.")
+}

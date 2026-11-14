@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
@@ -516,4 +517,8 @@ func (em *EpochManager) trimHistorical() {
 func (em *EpochManager) String() string {
 	return fmt.Sprintf("EpochManager{epoch=%d, validators=%d, epochLength=%d}",
 		em.currentEpoch, em.currentSet.Len(), em.epochLength)
+}
+
+func init() {
+	envswitch.Declare("N42_HOTSTUFF_LEADER_TENURE", envswitch.Consensus, "Consecutive views one validator leads before the rotation moves on.")
 }

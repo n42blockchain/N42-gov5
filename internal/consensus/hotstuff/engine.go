@@ -10,10 +10,10 @@
 package hotstuff
 
 import (
-	"os"
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
@@ -27,7 +27,7 @@ import (
 // touched, no change to "hotstuff view timing"'s existing output.
 // docs/QS_BLOCK_TIME_BUDGET.md 6cb-6ce found ~450ms of an in-tenure cycle's
 // 520ms consensus round-trip unattributed to any named wait; this measures it.
-var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
+var contentionDiagEnabled = envswitch.Is1("N42_CONTENTION_DIAG", envswitch.Diag, "Contention stamps and lock-wait timing on the vote and seal paths (S14).")
 
 // commitJournalEarly is N42_COMMIT_JOURNAL_EARLY=1: take the Round 2 journal
 // write (an fsync) off the commit round's critical path. A follower whose
@@ -37,7 +37,7 @@ var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
 // commitment and counts its self commit vote only once that is durable
 // (voting.go). Votes are still never released before they are on disk.
 // Off by default.
-var commitJournalEarly = os.Getenv("N42_COMMIT_JOURNAL_EARLY") == "1"
+var commitJournalEarly = envswitch.Is1("N42_COMMIT_JOURNAL_EARLY", envswitch.Perf, "Take the round-2 journal write (an fsync) off the commit round trip.")
 
 // SetCommitJournalEarlyForTest switches commitJournalEarly and returns the
 // restore.

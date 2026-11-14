@@ -18,16 +18,16 @@
 package hotstuff
 
 import (
-	"os"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
 
 // voteDeferRetry is N42_VOTE_DEFER_RETRY=1. Off by default: the vote sites
 // then drop a "wait" vote exactly as before.
-var voteDeferRetry = os.Getenv("N42_VOTE_DEFER_RETRY") == "1"
+var voteDeferRetry = envswitch.Is1("N42_VOTE_DEFER_RETRY", envswitch.Consensus, "Retry a vote deferred for availability instead of dropping it.")
 
 // SetVoteDeferRetryForTest switches voteDeferRetry for engines constructed
 // afterwards and returns the restore.
@@ -275,7 +275,7 @@ func (e *ConsensusEngine) tryImportedVote(view ViewNumber) (bool, error) {
 // hash collision. Only their retention changes. The walk still allows a
 // block only when it reaches this node's committed block through such
 // links, and still refuses or waits exactly as before otherwise.
-var floorLagHeaders = os.Getenv("N42_FLOOR_LAG_HEADERS") == "1"
+var floorLagHeaders = envswitch.Is1("N42_FLOOR_LAG_HEADERS", envswitch.Consensus, "Keep parent links for the committed-floor walk in a window of floor-lag headers.")
 
 // SetFloorLagHeadersForTest switches floorLagHeaders for engines constructed
 // afterwards and returns the restore.

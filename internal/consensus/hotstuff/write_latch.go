@@ -21,10 +21,10 @@
 package hotstuff
 
 import (
-	"os"
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -38,7 +38,7 @@ import (
 // (N42_LEADER_WRITE_AFTER_JOURNAL_TIMEOUT_MS) is parsed ONLY on the miner
 // side (push_order.go): the miner is the side that owns the Wait call and
 // its deadline, so only it needs the value.
-var leaderWriteAfterJournalEnabled = os.Getenv("N42_LEADER_WRITE_AFTER_JOURNAL") == "1"
+var leaderWriteAfterJournalEnabled = envswitch.Is1("N42_LEADER_WRITE_AFTER_JOURNAL", envswitch.Config, "The leader writes the block after the vote journal is durable.")
 
 // writeLatch is a single-hash, single-fire signal with both fire-before-wait
 // and fire-after-wait semantics: a plain channel close gives both for free
