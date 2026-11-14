@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -126,4 +127,11 @@ func parseLeaderWriteAfterJournalTimeoutMs(v string) time.Duration {
 		}
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func init() {
+	envswitch.Declare("N42_PUSH_BEFORE_WRITE", envswitch.Perf, "The leader direct-pushes a sealed block before WriteBlock.")
+	envswitch.Declare("N42_PROPOSE_BEFORE_WRITE", envswitch.Perf, "With the early push on, the Proposal goes out before the block write.")
+	envswitch.Declare("N42_LEADER_WRITE_AFTER_JOURNAL", envswitch.Config, "The leader writes the block after the vote journal is durable.")
+	envswitch.Declare("N42_LEADER_WRITE_AFTER_JOURNAL_TIMEOUT_MS", envswitch.Config, "Timeout of the write-after-journal wait, in ms.")
 }

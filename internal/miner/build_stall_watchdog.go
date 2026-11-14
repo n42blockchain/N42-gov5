@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -42,7 +43,7 @@ import (
 // env switches (parallelFillEnabled's sibling N42_MINER_ADOPT_APPENDS,
 // N42_PUSH_BEFORE_WRITE): off by default, so a round that has not opted in
 // pays nothing -- no extra time.Now() calls, no timer allocation.
-var buildStallDiagEnabled = os.Getenv("N42_BUILD_STALL_DIAG") == "1"
+var buildStallDiagEnabled = envswitch.Is1("N42_BUILD_STALL_DIAG", envswitch.Diag, "Diagnostic mutex-wait timers on the build path and its watchdog.")
 
 // buildStallThreshold is how long a build may run past "commitWork begin"
 // without reaching its fill before the watchdog dumps every goroutine's

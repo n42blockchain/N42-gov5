@@ -28,6 +28,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal"
@@ -80,7 +81,7 @@ type framePick struct {
 // gateway), and nothing is recovered at build time.
 const EnvFrameFillHeld = "N42_FRAME_FILL_HELD"
 
-var frameFillHeld = os.Getenv(EnvFrameFillHeld) == "1"
+var frameFillHeld = envswitch.Is1(EnvFrameFillHeld, envswitch.Perf, "A build held on a gateway fills from the next frame's ready senders.")
 
 // frameHurryCap bounds the frames one build hurries.
 const frameHurryCap = 256
@@ -111,7 +112,7 @@ const (
 )
 
 var (
-	frameReadyPick  = os.Getenv(EnvFramePickReady) != "0"
+	frameReadyPick  = envswitch.Not0(EnvFramePickReady, envswitch.Perf, "Frame pick: wait for ready senders.")
 	frameReadyGrace = envFrameReadyGrace()
 )
 
@@ -612,4 +613,10 @@ func (w *worker) pruneLocalFrames(st *store.Store, inFlight func(types.Hash) boo
 	if len(drop) > 0 {
 		st.Remove(drop)
 	}
+}
+
+func init() {
+	envswitch.Declare(EnvFrameBlockMaxFrames, envswitch.Config, "Cap of frames in one block (default 1024).")
+	envswitch.Declare(EnvFrameReadyGraceMs, envswitch.Perf, "Grace before a frame is picked as ready, in ms.")
+	envswitch.Declare(EnvFrameBlockPoolGas, envswitch.Consensus, "Gas a frame block gives the transaction pool.")
 }

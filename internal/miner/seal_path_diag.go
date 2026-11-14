@@ -16,11 +16,12 @@
 package miner
 
 import (
-	"os"
 	"time"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
-var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
+var contentionDiagEnabled = envswitch.Is1("N42_CONTENTION_DIAG", envswitch.Diag, "Contention stamps and lock-wait timing on the vote and seal paths (S14).")
 
 // tMs returns t's unix-ms stamp, or 0 for a zero time.Time -- used
 // throughout "miner: seal path" so an unreached step (e.g. specParkedAt on

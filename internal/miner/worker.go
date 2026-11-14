@@ -42,6 +42,7 @@ import (
 	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -3136,4 +3137,8 @@ func (w *worker) parentExecutedResult(tx kv.Getter, header *block.Header) (rawdb
 		return rawdb.ExecutedResult{}, fmt.Errorf("parent %x of block %d unknown", parent[:8], header.Number.Uint64())
 	}
 	return internal.ExecutedResultOfHeader(w.chainConfig, tx, ph)
+}
+
+func init() {
+	envswitch.Declare("N42_MINER_PARALLEL_FILL", envswitch.Perf, "Block-STM fill of the builder.")
 }

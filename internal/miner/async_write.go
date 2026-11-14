@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
@@ -226,4 +227,8 @@ func (aw *asyncBlockWriter) Drain(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_LEADER_WRITE_ASYNC", envswitch.Perf, "The leader writes its sealed block asynchronously.")
 }

@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -34,7 +35,7 @@ import (
 // ±1/GasLimitBoundDivisor adjustment) so a throughput stress test can reach a high
 // gas limit immediately. Only sound when ALL validators run with the same env
 // (both this and the paired VerifyGaslimit relaxation must agree) — NOT for prod.
-var stressGasLimit = os.Getenv("N42_STRESS_GASLIMIT") == "1"
+var stressGasLimit = envswitch.Is1("N42_STRESS_GASLIMIT", envswitch.BenchOnly, "Lets the miner jump the block gas limit for a stress run.")
 
 func CalcGasLimit(parentGasLimit, desiredLimit uint64) uint64 {
 	if desiredLimit < params.MinGasLimit {
@@ -102,4 +103,8 @@ func fillGasBudget(headerGasLimit uint64) uint64 {
 		return fillGas
 	}
 	return headerGasLimit
+}
+
+func init() {
+	envswitch.Declare("N42_MINER_FILL_GAS", envswitch.BenchOnly, "Gas the builder fills a block up to, instead of the header's gas limit.")
 }
