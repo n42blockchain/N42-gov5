@@ -157,9 +157,15 @@ type lagPipeline struct {
 	taken *aheadExec
 	// parked: the next run's early snapshot, offered before its parent's
 	// hook and held until it (N42_LAG_EARLY_RETRY); parkedRun: that run,
-	// always p.next while parked is set.
-	parked     *earlySnap
-	parkedRun  *aheadExec
+	// always p.next (or, with N42_LAG_EARLY_DEPTH2, p.next2) while parked
+	// is set.
+	parked    *earlySnap
+	parkedRun *aheadExec
+	// early2: the next run's early snapshot stacked on early, published
+	// before early's hook; next2: the run of its child on it
+	// (N42_LAG_EARLY_DEPTH2). They become early/next at early's hook.
+	early2     *earlySnap
+	next2      *aheadExec
 	earlyHold  []types.Address
 	earlyStats lagEarlyStats
 	// older: the snapshots of the last written parents before parent,
@@ -383,6 +389,11 @@ type aheadExec struct {
 	es        *earlySnap
 	parPost   *state.PostState
 	parHeader *block.Header
+	// es2: the early snapshot under es this run reads and holds a reference
+	// on (a run on a stacked snapshot, N42_LAG_EARLY_DEPTH2); esCheck: the
+	// snapshot under es whose safety its take checks (es2, or the complete
+	// lower snapshot of a rotated es).
+	es2, esCheck *earlySnap
 	// pub: the early snapshot this run published (set on its own
 	// goroutine). The run holds one of its refs until its goroutine ends:
 	// its fold and receipts still read the executor the snapshot took.
@@ -715,6 +726,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		// After done: the run's readers are gone with it.
 		defer a.es.unref()
 	}
+	if a.es2 != nil {
+		defer a.es2.unref()
+	}
 	defer close(a.done)
 	defer func() { a.took = time.Since(a.started) }()
 	if since, avail := bc.lagQueuedTimes(a.blk.Hash()); !since.IsZero() {
@@ -748,6 +762,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		if es.start != nil {
 			layers = append(layers, es.start)
 		}
+		// A stacked snapshot: its parent's early layer and block-start
+		// writes, over the grandparent's complete post-state.
+		layers = append(layers, es.mid...)
 		layers = append(layers, es.below)
 	}
 	pendOf := par.header.ParentHash
@@ -799,8 +816,15 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	}
 	if ab := claim.prep.prefill(); ab != nil && ab.pf != nil {
 		if a.es != nil {
-			// Read below a block that is not even folded yet.
-			ab.pf, ab.skip = nil, "parent published early"
+			if !lagEarlyPrefillOn || !earlyPrefillUsable(ab, a.es) {
+				// Read below a block that is not even folded yet.
+				ab.pf, ab.skip = nil, "parent published early"
+			} else {
+				// N42_LAG_EARLY_PREFILL: read at or above the layer under
+				// the complete post-state at the stack's bottom.
+				a.pf = ab.pf
+				lagEarlyPrefillUsed.Add(1)
+			}
 		} else {
 			layers = bc.lagPipe.aheadBaseLayers(ab, par, layers)
 			a.pf = ab.pf
@@ -963,6 +987,9 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 	case a.es != nil && !a.es.ok.Load():
 		reason = "parent wrote after its fold outside the early hold set"
 		cnt = &p.discEarly
+	case a.esCheck != nil && !a.esCheck.ok.Load():
+		reason = "grandparent wrote after its fold outside the early hold set"
+		cnt = &p.discEarly
 	}
 	if reason != "" {
 		p.mu.Lock()
@@ -990,6 +1017,10 @@ func (bc *BlockChain) lagPipeTake(blk block.IBlock, number uint64) *aheadExec {
 func (p *lagPipeline) discardLocked(a *aheadExec, reason *atomic.Uint64) {
 	if es := p.early; es != nil && es.hash == a.blk.Hash() {
 		p.dropEarlyLocked()
+	}
+	if es := p.early2; es != nil && es.hash == a.blk.Hash() {
+		// a published the stacked snapshot (N42_LAG_EARLY_DEPTH2).
+		p.dropEarly2Locked()
 	}
 	p.dropParkedOfLocked(a)
 	p.discarded.Add(1)
@@ -1066,6 +1097,9 @@ func (bc *BlockChain) lagPipeSettle(h types.Hash, written bool) {
 	// the hook that switches it.
 	if es := p.early; es != nil && es.hash == h {
 		p.dropEarlyLocked()
+	}
+	if es := p.early2; es != nil && es.hash == h {
+		p.dropEarly2Locked()
 	}
 	if par := p.parent; par != nil && par.hash == h {
 		if written {

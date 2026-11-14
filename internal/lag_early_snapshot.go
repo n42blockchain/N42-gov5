@@ -99,6 +99,110 @@ func SetLagEarlyRetryForTest(on bool) func() {
 	return func() { lagEarlyRetryOn = prev }
 }
 
+// N42_LAG_EARLY_DEPTH2=1 (default off; only meaningful with
+// N42_LAG_EARLY_SNAPSHOT=1): a next run whose Block-STM ends before its
+// parent's root hook publishes its early snapshot on the parent's early
+// snapshot, and its child starts on it at once, instead of the offer being
+// refused (or parked until that hook, N42_LAG_EARLY_RETRY: run 67, 14% of
+// the early launches, 63 ms each, 8.9 ms a block).
+//
+// The stack stays bounded at two early layers: early(N) over early(N-1)
+// over complete(N-2) (mid holds early(N-1)'s layer and block-start writes,
+// below the complete post-state, parentEs early(N-1)). A snapshot is only
+// stacked on one whose own layers below are complete (stackBelow: a
+// snapshot that was itself stacked counts once its parent's complete
+// post-state is published, and is then read through that post-state), so a
+// third early layer never forms; an offer that would need one is parked
+// (with N42_LAG_EARLY_RETRY) or refused. Slots: early/next (the parent's
+// snapshot and the run on it, as before), early2/next2 (the stacked
+// snapshot and the run on it).
+//
+// What a run on the stack reads, and why each read is the serial value:
+//   - Each early layer answers from its block's final MVS versions, which
+//     its fold applies unchanged; reads of its hold set wait for its
+//     complete post-state; and every read that went to the layers below
+//     re-checks that layer's complete post-state afterwards (a store or
+//     tree value that already holds the block was read after its hook
+//     published it). Both layers do this independently, so a value of N-1
+//     or N reaching the reader through the store is caught by N-1's or N's
+//     own re-check.
+//   - What N-1 wrote after its fold outside its hold set makes N-1's
+//     snapshot unsafe at N-1's hook: the stacked snapshot and its run are
+//     dropped there (N's run read the same layer and is discarded at take,
+//     as before), and a run's take also checks the snapshot under its
+//     parent's (esCheck). What N wrote after its fold is checked at N's
+//     hook, as for a single layer.
+//   - Any drop of N-1's snapshot or of N's run (discard, reset, forget,
+//     failed or foreign import of N-1 or N) drops the stacked snapshot and
+//     its run with it (dropEarlyLocked, discardLocked, dropEarlyOfLocked,
+//     lagPipeSettle).
+//   - The pending-write layer is the one under complete(N-2): N-3's, the
+//     same relation as a single early layer one block lower.
+//
+// At N-1's hook the stack rotates: N's run becomes the spec, early2/next2
+// become early/next (early(N) now reads N-1 through its complete
+// post-state), and a parked offer of the new next run is stacked on
+// early(N). References: the stacked run holds one on each of the two
+// snapshots it reads until its goroutine ends; a run started on a rotated
+// snapshot reads the lower one only through its complete post-state and
+// holds none on it.
+var lagEarlyDepth2On = parseOptIn(os.Getenv("N42_LAG_EARLY_DEPTH2"))
+
+// SetLagEarlyDepth2ForTest switches N42_LAG_EARLY_DEPTH2 and returns the
+// restore.
+func SetLagEarlyDepth2ForTest(on bool) func() {
+	prev := lagEarlyDepth2On
+	lagEarlyDepth2On = on
+	return func() { lagEarlyDepth2On = prev }
+}
+
+// N42_LAG_EARLY_PREFILL=1 (default off): a run started on an early
+// snapshot keeps its base prefill (ahead_base_prefill.go) instead of
+// dropping it, when the prefill was read on the tree at or above the parent
+// of the complete post-state at the bottom of the run's layers.
+//
+// Run 67 (B2): 872 of 994 early launches dropped a prefill read on the tree
+// at the grandparent (N-2, the complete layer itself), so their block-start
+// calls read 3 keys through the tree's lock (2.4 ms mean, 11 ms p90, behind
+// a root's apply) and every worker read through the tree; hook launches,
+// which keep theirs, answer those reads from the prefill (0.4 ms).
+//
+// Why the values are right: the prefill holds, for each key, the tree's
+// value in the state of a block h of the child's own chain with at <= h <=
+// the child's parent (its fill checks that only roots of that chain ran
+// while it read). Under the layers -- early snapshots, block-start writes,
+// the complete post-state of block C, the pending write of C-1 -- a base
+// value of state h is the serial one when C-1 <= h <= C, the layers
+// answering every key C (and an unwritten C-1) changed: exactly the live
+// tree's case. When h is an early layer's block E, the value was read after
+// E's root applied, so after E's hook published its complete post-state;
+// every early read re-checks that post-state after reading the layers below
+// it (state/early_post_state.go), so such a read is answered from E's
+// complete post-state, as a live tree read that saw E is. Below C-1 a layer
+// would be missing: the prefill is dropped.
+var lagEarlyPrefillOn = parseOptIn(os.Getenv("N42_LAG_EARLY_PREFILL"))
+
+// SetLagEarlyPrefillForTest switches N42_LAG_EARLY_PREFILL and returns the
+// restore.
+func SetLagEarlyPrefillForTest(on bool) func() {
+	prev := lagEarlyPrefillOn
+	lagEarlyPrefillOn = on
+	return func() { lagEarlyPrefillOn = prev }
+}
+
+// lagEarlyPrefillUsed counts runs on an early snapshot that kept their base
+// prefill (process-wide).
+var lagEarlyPrefillUsed atomic.Uint64
+
+// earlyPrefillUsable reports whether a run on es may read through the base
+// prefill ab (see N42_LAG_EARLY_PREFILL).
+func earlyPrefillUsable(ab *aheadBase, es *earlySnap) bool {
+	if ab == nil || ab.pf == nil || es == nil || es.below == nil || es.belowNum == 0 {
+		return false
+	}
+	return ab.at+1 >= es.belowNum && ab.at <= es.number
+}
+
 // lagEarlyAfterFoldForTest runs on a block whose early snapshot was
 // published, right after its fold (tests: a write after the fold).
 var lagEarlyAfterFoldForTest func(ibs *state.IntraBlockState, txs []*transaction.Transaction)
@@ -128,8 +232,18 @@ type earlySnap struct {
 	start       *state.PostState
 	below       *state.PostState
 	belowParent types.Hash
-	hold        []types.Address
-	post        *state.PostState // the early layer itself
+	// belowNum: the height of below's block.
+	belowNum uint64
+	// mid, parentEs (N42_LAG_EARLY_DEPTH2): a snapshot published while its
+	// block's parent had not hooked sits on the parent's early snapshot:
+	// mid is that snapshot's layer and its block-start writes, between
+	// start and below (below then the grandparent's complete post-state),
+	// parentEs the parent's snapshot (its ok is checked at take; no
+	// reference: readers hold their own). Nil otherwise.
+	mid      []*state.PostState
+	parentEs *earlySnap
+	hold     []types.Address
+	post     *state.PostState // the early layer itself
 
 	full    atomic.Pointer[state.PostState]
 	done    chan struct{}
@@ -190,6 +304,7 @@ func (es *earlySnap) release() {
 	}
 	es.mvs.Store(nil)
 	es.start, es.below = nil, nil
+	es.mid, es.parentEs = nil, nil
 	earlySnapsLive.Add(-1)
 }
 
@@ -363,6 +478,73 @@ func (es *earlySnap) WaitFull() (*state.PostState, error) {
 type lagEarlyStats struct {
 	published, launched, used, unsafe, dropped atomic.Uint64
 	parked, parkedPublished, parkedDropped     atomic.Uint64
+	// stacked, stackedLaunched: snapshots published on an early snapshot
+	// and runs started on them (N42_LAG_EARLY_DEPTH2); each also counts in
+	// published / launched.
+	stacked, stackedLaunched atomic.Uint64
+}
+
+// stackBelow returns what a snapshot stacked on es (its block's parent's
+// early snapshot, not hooked yet) has under its own block-start writes: es's
+// layer and block-start writes (mid), then es's own layers below collapsed
+// to one complete post-state. ok is false when that is not possible: es
+// sits on an early snapshot whose complete post-state is not published (a
+// third early layer) or that was unsafe or dropped.
+func (es *earlySnap) stackBelow() (mid []*state.PostState, below *state.PostState, belowParent types.Hash, belowNum uint64, ok bool) {
+	if es.post == nil {
+		return nil, nil, types.Hash{}, 0, false
+	}
+	mid = []*state.PostState{es.post}
+	if es.start != nil {
+		mid = append(mid, es.start)
+	}
+	if pe := es.parentEs; pe != nil {
+		f := pe.Full()
+		if f == nil || !pe.ok.Load() || pe.header == nil {
+			return nil, nil, types.Hash{}, 0, false
+		}
+		return mid, f, pe.header.ParentHash, pe.number, true
+	}
+	if es.below == nil {
+		return nil, nil, types.Hash{}, 0, false
+	}
+	return mid, es.below, es.belowParent, es.belowNum, true
+}
+
+// stackLocked fills es (its store, start and hold already set) as a
+// snapshot stacked on p.early and publishes it in the early2 slot (p.mu
+// held); false when p.early cannot carry it.
+func (p *lagPipeline) stackLocked(es *earlySnap) bool {
+	pe := p.early
+	if pe == nil || p.early2 != nil || p.next2 != nil || pe.dead.Load() || pe.full.Load() != nil {
+		return false
+	}
+	mid, below, bp, bn, ok := pe.stackBelow()
+	if !ok {
+		return false
+	}
+	es.mid, es.below, es.belowParent, es.belowNum, es.parentEs = mid, below, bp, bn, pe
+	es.at = time.Now()
+	es.hold = append(es.hold, p.earlyHold...)
+	es.post = state.NewEarlyPostState(es)
+	p.early2 = es
+	p.earlyStats.published.Add(1)
+	p.earlyStats.stacked.Add(1)
+	return true
+}
+
+// dropEarly2Locked drops the stacked snapshot and the run on it (p.mu
+// held); a parked offer of that run goes with it.
+func (p *lagPipeline) dropEarly2Locked() {
+	if a := p.next2; a != nil {
+		p.next2 = nil
+		p.discardLocked(a, &p.discSuperseded)
+	}
+	if es := p.early2; es != nil {
+		p.early2 = nil
+		p.earlyStats.dropped.Add(1)
+		es.end(nil, false)
+	}
 }
 
 // lagPipeEarly publishes the early snapshot of a's block (a is the spec or
@@ -372,6 +554,38 @@ type lagEarlyStats struct {
 func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, start *state.PostState, free func()) bool {
 	p := &bc.lagPipe
 	p.mu.Lock()
+	if lagEarlyDepth2On && p.next == a && a.es != nil && p.early == a.es {
+		// a still reads its parent's early snapshot: stack a's on it.
+		hdr := a.blk.Header().(*block.Header)
+		es := &earlySnap{hash: a.blk.Hash(), number: hdr.Number.Uint64(), header: hdr,
+			numTxs: numTxs, start: start, done: make(chan struct{}), free: free}
+		es.mvs.Store(mvs)
+		es.hold = deferredFeeRecipients(bc.chainConfig, hdr)
+		if p.stackLocked(es) {
+			es.refs.Store(2)
+			noteEarlySnap(es)
+			a.pub = es
+			p.mu.Unlock()
+			bc.lagPipeLaunchEarly(lagLaunchHook)
+			return true
+		}
+	}
+	if lagEarlyDepth2On && lagEarlyRetryOn && p.next2 == a && a.es != nil && p.early2 == a.es && p.parked == nil {
+		// a reads a stacked snapshot: a third early layer. Park its offer
+		// until the stack rotates (earlyPublishLocked), then stack it.
+		hdr := a.blk.Header().(*block.Header)
+		es := &earlySnap{hash: a.blk.Hash(), number: hdr.Number.Uint64(), header: hdr,
+			numTxs: numTxs, start: start, done: make(chan struct{}), free: free}
+		es.mvs.Store(mvs)
+		es.hold = deferredFeeRecipients(bc.chainConfig, hdr)
+		es.refs.Store(2)
+		noteEarlySnap(es)
+		a.pub = es
+		p.parked, p.parkedRun = es, a
+		p.earlyStats.parked.Add(1)
+		p.mu.Unlock()
+		return true
+	}
 	if lagEarlyRetryOn && p.next == a && a.es != nil && p.early == a.es && p.parked == nil {
 		// a still reads its parent's early snapshot: the parent has not
 		// hooked, and a snapshot of a's block would have to sit on an early
@@ -406,7 +620,7 @@ func (bc *BlockChain) lagPipeEarly(a *aheadExec, mvs *parallel.MVS, numTxs int, 
 	}
 	es := &earlySnap{hash: a.blk.Hash(), number: hdr.Number.Uint64(), header: hdr, at: time.Now(),
 		numTxs: numTxs, start: start, below: below, belowParent: a.parHeader.ParentHash,
-		done: make(chan struct{}), free: free}
+		belowNum: a.parHeader.Number.Uint64(), done: make(chan struct{}), free: free}
 	es.mvs.Store(mvs)
 	es.hold = append(deferredFeeRecipients(bc.chainConfig, hdr), p.earlyHold...)
 	es.post = state.NewEarlyPostState(es)
@@ -438,6 +652,7 @@ func (p *lagPipeline) publishParkedLocked(a *aheadExec, full *state.PostState) b
 		return false
 	}
 	es.below = full
+	es.belowNum = es.number - 1
 	es.at = time.Now()
 	es.hold = append(es.hold, p.earlyHold...)
 	es.post = state.NewEarlyPostState(es)
@@ -468,28 +683,49 @@ func (bc *BlockChain) lagPipeLaunchEarly(by int) {
 	}
 	p := &bc.lagPipe
 	p.mu.Lock()
-	es := p.early
-	if es == nil || p.next != nil || es.dead.Load() || es.full.Load() != nil {
-		p.mu.Unlock()
-		return
+	var a, a2 *aheadExec
+	var par, par2 *lagPipeParent
+	if es := p.early; es != nil && p.next == nil && !es.dead.Load() && es.full.Load() == nil {
+		if child := bc.lagQueuedChild(es.hash); child != nil {
+			par = &lagPipeParent{hash: es.hash, number: es.number, header: es.header, post: es.post, hookAt: es.at, launched: true}
+			a = p.newAheadLocked(child, par, by)
+			a.es = es
+			// A rotated snapshot's lower one is complete and was safe:
+			// read through its complete post-state, checked again at take.
+			a.esCheck = es.parentEs
+			es.refs.Add(1)
+			p.next = a
+			p.earlyStats.launched.Add(1)
+		}
 	}
-	child := bc.lagQueuedChild(es.hash)
-	if child == nil {
-		p.mu.Unlock()
-		return
+	if es := p.early2; lagEarlyDepth2On && es != nil && p.next2 == nil && !es.dead.Load() && es.full.Load() == nil &&
+		es.parentEs != nil && es.parentEs == p.early {
+		if child := bc.lagQueuedChild(es.hash); child != nil {
+			par2 = &lagPipeParent{hash: es.hash, number: es.number, header: es.header, post: es.post, hookAt: es.at, launched: true}
+			a2 = p.newAheadLocked(child, par2, by)
+			// The run reads both snapshots' stores: one reference on each
+			// (the lower one is published, so it holds its publisher's).
+			a2.es, a2.es2, a2.esCheck = es, es.parentEs, es.parentEs
+			es.refs.Add(1)
+			es.parentEs.refs.Add(1)
+			p.next2 = a2
+			p.earlyStats.launched.Add(1)
+			p.earlyStats.stackedLaunched.Add(1)
+		}
 	}
-	par := &lagPipeParent{hash: es.hash, number: es.number, header: es.header, post: es.post, hookAt: es.at, launched: true}
-	a := p.newAheadLocked(child, par, by)
-	a.es = es
-	es.refs.Add(1)
-	p.next = a
-	p.earlyStats.launched.Add(1)
 	p.mu.Unlock()
-	go bc.runAhead(a, par)
+	if a != nil {
+		go bc.runAhead(a, par)
+	}
+	if a2 != nil {
+		go bc.runAhead(a2, par2)
+	}
 }
 
 // dropEarlyLocked drops the early snapshot and its next run (p.mu held).
 func (p *lagPipeline) dropEarlyLocked() {
+	// The stacked snapshot sits on early, its run on both.
+	p.dropEarly2Locked()
 	if a := p.next; a != nil {
 		p.next = nil
 		p.discardLocked(a, &p.discSuperseded)
@@ -508,6 +744,10 @@ func (p *lagPipeline) dropEarlyLocked() {
 func (p *lagPipeline) dropEarlyOfLocked(hash types.Hash) {
 	if (p.early != nil && p.early.hash == hash) || (p.next != nil && p.next.blk.Hash() == hash) {
 		p.dropEarlyLocked()
+		return
+	}
+	if (p.early2 != nil && p.early2.hash == hash) || (p.next2 != nil && p.next2.blk.Hash() == hash) {
+		p.dropEarly2Locked()
 	}
 }
 
@@ -539,6 +779,10 @@ func (p *lagPipeline) earlyPublishLocked(h types.Hash, post *state.PostState, wr
 		p.earlyStats.unsafe.Add(1)
 		log.Debug("lag pipeline: early snapshot missed a write after the fold", "number", es.number, "hash", h.Hex()[:12], "written", len(written))
 	}
+	if !ok {
+		// The stacked snapshot and its run read h's unsafely too.
+		p.dropEarly2Locked()
+	}
 	p.early = nil
 	es.end(post, ok)
 	if a := p.next; a != nil {
@@ -553,12 +797,37 @@ func (p *lagPipeline) earlyPublishLocked(h types.Hash, post *state.PostState, wr
 				p.dropParkedOfLocked(a)
 				return false
 			}
+			if es2 := p.early2; es2 != nil {
+				// N42_LAG_EARLY_DEPTH2: a's stacked snapshot and the run on
+				// it move down; a parked offer of that run is stacked now.
+				p.early, p.next = es2, p.next2
+				p.early2, p.next2 = nil, nil
+				p.publishParked2Locked()
+				return true
+			}
 			return p.publishParkedLocked(a, post)
 		}
 		// Drops a's parked snapshot with it.
 		p.discardLocked(a, &p.discSuperseded)
 	}
 	return false
+}
+
+// publishParked2Locked stacks the parked offer of the next run on the early
+// snapshot it reads, just rotated down (N42_LAG_EARLY_DEPTH2, p.mu held);
+// it is dropped when the stack cannot carry it.
+func (p *lagPipeline) publishParked2Locked() {
+	es := p.parked
+	if es == nil || p.next == nil || p.parkedRun != p.next || p.next.es != p.early {
+		return
+	}
+	p.parked, p.parkedRun = nil, nil
+	if !p.stackLocked(es) {
+		p.earlyStats.parkedDropped.Add(1)
+		es.end(nil, false)
+		return
+	}
+	p.earlyStats.parkedPublished.Add(1)
 }
 
 func (es *earlySnap) holds(addr types.Address) bool {
@@ -594,6 +863,9 @@ func (bc *BlockChain) lagEarlyLogFields() []interface{} {
 	if lagEarlyRetryOn {
 		f = append(f, "earlyParked", s.parked.Load(), "earlyParkedPublished", s.parkedPublished.Load(),
 			"earlyParkedDropped", s.parkedDropped.Load())
+	}
+	if lagEarlyDepth2On {
+		f = append(f, "earlyStacked", s.stacked.Load(), "earlyStackedLaunch", s.stackedLaunched.Load())
 	}
 	return f
 }
