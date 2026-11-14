@@ -1672,12 +1672,13 @@ func (s *Service) JournalVote(state *ConsensusState) error {
 		}
 		return nil
 	}
+	jctx := kv.WithRwTag(s.ctx, "hsVote")
 	if !journalTrace {
-		return db.Update(s.ctx, write)
+		return db.Update(jctx, write)
 	}
 	start := time.Now()
 	var acquire, save time.Duration
-	err := db.Update(s.ctx, func(tx kv.RwTx) error {
+	err := db.Update(jctx, func(tx kv.RwTx) error {
 		acquire = time.Since(start)
 		t := time.Now()
 		err := write(tx)
@@ -1691,9 +1692,17 @@ func (s *Service) JournalVote(state *ConsensusState) error {
 	return err
 }
 
-// persistState saves the current consensus state to the database using the
-// service context.
-func (s *Service) persistState() { s.persistStateCtx(s.ctx) }
+// persistState saves the current consensus state using the service context:
+// the steady-state persist (after a deferred commit-to-canonical, and every
+// persistInterval views), which N42_HS_STATE_JOURNAL routes to the vote
+// journal (state_journal.go).
+func (s *Service) persistState() {
+	h := s.newStateHook()
+	if h == nil {
+		return
+	}
+	s.persistHookTo(s.ctx, s.steadyStateDB(h), h)
+}
 
 // persistStateCtx is persistState with an explicit context. Shutdown must pass
 // a live one: MDBX refuses to open a write transaction on a cancelled context,
@@ -1711,6 +1720,8 @@ type stateHook struct {
 	run  func(tx kv.RwTx) error
 	view uint64
 	done bool // set by run on success; read only after the transaction returns
+	// staged: the snapshot carries a staged validator set (written with it).
+	staged bool
 }
 
 // stateHookCommitted reports whether the snapshot reached durable storage in
@@ -1738,7 +1749,7 @@ func (s *Service) newStateHook() *stateHook {
 	// to close.
 	state := ce.SnapshotState()
 	stagedEpoch, stagedVals, stagedF, hasStaged := ce.StagedEpochInfoSafe()
-	h := &stateHook{view: state.View}
+	h := &stateHook{view: state.View, staged: hasStaged}
 	h.run = func(tx kv.RwTx) error {
 		if err := SaveConsensusState(tx, state); err != nil {
 			return err
@@ -1761,7 +1772,16 @@ func (s *Service) persistStateCtx(ctx context.Context) {
 	if h == nil {
 		return
 	}
-	if err := s.db.Update(ctx, h.run); err != nil {
+	s.persistHookTo(ctx, s.db, h)
+}
+
+// persistHookTo writes h's snapshot to db in a transaction of its own.
+func (s *Service) persistHookTo(ctx context.Context, db kv.RwDB, h *stateHook) {
+	tag := "hsState"
+	if db != s.db {
+		tag = "hsStateJournal"
+	}
+	if err := db.Update(kv.WithRwTag(ctx, tag), h.run); err != nil {
 		log.Warn("hotstuff: failed to persist state", "err", err)
 		return
 	}
