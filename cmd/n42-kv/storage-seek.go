@@ -26,11 +26,12 @@ func cfg(d kv.TableCfg) kv.TableCfg {
 	return d
 }
 
-func main() {
-	dbPath := flag.String("db", "", "n42 datadir")
-	addrHex := flag.String("addr", "", "20-byte address (hex)")
-	slotHex := flag.String("slot", "", "32-byte slot (hex)")
-	flag.Parse()
+func runStorageSeek(args []string) {
+	fs := flag.NewFlagSet("n42-kv storage-seek", flag.ExitOnError)
+	dbPath := fs.String("db", "", "n42 datadir")
+	addrHex := fs.String("addr", "", "20-byte address (hex)")
+	slotHex := fs.String("slot", "", "32-byte slot (hex)")
+	fs.Parse(args)
 
 	addr, err := hex.DecodeString(strings.TrimPrefix(*addrHex, "0x"))
 	if err != nil || len(addr) != 20 {

@@ -19,7 +19,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func n42Cfg(d kv.TableCfg) kv.TableCfg {
+func stoProbeN42Cfg(d kv.TableCfg) kv.TableCfg {
 	d["Storage"] = kv.TableCfgItem{
 		Flags:                     kv.DupSort,
 		AutoDupSortKeysConversion: true,
@@ -29,12 +29,13 @@ func n42Cfg(d kv.TableCfg) kv.TableCfg {
 	return d
 }
 
-func main() {
-	dir := flag.String("n42", `D:/N42-eth1177-test/chaindata`, "n42 chaindata path")
-	addr := flag.String("addr", "0x0000000000000000000000000000000000000001", "address")
-	slot := flag.String("slot", "0x0000000000000000000000000000000000000000000000000000000000000000", "32-byte slot key (hex)")
-	count := flag.Int("count", 5, "how many entries to seek from addr (for sweep mode)")
-	flag.Parse()
+func runStoProbe(args []string) {
+	fs := flag.NewFlagSet("n42-kv sto-probe", flag.ExitOnError)
+	dir := fs.String("n42", `D:/N42-eth1177-test/chaindata`, "n42 chaindata path")
+	addr := fs.String("addr", "0x0000000000000000000000000000000000000001", "address")
+	slot := fs.String("slot", "0x0000000000000000000000000000000000000000000000000000000000000000", "32-byte slot key (hex)")
+	count := fs.Int("count", 5, "how many entries to seek from addr (for sweep mode)")
+	fs.Parse(args)
 
 	addrStripped := *addr
 	if len(addrStripped) >= 2 && addrStripped[:2] == "0x" {
@@ -55,7 +56,7 @@ func main() {
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).Path(*dir).Label(kv.ChainDB).
 		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(n42Cfg).Open(context.Background())
+		WithTableCfg(stoProbeN42Cfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

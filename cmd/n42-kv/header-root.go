@@ -18,11 +18,12 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
-func main() {
-	dir := flag.String("dir", "", "MDBX chaindata dir")
-	block := flag.Uint64("block", 0, "block number")
-	mapsizeGB := flag.Int("mapsize-gb", 4096, "mapsize cap")
-	flag.Parse()
+func runHeaderRoot(args []string) {
+	fs := flag.NewFlagSet("n42-kv header-root", flag.ExitOnError)
+	dir := fs.String("dir", "", "MDBX chaindata dir")
+	block := fs.Uint64("block", 0, "block number")
+	mapsizeGB := fs.Int("mapsize-gb", 4096, "mapsize cap")
+	fs.Parse(args)
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "--dir required")
 		os.Exit(2)

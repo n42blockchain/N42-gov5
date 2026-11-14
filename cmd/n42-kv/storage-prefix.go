@@ -28,11 +28,12 @@ func tableCfg(d kv.TableCfg) kv.TableCfg {
 	return d
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\N42-1703m\chain\mdbx.dat`, "n42 MDBX path (file or dir)")
-	addrHex := flag.String("addr", "", "20-byte address (hex)")
-	max := flag.Int("max", 50, "max rows to print")
-	flag.Parse()
+func runStoragePrefix(args []string) {
+	fs := flag.NewFlagSet("n42-kv storage-prefix", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\N42-1703m\chain\mdbx.dat`, "n42 MDBX path (file or dir)")
+	addrHex := fs.String("addr", "", "20-byte address (hex)")
+	max := fs.Int("max", 50, "max rows to print")
+	fs.Parse(args)
 
 	addr, err := hex.DecodeString(strings.TrimPrefix(*addrHex, "0x"))
 	if err != nil || len(addr) != 20 {

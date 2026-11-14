@@ -23,7 +23,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func n42Cfg(d kv.TableCfg) kv.TableCfg {
+func acctProbeN42Cfg(d kv.TableCfg) kv.TableCfg {
 	d["Account"] = kv.TableCfgItem{}
 	d["Storage"] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
@@ -69,11 +69,12 @@ func decodeRethAccount(v []byte) (nonce uint64, balance uint256.Int, codeHash ty
 	return nonce, balance, codeHash, true
 }
 
-func main() {
-	addr := flag.String("addr", "0x75193c3235b386DD7097E113b266633440a7da91", "address to probe")
-	n42Dir := flag.String("n42", `D:/N42-eth1177-test/chaindata`, "n42 chaindata path")
-	rethDir := flag.String("reth", `D:/reth2k/db`, "reth db path")
-	flag.Parse()
+func runAcctProbe(args []string) {
+	fs := flag.NewFlagSet("n42-kv acct-probe", flag.ExitOnError)
+	addr := fs.String("addr", "0x75193c3235b386DD7097E113b266633440a7da91", "address to probe")
+	n42Dir := fs.String("n42", `D:/N42-eth1177-test/chaindata`, "n42 chaindata path")
+	rethDir := fs.String("reth", `D:/reth2k/db`, "reth db path")
+	fs.Parse(args)
 
 	if len(*addr) >= 2 && (*addr)[:2] == "0x" {
 		*addr = (*addr)[2:]
@@ -83,7 +84,7 @@ func main() {
 	logger := log.New()
 	n42DB, err := mdbx.NewMDBX(logger).Path(*n42Dir).Label(kv.ChainDB).
 		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(n42Cfg).Open(context.Background())
+		WithTableCfg(acctProbeN42Cfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open n42:", err)
 		os.Exit(1)

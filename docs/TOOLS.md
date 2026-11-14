@@ -94,3 +94,17 @@ Code-table inspection and repair tools (`copy` and `fix` write). `copy` takes po
 | `copy-code` | `n42-code copy` | copy the Code table from one MDBX to another (writes; positional --src/--dst) |
 | `code-fix` | `n42-code fix` | detect and unwrap reth LegacyAnalyzedBytecode wrappers in the Code table (writes) |
 | `n42-check-code` | `n42-code check-hashed` | verify every HashedAccount codeHash has a Code-table entry |
+
+## n42-kv
+
+Spot-check readers for N42 PlainState / Storage / header MDBX data.
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `read-account` | `n42-kv account` | dump an account record from N42 PlainState (nonce/balance/codeHash/code length) |
+| `read-storage` | `n42-kv storage` | print current value of (address, slot) pairs in a Plain Account/Storage MDBX |
+| `read-storage-prefix` | `n42-kv storage-prefix` | dump every Storage row whose key starts with a 20-byte address |
+| `read-storage-seek` | `n42-kv storage-seek` | seek to an (addr, slot) key in Storage and print existence and value |
+| `read-header-root` | `n42-kv header-root` | print header.Root (stateRoot) of a block from an MDBX chaindata |
+| `acct-probe` | `n42-kv acct-probe` | dump one address's account state from N42 and reth side by side |
+| `sto-probe` | `n42-kv sto-probe` | read one storage slot from N42's Storage table (DupSort+AutoConv) |

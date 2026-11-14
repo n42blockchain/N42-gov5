@@ -16,10 +16,11 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func main() {
-	dir := flag.String("dir", `d:\n42-eth037`, "datadir")
-	addrHex := flag.String("addr", "0000000000007f150bd6f54c40a34d7c3d5e9f56", "address (hex, 20 bytes)")
-	flag.Parse()
+func runAccount(args []string) {
+	fs := flag.NewFlagSet("n42-kv account", flag.ExitOnError)
+	dir := fs.String("dir", `d:\n42-eth037`, "datadir")
+	addrHex := fs.String("addr", "0000000000007f150bd6f54c40a34d7c3d5e9f56", "address (hex, 20 bytes)")
+	fs.Parse(args)
 
 	addr, err := hex.DecodeString(*addrHex)
 	if err != nil || len(addr) != 20 {

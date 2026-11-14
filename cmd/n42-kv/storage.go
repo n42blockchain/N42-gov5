@@ -20,11 +20,12 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func main() {
-	dir := flag.String("dir", `d:\n42-eth037`, "datadir (MDBX path)")
-	addrHex := flag.String("addr", "c02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "20-byte address (hex)")
-	slotHex := flag.String("slot", "fb19a963956c9cb662dd3ae48988c4b90766df71ea130109840abe0a1b23dba8", "32-byte slot (hex)")
-	flag.Parse()
+func runStorage(args []string) {
+	fs := flag.NewFlagSet("n42-kv storage", flag.ExitOnError)
+	dir := fs.String("dir", `d:\n42-eth037`, "datadir (MDBX path)")
+	addrHex := fs.String("addr", "c02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "20-byte address (hex)")
+	slotHex := fs.String("slot", "fb19a963956c9cb662dd3ae48988c4b90766df71ea130109840abe0a1b23dba8", "32-byte slot (hex)")
+	fs.Parse(args)
 
 	addr, err := hex.DecodeString(*addrHex)
 	if err != nil || len(addr) != 20 {
