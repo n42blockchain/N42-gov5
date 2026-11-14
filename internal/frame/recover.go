@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame/store"
@@ -385,4 +386,8 @@ func ApplySendersDeclared(txs []*transaction.Transaction, ss *store.Senders) (in
 		n++
 	}
 	return n, declared
+}
+
+func init() {
+	envswitch.Declare(EnvRecoverWorkers, envswitch.Perf, "Size of the admission sender-recovery pool (default 8).")
 }

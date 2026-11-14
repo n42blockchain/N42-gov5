@@ -19,11 +19,11 @@ package frame
 import (
 	"errors"
 	"math"
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -55,7 +55,9 @@ const EnvTxDecodePool = "N42_TX_DECODE_POOL"
 
 var txDecodePoolOn atomic.Bool
 
-func init() { txDecodePoolOn.Store(os.Getenv(EnvTxDecodePool) != "0") }
+func init() {
+	txDecodePoolOn.Store(envswitch.Not0(EnvTxDecodePool, envswitch.Perf, "Frame transactions decode into per-frame slabs."))
+}
 
 // TxDecodePoolEnabled reports N42_TX_DECODE_POOL.
 func TxDecodePoolEnabled() bool { return txDecodePoolOn.Load() }
