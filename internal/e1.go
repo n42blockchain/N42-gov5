@@ -264,13 +264,14 @@ func (bc *BlockChain) e1LightImport(b *block.Block, tm *e1ImportTiming) (done bo
 		<-fa.done
 		tm.framesWait = time.Since(tWait)
 		framesStored = fa.err == nil
+		tm.ahead = fa
 	}
 	var td *uint256.Int
 	tLock := time.Now()
 	bc.lock.Lock()
 	tm.lockWait = time.Since(tLock)
 	tUpdate := time.Now()
-	err = bc.ChainDB.Update(ctx, func(tx kv.RwTx) error {
+	err = bc.ChainDB.Update(kv.WithRwTag(ctx, "lightImport"), func(tx kv.RwTx) error {
 		if !stored {
 			ptd, err := rawdb.ReadTd(tx, b.ParentHash(), n-1)
 			if err != nil {
@@ -512,6 +513,8 @@ func (bc *BlockChain) e1HasResult(hash types.Hash) bool {
 // diagnosis: light nodes mark frames committed 10-20 blocks late).
 type e1ImportTiming struct {
 	decode, framesWait, lockWait, update, persist time.Duration
+	// ahead: the block's frames-ahead write, when it waited for one.
+	ahead *e1AheadWrite
 }
 
 // e1LastImportEnd is when the previous light import finished (unix ns).
@@ -531,9 +534,18 @@ func e1LogImportTiming(b *block.Block, n uint64, q *lagQueued, queued int, commi
 	if prev != 0 {
 		gapUs = (now.UnixNano() - prev) / 1000
 	}
-	log.Info("e1 light: import timing", "n", n, "txs", len(body.Txs), "queued", queued,
-		"behindCommitted", int64(committedNum)-int64(n), "queueAgeUs", now.Sub(q.since).Microseconds(),
+	fields := []interface{}{"n", n, "txs", len(body.Txs), "queued", queued,
+		"behindCommitted", int64(committedNum) - int64(n), "queueAgeUs", now.Sub(q.since).Microseconds(),
 		"gapUs", gapUs, "importUs", importDur.Microseconds(), "decodeUs", tm.decode.Microseconds(), "framesWaitUs", tm.framesWait.Microseconds(),
 		"lockWaitUs", tm.lockWait.Microseconds(), "updateUs", tm.update.Microseconds(),
-		"persistUs", tm.persist.Microseconds(), "doneUs", doneDur.Microseconds())
+		"persistUs", tm.persist.Microseconds(), "doneUs", doneDur.Microseconds(), "tMs", now.UnixMilli()}
+	if a := tm.ahead; a != nil {
+		// The frames-ahead batch this block waited for: its size, when it
+		// ran, and the frame log write's split (mutex wait, append with its
+		// data sync, index, segment roll).
+		fields = append(fields, "aheadBlocks", a.batchBlocks, "aheadStartTMs", a.startTMs, "aheadEndTMs", a.endTMs,
+			"aheadLockUs", a.times.LockWait.Microseconds(), "aheadIoUs", a.times.IO.Microseconds(),
+			"aheadIdxUs", a.times.Index.Microseconds(), "aheadRollUs", a.times.Roll.Microseconds())
+	}
+	log.Info("e1 light: import timing", fields...)
 }

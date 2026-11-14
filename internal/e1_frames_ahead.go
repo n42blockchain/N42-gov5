@@ -42,6 +42,11 @@ type e1AheadWrite struct {
 	raws   [][]byte
 	done   chan struct{}
 	err    error
+	// The batch that wrote it (valid once done closed): its blocks, its
+	// start and end (unix ms) and the frame log write's split.
+	batchBlocks      int
+	startTMs, endTMs int64
+	times            rawdb.FrameWriteTimes
 }
 
 type e1FramesAhead struct {
@@ -104,6 +109,13 @@ func (a *e1FramesAhead) queue(bc *BlockChain, list []*lagQueued, committedNum ui
 	}
 }
 
+// queued returns the blocks waiting for the writer.
+func (a *e1FramesAhead) queued() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.work)
+}
+
 // take returns hash's ahead write and forgets it, or nil.
 func (a *e1FramesAhead) take(hash types.Hash) *e1AheadWrite {
 	a.mu.Lock()
@@ -148,9 +160,12 @@ func (a *e1FramesAhead) write(ctx context.Context, batch []*e1AheadWrite) {
 		hashes = append(hashes, e.hashes...)
 		raws = append(raws, e.raws...)
 	}
-	err := rawdb.WriteFramesToStore(ctx, hashes, raws)
+	var times rawdb.FrameWriteTimes
+	err := rawdb.WriteFramesToStoreTimed(ctx, hashes, raws, &times)
+	end := time.Now().UnixMilli()
 	for _, e := range batch {
 		e.err = err
+		e.batchBlocks, e.startTMs, e.endTMs, e.times = len(batch), t0.UnixMilli(), end, times
 		close(e.done)
 	}
 	a.batches.Add(1)
@@ -162,7 +177,9 @@ func (a *e1FramesAhead) write(ctx context.Context, batch []*e1AheadWrite) {
 	if now := time.Now().UnixNano(); now-a.lastLog.Load() > int64(10*time.Second) {
 		a.lastLog.Store(now)
 		log.Info("e1 light: frames written ahead", "blocks", len(batch), "frames", len(hashes),
-			"tookUs", time.Since(t0).Microseconds(), "batches", a.batches.Load(), "totalBlocks", a.blocks.Load())
+			"tookUs", time.Since(t0).Microseconds(), "batches", a.batches.Load(), "totalBlocks", a.blocks.Load(),
+			"lockUs", times.LockWait.Microseconds(), "ioUs", times.IO.Microseconds(), "idxUs", times.Index.Microseconds(),
+			"rollUs", times.Roll.Microseconds(), "queued", a.queued(), "tMs", end)
 	}
 }
 

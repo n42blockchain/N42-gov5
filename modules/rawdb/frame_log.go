@@ -387,7 +387,7 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 		defer func() { times.Index = time.Since(tIdx) }()
 	}
 	// The index needs no sync of its own: it is rebuilt from the log.
-	if err := l.db.UpdateNosync(ctx, func(tx kv.RwTx) error {
+	if err := l.db.UpdateNosync(kv.WithRwTag(ctx, "frameIndex"), func(tx kv.RwTx) error {
 		for _, c := range locs {
 			if err := tx.Put(modules.FrameLogIndex, c.h[:], encodeFrameLogLoc(seg, base+c.rel, c.n)); err != nil {
 				return err
