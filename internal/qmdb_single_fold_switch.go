@@ -12,6 +12,8 @@ package internal
 import (
 	"os"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 var (
@@ -36,4 +38,12 @@ func parseQMDBSingleFold(v string) bool {
 	default:
 		return false
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_SINGLE_FOLD", envswitch.Config, "The leader's write path uses ComputeRootShared (single fold).")
+}
+
+func init() {
+	envswitch.Declare("N42_QMDB_SINGLE_FOLD", envswitch.Config, "The leader's write path uses ComputeRootShared (single fold).")
 }

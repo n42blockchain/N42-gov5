@@ -17,11 +17,11 @@
 package internal
 
 import (
-	"os"
 	"sync"
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -55,7 +55,7 @@ import (
 
 // lagGateApplied is N42_LAG_GATE_APPLIED (default on; "0", "false" or
 // "off" waits for the durable write).
-var lagGateApplied = parseLagPipeline(os.Getenv("N42_LAG_GATE_APPLIED"))
+var lagGateApplied = envswitch.DefaultOn("N42_LAG_GATE_APPLIED", envswitch.Perf, "Default on: the lag gate waits for the applied state.")
 
 // SetLagGateAppliedForTest switches the gate on the applied result and
 // returns the restore.
@@ -161,7 +161,7 @@ func (bc *BlockChain) lagResultReadySoon(j *lagWriteJob) {
 
 // lagResultEarlyOn is N42_LAG_RESULT_EARLY (default off; "1", "true" or
 // "on" enables). It needs N42_LAG_GATE_APPLIED (default on).
-var lagResultEarlyOn = parseOptIn(os.Getenv("N42_LAG_RESULT_EARLY"))
+var lagResultEarlyOn = envswitch.OptIn("N42_LAG_RESULT_EARLY", envswitch.Perf, "Opt-in: publish the lag result early.")
 
 // SetLagResultEarlyForTest switches N42_LAG_RESULT_EARLY and returns the
 // restore.

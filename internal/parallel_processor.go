@@ -38,6 +38,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -1827,12 +1828,12 @@ func applyMVSToIBSTimed(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockStat
 
 // applyBulkEnabled gates applyMVSToIBS's bulk account pass (P13c);
 // N42_APPLY_BULK=0 restores the per-entry loop.
-var applyBulkEnabled = os.Getenv("N42_APPLY_BULK") != "0"
+var applyBulkEnabled = envswitch.Not0("N42_APPLY_BULK", envswitch.Perf, "Default on: bulk account pass of applyMVSToIBS; 0 restores the per-entry loop.")
 
 // collectShardWorkers, from N42_COLLECT_SHARD, splits the bulk account
 // pass's serial part across that many goroutines
 // (state.ApplyAccountsSharded); 0, 1 or unset keeps ApplyAccounts.
-var collectShardWorkers = parseCollectShard(os.Getenv("N42_COLLECT_SHARD"))
+var collectShardWorkers = parseCollectShard(envswitch.Raw("N42_COLLECT_SHARD", envswitch.Perf, "Goroutines that split the bulk account pass's serial part."))
 
 func parseCollectShard(v string) int {
 	n, err := strconv.Atoi(v)
@@ -2159,4 +2160,12 @@ func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *
 	}
 	pf.Seed(accts)
 	return len(addrs), nil
+}
+
+func init() {
+	envswitch.Declare("N42_PARALLEL_WORKERS", envswitch.Perf, "Block-STM worker count (default 32).")
+}
+
+func init() {
+	envswitch.Declare("N42_PARALLEL_WORKERS", envswitch.Perf, "Block-STM worker count (default 32).")
 }

@@ -2,12 +2,12 @@ package internal
 
 import (
 	"context"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -23,7 +23,7 @@ import (
 // several blocks per transaction, and the import only waits for its own
 // block's frames before writing the block (WriteBlockFramesStored). A
 // block is still written only after its frames are durable.
-var e1FramesAheadOn = os.Getenv("N42_E1_LIGHT_FRAMES_AHEAD") == "1"
+var e1FramesAheadOn = envswitch.Is1("N42_E1_LIGHT_FRAMES_AHEAD", envswitch.Perf, "A light node's import writes each block's frames ahead of the block.")
 
 // SetE1FramesAheadForTest overrides N42_E1_LIGHT_FRAMES_AHEAD.
 func SetE1FramesAheadForTest(on bool) func() {

@@ -30,6 +30,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -573,4 +574,12 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 func verifyBlockSendersWithHints(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) error {
 	_, err := verifyBlockSendersHinted(signer, txs, hints)
 	return err
+}
+
+func init() {
+	envswitch.Declare("N42_SENDER_RECOVER_WORKERS", envswitch.Perf, "Worker count of the sender recovery.")
+}
+
+func init() {
+	envswitch.Declare("N42_SENDER_RECOVER_WORKERS", envswitch.Perf, "Worker count of the sender recovery.")
 }

@@ -17,7 +17,6 @@
 package internal
 
 import (
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/qmdb"
@@ -69,7 +69,7 @@ import (
 
 // aheadBasePrefetchOn is N42_AHEAD_BASE_PREFETCH (default on; "0", "false"
 // or "off" disables).
-var aheadBasePrefetchOn = parseLagPipeline(os.Getenv("N42_AHEAD_BASE_PREFETCH"))
+var aheadBasePrefetchOn = envswitch.DefaultOn("N42_AHEAD_BASE_PREFETCH", envswitch.Perf, "Default on: prefill the ahead run's base tree reads.")
 
 // SetAheadBasePrefetchForTest switches the base prefill and returns the
 // restore.
@@ -83,7 +83,7 @@ func SetAheadBasePrefetchForTest(on bool) func() {
 // block h of the child's chain with N-K <= h <= N (N the child's parent).
 // Default 1, clamped to [1, aheadBaseMaxDepth]; each step keeps one more
 // written block's post-state alive (lagPipeline.older).
-var aheadBaseDepth = parseAheadBaseDepth(os.Getenv("N42_AHEAD_BASE_DEPTH"))
+var aheadBaseDepth = parseAheadBaseDepth(envswitch.Raw("N42_AHEAD_BASE_DEPTH", envswitch.Perf, "K: how many blocks behind the child's parent a base prefill may read the tree."))
 
 const aheadBaseMaxDepth = 4
 
@@ -107,7 +107,7 @@ func SetAheadBaseDepthForTest(k int) func() {
 
 // aheadBaseClaimWaitsFill is N42_AHEAD_BASE_CLAIM_WAIT (default on, the P15
 // behaviour): the claim waits for a fill still reading; "0" stops it.
-var aheadBaseClaimWaitsFill = os.Getenv("N42_AHEAD_BASE_CLAIM_WAIT") != "0"
+var aheadBaseClaimWaitsFill = envswitch.Not0("N42_AHEAD_BASE_CLAIM_WAIT", envswitch.Perf, "Default on: a claim waits for a prefill still reading; 0 stops the wait.")
 
 // SetAheadBaseClaimWaitForTest sets whether the claim waits for a fill
 // still reading, and returns the restore.

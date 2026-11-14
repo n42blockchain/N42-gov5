@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -232,7 +233,7 @@ type receiptsResultFuture struct {
 // result (root, bloom, gas used) and the storage row on separate goroutines,
 // so done no longer waits for the row, and builds root and bloom with
 // block.ReceiptsRootBloomParallel on the native path.
-var receiptsResultSplit = os.Getenv("N42_RECEIPTS_RESULT_SPLIT") == "1"
+var receiptsResultSplit = envswitch.Is1("N42_RECEIPTS_RESULT_SPLIT", envswitch.Perf, "Compute the receipts result (root, bloom, logs) beside the receipts.")
 
 // receiptsResultWorkers is the parallel root/bloom worker count
 // (N42_RECEIPTS_RESULT_WORKERS, default 8).
@@ -353,4 +354,12 @@ func (bc *BlockChain) takeExecutedResultHint(hash types.Hash) (rawdb.ExecutedRes
 	}
 	r, ok := v.(rawdb.ExecutedResult)
 	return r, ok
+}
+
+func init() {
+	envswitch.Declare("N42_RECEIPTS_RESULT_WORKERS", envswitch.Perf, "Parallel root/bloom worker count of the receipts result.")
+}
+
+func init() {
+	envswitch.Declare("N42_RECEIPTS_RESULT_WORKERS", envswitch.Perf, "Parallel root/bloom worker count of the receipts result.")
 }

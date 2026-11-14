@@ -18,7 +18,6 @@ package internal
 
 import (
 	"encoding/binary"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +25,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/parallel"
@@ -56,7 +56,7 @@ import (
 
 // aheadPrepOn is N42_AHEAD_PREP (default on; "0", "false" or "off"
 // disables).
-var aheadPrepOn = parseLagPipeline(os.Getenv("N42_AHEAD_PREP"))
+var aheadPrepOn = envswitch.DefaultOn("N42_AHEAD_PREP", envswitch.Perf, "Default on: the ahead run's preparation pipeline.")
 
 // SetAheadPrepForTest switches the preparation and returns the restore.
 func SetAheadPrepForTest(on bool) func() {
@@ -204,7 +204,7 @@ func (bc *BlockChain) startAheadPrepFor(pr *aheadPrep, b *block.Block) {
 // the check's last steps (the gas sum and the lagged result, ~6 ms at 163k)
 // need nothing the preparation reads. A block the check then refuses has
 // its preparation dropped; the preparation only reads the transactions.
-var availEarlyPrepOn = parseLagPipeline(os.Getenv("N42_AVAIL_EARLY_PREP"))
+var availEarlyPrepOn = envswitch.DefaultOn("N42_AVAIL_EARLY_PREP", envswitch.Perf, "Default on: the availability check starts the preparation early.")
 
 // SetAvailEarlyPrepForTest switches N42_AVAIL_EARLY_PREP and returns the
 // restore.
@@ -300,7 +300,7 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 // ~9 ms for the fill (E1N26 run 15: basePrefillWaitMs p50 9, tree wait 0),
 // which only started once the ~10 ms computation was done, though its keys
 // need nothing the computation produces.
-var aheadBaseEarlyOn = parseLagPipeline(os.Getenv("N42_AHEAD_BASE_EARLY"))
+var aheadBaseEarlyOn = envswitch.DefaultOn("N42_AHEAD_BASE_EARLY", envswitch.Perf, "Default on: a preparation starts its base prefill together with itself.")
 
 // SetAheadBaseEarlyForTest switches N42_AHEAD_BASE_EARLY and returns the
 // restore.

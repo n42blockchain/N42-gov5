@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // slowBlockThreshold is the wall-clock cost above which the per-block phase
@@ -164,4 +165,12 @@ func (it *insertIterator) remaining() int {
 // processed returns the number of processed blocks.
 func (it *insertIterator) processed() int {
 	return it.index + 1
+}
+
+func init() {
+	envswitch.Declare("N42_SLOW_BLOCK_MS", envswitch.Diag, "Log blocks that take longer than this, in ms.")
+}
+
+func init() {
+	envswitch.Declare("N42_SLOW_BLOCK_MS", envswitch.Diag, "Log blocks that take longer than this, in ms.")
 }

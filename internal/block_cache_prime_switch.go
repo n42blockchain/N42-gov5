@@ -13,6 +13,8 @@ package internal
 import (
 	"os"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 var (
@@ -37,4 +39,12 @@ func parseBlockCachePrime(v string) bool {
 	default:
 		return false
 	}
+}
+
+func init() {
+	envswitch.Declare("N42_BLOCK_CACHE_PRIME", envswitch.Perf, "Opt-in: prime the block cache with a block already decoded when it becomes canonical.")
+}
+
+func init() {
+	envswitch.Declare("N42_BLOCK_CACHE_PRIME", envswitch.Perf, "Opt-in: prime the block cache with a block already decoded when it becomes canonical.")
 }

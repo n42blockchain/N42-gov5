@@ -17,9 +17,8 @@
 package internal
 
 import (
-	"os"
-
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -42,7 +41,7 @@ import (
 // transaction lookups the tail indexer owns, needs no write at all. Any
 // other block is read there and handed to the write transaction, which then
 // runs unchanged.
-var commitDupFast = os.Getenv("N42_COMMIT_DUP_FAST") == "1"
+var commitDupFast = envswitch.Is1("N42_COMMIT_DUP_FAST", envswitch.Perf, "Commit-to-canonical keeps block reads off the MDBX writer (r76a).")
 
 // SetCommitDupFastForTest switches the fast path and returns the restore.
 func SetCommitDupFastForTest(on bool) func() {

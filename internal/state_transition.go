@@ -32,6 +32,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/envswitch"
 	cmath "github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -915,4 +916,12 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 	}
 
 	return nil
+}
+
+func init() {
+	envswitch.Declare("N42_NONCETRACE", envswitch.Diag, "Trace every nonce increment in the given block.")
+}
+
+func init() {
+	envswitch.Declare("N42_NONCETRACE", envswitch.Diag, "Trace every nonce increment in the given block.")
 }

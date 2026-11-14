@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -45,8 +45,8 @@ import (
 // N42_E1_SOURCE=http://<addr> makes a node light: its lag executor fetches
 // each queued block's result from there and stores the block with it.
 var (
-	e1ServeAddr = os.Getenv("N42_E1_SERVE")
-	e1SourceURL = os.Getenv("N42_E1_SOURCE")
+	e1ServeAddr = envswitch.Raw("N42_E1_SERVE", envswitch.BenchOnly, "E=1 benchmark mode: address this executor serves results on.")
+	e1SourceURL = envswitch.Raw("N42_E1_SOURCE", envswitch.BenchOnly, "E=1 benchmark mode: URL of the executor a light node fetches results from.")
 )
 
 // e1FetchWait bounds one long poll for a result.
@@ -325,7 +325,7 @@ func (bc *BlockChain) e1LightImport(b *block.Block, tm *e1ImportTiming) (done bo
 // sees the stored block only. The result is the executor's either way.
 // Default on, like N42_LAG_GATE_APPLIED; "0", "false" or "off" waits for
 // the stored block.
-var e1Early = parseLagPipeline(os.Getenv("N42_E1_EARLY"))
+var e1Early = envswitch.DefaultOn("N42_E1_EARLY", envswitch.Perf, "Default on: a light node publishes a fetched result before it stores the block.")
 
 // SetE1EarlyForTest switches N42_E1_EARLY and returns the restore.
 func SetE1EarlyForTest(on bool) func() {
@@ -368,7 +368,7 @@ func e1LogFetched(b *block.Block, n uint64, t0 time.Time, prefetched bool) {
 // height N) a median 8.5 ms, mean 10 ms and p90 50 ms after node0 had it,
 // behind its own store of N-3 (a 163k-transaction block). The stores still
 // run in parent order; only the result arrives sooner.
-var e1Prefetch = os.Getenv("N42_E1_PREFETCH") == "1"
+var e1Prefetch = envswitch.Is1("N42_E1_PREFETCH", envswitch.Perf, "A light node fetches the result of every queued block at once.")
 
 // SetE1PrefetchForTest switches N42_E1_PREFETCH and returns the restore.
 func SetE1PrefetchForTest(on bool) func() {

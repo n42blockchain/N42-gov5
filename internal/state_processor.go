@@ -24,12 +24,12 @@ package internal
 
 import (
 	"fmt"
-	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
@@ -151,7 +151,7 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // behind an env gate: it is the only way to tell a cold cache from a cold
 // pool when the import recov phase blows up.
 var (
-	senderSourceTrace = os.Getenv("N42_SENDER_TRACE") == "1"
+	senderSourceTrace = envswitch.Is1("N42_SENDER_TRACE", envswitch.Diag, "Trace the source of recovered senders.")
 	lastCacheHits     uint64
 	lastCacheMisses   uint64
 )

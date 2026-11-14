@@ -25,8 +25,6 @@ import (
 	"context"
 	"errors"
 	"github.com/n42blockchain/N42/lib/qmdb"
-	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +35,7 @@ import (
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
@@ -135,7 +134,7 @@ const (
 // nothing in production should set it until a round says what the right number
 // is. Whether this cache is even full on the import path is UNMEASURED -- its
 // largest filler (HasBlockAndState) stopped decoding blocks earlier today.
-var blockCacheLimit = envInt("N42_BLOCK_CACHE_BLOCKS", 512)
+var blockCacheLimit = envswitch.Int("N42_BLOCK_CACHE_BLOCKS", 512, envswitch.Perf, "Count of fully decoded blocks the block cache keeps.")
 
 const (
 	receiptsCacheLimit  = 256
@@ -330,10 +329,5 @@ type insertStats struct {
 // anything unset, unparseable or non-positive. Used only for benchmark
 // instruments; a production value belongs in conf, not here.
 func envInt(name string, def int) int {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return def
+	return envswitch.Int(name, def, envswitch.Perf, "Positive integer benchmark instrument.")
 }

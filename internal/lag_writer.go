@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -29,6 +28,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
@@ -86,7 +86,7 @@ import (
 
 // lagWriteAsync is N42_LAG_WRITE_ASYNC (default on; "0", "false" or "off"
 // disables).
-var lagWriteAsync = parseLagPipeline(os.Getenv("N42_LAG_WRITE_ASYNC"))
+var lagWriteAsync = envswitch.DefaultOn("N42_LAG_WRITE_ASYNC", envswitch.Perf, "Default on: the lag writer writes asynchronously.")
 
 // SetLagWriteAsyncForTest switches the ordered writer and returns the
 // restore.
@@ -180,7 +180,7 @@ type lagWriteJob struct {
 // writer's CommitBlock and changeset encoding run before the block's write
 // transaction, overlapping the previous block's write
 // (docs/QS_MULTI_MILLION_DESIGN.md P11).
-var lagWritePrepare = parseLagPipeline(os.Getenv("N42_LAG_WRITE_PREPARE"))
+var lagWritePrepare = envswitch.DefaultOn("N42_LAG_WRITE_PREPARE", envswitch.Perf, "Default on: the ordered writer prepares CommitBlock ahead.")
 
 // SetLagWritePrepareForTest switches the prepared state write and returns
 // the restore.
@@ -256,7 +256,7 @@ func (bc *BlockChain) startStateWritePrepShards(ibs *state.IntraBlockState, numb
 // marker, receipts and the frames are written in the block's one MDBX
 // transaction exactly as before, and the block is reported imported only
 // once that transaction committed.
-var lagWriteEarlyPrep = os.Getenv("N42_LAG_WRITE_EARLY_PREP") == "1"
+var lagWriteEarlyPrep = envswitch.Is1("N42_LAG_WRITE_EARLY_PREP", envswitch.Perf, "A lag import prepares its write early (r67a).")
 
 // SetLagWriteEarlyPrepForTest switches the early preparation and returns
 // the restore.
@@ -280,8 +280,8 @@ func SetLagWriteEarlyPrepForTest(on bool) func() {
 // default count) runs an early preparation at n address shards; the
 // prepared write is the same for any count.
 var (
-	lagWriteEarlyPrepDelay  = os.Getenv("N42_LAG_WRITE_EARLY_PREP_DELAY") == "1"
-	lagWriteEarlyPrepShards = parseEarlyPrepShards(os.Getenv("N42_LAG_WRITE_EARLY_PREP_SHARDS"))
+	lagWriteEarlyPrepDelay  = envswitch.Is1("N42_LAG_WRITE_EARLY_PREP_DELAY", envswitch.Perf, "Delay the early prepare (r68a).")
+	lagWriteEarlyPrepShards = parseEarlyPrepShards(envswitch.Raw("N42_LAG_WRITE_EARLY_PREP_SHARDS", envswitch.Perf, "Shards of the early prepare."))
 )
 
 func parseEarlyPrepShards(v string) int {
@@ -719,7 +719,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 // the undo record and the root are the same; a failed capture fails the
 // write (the tree is reloaded and the block queued again) instead of the
 // hand-off.
-var lagHandoffLean = os.Getenv("N42_LAG_HANDOFF_LEAN") == "1"
+var lagHandoffLean = envswitch.Is1("N42_LAG_HANDOFF_LEAN", envswitch.Perf, "Lean hand-off of the lag pipeline (r68a).")
 
 // lagLeanCaptures counts the hand-offs whose rows were captured off the
 // importing goroutine (since start).

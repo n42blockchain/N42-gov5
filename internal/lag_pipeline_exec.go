@@ -18,12 +18,12 @@ package internal
 
 import (
 	"errors"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/parallel"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -81,15 +81,7 @@ import (
 
 // lagPipelineOn is N42_LAG_PIPELINE (default on; "0", "false" or "off"
 // disables).
-var lagPipelineOn = parseLagPipeline(os.Getenv("N42_LAG_PIPELINE"))
-
-func parseLagPipeline(v string) bool {
-	switch v {
-	case "0", "false", "FALSE", "off", "OFF", "no":
-		return false
-	}
-	return true
-}
+var lagPipelineOn = envswitch.DefaultOn("N42_LAG_PIPELINE", envswitch.Perf, "Default on: the lag pipeline.")
 
 // SetLagPipelineForTest switches the pipeline and returns the restore.
 func SetLagPipelineForTest(on bool) func() {
@@ -646,7 +638,7 @@ func (bc *BlockChain) lagPipeLaunch(by int) {
 // semantics, for late children only: the run reads the remaining keys
 // through the tree, the same values. A hook launch is unchanged (its child
 // waited for the hook anyway, so its prefill usually finished).
-var aheadPreEarlyOn = parseOptIn(os.Getenv("N42_AHEAD_PRE_EARLY"))
+var aheadPreEarlyOn = envswitch.OptIn("N42_AHEAD_PRE_EARLY", envswitch.Perf, "Opt-in: a child launched after its parent's pre-hook starts its pre phase early.")
 
 // SetAheadPreEarlyForTest switches N42_AHEAD_PRE_EARLY and returns the
 // restore.

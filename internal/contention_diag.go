@@ -11,6 +11,8 @@
 
 package internal
 
-import "os"
+import (
+	"github.com/n42blockchain/N42/common/envswitch"
+)
 
-var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
+var contentionDiagEnabled = envswitch.Is1("N42_CONTENTION_DIAG", envswitch.Diag, "Contention stamps and lock-wait timing on the vote and seal paths (S14).")

@@ -17,10 +17,10 @@
 package internal
 
 import (
-	"os"
-	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // Background writers yield the MDBX writer to the lag writer (r58a).
@@ -54,10 +54,10 @@ import (
 // above the index marker stay refused meanwhile, as they are for any fold
 // in progress.
 var (
-	lagWriteDeferBG          = os.Getenv("N42_LAG_WRITE_DEFER_BG") == "1"
-	lagWriteDeferBGIdle      = envMillis("N42_LAG_WRITE_DEFER_BG_IDLE_MS", time.Second)
-	lagWriteDeferBGWait      = envMillis("N42_LAG_WRITE_DEFER_BG_WAIT_MS", 250*time.Millisecond)
-	lagWriteDeferBGMaxBlocks = envUint("N42_LAG_WRITE_DEFER_BG_MAX_BLOCKS", 0)
+	lagWriteDeferBG          = envswitch.Is1("N42_LAG_WRITE_DEFER_BG", envswitch.Perf, "Background writers yield the MDBX writer to the lag writer (r58a).")
+	lagWriteDeferBGIdle      = envswitch.Millis("N42_LAG_WRITE_DEFER_BG_IDLE_MS", time.Second, envswitch.Perf, "Idle time after which background writers resume, in ms.")
+	lagWriteDeferBGWait      = envswitch.Millis("N42_LAG_WRITE_DEFER_BG_WAIT_MS", 250*time.Millisecond, envswitch.Perf, "Longest a background writer waits for the lag writer, in ms.")
+	lagWriteDeferBGMaxBlocks = envswitch.Uint64("N42_LAG_WRITE_DEFER_BG_MAX_BLOCKS", 0, envswitch.Perf, "Blocks a background writer may be deferred (0 = unlimited).")
 )
 
 // SetLagWriteDeferBGForTest switches the deferral and returns the restore.
@@ -65,15 +65,6 @@ func SetLagWriteDeferBGForTest(on bool) func() {
 	prev := lagWriteDeferBG
 	lagWriteDeferBG = on
 	return func() { lagWriteDeferBG = prev }
-}
-
-func envUint(name string, def uint64) uint64 {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-			return n
-		}
-	}
-	return def
 }
 
 // lagWriteBGGate tracks the lag writer's open write transactions.

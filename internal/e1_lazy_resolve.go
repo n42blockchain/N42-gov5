@@ -4,10 +4,10 @@
 package internal
 
 import (
-	"os"
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/log"
 )
@@ -41,7 +41,7 @@ const (
 	e1LazyCheck
 )
 
-var e1LazyMode = parseE1LazyResolve(os.Getenv(EnvE1LightLazyResolve))
+var e1LazyMode = parseE1LazyResolve(envswitch.Raw(EnvE1LightLazyResolve, envswitch.Perf, "E=1 light node moves the frame decode off its vote path."))
 
 func parseE1LazyResolve(v string) int {
 	switch v {

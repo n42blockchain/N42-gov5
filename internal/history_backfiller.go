@@ -5,12 +5,11 @@ package internal
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
@@ -347,7 +346,7 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 
 // historyFoldTxnBudget bounds the puts of one fold write transaction
 // (N42_HISTORY_FOLD_TXN_MS, default 30 ms; the commit adds its own few ms).
-var historyFoldTxnBudget = envMillis("N42_HISTORY_FOLD_TXN_MS", 30*time.Millisecond)
+var historyFoldTxnBudget = envswitch.Millis("N42_HISTORY_FOLD_TXN_MS", 30*time.Millisecond, envswitch.Config, "Budget of one history fold write transaction, in ms.")
 
 // historyFoldBetweenTxnsForTest, when set, runs between two fold write
 // transactions; an error stops the fold there (tests: a crash mid-fold).
@@ -355,16 +354,7 @@ var historyFoldBetweenTxnsForTest func() error
 
 // historyFoldYield is the pause between two fold write transactions, in
 // which a waiting block write takes the MDBX writer.
-var historyFoldYield = envMillis("N42_HISTORY_FOLD_YIELD_MS", 5*time.Millisecond)
-
-func envMillis(name string, def time.Duration) time.Duration {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			return time.Duration(n) * time.Millisecond
-		}
-	}
-	return def
-}
+var historyFoldYield = envswitch.Millis("N42_HISTORY_FOLD_YIELD_MS", 5*time.Millisecond, envswitch.Config, "Pause between two history fold write transactions, in ms.")
 
 func (b *HistoryBackfiller) readMarker() (uint64, bool, error) {
 	var n uint64

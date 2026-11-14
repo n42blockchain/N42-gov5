@@ -1,12 +1,12 @@
 package internal
 
 import (
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -26,7 +26,7 @@ import (
 // write), the mdbx store under its single writer and the prune window under
 // framePruneMu.
 
-var framesWriteEarlyOn = parseOptIn(os.Getenv("N42_FRAMES_WRITE_EARLY"))
+var framesWriteEarlyOn = envswitch.OptIn("N42_FRAMES_WRITE_EARLY", envswitch.Perf, "Opt-in: write a block's frames early.")
 
 // SetFramesWriteEarlyForTest switches N42_FRAMES_WRITE_EARLY and returns the
 // restore.

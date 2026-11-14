@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -20,7 +20,7 @@ import (
 
 const maxAccountPrefetchAddresses = 262144
 
-var accountPrefetchWorkers = parseAccountPrefetchWorkers(os.Getenv("N42_ACCOUNT_PREFETCH_WORKERS"))
+var accountPrefetchWorkers = parseAccountPrefetchWorkers(envswitch.Raw("N42_ACCOUNT_PREFETCH_WORKERS", envswitch.Perf, "Worker count of the account prefetch pass."))
 
 func parseAccountPrefetchWorkers(value string) int {
 	n, err := strconv.Atoi(value)

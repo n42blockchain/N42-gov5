@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
@@ -211,15 +212,7 @@ func (bc *BlockChain) OrphanFramesReleased() uint64 { return bc.frames.orphanRel
 // another branch is excluded (it is on the chain); one only on another
 // branch may be taken again by a block of this one, which is valid either
 // way: a transaction already applied is skipped as a stale nonce.
-var orphanReinjectOn = parseOrphanReinject(os.Getenv("N42_ORPHAN_REINJECT"))
-
-func parseOrphanReinject(v string) bool {
-	switch v {
-	case "1", "true", "TRUE", "on", "ON", "yes":
-		return true
-	}
-	return false
-}
+var orphanReinjectOn = envswitch.OptIn("N42_ORPHAN_REINJECT", envswitch.Config, "Opt-in: reinject orphaned transactions after a reorg.")
 
 // OrphanReinjectOn reports N42_ORPHAN_REINJECT.
 func OrphanReinjectOn() bool { return orphanReinjectOn }
@@ -636,4 +629,9 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	log.Debug("frame body resolved", "number", b.Number64().Uint64(), "frames", len(hashes), "txs", len(txs),
 		"dropped", dropped, "cachedSenders", cached, "fromDB", fromDB, "pulled", pulled, "held", held, "ms", time.Since(t0).Milliseconds())
 	return nil
+}
+
+func init() {
+	envswitch.Declare(EnvFrameBlocks, envswitch.Consensus, "Frame-referenced block production (leader side).")
+	envswitch.Declare(EnvFramePullTimeout, envswitch.Config, "Bound of the FRQ1 pull for missing frames, in ms.")
 }

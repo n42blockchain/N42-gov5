@@ -4,8 +4,9 @@
 package internal
 
 import (
-	"os"
 	"sync/atomic"
+
+	"github.com/n42blockchain/N42/common/envswitch"
 )
 
 // N42_LAG_EARLY_PUBLISH=1 (ported from qs/r38a-lag-early). What a child's
@@ -24,15 +25,7 @@ import (
 
 // lagEarlyPublishOn is N42_LAG_EARLY_PUBLISH (default off; "1", "true" or
 // "on" enables).
-var lagEarlyPublishOn = parseOptIn(os.Getenv("N42_LAG_EARLY_PUBLISH"))
-
-func parseOptIn(v string) bool {
-	switch v {
-	case "1", "true", "TRUE", "on", "ON", "yes":
-		return true
-	}
-	return false
-}
+var lagEarlyPublishOn = envswitch.OptIn("N42_LAG_EARLY_PUBLISH", envswitch.Perf, "Opt-in: an ahead run assembles its receipts beside the fold and publishes earlier.")
 
 // SetLagEarlyPublishForTest switches N42_LAG_EARLY_PUBLISH and returns the
 // restore.

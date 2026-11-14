@@ -5,7 +5,6 @@ package internal
 
 import (
 	"errors"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/parallel"
@@ -52,7 +52,7 @@ import (
 // the early snapshot answers.
 //
 // Default off.
-var lagEarlySnapOn = parseOptIn(os.Getenv("N42_LAG_EARLY_SNAPSHOT"))
+var lagEarlySnapOn = envswitch.OptIn("N42_LAG_EARLY_SNAPSHOT", envswitch.Perf, "The child starts at its parent's exec end.")
 
 // SetLagEarlySnapshotForTest switches N42_LAG_EARLY_SNAPSHOT and returns
 // the restore.

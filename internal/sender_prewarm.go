@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
@@ -620,4 +621,12 @@ func (bc *BlockChain) recoverBlockSendersFor(h types.Hash, signer transaction.Si
 		}
 	}
 	recoverBlockSenders(signer, txs)
+}
+
+func init() {
+	envswitch.Declare("N42_SENDER_PREWARM_WORKERS", envswitch.Perf, "Worker count of the sender prewarm.")
+}
+
+func init() {
+	envswitch.Declare("N42_SENDER_PREWARM_WORKERS", envswitch.Perf, "Worker count of the sender prewarm.")
 }

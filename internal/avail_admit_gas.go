@@ -5,10 +5,10 @@ package internal
 
 import (
 	"math"
-	"os"
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/log"
 )
@@ -32,7 +32,7 @@ const (
 	availAdmitGasCheck
 )
 
-var availAdmitGasMode = parseAvailAdmitGas(os.Getenv("N42_AVAIL_ADMIT_GAS"))
+var availAdmitGasMode = parseAvailAdmitGas(envswitch.Raw("N42_AVAIL_ADMIT_GAS", envswitch.Perf, "Availability-admission gas mode."))
 
 func parseAvailAdmitGas(v string) int {
 	switch v {

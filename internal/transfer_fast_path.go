@@ -21,13 +21,13 @@ package internal
 
 import (
 	"bytes"
-	"os"
 	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	cmath "github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -40,18 +40,18 @@ import (
 
 // transferFastPath is read once: flipping it mid-process would split a
 // node's blocks across two code paths for no benefit.
-var transferFastPath = os.Getenv("N42_TRANSFER_FAST_PATH") != "0"
+var transferFastPath = envswitch.Not0("N42_TRANSFER_FAST_PATH", envswitch.Perf, "Default on: transfer fast path.")
 
 // transferDirectPath lets a Block-STM worker apply a fast-path transfer on
 // its reader and writer without the IntraBlockState (tryDirectTransfer).
 // N42_TRANSFER_DIRECT=0 keeps the fast path on the IntraBlockState (A/B).
-var transferDirectPath = os.Getenv("N42_TRANSFER_DIRECT") != "0"
+var transferDirectPath = envswitch.Not0("N42_TRANSFER_DIRECT", envswitch.Perf, "Default on: a Block-STM worker applies a fast-path transfer directly.")
 
 // transferFast2 is N42_TRANSFER_FAST2 (default on; "0" keeps the previous
 // direct path): the direct transfer runs from the transaction's transfer
 // plan (transferPlan, built with its message before the wave) instead of
 // its message, and skips the work the plan or the path makes redundant.
-var transferFast2 = os.Getenv("N42_TRANSFER_FAST2") != "0"
+var transferFast2 = envswitch.Not0("N42_TRANSFER_FAST2", envswitch.Perf, "Default on: second transfer fast path.")
 
 // setTransferFast2ForTest sets transferFast2 (and the store's matching
 // switch) and returns the restore.

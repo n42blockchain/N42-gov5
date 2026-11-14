@@ -17,9 +17,9 @@
 package internal
 
 import (
-	"os"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/internal/parallel"
 )
@@ -37,7 +37,7 @@ import (
 // the block that used it.
 //
 // N42_BLOCK_SCRATCH_POOL=0 restores the old allocation (default on).
-var blockScratchPool = os.Getenv("N42_BLOCK_SCRATCH_POOL") != "0"
+var blockScratchPool = envswitch.Not0("N42_BLOCK_SCRATCH_POOL", envswitch.Perf, "Default on: per-block scratch reused across blocks; 0 allocates fresh (r31a).")
 
 // SetBlockScratchPoolForTest switches the per-block scratch reuse (here and
 // in internal/parallel) and returns the restore.

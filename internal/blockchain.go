@@ -51,6 +51,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
@@ -525,7 +526,7 @@ func (bc *BlockChain) voidMinerRootTrust(reason string) {
 
 // minerAdoptAppends gates NewMinerRootComputer's own-block fast path; off by
 // default until a fleet round has read it (QS_BLOCK_TIME_BUDGET, round 35zf).
-var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
+var minerAdoptAppends = envswitch.Is1("N42_MINER_ADOPT_APPENDS", envswitch.Perf, "NewMinerRootComputer's own-block fast path.")
 
 // buildStallDiagEnabled gates S11's diagnostic mutex-wait timers on bc.lock
 // (AlignAppliedBranch, InsertChainAuthorized) and minerRCMu
@@ -534,7 +535,7 @@ var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
 // each Lock() is skipped entirely, so a fleet round that has not opted in
 // pays nothing. See docs/QS_BLOCK_TIME_BUDGET.md 6by/S11 and the matching
 // switch in internal/miner/build_stall_watchdog.go.
-var buildStallDiagEnabled = os.Getenv("N42_BUILD_STALL_DIAG") == "1"
+var buildStallDiagEnabled = envswitch.Is1("N42_BUILD_STALL_DIAG", envswitch.Diag, "Diagnostic mutex-wait timers on the build path and its watchdog.")
 
 // TakeBuildStallLockWait returns and resets the bc.lock wait time accumulated
 // by AlignAppliedBranch/InsertChainAuthorized calls since the last call to
@@ -4208,4 +4209,16 @@ func (bc *BlockChain) executedRootIn(tx kv.Getter, h *block.Header) (types.Hash,
 		return types.Hash{}, false
 	}
 	return r.Root, true
+}
+
+func init() {
+	envswitch.Declare("N42_BLOCK_GOSSIP_FALLBACK", envswitch.Config, "Default on: SealedBlock's gossip fallback runs unconditionally; 0 gossips only with no direct peers.")
+	envswitch.Declare("N42_TXROOT_BLAKE3_TIME", envswitch.BenchOnly, "Overrides the chain's txRootBlake3Time on a bench chain.")
+	envswitch.Declare("N42_DEFERRED_EXECUTION_TIME", envswitch.BenchOnly, "Overrides the chain's deferredExecutionTime on a bench chain.")
+}
+
+func init() {
+	envswitch.Declare("N42_BLOCK_GOSSIP_FALLBACK", envswitch.Config, "Default on: SealedBlock's gossip fallback runs unconditionally; 0 gossips only with no direct peers.")
+	envswitch.Declare("N42_TXROOT_BLAKE3_TIME", envswitch.BenchOnly, "Overrides the chain's txRootBlake3Time on a bench chain.")
+	envswitch.Declare("N42_DEFERRED_EXECUTION_TIME", envswitch.BenchOnly, "Overrides the chain's deferredExecutionTime on a bench chain.")
 }

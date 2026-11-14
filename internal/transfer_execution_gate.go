@@ -1,11 +1,11 @@
 package internal
 
 import (
-	"os"
 	"reflect"
 	"strconv"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -15,7 +15,7 @@ import (
 )
 
 // Opt-in while full block and fleet qualification is in progress. Default off.
-var transferExecutionWorkers = parseTransferExecutionWorkers(os.Getenv("N42_TRANSFER_COMPONENT_WORKERS"))
+var transferExecutionWorkers = parseTransferExecutionWorkers(envswitch.Raw("N42_TRANSFER_COMPONENT_WORKERS", envswitch.Perf, "Opt-in transfer component workers."))
 
 func parseTransferExecutionWorkers(value string) int {
 	n, err := strconv.Atoi(value)
