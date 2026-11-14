@@ -12,6 +12,7 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
@@ -141,3 +142,7 @@ func (t *StepTracer) CaptureFault(pc uint64, op vm2.OpCode, gas, cost uint64, sc
 
 // Avoid unused imports.
 var _ transaction.Transaction
+
+func init() {
+	envswitch.Declare("N42_NOOP_TRACER_LEVEL", envswitch.Diag, "Level of the no-op tracer.")
+}

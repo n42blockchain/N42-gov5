@@ -28,6 +28,7 @@ import (
 	"github.com/c2h5oh/datasize"
 
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/etl"
@@ -1522,4 +1523,13 @@ func InitHashState(tx kv.RwTx) error {
 
 	log.Info("HashState initialization complete", "accounts", accCount, "storage", stoCount)
 	return nil
+}
+
+func init() {
+	envswitch.Declare("N42_ETL_TMPDIR", envswitch.Config, "Directory for ETL and RecSplit spill files.")
+}
+
+func init() {
+	envswitch.Declare("N42_ETL_BUFFER_ACCT_GB", envswitch.Perf, "Account ETL sort buffer, in GB.")
+	envswitch.Declare("N42_ETL_BUFFER_STO_GB", envswitch.Perf, "Storage ETL sort buffer, in GB.")
 }

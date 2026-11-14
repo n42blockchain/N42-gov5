@@ -23,6 +23,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -55,7 +56,7 @@ type BlockResult struct {
 // os.Getenv inside the per-tx loop costs a map lookup per call;
 // hoisting saves ~24K syscalls/sec at 200 tx/block × 60 blk/s.
 var (
-	traceTxHashEnv = strings.ToLower(strings.TrimPrefix(os.Getenv("N42_TRACE_TX"), "0x"))
+	traceTxHashEnv = strings.ToLower(strings.TrimPrefix(envswitch.Raw("N42_TRACE_TX", envswitch.Diag, "Transaction hash the trace switches act on."), "0x"))
 	traceBlockEnv  = func() uint64 {
 		s := os.Getenv("N42_TRACE_BLOCK")
 		if s == "" {
@@ -65,10 +66,10 @@ var (
 		fmt.Sscanf(s, "%d", &v)
 		return v
 	}()
-	traceSkipOthersEnv = os.Getenv("N42_TRACE_SKIP_OTHERS") == "1"
-	noopTracerEnv      = os.Getenv("N42_NOOP_TRACER") == "1"
-	traceProdPathEnv   = os.Getenv("N42_TRACE_PROD_PATH") == "1"
-	traceOutEnv        = os.Getenv("N42_TRACE_OUT")
+	traceSkipOthersEnv = envswitch.Is1("N42_TRACE_SKIP_OTHERS", envswitch.Diag, "Skip transactions other than the traced one.")
+	noopTracerEnv      = envswitch.Is1("N42_NOOP_TRACER", envswitch.Diag, "Run the no-op tracer on every transaction.")
+	traceProdPathEnv   = envswitch.Is1("N42_TRACE_PROD_PATH", envswitch.Diag, "Trace on the production path.")
+	traceOutEnv        = envswitch.Raw("N42_TRACE_OUT", envswitch.Diag, "Output file of the eth-el trace.")
 )
 
 func applyEthelWithdrawals(chainCfg *params.ChainConfig, header *block.Header, ibs *state.IntraBlockState, withdrawals []*Withdrawal) {
@@ -463,4 +464,8 @@ func ValidateBlockOutputs(chainCfg *params.ChainConfig, header *block.Header, re
 		}
 	}
 	return nil
+}
+
+func init() {
+	envswitch.Declare("N42_TRACE_BLOCK", envswitch.Diag, "Block number the trace switches act on.")
 }

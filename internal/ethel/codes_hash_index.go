@@ -40,6 +40,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/lib/recsplit"
@@ -162,4 +163,8 @@ func (h *codesHashIndex) close() {
 	}
 	closeFileMapping(h.offs, h.offsF, h.offsM2)
 	h.offs, h.offsF, h.offsM2 = nil, nil, nil
+}
+
+func init() {
+	envswitch.Declare("N42_SNAP_MMAP", envswitch.Perf, "Default on: read snapshot files through mmap; 0 reads them into the heap.")
 }
