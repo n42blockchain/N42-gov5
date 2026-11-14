@@ -41,3 +41,15 @@ MDBX trie-table analysis and rebuild/diff probes (commitment-compression researc
 | `n42-trie-recorddiff` | `n42-trie recorddiff` | rebuild one account's storage subtree from HashedStorage, diff records |
 | `n42-trie-compress` | `n42-trie compress` | measure compressibility of reth AccountsTrie/StoragesTrie tables |
 | `n42-trie-branch-anatomy` | `n42-trie branch-anatomy` | byte-level dissection of reth trie branch nodes |
+
+## n42-progress
+
+Read/write the ethel progress markers stored in MDBX. `show` and `set` keep their positional `--datadir`/`--block` argument parsing (no `-h`).
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `read-progress` | `n42-progress read` | print the ethel progress marker for a datadir (flags) |
+| `show-progress` | `n42-progress show` | read the ethel progress marker from MDBX (--datadir D) |
+| `set-progress` | `n42-progress set` | write the ethel progress marker to MDBX (--datadir D --block N [--key K]) |
+| `write-progress` | `n42-progress write` | set the ethel progress marker for a datadir (flags) |
+| `n42-read-ethel-progress` | `n42-progress read-ethel` | print all known progress markers in an MDBX env (read-only) |

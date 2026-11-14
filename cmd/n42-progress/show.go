@@ -12,7 +12,8 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
+func runShow(args []string) {
+	os.Args = append([]string{"n42-progress show"}, args...)
 	if len(os.Args) < 3 || os.Args[1] != "--datadir" {
 		fmt.Fprintln(os.Stderr, "usage: show-progress --datadir PATH")
 		os.Exit(1)

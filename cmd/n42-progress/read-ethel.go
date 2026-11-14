@@ -1,11 +1,11 @@
 // n42-read-ethel-progress prints all known progress markers in an
 // MDBX env so we know where executor / rebuild stopped.
 //
-//   DbInfo/ethel_progress              — set ONLY at end of
-//                                        RebuildState. Stale if
-//                                        the rebuild crashed.
-//   SyncStageProgress/ethel-last-block — set per-batch by the
-//                                        executor. Authoritative.
+//	DbInfo/ethel_progress              — set ONLY at end of
+//	                                     RebuildState. Stale if
+//	                                     the rebuild crashed.
+//	SyncStageProgress/ethel-last-block — set per-batch by the
+//	                                     executor. Authoritative.
 //
 // Read-only. Single-shot.
 package main
@@ -24,10 +24,11 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
-	dir := flag.String("dir", "", "MDBX dir")
-	mapsizeGB := flag.Int("mapsize-gb", 1024, "mapsize cap")
-	flag.Parse()
+func runReadEthel(args []string) {
+	fs := flag.NewFlagSet("n42-progress read-ethel", flag.ExitOnError)
+	dir := fs.String("dir", "", "MDBX dir")
+	mapsizeGB := fs.Int("mapsize-gb", 1024, "mapsize cap")
+	fs.Parse(args)
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "--dir required")
 		os.Exit(2)

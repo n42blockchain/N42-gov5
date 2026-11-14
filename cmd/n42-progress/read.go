@@ -13,9 +13,10 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
-	dir := flag.String("dir", "", "datadir")
-	flag.Parse()
+func runRead(args []string) {
+	fs := flag.NewFlagSet("n42-progress read", flag.ExitOnError)
+	dir := fs.String("dir", "", "datadir")
+	fs.Parse(args)
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: read-progress --dir <DIR>")
 		os.Exit(1)

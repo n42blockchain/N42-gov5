@@ -14,7 +14,8 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
+func runSet(args []string) {
+	os.Args = append([]string{"n42-progress set"}, args...)
 	if len(os.Args) < 5 || os.Args[1] != "--datadir" || os.Args[3] != "--block" {
 		fmt.Fprintln(os.Stderr, "usage: set-progress --datadir PATH --block NUM [--key NAME]")
 		fmt.Fprintln(os.Stderr, "  --key: SyncStageProgress key (default ethel-last-block;")

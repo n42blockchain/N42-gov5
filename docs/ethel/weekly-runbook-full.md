@@ -258,7 +258,7 @@ mainnet from block 1 (`missing canonical parent hash at 0`, every round imports
 ```powershell
 # NOTE: --datadir here is the MDBX path itself, i.e. <datadir>\chaindata.
 # Pointing it one level up silently creates a stray mdbx.dat the node never reads.
-C:\N42\N42-gov5\build\bin\set-progress.exe --datadir E:\ethel-min-<tip>\chaindata --block <tip>
+C:\N42\N42-gov5\build\bin\n42-progress.exe set --datadir E:\ethel-min-<tip>\chaindata --block <tip>
 C:\N42\N42-gov5\build\bin\ethexec.exe db-stats --datadir E:\ethel-min-<tip>\chaindata   # verify
 ```
 
@@ -280,7 +280,7 @@ C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-min-<tip> --snapshot.mod
 
 ### FULL (minimal + the ledger freezers)
 
-Same as minimal — including the `set-progress` marker and the `.val.zst` drop —
+Same as minimal — including the `n42-progress set` marker and the `.val.zst` drop —
 plus copy the **one-year `bodyc` window** (newest ~56 `.cdat` plus the whole
 `bodyc.cidx`) and the **window-tier** `txindex.*` (from
 `d:/n42-txindex-window-<tip>`, NOT the archive tier) into

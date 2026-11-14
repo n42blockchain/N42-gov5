@@ -13,11 +13,12 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
-	dir := flag.String("dir", "", "datadir")
-	target := flag.Uint64("target", 0, "block number")
-	create := flag.Bool("create", false, "create the database if absent (fresh snapshot-direct datadir bootstrap)")
-	flag.Parse()
+func runWrite(args []string) {
+	fs := flag.NewFlagSet("n42-progress write", flag.ExitOnError)
+	dir := fs.String("dir", "", "datadir")
+	target := fs.Uint64("target", 0, "block number")
+	create := fs.Bool("create", false, "create the database if absent (fresh snapshot-direct datadir bootstrap)")
+	fs.Parse(args)
 	if *dir == "" || *target == 0 {
 		fmt.Fprintln(os.Stderr, "usage: write-progress --dir <DIR> --target <BLOCK> [--create]")
 		os.Exit(1)

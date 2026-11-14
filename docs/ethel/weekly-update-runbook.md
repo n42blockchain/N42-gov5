@@ -379,7 +379,7 @@ including `wk-eth-el` with `-tags n42el`); logs in `D:\weekly-20261022\`.
 - Step 1: senders 58 s / 56 s, headerc 2 s, bodyc 6m36s, receipts 4m33s (421 blk/s).
   headerc and bodyc both rewound the PARTIAL tail segment. All exit 0.
 - Step 2 replay: **1h09m @ ~26-33 blk/s**; `SyncStageProgress/ethel-last-block` =
-  26245274 (read with `n42-read-ethel-progress -dir d:/N42-eth1177`; the log has no
+  26245274 (read with `n42-progress read-ethel -dir d:/N42-eth1177`; the log has no
   completion line). Witness spot-check 26,180,000 / 26,220,000 / 26,245,274: **gas
   diff +0**.
 - Step 2b txindex: archive 8m19s (27 segments, 3,804,829,443 tx, 16.90 GB,
@@ -731,7 +731,7 @@ Also this session, off the critical path:
   weekly run appends to each table's last cdat and overwrites its cidx.
 
 - **Three-mode test (E:, catch-up + live)** — serialized on :30403 / 20115,
-  each started from H0 = 25,864,981 with `set-progress`:
+  each started from H0 = 25,864,981 with `n42-progress set`:
 
   | mode | size | head reached | batches | live rounds | mismatch |
   |---|---|---|---|---|---|
@@ -871,7 +871,7 @@ time), then stopped.
   :30403 / 20115, each CTRL_BREAK-stopped clean:
   - **archive** (chaindata 156 GB + headerc): caught up +5,903 blocks in 31 min,
     then ~45 min live, per-block tExec 61-535 ms, `eth_blockNumber` advancing.
-  - **minimal** (snapshot 97 files + headerc + codes + set-progress marker):
+  - **minimal** (snapshot 97 files + headerc + codes + n42-progress set marker):
     caught up +6,175 in ~10 min (snapshot-direct overlay), ~39 min live clean.
   - **full** (minimal + bodyc 627 GB): caught up +6,435 in ~12 min, live clean.
   - Zero `state root mismatch` / `diverge` / `error` / `panic` in all three logs
@@ -879,9 +879,9 @@ time), then stopped.
 - NOT run: DATC sr merge (§5, no DATC head advance), anchors/bpp, manifests.
   geth + reth2k left STOPPED; fleet left STOPPED (was already down).
 - Assembly notes for next time: `.val.zst` excluded from E: snapshot copies
-  (mandatory); `set-progress`/`headcheck` use `ethel-last-block` while
-  `read-progress` prints the legacy `DbInfo/ethel_progress` key — verify markers
-  with headcheck, not read-progress.
+  (mandatory); `n42-progress set`/`headcheck` use `ethel-last-block` while
+  `n42-progress read` prints the legacy `DbInfo/ethel_progress` key — verify markers
+  with headcheck, not n42-progress read.
 
 ### 2026-07-22 (geth-sourced part; reth-sourced deferred)
 

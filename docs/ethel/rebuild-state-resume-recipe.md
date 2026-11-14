@@ -132,11 +132,11 @@ eth-el will:
 
 ## Helper
 
-`cmd/n42-read-ethel-progress/main.go` — read-only one-shot to
+`cmd/n42-progress/read-ethel.go` — read-only one-shot to
 print the ethel_progress value of any MDBX:
 
 ```bash
-n42-read-ethel-progress --dir D:/N42-eth1177
+n42-progress read-ethel --dir D:/N42-eth1177
 # ethel_progress: 12501823 (next rebuild-state run will resume at 12501824)
 ```
 

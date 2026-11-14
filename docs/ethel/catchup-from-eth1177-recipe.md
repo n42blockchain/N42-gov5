@@ -99,4 +99,4 @@ should be verified before relying on automatic continuation.
 - `docs/ethel/real-chain-three-mode-runbook.md` — three-mode
   bootstrap design
 - `memory/project_eth_el_bootstrap_paths.md` — terminology
-- `cmd/n42-read-ethel-progress` — helper to inspect markers
+- `cmd/n42-progress` (read-ethel) — helper to inspect markers
