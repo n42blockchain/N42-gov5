@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/erigontech/mdbx-go/mdbx"
+
 	"github.com/n42blockchain/N42/lib/kv"
 )
 
@@ -58,10 +60,19 @@ func (tx *MdbxTx) Commit() error {
 		traceTxID = tx.tx.ID()
 	}
 	dirty, limit, probe := tx.writeProbeDirty()
+	if cs := tx.commitStats; cs != nil {
+		// The dirty volume the commit is about to write (no reader scan).
+		if info, err := tx.tx.Info(false); err == nil {
+			cs.DirtyBytes = info.SpaceDirty
+		}
+	}
 
 	latency, err := tx.tx.Commit()
 	if err != nil {
 		return fmt.Errorf("label: %s, %w", tx.db.opts.label, err)
+	}
+	if cs := tx.commitStats; cs != nil {
+		cs.Latency, cs.OK = latency, true
 	}
 	if traceCommit {
 		tx.logCommitTrace(traceTxID, latency)
@@ -79,6 +90,24 @@ func (tx *MdbxTx) Commit() error {
 	}
 
 	return nil
+}
+
+// CommitStats is one write transaction's commit breakdown, as libmdbx
+// reports it: preparation, GC update, audit, page write, sync and ending,
+// plus the dirty volume the commit wrote. OK is false until the commit
+// succeeded.
+type CommitStats struct {
+	Latency    mdbx.CommitLatency
+	DirtyBytes uint64
+	OK         bool
+}
+
+// RecordCommitStats makes this write transaction's Commit fill dst
+// (observability only: one txn-info call before the commit).
+func (tx *MdbxTx) RecordCommitStats(dst *CommitStats) {
+	if !tx.readOnly {
+		tx.commitStats = dst
+	}
 }
 
 func (tx *MdbxTx) Rollback() {

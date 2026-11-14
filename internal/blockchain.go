@@ -2932,6 +2932,8 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				// handWait is its wait for the previous block's write.
 				fields = append(fields, "handed", true, "handWait", time.Duration(bc.lagWrite.lastWait.Load()),
 					"handoffUs", bc.lagWrite.lastHandoff.Load()/1000, "handLean", lagHandoffLean)
+				// handWait split by the phase the previous write was in.
+				fields = append(fields, bc.lagWaitSplitFields()...)
 			}
 			fields = append(fields, bc.lagPipeLogFields()...)
 			fields = append(fields, senderSrcLogFields()...)

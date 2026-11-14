@@ -128,6 +128,10 @@ type lagWriter struct {
 	// goroutine -- its whole span less the wait for the previous write to
 	// finish (handoffUs on the "blockimport phases" line).
 	lastHandoff atomic.Int64
+	// lastWaitSplit: the last hand-off's wait for the previous write split
+	// by the phase that write was in (lag_write_txn_early.go); nil when it
+	// did not wait for one.
+	lastWaitSplit atomic.Pointer[[lwpCount]time.Duration]
 }
 
 // lagWriteJob is one block's durable write.
@@ -171,6 +175,11 @@ type lagWriteJob struct {
 	// gen: the tree's mutation count at the hand-off (lagWriteFastReady).
 	capture *commitment.FlushCapture
 	gen     uint64
+
+	// marks: when the writer entered each phase (zero: never), end: when
+	// the job finished; written by the writer goroutine before done closes.
+	marks [lwpCount]time.Time
+	end   time.Time
 
 	done chan struct{}
 	err  error
@@ -513,6 +522,27 @@ func (f *qmdbFlushRows) Delete(table string, key []byte) error {
 	return nil
 }
 
+// counts returns the captured rows by kind: entry puts, entry deletes, twig
+// and leaf rows, and the rest (meta).
+func (f *qmdbFlushRows) counts() (ent, del, twig, leaf, other int) {
+	for i := range f.rows {
+		r := &f.rows[i]
+		switch {
+		case r.table == qmdb.EntryTable && r.del:
+			del++
+		case r.table == qmdb.EntryTable:
+			ent++
+		case r.table == qmdb.TwigTable:
+			twig++
+		case r.table == qmdb.LeavesTable:
+			leaf++
+		default:
+			other++
+		}
+	}
+	return
+}
+
 // replay writes the captured rows into tx, in capture order.
 func (f *qmdbFlushRows) replay(tx kv.RwTx) error {
 	for _, r := range f.rows {
@@ -659,11 +689,18 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	}
 	tWait := time.Now()
 	lean := lagHandoffLean
+	prevJob := bc.lagWrite.inflight
 	doneWait, joined, err := bc.joinLagWriteMode(lean)
 	if err != nil {
 		return failed(err)
 	}
 	bc.lagWrite.lastWait.Store(int64(time.Since(tWait)))
+	if prevJob != nil {
+		sp := prevJob.waitSplit(tWait)
+		bc.lagWrite.lastWaitSplit.Store(&sp)
+	} else {
+		bc.lagWrite.lastWaitSplit.Store(nil)
+	}
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
@@ -744,6 +781,7 @@ func (bc *BlockChain) LagHandoffStats() time.Duration {
 
 // runLagWrite is the writer goroutine of one block.
 func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
+	j.mark(lwpStart)
 	if fn := lagWriteBeforeCommitForTest; fn != nil {
 		j.err = fn(j.number)
 	}
@@ -755,6 +793,12 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 		if _, cerr := j.capture.Wait(); cerr != nil && j.err == nil {
 			j.err = cerr
 		}
+	}
+	if j.prep != nil && lagWriteTxnEarly {
+		// N42_LAG_WRITE_TXN_EARLY waits for the preparation inside the
+		// transaction: a write that failed before that point must not let
+		// the ahead run's reader go while the preparation still reads it.
+		_, _ = j.prep.wait()
 	}
 	if j.ahead != nil {
 		j.ahead.release()
@@ -768,6 +812,7 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 			"number", j.number, "hash", j.hash, "err", j.err)
 	}
 	bc.lagWriteNotify(j)
+	j.end = time.Now()
 	close(j.done)
 }
 

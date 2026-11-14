@@ -241,7 +241,10 @@ func (sdb *IntraBlockState) creditedObject(c creditedLoad) *stateObject {
 // shards, Merge concatenates them. Zero for a serial or slow-path write.
 type PrepPhases struct {
 	Load, Mark, Commit, Reset, Encode, Merge time.Duration
-	Pending, Loaded                          int
+	// Tail is the step after Merge: keeping the calls for the created
+	// addresses' check (the merged log, or only the addresses).
+	Tail            time.Duration
+	Pending, Loaded int
 }
 
 // appendLog appends o's calls after l's.
@@ -286,13 +289,7 @@ func prepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number u
 	if err != nil {
 		return nil, true, err
 	}
-	merged := func() *StateWriteLog {
-		l := &StateWriteLog{}
-		for _, s := range logs {
-			l.appendLog(s)
-		}
-		return l
-	}
+	merged := func() *StateWriteLog { return mergeShardLogs(logs) }
 	if number == 0 || !(HistoryIndexDisabled() || HistoryIndexDeferred()) {
 		return &PreparedStateWrite{log: merged()}, true, nil
 	}
@@ -343,15 +340,56 @@ func prepareStateWriteShards(ibs *IntraBlockState, rules *params.Rules, number u
 		p.nSlots += parts[k].nSlots
 	}
 	p.fast = true
-	ph.Merge = time.Since(tMerge)
-	p.phases = ph
+	tTail := time.Now()
+	ph.Merge = tTail.Sub(tMerge)
 	// The calls are kept only for the transaction's check of created
 	// addresses (WriteState).
 	for _, l := range logs {
 		if l.NeedsStore() {
-			p.log = merged()
+			if prepLazyLog {
+				// Only the created addresses now; the calls are merged if
+				// the check refuses the fast path.
+				p.shardLogs = logs
+				for _, sl := range logs {
+					p.creates = append(p.creates, sl.creates...)
+				}
+			} else {
+				p.log = merged()
+			}
 			break
 		}
 	}
+	ph.Tail = time.Since(tTail)
+	p.phases = ph
 	return p, true, nil
+}
+
+// mergeShardLogs is the shards' logs concatenated in shard order: the
+// serial CommitBlock's log.
+func mergeShardLogs(logs []*StateWriteLog) *StateWriteLog {
+	l := &StateWriteLog{}
+	for _, s := range logs {
+		l.appendLog(s)
+	}
+	return l
+}
+
+// prepLazyLog is N42_STATE_WRITE_PREP_LAZY_LOG (default off, r87b). A
+// sharded preparation whose calls include a CreateContract kept the calls,
+// merged into one log, for the write transaction's check that the created
+// addresses hold no Storage row -- a copy of every account write (~31k
+// of 240 bytes in a full transfer block, appended without a reserve) on
+// the preparation's critical path, the untimed ~12 ms between its Merge
+// step and its end (run 67, node0). With it on the preparation keeps only
+// the shards' logs and their created addresses; the merged log is built
+// in WriteState only when the check refuses the fast path, which then
+// replays it exactly as before. The rows written are the same either way.
+var prepLazyLog = os.Getenv("N42_STATE_WRITE_PREP_LAZY_LOG") == "1"
+
+// SetPrepLazyLogForTest switches the lazy merged log and returns the
+// restore.
+func SetPrepLazyLogForTest(on bool) func() {
+	prev := prepLazyLog
+	prepLazyLog = on
+	return func() { prepLazyLog = prev }
 }
