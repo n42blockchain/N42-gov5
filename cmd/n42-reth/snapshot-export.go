@@ -73,19 +73,20 @@ var logger = log.New()
 // to generate small test snapshots quickly. 0 = export the whole table.
 var limitEntries uint64
 
-func main() {
-	dbPath := flag.String("db", "d:/reth2k/db", "MDBX path (Reth or N42)")
-	outDir := flag.String("out", "d:/n42-snapshot", "Output directory")
-	table := flag.String("table", "", "account / storage / both (default: both)")
-	accountTable := flag.String("account-table", "PlainAccountState", "MDBX table for accounts (N42: Account)")
-	storageTable := flag.String("storage-table", "PlainStorageState", "MDBX table for storage (N42: Storage; dup-sort key=20B addr, value=slot(32B)+val)")
-	n42 := flag.Bool("n42", false, "Shortcut: sets account-table=Account, storage-table=Storage")
-	countOverride := flag.Uint64("count", 0, "Display-only entry count override (v2 derives exact per-shard counts from the scan)")
-	skipZstd := flag.Bool("skip-zstd", false, "Skip the final zstd compress step")
-	endBlock := flag.Uint64("end-block", 0, "Snapshot end block; when > 0, files are named accounts.0-<endBlock>.* / storage.0-<endBlock>.* (H.3 segment naming, monolithic case)")
-	limit := flag.Uint64("limit", 0, "Cap entries per table (for small test snapshots; 0 = export all)")
-	shards := flag.Int("shards", 16, "Number of hash shards (power of two; per-shard MPHFs build in parallel)")
-	flag.Parse()
+func runSnapshotExport(args []string) {
+	fs := flag.NewFlagSet("n42-reth snapshot-export", flag.ExitOnError)
+	dbPath := fs.String("db", "d:/reth2k/db", "MDBX path (Reth or N42)")
+	outDir := fs.String("out", "d:/n42-snapshot", "Output directory")
+	table := fs.String("table", "", "account / storage / both (default: both)")
+	accountTable := fs.String("account-table", "PlainAccountState", "MDBX table for accounts (N42: Account)")
+	storageTable := fs.String("storage-table", "PlainStorageState", "MDBX table for storage (N42: Storage; dup-sort key=20B addr, value=slot(32B)+val)")
+	n42 := fs.Bool("n42", false, "Shortcut: sets account-table=Account, storage-table=Storage")
+	countOverride := fs.Uint64("count", 0, "Display-only entry count override (v2 derives exact per-shard counts from the scan)")
+	skipZstd := fs.Bool("skip-zstd", false, "Skip the final zstd compress step")
+	endBlock := fs.Uint64("end-block", 0, "Snapshot end block; when > 0, files are named accounts.0-<endBlock>.* / storage.0-<endBlock>.* (H.3 segment naming, monolithic case)")
+	limit := fs.Uint64("limit", 0, "Cap entries per table (for small test snapshots; 0 = export all)")
+	shards := fs.Int("shards", 16, "Number of hash shards (power of two; per-shard MPHFs build in parallel)")
+	fs.Parse(args)
 	limitEntries = *limit
 
 	if *shards < 1 || *shards > 256 || bits.OnesCount(uint(*shards)) != 1 {

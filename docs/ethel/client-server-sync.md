@@ -317,7 +317,7 @@ If a client misses a delta or one fails blake2b verification:
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| Snapshot writer | ✓ done | `cmd/reth-snapshot-export` |
+| Snapshot writer | ✓ done | `cmd/n42-reth` |
 | History writer (MPHF+fp) | ✓ done | `cmd/n42-history-build --mphf` |
 | History verify | ✓ done | `cmd/n42-history-verify` |
 | Code freezer reader | ✓ done | `internal/ethel/codes_freezer_reader.go` |

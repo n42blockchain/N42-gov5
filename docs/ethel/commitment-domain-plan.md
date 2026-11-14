@@ -43,7 +43,7 @@ We already have most of the lower-level pieces:
 | MPT BranchNodeCompact reader (rmove compact omission) | `internal/mpttrie/` |
 | ETL + AppendDup MDBX patterns | `lib/etl/`, `internal/mptbuild/` |
 | Recsplit MPHF + zstd dict | `internal/history/store_mphf.go` |
-| Snapshot manifest + blake3 chain | `cmd/reth-snapshot-export/` |
+| Snapshot manifest + blake3 chain | `cmd/n42-reth/` |
 
 What's missing: **the glue**.
 

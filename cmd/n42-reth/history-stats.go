@@ -34,21 +34,22 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func tableCfg(table string) func(kv.TableCfg) kv.TableCfg {
+func historyStatsTableCfg(table string) func(kv.TableCfg) kv.TableCfg {
 	return func(d kv.TableCfg) kv.TableCfg {
 		d[table] = kv.TableCfgItem{}
 		return d
 	}
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	table := flag.String("table", "AccountsHistory", "AccountsHistory or StoragesHistory")
-	prefixLen := flag.Int("prefix", 0, "0=auto (20 for accounts, 52 for storage)")
-	limit := flag.Uint64("limit", 0, "0=full scan, else stop after this many MDBX rows")
-	groupLimit := flag.Uint64("groups", 0, "0=full, else stop after this many groups")
-	progressEvery := flag.Duration("progress", 5*time.Second, "progress log interval")
-	flag.Parse()
+func runHistoryStats(args []string) {
+	fs := flag.NewFlagSet("n42-reth history-stats", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	table := fs.String("table", "AccountsHistory", "AccountsHistory or StoragesHistory")
+	prefixLen := fs.Int("prefix", 0, "0=auto (20 for accounts, 52 for storage)")
+	limit := fs.Uint64("limit", 0, "0=full scan, else stop after this many MDBX rows")
+	groupLimit := fs.Uint64("groups", 0, "0=full, else stop after this many groups")
+	progressEvery := fs.Duration("progress", 5*time.Second, "progress log interval")
+	fs.Parse(args)
 
 	if *prefixLen == 0 {
 		switch *table {
@@ -69,7 +70,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg(*table)).
+		WithTableCfg(historyStatsTableCfg(*table)).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)

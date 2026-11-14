@@ -18,19 +18,20 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tblStorCS = "StorageChangeSets"
+const addrBlockTblStorCS = "StorageChangeSets"
 
-func tableCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
+func addrBlockTableCfg(d kv.TableCfg) kv.TableCfg {
+	d[addrBlockTblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	block := flag.Uint64("block", 0, "block")
-	addrHex := flag.String("addr", "", "20B addr hex")
-	sample := flag.Int("sample", 20, "rows to print")
-	flag.Parse()
+func runAddrBlock(args []string) {
+	fs := flag.NewFlagSet("n42-reth addr-block", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	block := fs.Uint64("block", 0, "block")
+	addrHex := fs.String("addr", "", "20B addr hex")
+	sample := fs.Int("sample", 20, "rows to print")
+	fs.Parse(args)
 
 	addr, err := hex.DecodeString(strings.TrimPrefix(*addrHex, "0x"))
 	if err != nil || len(addr) != 20 {
@@ -45,7 +46,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(addrBlockTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -60,7 +61,7 @@ func main() {
 	}
 	defer tx.Rollback()
 
-	c, err := tx.Cursor(tblStorCS)
+	c, err := tx.Cursor(addrBlockTblStorCS)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cursor:", err)
 		os.Exit(1)

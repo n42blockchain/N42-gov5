@@ -19,21 +19,22 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func cfg(d kv.TableCfg) kv.TableCfg {
+func csRangeCfg(d kv.TableCfg) kv.TableCfg {
 	d["AccountChangeSets"] = kv.TableCfgItem{Flags: kv.DupSort}
 	d["StorageChangeSets"] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	flag.Parse()
+func runCsRange(args []string) {
+	fs := flag.NewFlagSet("n42-reth cs-range", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
 		Path(*rethDir).Label(kv.ChainDB).PageSize(4096).
 		MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(csRangeCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

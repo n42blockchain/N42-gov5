@@ -22,22 +22,23 @@ import (
 //   StorageChangeSets:  DUPSORT  key=BlockNumberAddress(28B = 8B BE block + 20B addr)  value=StorageEntry(32B slot + value)
 
 const (
-	tblAcctCS = "AccountChangeSets"
-	tblStorCS = "StorageChangeSets"
+	scanCsTblAcctCS = "AccountChangeSets"
+	scanCsTblStorCS = "StorageChangeSets"
 )
 
-func tableCfg(defaults kv.TableCfg) kv.TableCfg {
-	defaults[tblAcctCS] = kv.TableCfgItem{Flags: kv.DupSort}
-	defaults[tblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
+func scanCsTableCfg(defaults kv.TableCfg) kv.TableCfg {
+	defaults[scanCsTblAcctCS] = kv.TableCfgItem{Flags: kv.DupSort}
+	defaults[scanCsTblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
 	return defaults
 }
 
-func main() {
-	dbPath := flag.String("db", "d:/reth2k/db", "reth MDBX path")
-	what := flag.String("what", "account", "account or storage")
-	maxBlock := flag.Uint64("max", 0, "max block (0=all)")
-	thr := flag.Int("thr", 6, "threshold for hot data count")
-	flag.Parse()
+func runScanCs(args []string) {
+	fs := flag.NewFlagSet("n42-reth scan-cs", flag.ExitOnError)
+	dbPath := fs.String("db", "d:/reth2k/db", "reth MDBX path")
+	what := fs.String("what", "account", "account or storage")
+	maxBlock := fs.Uint64("max", 0, "max block (0=all)")
+	thr := fs.Int("thr", 6, "threshold for hot data count")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
@@ -46,7 +47,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(scanCsTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open: %v\n", err)
@@ -72,7 +73,7 @@ func main() {
 const numShards = 256
 
 func scanAccount(tx kv.Tx, maxBlock uint64, threshold int) {
-	cursor, err := tx.Cursor(tblAcctCS)
+	cursor, err := tx.Cursor(scanCsTblAcctCS)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cursor: %v\n", err)
 		os.Exit(1)
@@ -152,7 +153,7 @@ func scanAccount(tx kv.Tx, maxBlock uint64, threshold int) {
 }
 
 func scanStorage(tx kv.Tx, maxBlock uint64, threshold int) {
-	cursor, err := tx.Cursor(tblStorCS)
+	cursor, err := tx.Cursor(scanCsTblStorCS)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cursor: %v\n", err)
 		os.Exit(1)

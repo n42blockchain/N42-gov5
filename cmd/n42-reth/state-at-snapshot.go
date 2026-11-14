@@ -30,25 +30,26 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tbl = "AccountChangeSets"
+const stateAtSnapshotTbl = "AccountChangeSets"
 
-func cfg(d kv.TableCfg) kv.TableCfg {
-	d[tbl] = kv.TableCfgItem{Flags: kv.DupSort}
+func stateAtSnapshotCfg(d kv.TableCfg) kv.TableCfg {
+	d[stateAtSnapshotTbl] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	snapBlock := flag.Uint64("snapshot", 24998143, "block whose state to reconstruct")
-	endBlock := flag.Uint64("end", 25045128, "scan up to this block (reth head)")
-	outFile := flag.String("out", "reth-state-at-snapshot.bin", "output file: addr(20B) || prevLen(2B LE) || prev(prevLen B) per record")
-	flag.Parse()
+func runStateAtSnapshot(args []string) {
+	fs := flag.NewFlagSet("n42-reth state-at-snapshot", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	snapBlock := fs.Uint64("snapshot", 24998143, "block whose state to reconstruct")
+	endBlock := fs.Uint64("end", 25045128, "scan up to this block (reth head)")
+	outFile := fs.String("out", "reth-state-at-snapshot.bin", "output file: addr(20B) || prevLen(2B LE) || prev(prevLen B) per record")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
 		Path(*rethDir).Label(kv.ChainDB).PageSize(4096).
 		MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(stateAtSnapshotCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open reth:", err)
 		os.Exit(1)
@@ -57,7 +58,7 @@ func main() {
 	tx, _ := db.BeginRo(context.Background())
 	defer tx.Rollback()
 
-	cur, _ := tx.CursorDupSort(tbl)
+	cur, _ := tx.CursorDupSort(stateAtSnapshotTbl)
 	defer cur.Close()
 
 	out, err := os.Create(*outFile)

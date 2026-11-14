@@ -256,6 +256,6 @@ Each integration test has at least one paired negative test:
 |---|---|
 | Network failures during fetch (partial reads) | unit-level retry logic exists; full chaos testing needs a network harness |
 | HTTP source against a real server | LocalSource exercises the same code path post-decode |
-| Snapshot writer emitting segments (H.3b) | requires modifying `cmd/reth-snapshot-export`; tracked separately |
+| Snapshot writer emitting segments (H.3b) | requires modifying `cmd/n42-reth`; tracked separately |
 | Cross-platform path semantics (CIFS, NTFS junctions) | filepath.* is uniform across Go targets |
 | S3-style storage backend | local file:// publisher proves the contract; S3 add-on uses same Source interface |

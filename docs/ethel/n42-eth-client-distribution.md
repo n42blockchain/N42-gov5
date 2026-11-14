@@ -45,7 +45,7 @@ transactions, **cannot** answer historical queries.
 | Section | File(s) | Size | Format | Source |
 |:--|:--|--:|:--|:--|
 | Chain headers | `chain/freezer/headerc.{cidx,NNNN.cdat}` | **4.6 GB** | N42 columnar (8 K blocks/segment, per-field zstd) | `ethexec header-compact` |
-| State — accounts | `snapshot/accounts.[0-H₀].{idx,ef,val.zst}` | **3.9 GB** | RecSplit MPHF (1.71 b/key) + Elias-Fano + zstd values | `cmd/reth-snapshot-export --n42` |
+| State — accounts | `snapshot/accounts.[0-H₀].{idx,ef,val.zst}` | **3.9 GB** | RecSplit MPHF (1.71 b/key) + Elias-Fano + zstd values | `cmd/n42-reth snapshot-export --n42` |
 | State — storage | `snapshot/storage.[0-H₀].{idx,ef,val.zst}` | **24 GB** | Same shape; 1.57 B entries | same |
 | Code | `chain/freezer/codes.{cidx,NNNN.cdat}` | **6 GB** | Address-indexed (`internal/ethel/codes_freezer_reader.go`); per-entry zstd | `code-import2fz` |
 | Manifest | `manifest-minimal.json` | < 1 MB | blake2b-256 per file + segment range | `cmd/n42-eth-manifest` |
@@ -239,7 +239,7 @@ historical proofs can save 167 GB by choosing `full`.
 | **Address-indexed (codes)** | `codes.cidx`/`cdat` | `internal/ethel/codes_freezer_reader.go` — 26 B/entry sorted by address, binary searched |
 | **N42 columnar** | `headerc`, `bodyc` | `internal/ethel/{header,body}_compact.go` — 8 192 blocks/segment, per-field zstd |
 | **cscompact (history)** | `accthist`, `storhist`, `txindex` | `internal/cscompact/segment_store.go` — 1 M blocks/segment, RecSplit MPHF + delta-varint |
-| **Snapshot (state)** | `accounts.*`, `storage.*` | `cmd/reth-snapshot-export` — RecSplit MPHF + Elias-Fano + zstd values |
+| **Snapshot (state)** | `accounts.*`, `storage.*` | `cmd/n42-reth` — RecSplit MPHF + Elias-Fano + zstd values |
 | **MDBX (live tip)** | `chain/mdbx.dat` | Hot table for blocks within the warm-CS window (last ~7 days) |
 
 Per-table source code / writer mapping: `docs/ethel/freezer-tables.md`.
@@ -366,7 +366,7 @@ build. The publisher pipeline is:
 ethexec replay (produces archive freezer + warm MDBX)
    │
    ├── ethexec history-build      → accthist + storhist + txindex
-   ├── reth-snapshot-export --n42 → snapshot/accounts.* + storage.*
+   ├── n42-reth snapshot-export --n42 → snapshot/accounts.* + storage.*
    ├── code-import2fz             → codes.cidx + cdat
    ├── ethexec header-compact     → headerc.*
    ├── ethexec body-compact       → bodyc.*
@@ -416,7 +416,7 @@ n42-eth's archive at 849 GB vs reth's 2.5 TB comes from:
 |:--|:--|:--|
 | Phase A — write specs | this doc + companion docs | ✓ |
 | Phase B — single-source archive build | `ethexec` replay → all freezer tables | ✓ in production |
-| Phase C — snapshot exporter | `reth-snapshot-export --n42` (accounts 3.92 GB / storage 24 GB) | accounts ✓, storage in progress |
+| Phase C — snapshot exporter | `n42-reth snapshot-export --n42` (accounts 3.92 GB / storage 24 GB) | accounts ✓, storage in progress |
 | Phase D — history index | `accthist` / `storhist` / `txindex` | ✓ at 24M blocks |
 | Phase E — manifest tool | `n42-eth-manifest` produces per-mode manifests + content-addressed indexes | ✓ |
 | Phase F — client snapshot CLI | `n42-eth-snapshot {verify,mode,fetch,upgrade,downgrade}` | ✓ |
@@ -424,7 +424,7 @@ n42-eth's archive at 849 GB vs reth's 2.5 TB comes from:
 | Phase H.1 — delta builder | `n42-eth-delta-build` emits per-release delta trees | ✓ |
 | Phase H.2 — delta client | `n42-eth-snapshot delta {plan,apply}` flow | ✓ |
 | Phase H.3a — segmented snapshot spec + selector | docs + selector glob verified for segments | ✓ |
-| Phase H.3b — snapshot writer emits segments | `cmd/reth-snapshot-export --n42` migration | TODO |
+| Phase H.3b — snapshot writer emits segments | `cmd/n42-reth snapshot-export --n42` migration | TODO |
 | Phase H.4 — publication tooling | `n42-eth-publish release/delta/prune/list` | ✓ |
 
 ---

@@ -58,7 +58,7 @@ row. This is the sweet spot:
 
 ## Implementation status (2026-05-18)
 
-- ✓ Snapshot writer (`cmd/reth-snapshot-export --n42`):
+- ✓ Snapshot writer (`cmd/n42-reth snapshot-export --n42`):
   - accounts: 3.92 GB / 386M / 37 min (measured)
   - storage: in progress (1.57B entries, ETA ~2h)
 - ✓ History writer (`cmd/n42-history-build`):
@@ -98,7 +98,7 @@ honest-target band.
 
 ### Note on .val files
 
-`reth-snapshot-export` keeps both `.val` (uncompressed) and `.val.zst`
+`n42-reth snapshot-export` keeps both `.val` (uncompressed) and `.val.zst`
 after build. For deployment, delete `.val` and keep `.val.zst`. The
 table above assumes `.val.zst` only.
 

@@ -20,17 +20,18 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tbl = "AccountsHistory"
+const acctHistoryBitmapTbl = "AccountsHistory"
 
-func cfg(d kv.TableCfg) kv.TableCfg {
-	d[tbl] = kv.TableCfgItem{}
+func acctHistoryBitmapCfg(d kv.TableCfg) kv.TableCfg {
+	d[acctHistoryBitmapTbl] = kv.TableCfgItem{}
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	addrStr := flag.String("addr", "", "20B addr hex")
-	flag.Parse()
+func runAcctHistoryBitmap(args []string) {
+	fs := flag.NewFlagSet("n42-reth acct-history-bitmap", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	addrStr := fs.String("addr", "", "20B addr hex")
+	fs.Parse(args)
 	addr, _ := hex.DecodeString(*addrStr)
 	if len(addr) != 20 {
 		fmt.Fprintln(os.Stderr, "addr must be 20B hex")
@@ -40,11 +41,11 @@ func main() {
 	logger := log.New()
 	db, _ := mdbx.NewMDBX(logger).Path(*rethDir).Label(kv.ChainDB).
 		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(acctHistoryBitmapCfg).Open(context.Background())
 	defer db.Close()
 	tx, _ := db.BeginRo(context.Background())
 	defer tx.Rollback()
-	cur, _ := tx.Cursor(tbl)
+	cur, _ := tx.Cursor(acctHistoryBitmapTbl)
 	defer cur.Close()
 
 	// Seek to addr (any highest_block). Reth keys are (addr || highest_block).

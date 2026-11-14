@@ -16,7 +16,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func tableCfg(tbls []string, dupsort map[string]bool) func(kv.TableCfg) kv.TableCfg {
+func probeTableCfg(tbls []string, dupsort map[string]bool) func(kv.TableCfg) kv.TableCfg {
 	return func(defaults kv.TableCfg) kv.TableCfg {
 		for _, t := range tbls {
 			it := kv.TableCfgItem{}
@@ -29,13 +29,14 @@ func tableCfg(tbls []string, dupsort map[string]bool) func(kv.TableCfg) kv.Table
 	}
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	table := flag.String("table", "StorageChangeSets", "table name")
-	n := flag.Int("n", 5, "rows to print")
-	dup := flag.Bool("dup", true, "dupsort")
-	seekHex := flag.String("seek", "", "hex seek key (if set)")
-	flag.Parse()
+func runProbe(args []string) {
+	fs := flag.NewFlagSet("n42-reth probe", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	table := fs.String("table", "StorageChangeSets", "table name")
+	n := fs.Int("n", 5, "rows to print")
+	dup := fs.Bool("dup", true, "dupsort")
+	seekHex := fs.String("seek", "", "hex seek key (if set)")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
@@ -44,7 +45,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg([]string{*table}, map[string]bool{*table: *dup})).
+		WithTableCfg(probeTableCfg([]string{*table}, map[string]bool{*table: *dup})).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)

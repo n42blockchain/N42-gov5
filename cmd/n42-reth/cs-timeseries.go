@@ -30,22 +30,23 @@ import (
 )
 
 const (
-	tblAcct = "AccountChangeSets"
-	tblStor = "StorageChangeSets"
+	csTimeseriesTblAcct = "AccountChangeSets"
+	csTimeseriesTblStor = "StorageChangeSets"
 )
 
-func tableCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcct] = kv.TableCfgItem{Flags: kv.DupSort}
-	d[tblStor] = kv.TableCfgItem{Flags: kv.DupSort}
+func csTimeseriesTableCfg(d kv.TableCfg) kv.TableCfg {
+	d[csTimeseriesTblAcct] = kv.TableCfgItem{Flags: kv.DupSort}
+	d[csTimeseriesTblStor] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	headBlock := flag.Uint64("head", 24766147, "head block (inclusive)")
-	windowBlocks := flag.Uint64("window", 216000, "window size in blocks (~30 days @ 12s)")
-	bucketBlocks := flag.Uint64("bucket", 7200, "bucket size in blocks (~1 day @ 12s)")
-	flag.Parse()
+func runCsTimeseries(args []string) {
+	fs := flag.NewFlagSet("n42-reth cs-timeseries", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	headBlock := fs.Uint64("head", 24766147, "head block (inclusive)")
+	windowBlocks := fs.Uint64("window", 216000, "window size in blocks (~30 days @ 12s)")
+	bucketBlocks := fs.Uint64("bucket", 7200, "bucket size in blocks (~1 day @ 12s)")
+	fs.Parse(args)
 
 	startBlock := *headBlock - *windowBlocks + 1
 	endBlock := *headBlock
@@ -58,7 +59,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(csTimeseriesTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -93,7 +94,7 @@ func main() {
 	// --- AccountChangeSets pass ---
 	{
 		fmt.Fprintf(os.Stderr, "scanning AccountChangeSets [%d, %d]...\n", startBlock, endBlock)
-		cdup, err := tx.CursorDupSort(tblAcct)
+		cdup, err := tx.CursorDupSort(csTimeseriesTblAcct)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "acct cursor:", err)
 			os.Exit(1)
@@ -134,7 +135,7 @@ func main() {
 	// --- StorageChangeSets pass ---
 	{
 		fmt.Fprintf(os.Stderr, "scanning StorageChangeSets [%d, %d]...\n", startBlock, endBlock)
-		cdup, err := tx.CursorDupSort(tblStor)
+		cdup, err := tx.CursorDupSort(csTimeseriesTblStor)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "stor cursor:", err)
 			os.Exit(1)

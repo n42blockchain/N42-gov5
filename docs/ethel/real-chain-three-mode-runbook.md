@@ -176,7 +176,7 @@ Realistically, the next session-sized chunk is **task #94**:
 
   1. Design `internal/ethel/snapshotreader` package
   2. Implement PlainState reads via RecSplit + EF (we already
-     have the writer in `cmd/reth-snapshot-export`)
+     have the writer in `cmd/n42-reth`)
   3. Add warm-tier overlay
   4. Wire `--bootstrap.mode=snapshot` into cmd/eth-el
   5. Unit + e2e tests

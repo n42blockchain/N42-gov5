@@ -29,17 +29,18 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tblAcct = "PlainAccountState"
+const codehashUniqTblAcct = "PlainAccountState"
 
-func tableCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcct] = kv.TableCfgItem{}
+func codehashUniqTableCfg(d kv.TableCfg) kv.TableCfg {
+	d[codehashUniqTblAcct] = kv.TableCfgItem{}
 	return d
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	progress := flag.Duration("progress", 15*time.Second, "progress interval")
-	flag.Parse()
+func runCodehashUniq(args []string) {
+	fs := flag.NewFlagSet("n42-reth codehash-uniq", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	progress := fs.Duration("progress", 15*time.Second, "progress interval")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
@@ -48,7 +49,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(codehashUniqTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -63,7 +64,7 @@ func main() {
 	}
 	defer tx.Rollback()
 
-	c, err := tx.Cursor(tblAcct)
+	c, err := tx.Cursor(codehashUniqTblAcct)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cursor:", err)
 		os.Exit(1)

@@ -17,7 +17,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-// We don't know the table names, so we open with empty cfg and let
+// We don't know the table names, so we open with empty tablesListCfg and let
 // the WithTableCfgFn populate from the actual DB metadata.
 var knownTables = []string{
 	"PlainAccountState",
@@ -37,7 +37,7 @@ var knownTables = []string{
 	"HashedStorages",
 }
 
-func cfg(d kv.TableCfg) kv.TableCfg {
+func tablesListCfg(d kv.TableCfg) kv.TableCfg {
 	for _, t := range knownTables {
 		d[t] = kv.TableCfgItem{}
 	}
@@ -48,14 +48,15 @@ func cfg(d kv.TableCfg) kv.TableCfg {
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	flag.Parse()
+func runTablesList(args []string) {
+	fs := flag.NewFlagSet("n42-reth tables-list", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	fs.Parse(args)
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
 		Path(*rethDir).Label(kv.ChainDB).PageSize(4096).
 		MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(tablesListCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)

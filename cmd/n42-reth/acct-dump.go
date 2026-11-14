@@ -16,17 +16,18 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tblAcct = "PlainAccountState"
+const acctDumpTblAcct = "PlainAccountState"
 
-func cfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcct] = kv.TableCfgItem{}
+func acctDumpCfg(d kv.TableCfg) kv.TableCfg {
+	d[acctDumpTblAcct] = kv.TableCfgItem{}
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	addrStr := flag.String("addr", "", "20B addr hex (no 0x prefix)")
-	flag.Parse()
+func runAcctDump(args []string) {
+	fs := flag.NewFlagSet("n42-reth acct-dump", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	addrStr := fs.String("addr", "", "20B addr hex (no 0x prefix)")
+	fs.Parse(args)
 
 	if *addrStr == "" {
 		fmt.Fprintln(os.Stderr, "--addr required")
@@ -42,7 +43,7 @@ func main() {
 	db, err := mdbx.NewMDBX(logger).
 		Path(*rethDir).Label(kv.ChainDB).PageSize(4096).
 		MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(acctDumpCfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)
@@ -54,7 +55,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer tx.Rollback()
-	v, err := tx.GetOne(tblAcct, addr)
+	v, err := tx.GetOne(acctDumpTblAcct, addr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get:", err)
 		os.Exit(1)

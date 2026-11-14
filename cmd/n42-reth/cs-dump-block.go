@@ -17,27 +17,28 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tbl = "AccountChangeSets"
+const csDumpBlockTbl = "AccountChangeSets"
 
-func cfg(d kv.TableCfg) kv.TableCfg {
-	d[tbl] = kv.TableCfgItem{Flags: kv.DupSort}
+func csDumpBlockCfg(d kv.TableCfg) kv.TableCfg {
+	d[csDumpBlockTbl] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	block := flag.Uint64("block", 0, "block number")
-	flag.Parse()
+func runCsDumpBlock(args []string) {
+	fs := flag.NewFlagSet("n42-reth cs-dump-block", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	block := fs.Uint64("block", 0, "block number")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, _ := mdbx.NewMDBX(logger).Path(*rethDir).Label(kv.ChainDB).
 		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
-		WithTableCfg(cfg).Open(context.Background())
+		WithTableCfg(csDumpBlockCfg).Open(context.Background())
 	defer db.Close()
 	tx, _ := db.BeginRo(context.Background())
 	defer tx.Rollback()
 
-	cur, _ := tx.CursorDupSort(tbl)
+	cur, _ := tx.CursorDupSort(csDumpBlockTbl)
 	defer cur.Close()
 
 	key := make([]byte, 8)

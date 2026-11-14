@@ -39,13 +39,13 @@ import (
 )
 
 const (
-	tblAcct = "AccountChangeSets"
-	tblStor = "StorageChangeSets"
+	csCumulativeTblAcct = "AccountChangeSets"
+	csCumulativeTblStor = "StorageChangeSets"
 )
 
-func tableCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcct] = kv.TableCfgItem{Flags: kv.DupSort}
-	d[tblStor] = kv.TableCfgItem{Flags: kv.DupSort}
+func csCumulativeTableCfg(d kv.TableCfg) kv.TableCfg {
+	d[csCumulativeTblAcct] = kv.TableCfgItem{Flags: kv.DupSort}
+	d[csCumulativeTblStor] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
@@ -55,15 +55,16 @@ func memMiB() float64 {
 	return float64(m.Alloc) / (1024 * 1024)
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	headBlock := flag.Uint64("head", 24766147, "head block (inclusive)")
-	days := flag.Int("days", 30, "number of days in window")
-	bucketBlocks := flag.Uint64("bucket", 7200, "blocks per day (~12s/block)")
-	skipAcct := flag.Bool("skip-acct", false, "skip AccountChangeSets pass")
-	skipStor := flag.Bool("skip-stor", false, "skip StorageChangeSets pass")
-	progressEvery := flag.Duration("progress", 15*time.Second, "progress log interval")
-	flag.Parse()
+func runCsCumulative(args []string) {
+	fs := flag.NewFlagSet("n42-reth cs-cumulative", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	headBlock := fs.Uint64("head", 24766147, "head block (inclusive)")
+	days := fs.Int("days", 30, "number of days in window")
+	bucketBlocks := fs.Uint64("bucket", 7200, "blocks per day (~12s/block)")
+	skipAcct := fs.Bool("skip-acct", false, "skip AccountChangeSets pass")
+	skipStor := fs.Bool("skip-stor", false, "skip StorageChangeSets pass")
+	progressEvery := fs.Duration("progress", 15*time.Second, "progress log interval")
+	fs.Parse(args)
 
 	windowBlocks := uint64(*days) * (*bucketBlocks)
 	startBlock := *headBlock - windowBlocks + 1
@@ -76,7 +77,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(csCumulativeTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -106,7 +107,7 @@ func main() {
 	// --- AccountChangeSets pass ---
 	if !*skipAcct {
 		fmt.Fprintf(os.Stderr, "scanning AccountChangeSets [%d, %d]...\n", startBlock, endBlock)
-		cdup, err := tx.CursorDupSort(tblAcct)
+		cdup, err := tx.CursorDupSort(csCumulativeTblAcct)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "acct cursor:", err)
 			os.Exit(1)
@@ -155,7 +156,7 @@ func main() {
 	// --- StorageChangeSets pass ---
 	if !*skipStor {
 		fmt.Fprintf(os.Stderr, "scanning StorageChangeSets [%d, %d]...\n", startBlock, endBlock)
-		cdup, err := tx.CursorDupSort(tblStor)
+		cdup, err := tx.CursorDupSort(csCumulativeTblStor)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "stor cursor:", err)
 			os.Exit(1)

@@ -190,10 +190,10 @@ checkpoint). Table sizes confirmed via `mdbx-table-stat.exe`:
 `PlainAccountState=398,785,792 entries (24.0GB)`, `PlainStorageState=1,602,375,128 entries
 (132.5GB)` — matches the memory note's "3亿账户+10亿槽" estimate closely.
 
-**Tool**: `cmd/reth-snapshot-export` (built fresh: `build/bin/reth-snapshot-export.exe`).
+**Tool**: `cmd/n42-reth` (built fresh: `build/bin/reth-snapshot-export.exe`).
 **Command**:
 ```
-reth-snapshot-export.exe -db D:/reth2k/db -out D:/n42-snapshot -end-block 25439434
+n42-reth snapshot-export.exe -db D:/reth2k/db -out D:/n42-snapshot -end-block 25439434
 ```
 (reth's real table names `PlainAccountState`/`PlainStorageState` are the tool's defaults —
 did NOT pass `-n42`, that flag is only for when the source is an N42-format DB.)

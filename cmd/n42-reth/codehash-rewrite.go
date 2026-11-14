@@ -60,12 +60,13 @@ func dstCfg(d kv.TableCfg) kv.TableCfg {
 	return d
 }
 
-func main() {
-	srcPath := flag.String("src", `d:\reth2k\db`, "reth MDBX (read-only)")
-	dstDir := flag.String("dst", `d:\reth-codehash-poc`, "PoC output directory (creates db/ + dict.bin)")
-	limit := flag.Uint64("limit", 0, "stop after N rows (0 = all)")
-	progress := flag.Duration("progress", 30*time.Second, "log interval")
-	flag.Parse()
+func runCodehashRewrite(args []string) {
+	fs := flag.NewFlagSet("n42-reth codehash-rewrite", flag.ExitOnError)
+	srcPath := fs.String("src", `d:\reth2k\db`, "reth MDBX (read-only)")
+	dstDir := fs.String("dst", `d:\reth-codehash-poc`, "PoC output directory (creates db/ + dict.bin)")
+	limit := fs.Uint64("limit", 0, "stop after N rows (0 = all)")
+	progress := fs.Duration("progress", 30*time.Second, "log interval")
+	fs.Parse(args)
 
 	if err := os.MkdirAll(filepath.Join(*dstDir, "db"), 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "mkdir:", err)

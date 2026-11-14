@@ -16,9 +16,10 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	flag.Parse()
+func runCsHead(args []string) {
+	fs := flag.NewFlagSet("n42-reth cs-head", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	fs.Parse(args)
 
 	tables := []string{"AccountChangeSets", "StorageChangeSets"}
 	logger := log.New()

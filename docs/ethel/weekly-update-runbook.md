@@ -205,7 +205,7 @@ courtesy: the box is shared and a build holds it for tens of hours.
 
 | Item | Trigger | Tool | Notes |
 |---|---|---|---|
-| snapshot regen (minimal/full) | needs >60 GB free RAM window | `reth-snapshot-export` | per MEMORY, deferred |
+| snapshot regen (minimal/full) | needs >60 GB free RAM window | `n42-reth snapshot-export` | per MEMORY, deferred |
 | anchors / bpp | when publishing stateless mode | `blockproof-produce` | ~1.5-2 h per 60k blocks |
 | N42-hashed state | when eth-el follower redeploys | `n42-migrate-reth-hashed` (reth copy) or MerkleStageIncremental (changesets) | reth2k must be idle |
 | manifests | at publish | `cmd/n42-eth-manifest` | blake3 per file; source = a hard-link publish root, NOT the E: test dirs (they drop `*.val.zst`) |

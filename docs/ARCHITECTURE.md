@@ -461,7 +461,7 @@ cmd/ethexec                    bring-up tool: witness/leaves freezer replay, reb
 cmd/n42-eth-snapshot           snapshot client: status, fetch, catchup (delta), follow
 cmd/n42-eth-manifest           publisher manifest tool
 cmd/n42-eth-publish            mirror/publisher pipeline
-cmd/reth-snapshot-export       MDBX → RecSplit MPHF + Elias-Fano + zstd snapshot writer
+cmd/n42-reth       MDBX → RecSplit MPHF + Elias-Fano + zstd snapshot writer
 ```
 
 ### Engine API path (external CL → eth-el)
@@ -582,7 +582,7 @@ Decision rationale: `memory feedback_erigon_v2_codec.md`.
 | Client fetch | `n42-eth-snapshot fetch ...` — atomic tmp+rename, parallel workers, blake2b verify | ✓ |
 | Delta apply | `n42-eth-snapshot catchup ...` — apply chained deltas to current manifest_id | ✓ |
 | eth-el AutoFetch | `--snapshot.auto-fetch` — first-boot empty datadir runs initial fetch + delta | ✓ |
-| Segmented snapshot writer | H.3b-mini: `reth-snapshot-export --end-block H` spec-named files | ✓ |
+| Segmented snapshot writer | H.3b-mini: `n42-reth snapshot-export --end-block H` spec-named files | ✓ |
 | Per-1M-block segments | H.3b-full: real per-segment writer using reth `AccountChangeSets` | TODO (1-2 wk) |
 | Delta payload size | per-week delta with H.3b-full ≈ ~2 GB / 0.24 % of archive | targeted |
 

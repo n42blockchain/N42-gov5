@@ -38,17 +38,17 @@ import (
 )
 
 const (
-	tblAcct = "AccountChangeSets"
-	tblStor = "StorageChangeSets"
+	csDictReuseTblAcct = "AccountChangeSets"
+	csDictReuseTblStor = "StorageChangeSets"
 )
 
-func tableCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcct] = kv.TableCfgItem{Flags: kv.DupSort}
-	d[tblStor] = kv.TableCfgItem{Flags: kv.DupSort}
+func csDictReuseTableCfg(d kv.TableCfg) kv.TableCfg {
+	d[csDictReuseTblAcct] = kv.TableCfgItem{Flags: kv.DupSort}
+	d[csDictReuseTblStor] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-type stats struct {
+type csDictReuseStats struct {
 	label string
 
 	totalWrites uint64
@@ -56,11 +56,11 @@ type stats struct {
 	keyLen      int                 // 20 for addr (low 20 bytes meaningful), 32 for hash
 }
 
-func newStats(label string, keyLen int) *stats {
-	return &stats{label: label, freq: make(map[[32]byte]uint64), keyLen: keyLen}
+func newStats(label string, keyLen int) *csDictReuseStats {
+	return &csDictReuseStats{label: label, freq: make(map[[32]byte]uint64), keyLen: keyLen}
 }
 
-func (s *stats) add(b []byte) {
+func (s *csDictReuseStats) add(b []byte) {
 	if len(b) < s.keyLen {
 		return
 	}
@@ -70,7 +70,7 @@ func (s *stats) add(b []byte) {
 	s.totalWrites++
 }
 
-func (s *stats) report() {
+func (s *csDictReuseStats) report() {
 	if s.totalWrites == 0 {
 		fmt.Printf("=== %s ===\n  empty window\n", s.label)
 		return
@@ -177,13 +177,14 @@ func codeHashFromOldAccount(v []byte) []byte {
 	return tail
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	headBlock := flag.Uint64("head", 24766147, "head block (inclusive)")
-	windows := flag.String("windows", "10000,100000,216000",
+func runCsDictReuse(args []string) {
+	fs := flag.NewFlagSet("n42-reth cs-dict-reuse", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	headBlock := fs.Uint64("head", 24766147, "head block (inclusive)")
+	windows := fs.String("windows", "10000,100000,216000",
 		"comma-separated window sizes in blocks (10K=1 freezer file, 216K=30 days)")
-	progressEvery := flag.Duration("progress", 15*time.Second, "progress interval")
-	flag.Parse()
+	progressEvery := fs.Duration("progress", 15*time.Second, "progress interval")
+	fs.Parse(args)
 
 	var winSizes []uint64
 	for _, s := range splitCSV(*windows) {
@@ -206,7 +207,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(csDictReuseTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -235,7 +236,7 @@ func main() {
 
 		// AccountCS: key=block(8B), value=addr(20B) + V2 acct
 		{
-			cdup, err := tx.CursorDupSort(tblAcct)
+			cdup, err := tx.CursorDupSort(csDictReuseTblAcct)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "acct cursor:", err)
 				os.Exit(1)
@@ -277,7 +278,7 @@ func main() {
 
 		// StorageCS: key=block(8B)+addr(20B), DUPSORT slots
 		{
-			cdup, err := tx.CursorDupSort(tblStor)
+			cdup, err := tx.CursorDupSort(csDictReuseTblStor)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "stor cursor:", err)
 				os.Exit(1)

@@ -1,4 +1,4 @@
-// reth-value-stats scans reth's PlainAccountState and PlainStorageState and
+// reth-value-valueStatsStats scans reth's PlainAccountState and PlainStorageState and
 // reports value-length histograms plus total-size estimates for several
 // storage layouts:
 //
@@ -35,17 +35,17 @@ import (
 )
 
 const (
-	tblAcct = "PlainAccountState"
-	tblStor = "PlainStorageState"
+	valueStatsTblAcct = "PlainAccountState"
+	valueStatsTblStor = "PlainStorageState"
 )
 
-func tableCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcct] = kv.TableCfgItem{}
-	d[tblStor] = kv.TableCfgItem{Flags: kv.DupSort}
+func valueStatsTableCfg(d kv.TableCfg) kv.TableCfg {
+	d[valueStatsTblAcct] = kv.TableCfgItem{}
+	d[valueStatsTblStor] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-type stats struct {
+type valueStatsStats struct {
 	count    uint64
 	totalLen uint64
 	maxLen   int
@@ -53,7 +53,7 @@ type stats struct {
 	hist     [256]uint64 // value length histogram (length in bytes, capped at 255)
 }
 
-func (s *stats) add(l int) {
+func (s *valueStatsStats) add(l int) {
 	s.count++
 	s.totalLen += uint64(l)
 	if s.maxLen == 0 && s.minLen == 0 {
@@ -72,7 +72,7 @@ func (s *stats) add(l int) {
 }
 
 // percentile returns smallest length L such that >= p fraction of entries have length <= L.
-func (s *stats) percentile(p float64) int {
+func (s *valueStatsStats) percentile(p float64) int {
 	if s.count == 0 {
 		return 0
 	}
@@ -87,7 +87,7 @@ func (s *stats) percentile(p float64) int {
 	return 255
 }
 
-func (s *stats) sumUpToLen(L int) uint64 {
+func (s *valueStatsStats) sumUpToLen(L int) uint64 {
 	var sum uint64
 	for i := 0; i <= L && i < 256; i++ {
 		sum += s.hist[i] * uint64(i)
@@ -95,7 +95,7 @@ func (s *stats) sumUpToLen(L int) uint64 {
 	return sum
 }
 
-func (s *stats) countAboveLen(L int) uint64 {
+func (s *valueStatsStats) countAboveLen(L int) uint64 {
 	var c uint64
 	for i := L + 1; i < 256; i++ {
 		c += s.hist[i]
@@ -103,7 +103,7 @@ func (s *stats) countAboveLen(L int) uint64 {
 	return c
 }
 
-func (s *stats) sumAboveLen(L int) uint64 {
+func (s *valueStatsStats) sumAboveLen(L int) uint64 {
 	var sum uint64
 	for i := L + 1; i < 256; i++ {
 		sum += s.hist[i] * uint64(i)
@@ -118,7 +118,7 @@ func mib(x uint64) string {
 	return fmt.Sprintf("%.2f MiB", float64(x)/(1<<20))
 }
 
-func report(label string, s *stats) {
+func report(label string, s *valueStatsStats) {
 	if s.count == 0 {
 		fmt.Printf("\n=== %s ===\nempty\n", label)
 		return
@@ -185,7 +185,7 @@ func report(label string, s *stats) {
 		gib(inlineNoOffset))
 }
 
-func scanTable(tx kv.Tx, table string, stripPrefix int, isDupsort bool) (*stats, error) {
+func scanTable(tx kv.Tx, table string, stripPrefix int, isDupsort bool) (*valueStatsStats, error) {
 	var (
 		c   kv.Cursor
 		err error
@@ -200,7 +200,7 @@ func scanTable(tx kv.Tx, table string, stripPrefix int, isDupsort bool) (*stats,
 	}
 	defer c.Close()
 
-	s := &stats{}
+	s := &valueStatsStats{}
 	startT := time.Now()
 	lastT := startT
 	var bytes uint64
@@ -227,11 +227,12 @@ func scanTable(tx kv.Tx, table string, stripPrefix int, isDupsort bool) (*stats,
 	return s, nil
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	skipAcct := flag.Bool("skip-acct", false, "skip PlainAccountState")
-	skipStor := flag.Bool("skip-stor", false, "skip PlainStorageState")
-	flag.Parse()
+func runValueStats(args []string) {
+	fs := flag.NewFlagSet("n42-reth value-stats", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	skipAcct := fs.Bool("skip-acct", false, "skip PlainAccountState")
+	skipStor := fs.Bool("skip-stor", false, "skip PlainStorageState")
+	fs.Parse(args)
 
 	logger := log.New()
 	db, err := mdbx.NewMDBX(logger).
@@ -240,7 +241,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(valueStatsTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -257,7 +258,7 @@ func main() {
 
 	if !*skipAcct {
 		fmt.Fprintln(os.Stderr, "scanning PlainAccountState...")
-		s, err := scanTable(tx, tblAcct, 0, false)
+		s, err := scanTable(tx, valueStatsTblAcct, 0, false)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "acct scan:", err)
 			os.Exit(1)
@@ -268,7 +269,7 @@ func main() {
 	if !*skipStor {
 		fmt.Fprintln(os.Stderr, "scanning PlainStorageState...")
 		// strip 32B slot prefix to count only U256 bytes
-		s, err := scanTable(tx, tblStor, 32, true)
+		s, err := scanTable(tx, valueStatsTblStor, 32, true)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "stor scan:", err)
 			os.Exit(1)

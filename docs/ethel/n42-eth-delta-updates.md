@@ -187,7 +187,7 @@ ethexec extend (1 week of new blocks)
    and currently rebuilt monolithically per release. Without H.3,
    every delta carries the full snapshot. With H.3, only changed
    account/storage **segments** ship. The size win is huge but
-   touches the snapshot writer (`cmd/reth-snapshot-export --n42`).
+   touches the snapshot writer (`cmd/n42-reth snapshot-export --n42`).
 
 4. **Cross-mode deltas?**
    Should a `delta-archive-*.json` carry the files for `full`

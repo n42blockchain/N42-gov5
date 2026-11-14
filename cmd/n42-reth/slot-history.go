@@ -25,20 +25,21 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tblStorCS = "StorageChangeSets"
+const slotHistoryTblStorCS = "StorageChangeSets"
 
-func tableCfg(defaults kv.TableCfg) kv.TableCfg {
-	defaults[tblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
+func slotHistoryTableCfg(defaults kv.TableCfg) kv.TableCfg {
+	defaults[slotHistoryTblStorCS] = kv.TableCfgItem{Flags: kv.DupSort}
 	return defaults
 }
 
-func main() {
-	dbPath := flag.String("db", `d:\reth2k\db`, "reth MDBX path")
-	fromBlock := flag.Uint64("from", 0, "start block (inclusive)")
-	toBlock := flag.Uint64("to", 0, "end block (inclusive, 0 = unbounded)")
-	addrHex := flag.String("addr", "", "20-byte address (hex, empty = any)")
-	slotHex := flag.String("slot", "", "32-byte slot (hex)")
-	flag.Parse()
+func runSlotHistory(args []string) {
+	fs := flag.NewFlagSet("n42-reth slot-history", flag.ExitOnError)
+	dbPath := fs.String("db", `d:\reth2k\db`, "reth MDBX path")
+	fromBlock := fs.Uint64("from", 0, "start block (inclusive)")
+	toBlock := fs.Uint64("to", 0, "end block (inclusive, 0 = unbounded)")
+	addrHex := fs.String("addr", "", "20-byte address (hex, empty = any)")
+	slotHex := fs.String("slot", "", "32-byte slot (hex)")
+	fs.Parse(args)
 
 	var addr []byte
 	if *addrHex != "" {
@@ -68,7 +69,7 @@ func main() {
 		PageSize(4096).
 		MapSize(4 * datasize.TB).
 		Readonly().
-		WithTableCfg(tableCfg).
+		WithTableCfg(slotHistoryTableCfg).
 		Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
@@ -83,7 +84,7 @@ func main() {
 	}
 	defer tx.Rollback()
 
-	cursor, err := tx.Cursor(tblStorCS)
+	cursor, err := tx.Cursor(slotHistoryTblStorCS)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cursor:", err)
 		os.Exit(1)

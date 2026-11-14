@@ -384,7 +384,7 @@ already cross-checks to canonical geth.
   — never window by recency).
 - 2026-06-15 — **N42-hashed approach corrected.** N42-hashed (hashed-canonical state)
   is NOT needed by ANY published format — minimal/full snapshots export from PlainState
-  (`reth-snapshot-export` reads PlainAccountState/Storage), archive uses PlainState+
+  (`n42-reth snapshot-export` reads PlainAccountState/Storage), archive uses PlainState+
   changesets, stateless uses anchors. N42-hashed is ONLY the eth-el live follower node's
   state. The block data is all LOCAL (don't fetch via network). N42-eth1177 PlainState is
   @ tip + verified; its hashed tables are EMPTY (HashedAccount/Storage/Trie* = 0 — the EVM

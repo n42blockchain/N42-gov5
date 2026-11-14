@@ -29,19 +29,20 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
-const tblAcctCS = "AccountChangeSets"
+const acctHistoryTblAcctCS = "AccountChangeSets"
 
 func rethCfg(d kv.TableCfg) kv.TableCfg {
-	d[tblAcctCS] = kv.TableCfgItem{Flags: kv.DupSort}
+	d[acctHistoryTblAcctCS] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 
-func main() {
-	rethDir := flag.String("reth", `d:\reth2k\db`, "reth MDBX path")
-	addrStr := flag.String("addr", "", "20B addr hex (no 0x prefix)")
-	fromBlock := flag.Uint64("from", 0, "start block (inclusive)")
-	toBlock := flag.Uint64("to", 24998143, "end block (inclusive)")
-	flag.Parse()
+func runAcctHistory(args []string) {
+	fs := flag.NewFlagSet("n42-reth acct-history", flag.ExitOnError)
+	rethDir := fs.String("reth", `d:\reth2k\db`, "reth MDBX path")
+	addrStr := fs.String("addr", "", "20B addr hex (no 0x prefix)")
+	fromBlock := fs.Uint64("from", 0, "start block (inclusive)")
+	toBlock := fs.Uint64("to", 24998143, "end block (inclusive)")
+	fs.Parse(args)
 
 	if *addrStr == "" {
 		fmt.Fprintln(os.Stderr, "--addr required")
@@ -75,7 +76,7 @@ func main() {
 	// values (verified against reth-cs-dump-block — 245 entries in block
 	// 14698850 are all visible via cursor.Next()). Per-block SeekExact
 	// for 25M blocks is unusably slow; flat scan is O(table-size).
-	cur, err := tx.CursorDupSort(tblAcctCS)
+	cur, err := tx.CursorDupSort(acctHistoryTblAcctCS)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cursor:", err)
 		os.Exit(1)

@@ -274,7 +274,7 @@ dense 是 sparse 的超集:e[3]=1 的逐块记录版本里,天然包含 e[3]=64 
 
 ✻ Crunched for 2m 10s · 1 monitor still running
 
-● Monitor event: "Hourly progress report for reth-snapshot-export (PID 2972)"
+● Monitor event: "Hourly progress report for n42-reth snapshot-export (PID 2972)"
 
 snapshot-export:storage 的 MPHF 构建(phase 1)完成,耗时2h04m,现在 phase 2 序号回查 200M/1602M。照 account 侧的比例,后面还有约2-3小时。DATC 会在它结束后自动续传。
 
@@ -325,7 +325,7 @@ Monitor started · task b3i2gahii · persistent
 
 ✻ Churned for 56s · 1 monitor still running
 
-● Monitor event: "Hourly progress report for reth-snapshot-export (PID 2972)"
+● Monitor event: "Hourly progress report for n42-reth snapshot-export (PID 2972)"
 
 snapshot-export phase 2 到 1400M/1602M,快完了,之后还有 phase 3-5(重写+ETL排序+压缩)。接力监控在位。
 
@@ -362,9 +362,9 @@ DATC 续传基线确认:叶子 27.45%(3.66B/13.33B)、区块 49.77%(12,660,000),
 
 ✻ Worked for 7s · 1 monitor still running
 
-● Monitor event: "Hourly progress report for reth-snapshot-export (PID 2972)"
+● Monitor event: "Hourly progress report for n42-reth snapshot-export (PID 2972)"
 
-● Monitor "Hourly progress report for reth-snapshot-export (PID 2972)" stream ended
+● Monitor "Hourly progress report for n42-reth snapshot-export (PID 2972)" stream ended
 
 这是 snapshot 监控的收尾通知,内容之前已汇报过(storage 侧 20.3GB/4h48m,DATC 已接力续传)。该监控自然结束,无需处理。
 

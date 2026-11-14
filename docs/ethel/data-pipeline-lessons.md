@@ -127,7 +127,7 @@ rebuild (verify-root), not incremental roots.
 ## 5. Architecture facts worth keeping
 
 - **No published distribution format depends on N42-hashed** (the hashed-canonical
-  state). minimal/full **snapshots export from PlainState** (`reth-snapshot-export`
+  state). minimal/full **snapshots export from PlainState** (`n42-reth snapshot-export`
   reads PlainAccountState/Storage), archive = PlainState + changesets + witness,
   stateless = anchors. N42-hashed is ONLY the **eth-el live follower node's** state.
   So weekly published data derives entirely from N42-eth1177 PlainState (+ codes/

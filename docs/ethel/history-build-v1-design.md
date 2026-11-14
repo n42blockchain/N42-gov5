@@ -133,7 +133,7 @@ for each domain in [account, storage]:
 ```
 
 ETL handles the spilling-to-disk + merge sort, exactly the pattern
-already validated by `reth-snapshot-export` Phase 3.
+already validated by `n42-reth snapshot-export` Phase 3.
 
 Memory ceiling: one ETL buffer (e.g., 1 GB) + one in-progress per-key
 accumulator (bounded by max writes for a single hottest slot — wETH
