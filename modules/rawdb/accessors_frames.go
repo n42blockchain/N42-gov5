@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
@@ -404,4 +405,8 @@ func writeFrameBodyOpts(db kv.RwTx, hash types.Hash, number uint64, body *block.
 		}
 	}
 	return nil
+}
+
+func init() {
+	envswitch.Declare("N42_FRAME_DB_PRUNE_BATCHES", envswitch.BenchOnly, "BENCH ONLY: the frame store keeps only the last N batches.")
 }
