@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/ddn/gateway"
@@ -158,4 +159,8 @@ func (n *Node) ddnProvider(c conf.DDNCfg) (provider.DecisionProvider, error) {
 		members = append(members, quorum.Member{Provider: p, Price: sc.Price})
 	}
 	return quorum.New(c.ProviderDID, members, c.MaxProviderConcurrency)
+}
+
+func init() {
+	envswitch.Declare("N42_DDN_KEY_PASSWORD", envswitch.Config, "Password of the DDN receipt signer key.")
 }

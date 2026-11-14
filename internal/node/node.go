@@ -58,6 +58,7 @@ import (
 	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -1824,6 +1825,7 @@ func (n *Node) Start() error {
 	n.state = runningState
 	n.lock.Unlock()
 
+	logEnvSwitches()
 	log.PrintStartupProgress(1, 6, "Blockchain")
 	if err := n.blockChain.Start(); err != nil {
 		log.Errorf("failed setup blockChain service, err: %v", err)
@@ -4368,4 +4370,20 @@ func historyBackfillInterval() time.Duration {
 		log.Warn("N42_HISTORY_INDEX_INTERVAL ignored (not a positive duration)", "value", v)
 	}
 	return 2 * time.Second
+}
+
+func init() {
+	envswitch.Declare("N42_FRAME_LOG_KEEP_SEGMENTS", envswitch.Diag, "Segments the frame log keeps.")
+	envswitch.Declare("N42_TXINDEX_DIR", envswitch.Config, "Cold tx-hash to block index directory (txlookup segments).")
+	envswitch.Declare("N42_BLOCKHASH_DIR", envswitch.Config, "Cold blockHash to number index directory (blockhashindex segments).")
+	envswitch.Declare("N42_SEPARATE_VOTE_DB", envswitch.Config, "Keep votes in their own database.")
+	envswitch.Declare("N42_FRAME_DB", envswitch.Config, "Frames go to their own MDBX store instead of the chain database.")
+	envswitch.Declare("N42_FRAME_LOG", envswitch.Diag, "Append frame data to a log beside the frame store.")
+	envswitch.Declare("N42_FRAME_DB_SYNC", envswitch.BenchOnly, "BENCH ONLY: safe-nosync drops the frame store's per-commit fsync.")
+	envswitch.Declare("N42_FRAME_DB_MAPSIZE_GB", envswitch.Perf, "Map size of the frame store, in GB.")
+	envswitch.Declare("N42_MDBX_SYNC", envswitch.Config, "MDBX durability mode.")
+	envswitch.Declare("N42_MDBX_DIRTY_GB", envswitch.Perf, "Dirty-page limit of the ChainDB, in GB.")
+	envswitch.Declare("N42_MDBX_MAPSIZE_GB", envswitch.Config, "Map size of the ChainDB, in GB.")
+	envswitch.Declare("N42_HISTORY_INDEX_INTERVAL", envswitch.Config, "How often the deferred history backfiller folds the changesets.")
+	envswitch.Declare(attest.EnvFlushMs, envswitch.Perf, "How long a committee member batches attestations before signing, in ms.")
 }
