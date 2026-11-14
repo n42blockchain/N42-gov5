@@ -33,7 +33,6 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit/testnet"
 	"github.com/n42blockchain/N42/contracts/deposit/token"
 	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"

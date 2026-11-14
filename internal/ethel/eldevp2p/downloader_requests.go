@@ -3,6 +3,8 @@
 //
 // Downloader wire requests to peers.
 
+//go:build n42el
+
 package eldevp2p
 
 import (

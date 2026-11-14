@@ -3,6 +3,8 @@
 //
 // Downloader peer handshake, response handlers and peer selection.
 
+//go:build n42el
+
 package eldevp2p
 
 import (

@@ -3,6 +3,8 @@
 //
 // Downloader coordinator, missing-ancestor sync, prefetch and header/body ensure rounds.
 
+//go:build n42el
+
 package eldevp2p
 
 import (

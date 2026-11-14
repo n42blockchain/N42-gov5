@@ -3,6 +3,8 @@
 //
 // Downloader reorg handling, canonical-head seeding and header link validation.
 
+//go:build n42el
+
 package eldevp2p
 
 import (
@@ -12,7 +14,6 @@ import (
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"

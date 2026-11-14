@@ -32,7 +32,6 @@ import (
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/utils"
-	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/consensusrest"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/log"

@@ -3,6 +3,8 @@
 //
 // Block assembly and wire transaction/withdrawal decoding.
 
+//go:build n42el
+
 package eldevp2p
 
 import (

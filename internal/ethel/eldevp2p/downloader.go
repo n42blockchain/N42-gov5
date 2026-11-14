@@ -49,7 +49,6 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/envswitch"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"

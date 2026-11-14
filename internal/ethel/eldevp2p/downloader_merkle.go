@@ -3,6 +3,8 @@
 //
 // Downloader async merkle stage and anchor attestation.
 
+//go:build n42el
+
 package eldevp2p
 
 import (

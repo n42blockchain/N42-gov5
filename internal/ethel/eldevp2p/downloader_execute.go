@@ -3,6 +3,8 @@
 //
 // Downloader local catch-up and range execution.
 
+//go:build n42el
+
 package eldevp2p
 
 import (
