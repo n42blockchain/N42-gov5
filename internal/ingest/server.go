@@ -26,11 +26,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame/attest"
@@ -685,4 +685,4 @@ func (s *Server) readAttest(r io.Reader, buf *[]byte) error {
 
 // attestBodyReuse is N42_BLOCK_SCRATCH_POOL (default on; "0" reads every
 // attestation batch into a fresh body).
-var attestBodyReuse = os.Getenv("N42_BLOCK_SCRATCH_POOL") != "0"
+var attestBodyReuse = envswitch.Not0("N42_BLOCK_SCRATCH_POOL", envswitch.Perf, "Default on: per-block scratch reused across blocks; 0 allocates fresh (r31a).")

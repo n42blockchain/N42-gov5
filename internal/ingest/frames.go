@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
@@ -325,4 +326,8 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 			last, lastBusy = a, b
 		}
 	}
+}
+
+func init() {
+	envswitch.Declare(EnvFrameGateways, envswitch.Config, "Gateway addresses whose frames this node admits.")
 }

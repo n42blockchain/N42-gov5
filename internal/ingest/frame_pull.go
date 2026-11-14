@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/common/envswitch"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
@@ -258,4 +259,8 @@ func pullFrom(ctx context.Context, peer string, hashes []types.Hash, found func(
 		found(h, raw)
 	}
 	return nil
+}
+
+func init() {
+	envswitch.Declare(EnvFramePullPeers, envswitch.Config, "Ingest addresses of the validators a node pulls missing frames from.")
 }
