@@ -13,7 +13,8 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
+func runHeads(args []string) {
+	os.Args = append([]string{"n42-freezer heads"}, args...)
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: freezer-heads <freezer-dir>")
 		os.Exit(2)

@@ -228,7 +228,7 @@ Shanghai 时代 gas/EVM 规则变化的交互。**要清零必须查根因,不�
 ### 5.1 静态段哲学 [已落地]
 
 时间(月度)分段、不可变、内容寻址;freezer/columnar 双格式;派生数据可再生
-(每周补齐流程:freezer-heads 盘点 → 四小件 → witness auto-resume)。
+(每周补齐流程:n42-freezer heads 盘点 → 四小件 → witness auto-resume)。
 
 ### 5.2 压缩矩阵 [实测]
 

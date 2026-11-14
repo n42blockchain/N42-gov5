@@ -740,7 +740,7 @@ witnessreplay: block 12854611: ProcessBlock: tx 28: nonce too high:
   gauge，良性、tier-1 之前就有）；tier-1 新增代码无竞态报告；
 - 860k 块窗口（12.0–12.86M，256w，gc300）tier-1 ×3 / base ×3：6/6 通过，每次 1m50s。
 
-失败块本身：`block-senders-list` 显示该块前 29 笔以上全是同一热钱包
+失败块本身：`n42-freezer block-senders-list` 显示该块前 29 笔以上全是同一热钱包
 `0x99c8…89e3` 的连续 nonce（1153178 起，type 0 转账），tx 28 = 1153206；
 "state 1153205" = 前 28 笔只生效了 27 次自增，或 tx 28 读到的是另一份对象。
 需要从创世跑到 12.85M 才触发，说明触发条件是**进程生命周期内累积的状态**

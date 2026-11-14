@@ -72,7 +72,7 @@ cidx) resume by **`SegmentCount × 8192`**. If the last segment is **partial**
 (e.g. 4408/8192), the segment count **over-estimates** actual coverage, and a
 naive extension appends the tail at the wrong block → a **non-contiguous hole**.
 
-- `freezer-info`'s "N segments × 8192 = MaxBlock" is a **CAPACITY** figure, NOT
+- `n42-freezer info`'s "N segments × 8192 = MaxBlock" is a **CAPACITY** figure, NOT
   actual coverage. To know the real last block, **READ across the suspected
   region**, don't trust the segment count.
 - **Symptom:** a continuous-read consumer (bpp / blockproof-produce) crashes
@@ -153,7 +153,7 @@ rebuild (verify-root), not incremental roots.
 
 Published data refreshes **weekly**; every block number in the runbook is a
 one-week snapshot. The SOURCE OF TRUTH for "where is each dataset" is its on-disk
-height marker (`freezer-info` Items / `ethel-last-block` / `codes.coverage` /
+height marker (`n42-freezer info` Items / `ethel-last-block` / `codes.coverage` /
 manifest `block_range.end` / anchorc end / geth `Frozen()`). Weekly maintenance =
 re-run the same generators (they auto-resume to the new geth tip); refresh geth
 ancient from a live geth+CL first, then fan out. See runbook §5b/§5e.

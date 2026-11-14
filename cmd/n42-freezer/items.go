@@ -27,7 +27,8 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
+func runItems(args []string) {
+	os.Args = append([]string{"n42-freezer items"}, args...)
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: freezer-items <freezer-dir>")
 		os.Exit(1)

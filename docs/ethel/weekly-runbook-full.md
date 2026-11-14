@@ -36,7 +36,7 @@ ethexec-built datadir, truncates the freezer). See §6 gotcha table.
 
 ```bash
 # geth-sourced target = geth frozen head
-build/bin/freezer-heads.exe d:/geth/geth/chaindata/ancient/chain
+build/bin/n42-freezer.exe heads d:/geth/geth/chaindata/ancient/chain
 #   → "frozen=<Items>" (sentinel stripped). Target last block = Items − 1.
 #     2026-07-22: Items 25,587,116 → geth target 25,587,115.
 
@@ -72,7 +72,7 @@ Start-Process $EX -ArgumentList '--ancient',$A,'--datadir','d:/N42-eth1177' `
   -RedirectStandardOutput D:\weekly-<date>-replay.log -RedirectStandardError D:\weekly-<date>-replay.err.log
 ```
 
-**Gate**: `freezer-heads` shows n42-eth1 {receipts,senders} and N42-eth1177
+**Gate**: `n42-freezer heads` shows n42-eth1 {receipts,senders} and N42-eth1177
 {acctcs,storcs,witness,senders} all = geth Items; `ethel-last-block` = geth head.
 The replay verifies gasUsed per-block inline, so a clean run to tip IS the exec gate.
 (`witness-block-trace` works again as of 2026-09-10 — three sampled blocks all
@@ -121,7 +121,7 @@ WS is reclaimable — watch `\Memory\Committed Bytes`, not "free RAM"). Fresh ds
 ≈ 156 GB. Only after the gate: swap `D:/N42-hashed` to the new dir.
 
 `--expect-root` = the stateRoot of `<reth-head>` read from the geth freezer
-(geth must be frozen past it — check with `freezer-heads.exe`):
+(geth must be frozen past it — check with `n42-freezer.exe heads`):
 
 ```bash
 build/bin/geth-hdr-probe.exe -ancient d:/geth/geth/chaindata/ancient/chain -blocks <reth-head>

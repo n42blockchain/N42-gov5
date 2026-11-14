@@ -40,7 +40,7 @@ be confirmed via `reth db stats` (safe now it's idle).
 
 ## 2. n42-eth-el derived-data inventory (what gets regenerated)
 
-**Real ends probed 2026-06-14** (`freezer-info`, `headerc-bodyc-probe`,
+**Real ends probed 2026-06-14** (`n42-freezer info`, `headerc-bodyc-probe`,
 cidx sizes) — supersede the stale 05-19 manifest (25,101,867):
 
 | Dataset | Path | Size | Freezer tables / content | **Real current end** | Feeds mode |
@@ -275,7 +275,7 @@ each dataset" is its on-disk **height marker**, which every weekly run updates:
 
 | Dataset | Authoritative height marker | How to read |
 |---|---|---|
-| n42-eth1 / N42-eth1177 freezers | per-table `Items()` (= last block + 1) | `freezer-info --dir <fz>` |
+| n42-eth1 / N42-eth1177 freezers | per-table `Items()` (= last block + 1) | `n42-freezer info --dir <fz>` |
 | N42-eth1177 PlainState | `ethel-last-block` (SyncStage) | `ethexec db-stats --datadir` |
 | **codes** | `codes.coverage` (8-byte BE uint64 block) | `xxd codes.coverage` |
 | manifests | `block_range.end` | `manifest.json` |
@@ -310,7 +310,7 @@ break execution of most txs. The weekly delta is just cold new deployments; the
 ## 7. Source-correctness GATE — verification results (2026-06-14, read-only)
 
 Tools: `cmd/block-stats`, `cmd/geth-hdr-probe` (new), `cmd/headerc-bodyc-probe`,
-`cmd/freezer-info`. All open data read-only (`freezer.NewReadOnly` / `Readonly()`).
+`cmd/n42-freezer`. All open data read-only (`freezer.NewReadOnly` / `Readonly()`).
 
 | Check | Result |
 |---|---|
@@ -400,7 +400,7 @@ already cross-checks to canonical geth.
   resume crashed: `read header 24999000: index 5208 out of range (segment has 4408)`.
   Diagnosis (NOT byte-corruption — present blocks' hashes match geth): the columnar
   headerc/bodyc had a partial segment 3051 (4408/8192 → actual coverage ~24,998,199),
-  but `freezer-info` reports "3090 segments × 8192 = 25,313,280" which is CAPACITY, not
+  but `n42-freezer info` reports "3090 segments × 8192 = 25,313,280" which is CAPACITY, not
   actual. My earlier header-/body-compact extension resumed from that capacity estimate
   (25,255,936) → appended the tail but left a non-contiguous hole 24,998,200→25,255,935.
   Batch freezers (receipts/senders/acctcs/storcs/witness) were CONTIGUOUS/fine. **Fix

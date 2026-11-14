@@ -56,12 +56,12 @@ senders.cidx + senders.NNNN.cdat  # 可选，但性能测试强烈建议
 执行 manifest 校验。没有源端 manifest 时，只能表述为“大小与表头可读”，不能
 表述为“完整性已验证”。
 
-用 `freezer-heads` 检查各按块表的 `start/items`。`headerc/bodyc/witness/senders`
+用 `n42-freezer heads` 检查各按块表的 `start/items`。`headerc/bodyc/witness/senders`
 必须覆盖目标 `[start,end)`；codes 必须覆盖该区间用到的全部 bytecode：
 
 ```bash
-go build -tags nosqlite,noboltdb -o /tmp/freezer-heads ./cmd/freezer-heads
-/tmp/freezer-heads /data/blockchain/witness
+go build -tags nosqlite,noboltdb -o /tmp/n42-freezer ./cmd/n42-freezer
+/tmp/n42-freezer heads /data/blockchain/witness
 ```
 
 缺 code 会让合约被误当作 EOA，随后 witness 流错位，常表现为 nonce、gas 或

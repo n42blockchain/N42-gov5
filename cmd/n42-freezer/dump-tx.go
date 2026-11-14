@@ -16,11 +16,12 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
-	ancient := flag.String("ancient", `d:\geth\geth\chaindata\ancient\chain`, "geth ancient chain dir")
-	blockNum := flag.Uint64("block", 11114732, "block number")
-	idx := flag.Int("idx", 32, "tx index in block")
-	flag.Parse()
+func runDumpTx(args []string) {
+	fs := flag.NewFlagSet("n42-freezer dump-tx", flag.ExitOnError)
+	ancient := fs.String("ancient", `d:\geth\geth\chaindata\ancient\chain`, "geth ancient chain dir")
+	blockNum := fs.Uint64("block", 11114732, "block number")
+	idx := fs.Int("idx", 32, "tx index in block")
+	fs.Parse(args)
 
 	f, err := freezer.New(*ancient, 0)
 	if err != nil {

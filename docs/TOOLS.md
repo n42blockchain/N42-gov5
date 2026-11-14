@@ -67,3 +67,17 @@ MDBX table inspection (counts, sizes, diffs, checksums) plus `clear`, which wipe
 | `table-size` | `n42-table size` | chaindata table entry counts via cursor walk |
 | `mdbx-table-stat` | `n42-table mdbx-stat` | read-only entries / page-count / byte-size per table of an MDBX database |
 | `clear-table` | `n42-table clear` | ClearBucket a named table in a chaindata MDBX env (writes) |
+
+## n42-freezer
+
+Readers for freezer (ancient) directories; `retrim` rewrites a table index. heads/items take positional arguments and have no `-h`.
+
+| Old binary | New invocation | Purpose |
+|---|---|---|
+| `freezer-heads` | `n42-freezer heads` | print every table's coverage in a freezer directory (arg: dir) |
+| `freezer-info` | `n42-freezer info` | dump items() per table of a freezer dir, raw and compressed |
+| `freezer-items` | `n42-freezer items` | print item counts of freezer tables (positional) |
+| `freezer-retrim` | `n42-freezer retrim` | rewrite a per-item freezer table's cidx to trim it (writes) |
+| `block-senders-list` | `n42-freezer block-senders-list` | ecrecover a geth-ancient block's txs and print (idx, sender, nonce) |
+| `receipts-probe` | `n42-freezer receipts-probe` | time reading N receipts from a compressed freezer table |
+| `dump-tx` | `n42-freezer dump-tx` | print a single tx from a geth ancient block body |

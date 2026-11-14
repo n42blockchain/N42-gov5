@@ -20,11 +20,12 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-func main() {
-	ancient := flag.String("ancient", `d:\geth\geth\chaindata\ancient\chain`, "geth ancient dir")
-	block := flag.Uint64("block", 0, "block number")
-	filterAddr := flag.String("addr", "", "if set, only print txs whose sender matches this 20B hex")
-	flag.Parse()
+func runBlockSendersList(args []string) {
+	fs := flag.NewFlagSet("n42-freezer block-senders-list", flag.ExitOnError)
+	ancient := fs.String("ancient", `d:\geth\geth\chaindata\ancient\chain`, "geth ancient dir")
+	block := fs.Uint64("block", 0, "block number")
+	filterAddr := fs.String("addr", "", "if set, only print txs whose sender matches this 20B hex")
+	fs.Parse(args)
 
 	f, err := freezer.NewReadOnly(*ancient)
 	if err != nil {

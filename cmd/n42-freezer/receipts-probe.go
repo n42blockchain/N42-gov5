@@ -13,11 +13,12 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
-	dir := flag.String("dir", "", "freezer dir with receipts.cdat")
-	start := flag.Uint64("start", 0, "start block")
-	count := flag.Uint64("count", 1000, "blocks to read")
-	flag.Parse()
+func runReceiptsProbe(args []string) {
+	fs := flag.NewFlagSet("n42-freezer receipts-probe", flag.ExitOnError)
+	dir := fs.String("dir", "", "freezer dir with receipts.cdat")
+	start := fs.Uint64("start", 0, "start block")
+	count := fs.Uint64("count", 1000, "blocks to read")
+	fs.Parse(args)
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: receipts-probe --dir <freezer> [--start N] [--count M]")
 		os.Exit(1)

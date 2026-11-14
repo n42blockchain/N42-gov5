@@ -19,9 +19,10 @@ var compactTables = []string{
 	freezer.TableLeavesJournal, freezer.TableBlockWitness,
 }
 
-func main() {
-	dir := flag.String("dir", "", "freezer dir")
-	flag.Parse()
+func runInfo(args []string) {
+	fs := flag.NewFlagSet("n42-freezer info", flag.ExitOnError)
+	dir := fs.String("dir", "", "freezer dir")
+	fs.Parse(args)
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: freezer-info --dir <freezer>")
 		os.Exit(1)

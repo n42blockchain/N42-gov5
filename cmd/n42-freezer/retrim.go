@@ -27,17 +27,18 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
-func main() {
-	dir := flag.String("dir", "", "freezer directory containing <table>.cidx")
-	table := flag.String("table", "", "table name (e.g. receipts)")
-	ext := flag.String("ext", "c", "index extension family (cidx => c)")
-	keepFromFile := flag.Int("keep-from-file", -1, "first data-file number to keep (e.g. 89 keeps NNNN >= 0089)")
-	startItem := flag.Uint64("start-item", 0, "alternative: absolute first item to keep (snapped back to a batch boundary)")
-	dryrun := flag.Bool("dryrun", false, "report what would be dropped without writing")
-	flag.Parse()
+func runRetrim(args []string) {
+	fs := flag.NewFlagSet("n42-freezer retrim", flag.ExitOnError)
+	dir := fs.String("dir", "", "freezer directory containing <table>.cidx")
+	table := fs.String("table", "", "table name (e.g. receipts)")
+	ext := fs.String("ext", "c", "index extension family (cidx => c)")
+	keepFromFile := fs.Int("keep-from-file", -1, "first data-file number to keep (e.g. 89 keeps NNNN >= 0089)")
+	startItem := fs.Uint64("start-item", 0, "alternative: absolute first item to keep (snapped back to a batch boundary)")
+	dryrun := fs.Bool("dryrun", false, "report what would be dropped without writing")
+	fs.Parse(args)
 
 	if *dir == "" || *table == "" || (*keepFromFile < 0 && *startItem == 0) {
-		flag.Usage()
+		fs.Usage()
 		os.Exit(2)
 	}
 

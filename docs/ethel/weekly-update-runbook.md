@@ -304,7 +304,7 @@ per-tier window rule. The retrimmed receipts still wait on the retrim artefact.
 ## 7. Verification gates (every week)
 
 - Four light items: log lines report resumed-from == prior marker and
-  complete-to == geth tip; freezer-info re-probe shows Items() == tip+1.
+  complete-to == geth tip; n42-freezer info re-probe shows Items() == tip+1.
 - Replay: `ethel-last-block == tip`; witness spot-check
   (`witness-block-trace` on 2-3 sampled new blocks reproduces gasUsed).
 - Full state-root GATE (`verify-root --workers 16`, ~1 h) — run after LARGE
@@ -887,7 +887,7 @@ time), then stopped.
 
 Source: geth 1.17.4 ancient frozen **Items=25,587,116** → target last block
 **25,587,115** (prior week 25,503,167; Δ **83,948**). geth was STOPPED (last
-freeze 04:44); freezer-heads is the authority (strips the geth cidx sentinel:
+freeze 04:44); n42-freezer heads is the authority (strips the geth cidx sentinel:
 rawItems 25,587,117 → real 25,587,116).
 
 Both geth-sourced AND reth-sourced steps ran this session (reth2k finished
@@ -906,7 +906,7 @@ follower advances forward from the base state / geth changesets bridge the gap).
   tail). All four N42-eth1177 tables Items()=25,587,116; PlainState+Code written
   as side effect. Clean exit, no anomalies. ✅ (the replay verifies gasUsed
   per-block inline as it executes, so a clean run to tip is itself the exec gate.)
-- GATES: (a) freezer-heads all four tables = 25,587,116 ✅; (b) ethel-last-block
+- GATES: (a) n42-freezer heads all four tables = 25,587,116 ✅; (b) ethel-last-block
   = 25,587,115 ✅. (c) witness spot-check via `witness-block-trace` **could not
   run**: the tool is regressed — it fails with witness-stream misalignment
   ("nonce too high state:0") even on a prior-verified FROZEN block (25,490,000,
