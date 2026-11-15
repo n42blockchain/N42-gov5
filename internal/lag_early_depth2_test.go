@@ -185,6 +185,8 @@ func TestAheadKeysCut(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			defer SetAheadKeysCutForTest(on)()
+			// N42_AHEAD_PRE_DETACH stops the collection too (it detaches it).
+			defer SetAheadPreDetachForTest(false)()
 			defer SetLagEarlySnapshotForTest(true)()
 			defer SetAheadPreEarlyForTest(true)()
 			defer SetLagWriteAsyncForTest(true)()
