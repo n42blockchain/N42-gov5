@@ -210,6 +210,14 @@ type Store struct {
 	tombHead int
 
 	puts, dups, rejected, busy, bypassed, evicted, evictedBytes, released, hits, misses, removed atomic.Uint64
+
+	// r93 (fast.go): the write combiner, the per-gateway last stored seq of
+	// combined admissions, the sampled admission lock wait (always on) and
+	// the scan cursor: ring[head:fillLow] are committed or dropped.
+	wc            combiner
+	lastSeq       map[types.Address]uint64
+	admitLockWait WaitStat
+	fillLow       int
 }
 
 // New returns a store with the given byte budget (<= 0 selects the default)
@@ -284,6 +292,11 @@ func (s *Store) SetSenders(h types.Hash, ss *Senders) bool {
 	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.setSendersLocked(h, ss)
+}
+
+// setSendersLocked is SetSenders under the write lock.
+func (s *Store) setSendersLocked(h types.Hash, ss *Senders) bool {
 	sl, ok := s.m[h]
 	if !ok {
 		return false
@@ -319,6 +332,11 @@ type RecoverTicket struct {
 func (s *Store) BeginRecover(h types.Hash, skipClaimed bool) RecoverTicket {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.beginRecoverLocked(h, skipClaimed)
+}
+
+// beginRecoverLocked is BeginRecover under the write lock.
+func (s *Store) beginRecoverLocked(h types.Hash, skipClaimed bool) RecoverTicket {
 	sl, ok := s.m[h]
 	if !ok {
 		return RecoverTicket{H: h}
@@ -359,6 +377,16 @@ func (s *Store) finishRecover(t RecoverTicket, ss *Senders, keep bool) (first bo
 		return false
 	}
 	s.mu.Lock()
+	first = s.finishRecoverLocked(t, ss, keep)
+	s.mu.Unlock()
+	close(t.ch)
+	s.changed()
+	return first
+}
+
+// finishRecoverLocked applies an owned recovery's result under the write
+// lock; the caller closes t.ch after unlocking.
+func (s *Store) finishRecoverLocked(t RecoverTicket, ss *Senders, keep bool) (first bool) {
 	if sl, ok := s.m[t.H]; ok && sl.recWait == t.ch {
 		if ss != nil {
 			if sl.senders == nil {
@@ -378,9 +406,6 @@ func (s *Store) finishRecover(t RecoverTicket, ss *Senders, keep bool) (first bo
 		sl.recWait = nil
 		s.m[t.H] = sl
 	}
-	s.mu.Unlock()
-	close(t.ch)
-	s.changed()
 	return first
 }
 
@@ -475,8 +500,24 @@ func (s *Store) Admit(h types.Hash, e Entry, bypass bool) Result {
 		s.rejected.Add(1)
 		return TooLarge
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lockSampled()
+	r := s.admitLocked(h, e, bypass)
+	if r == Stored && !storeBatchOn.Load() {
+		// Historical placement: the notify runs under the store lock.
+		s.changed()
+		s.mu.Unlock()
+		return r
+	}
+	s.mu.Unlock()
+	if r == Stored {
+		s.changed()
+	}
+	return r
+}
+
+// admitLocked is Admit after the size check, under the write lock.
+func (s *Store) admitLocked(h types.Hash, e Entry, bypass bool) Result {
+	size := int64(len(e.Raw))
 	if _, ok := s.m[h]; ok {
 		s.dups.Add(1)
 		return Duplicate
@@ -499,7 +540,6 @@ func (s *Store) Admit(h types.Hash, e Entry, bypass bool) Result {
 	}
 	s.used += size
 	s.puts.Add(1)
-	defer s.changed()
 	if box := s.recoverer.Load(); box != nil {
 		// Under the store lock only to keep Submit ordered with the insert;
 		// Submit never blocks.
@@ -551,6 +591,9 @@ func (s *Store) Commit(number uint64, hs []types.Hash) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.trimHeadIndexLocked()
+	if scanFastOn.Load() {
+		defer s.advanceFillLowLocked()
+	}
 	for _, h := range hs {
 		sl, ok := s.m[h]
 		if !ok {
@@ -669,9 +712,11 @@ func (s *Store) reclaimRingLocked() {
 		}
 		s.ring = out
 		s.head = 0
+		s.fillLow = 0
 		return
 	}
 	if s.head > 1024 && s.head*2 > len(s.ring) {
+		s.fillLow = max(s.fillLow-s.head, 0)
 		n := copy(s.ring, s.ring[s.head:])
 		s.ring = s.ring[:n]
 		s.head = 0
@@ -725,8 +770,21 @@ func (s *Store) ScanFillable(fn func(h types.Hash, e Entry) bool) {
 // accepted from attestations), or no recoverer is attached (nothing would
 // ever cache them), or it was admitted at least grace ago (its senders
 // are late; the block recovers them). A block of ready frames executes
-// with no sender recovery left at block time.
+// with no sender recovery left at block time. Under N42_FRAME_SCAN_FAST the
+// walk starts after the committed prefix and fn runs on a snapshot taken
+// under the read lock, after the lock is released.
 func (s *Store) ScanFillableReady(grace time.Duration, fn func(h types.Hash, e Entry, ready bool) bool) {
+	if scanFastOn.Load() {
+		bp := s.snapshotUncommitted(grace, true)
+		defer releaseScanBuf(bp)
+		for i := range *bp {
+			it := &(*bp)[i]
+			if !fn(it.h, it.e, it.ready) {
+				return
+			}
+		}
+		return
+	}
 	recovering := s.recoverer.Load() != nil
 	cutoff := time.Now().Add(-grace).UnixNano()
 	s.mu.RLock()
@@ -749,6 +807,17 @@ func (s *Store) ScanFillableReady(grace time.Duration, fn func(h types.Hash, e E
 // holds (N42_ORPHAN_REINJECT) takes the pinned frames of other branches --
 // an abandoned sibling's -- in their arrival position.
 func (s *Store) ScanUncommittedReady(grace time.Duration, fn func(h types.Hash, e Entry, ready, pinned bool) bool) {
+	if scanFastOn.Load() {
+		bp := s.snapshotUncommitted(grace, false)
+		defer releaseScanBuf(bp)
+		for i := range *bp {
+			it := &(*bp)[i]
+			if !fn(it.h, it.e, it.ready, it.pinned) {
+				return
+			}
+		}
+		return
+	}
 	recovering := s.recoverer.Load() != nil
 	cutoff := time.Now().Add(-grace).UnixNano()
 	s.mu.RLock()
@@ -807,6 +876,9 @@ func (s *Store) Remove(hs []types.Hash) {
 		s.tombstoneLocked(h)
 	}
 	s.reclaimRingLocked()
+	if scanFastOn.Load() {
+		s.advanceFillLowLocked()
+	}
 }
 
 // Has reports whether h is stored.
