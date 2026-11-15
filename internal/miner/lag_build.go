@@ -209,7 +209,10 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 		"storeFrames", st.Len(), "heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready,
 		"capped", gw.capped, "hurried", gw.hurried, "heldBuilds", heldN, "heldFilled", heldFilled,
 		"storePinned", ss.Pending, "storeCommitted", ss.Committed, "storeWithSenders", ss.WithSenders, "storeBytes", ss.Bytes,
-		"scanned", gw.scanned, "skipped", gw.skipped, "tMs", time.Now().UnixMilli())
+		"scanned", gw.scanned, "skipped", gw.skipped,
+		"headAgeUs", gw.wait.headAge.Microseconds(), "headRunning", gw.wait.headRunning, "headClaimed", gw.wait.claimed,
+		"heldWaitUs", gw.wait.waited.Microseconds(), "heldRepicks", gw.wait.repicks, "heldLocal", gw.wait.local,
+		"heldGain", gw.wait.gained, "heldExpired", gw.wait.expired, "tMs", time.Now().UnixMilli())
 
 	select {
 	case w.taskCh <- &task{block: iblock, createdAt: time.Now(), lagged: true, buildBeginAt: start, triggerAt: triggerAt}:

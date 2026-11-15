@@ -69,6 +69,14 @@ type framePick struct {
 	// unwritten ancestor already holds them (inFlight); scanned: every frame
 	// the scan visited. Observability only.
 	skipped, scanned int
+	// heads: the frame each held gateway is held on (arrival order);
+	// unready: the held gateways' unready frames, arrival order, at most
+	// frameHurryCap (collected only under N42_FRAME_HELD_WAIT_MS).
+	heads   []types.Hash
+	unready []types.Hash
+	// wait: the bounded wait for held frames (N42_FRAME_HELD_WAIT_MS) and
+	// the head frame's recovery state at the first pick.
+	wait heldWait
 }
 
 // EnvFrameFillHeld (N42_FRAME_FILL_HELD=1, default off): a build held on a
@@ -161,7 +169,17 @@ var orphanReinjectPicks, orphanReinjectFallbacks atomic.Uint64
 // pickGatewayFrames is the builders' gateway pick for a block on parent
 // (parentHash at parentNumber): with N42_ORPHAN_REINJECT, on the chain's own
 // frames (pickFramesOnChain) when its ancestry is known, else pickFrames.
+// Under N42_FRAME_HELD_WAIT_MS a short pick held on unready frames waits a
+// bounded time for them (pickHeldWait).
 func (w *worker) pickGatewayFrames(bc *internal.BlockChain, tx kv.Getter, parentHash types.Hash, parentNumber uint64,
+	st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
+	return pickHeldWait(st, func() framePick {
+		return w.pickGatewayFramesOnce(bc, tx, parentHash, parentNumber, st, inFlight, exclude, budget, maxFrames)
+	})
+}
+
+// pickGatewayFramesOnce is one gateway pick (pickGatewayFrames).
+func (w *worker) pickGatewayFramesOnce(bc *internal.BlockChain, tx kv.Getter, parentHash types.Hash, parentNumber uint64,
 	st *store.Store, inFlight func(types.Hash) bool, exclude types.Address, budget uint64, maxFrames int) framePick {
 	if internal.OrphanReinjectOn() {
 		if onChain, ok := bc.ChainFramesAbove(tx, parentHash, parentNumber, w.ownSealed); ok {
@@ -192,6 +210,7 @@ func pickFramesScan(st *store.Store, scan func(fn func(h types.Hash, e store.Ent
 		return false
 	}
 	var hurry []types.Hash
+	collect := frameHeldWait > 0
 	scan(func(h types.Hash, e store.Entry, ready bool) bool {
 		p.scanned++
 		if inFlight != nil && inFlight(h) {
@@ -211,6 +230,9 @@ func pickFramesScan(st *store.Store, scan func(fn func(h types.Hash, e store.Ent
 					if frameFillHeld && len(hurry) < frameHurryCap {
 						hurry = append(hurry, h)
 					}
+					if collect && len(p.unready) < frameHurryCap {
+						p.unready = append(p.unready, h)
+					}
 				}
 				return true
 			}
@@ -218,8 +240,12 @@ func pickFramesScan(st *store.Store, scan func(fn func(h types.Hash, e store.Ent
 				held = append(held, gw)
 				p.held++
 				p.heldUnready++
+				p.heads = append(p.heads, h)
 				if frameFillHeld && len(hurry) < frameHurryCap {
 					hurry = append(hurry, h)
+				}
+				if collect && len(p.unready) < frameHurryCap {
+					p.unready = append(p.unready, h)
 				}
 				return true
 			}
@@ -323,7 +349,9 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 			"localFrames", len(local.hashes), "localTxs", local.txs,
 			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "cachedSenders", cachedSenders, "gasEst", pick.gas, "gasUsed", header.GasUsed,
 			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec),
-			"heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready, "hurried", gw.hurried)
+			"heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready, "hurried", gw.hurried,
+			"headAgeUs", gw.wait.headAge.Microseconds(), "heldWaitUs", gw.wait.waited.Microseconds(),
+			"heldRepicks", gw.wait.repicks, "heldLocal", gw.wait.local, "heldGain", gw.wait.gained)
 		internal.LogFrameSkips("build", number, len(env.txs), skipped, reasons)
 		return nil
 	}
