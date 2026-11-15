@@ -219,3 +219,33 @@ func TestPickHeldWaitBounded(t *testing.T) {
 		t.Fatalf("ready store: held %d waited %v", p.held, p.wait.waited)
 	}
 }
+
+// TestPickHeldHeadSeat: every pick stamps the committee seat covering the
+// frame its first held gateway is held on (-1 when nothing is held or no
+// seat map is installed), with the switches off.
+func TestPickHeldHeadSeat(t *testing.T) {
+	defer func(prev time.Duration) { frameReadyGrace = prev }(frameReadyGrace)
+	frameReadyGrace = time.Hour
+	defer func(prev bool) { frameReadyPick = prev }(frameReadyPick)
+	frameReadyPick = true
+	defer SetFrameHeldWaitForTest(0)()
+
+	st, _, arrival, _, _ := heldStore(t, time.Hour)
+	pick := func() framePick { return pickFrames(st, nil, types.Address{}, 1<<62, 1024) }
+	if p := pickHeldWait(st, pick); p.held == 0 || p.wait.headSeat != -1 {
+		t.Fatalf("no seat map: held %d seat %d", p.held, p.wait.headSeat)
+	}
+	var asked types.Hash
+	frame.SetSeatFunc(func(h types.Hash) int { asked = h; return 5 })
+	defer frame.SetSeatFunc(nil)
+	p := pickHeldWait(st, pick)
+	if p.wait.headSeat != 5 || len(p.heads) == 0 || asked != p.heads[0] {
+		t.Fatalf("seat %d for %x, heads %x", p.wait.headSeat, asked[:4], p.heads)
+	}
+	for _, h := range arrival {
+		st.SetSenders(h, &store.Senders{Addrs: make([]types.Address, 5)})
+	}
+	if p = pickHeldWait(st, pick); p.held != 0 || p.wait.headSeat != -1 {
+		t.Fatalf("nothing held: seat %d", p.wait.headSeat)
+	}
+}

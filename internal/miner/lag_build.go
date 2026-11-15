@@ -210,7 +210,7 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 		"capped", gw.capped, "hurried", gw.hurried, "heldBuilds", heldN, "heldFilled", heldFilled,
 		"storePinned", ss.Pending, "storeCommitted", ss.Committed, "storeWithSenders", ss.WithSenders, "storeBytes", ss.Bytes,
 		"scanned", gw.scanned, "skipped", gw.skipped,
-		"headAgeUs", gw.wait.headAge.Microseconds(), "headRunning", gw.wait.headRunning, "headClaimed", gw.wait.claimed,
+		"headAgeUs", gw.wait.headAge.Microseconds(), "headRunning", gw.wait.headRunning, "headClaimed", gw.wait.claimed, "headSeat", gw.wait.headSeat,
 		"heldWaitUs", gw.wait.waited.Microseconds(), "heldRepicks", gw.wait.repicks, "heldLocal", gw.wait.local,
 		"heldGain", gw.wait.gained, "heldExpired", gw.wait.expired, "tMs", time.Now().UnixMilli())
 

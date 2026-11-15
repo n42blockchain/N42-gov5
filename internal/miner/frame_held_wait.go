@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/frame"
 	"github.com/n42blockchain/N42/internal/frame/store"
 )
 
@@ -92,17 +93,21 @@ type heldWait struct {
 	// claimed by a block's import at that time.
 	headAge              time.Duration
 	headRunning, claimed bool
-	expired              bool // the wait ended at the deadline still held
+	// headSeat: the committee seat whose attestation covers the head frame
+	// (frame.SeatOf; -1: no head frame, or no attestation).
+	headSeat int
+	expired  bool // the wait ended at the deadline still held
 }
 
 // pickHeldWait runs pick and, under N42_FRAME_HELD_WAIT_MS, the bounded
 // held wait described there.
 func pickHeldWait(st *store.Store, pick func() framePick) framePick {
 	first := pick()
-	var hw heldWait
+	hw := heldWait{headSeat: -1}
 	if len(first.heads) > 0 && st != nil {
 		info := st.RecoverInfoOf(first.heads[0])
 		hw.headAge, hw.headRunning, hw.claimed = info.Age, info.Running, info.Claimed
+		hw.headSeat = frame.SeatOf(first.heads[0])
 	}
 	if frameHeldWait <= 0 || st == nil || !frameReadyPick || first.held == 0 || first.capped {
 		first.wait = hw

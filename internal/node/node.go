@@ -2604,6 +2604,8 @@ func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *a
 	})
 	pool.Start(n.ctx)
 	n.ingestServer.SetAttestHandler(pool.HandleWire)
+	// Per-build stamp: which seat covers the frame a build is held on.
+	frame.SetSeatFunc(pool.Seat)
 	log.Info("Frame sender attestation", "committee", attest.CommitteeSizeFromEnv(), "testCommittee", testK, "peers", peers, "flush", flush)
 	return pool
 }

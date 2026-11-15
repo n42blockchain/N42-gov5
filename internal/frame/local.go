@@ -19,7 +19,9 @@ package frame
 import (
 	"crypto/ecdsa"
 	"errors"
+	"sync/atomic"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 )
 
@@ -44,4 +46,27 @@ func DeriveLocalKey(secret []byte) (*ecdsa.PrivateKey, error) {
 		}
 	}
 	return nil, errors.New("frame: no valid local frame key")
+}
+
+// seatFn (optional) maps a frame to the committee seat whose attestation
+// covers it (frame attestation, P8b): set once by the node, read by the
+// builder's per-build stamps.
+var seatFn atomic.Pointer[func(types.Hash) int]
+
+// SetSeatFunc installs the frame -> covering seat map (nil removes it).
+func SetSeatFunc(fn func(types.Hash) int) {
+	if fn == nil {
+		seatFn.Store(nil)
+		return
+	}
+	seatFn.Store(&fn)
+}
+
+// SeatOf returns the committee seat covering frame h, or -1 (no
+// attestation, or no map installed).
+func SeatOf(h types.Hash) int {
+	if fn := seatFn.Load(); fn != nil {
+		return (*fn)(h)
+	}
+	return -1
 }

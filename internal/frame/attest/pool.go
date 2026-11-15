@@ -200,6 +200,29 @@ func (p *Pool) InCommittee(h types.Hash) bool {
 	return false
 }
 
+// Seat returns the index, in the validators' sorted order, of frame h's
+// first committee member (the member whose attestation covers it at
+// committee size 1), or -1 when attestation is inactive. Observability.
+func (p *Pool) Seat(h types.Hash) int {
+	v := p.validators()
+	members, _ := p.committee(v, h)
+	if len(members) == 0 {
+		return -1
+	}
+	return v.index(members[0])
+}
+
+// SelfSeat returns this node's index in the validators' sorted order, or
+// -1 (observability: maps Seat values to nodes).
+func (p *Pool) SelfSeat() int {
+	v := p.validators()
+	self := p.self()
+	if v == nil || self == (types.Address{}) {
+		return -1
+	}
+	return v.index(self)
+}
+
 // Senders returns frame h's accepted senders (n < 0: any count), or nil.
 func (p *Pool) Senders(h types.Hash, n int) []types.Address {
 	p.mu.Lock()
@@ -511,9 +534,9 @@ func (p *Pool) publishLoop(ctx context.Context) {
 		case <-logT.C:
 			if s := p.Stats(); s != last {
 				if st := StagesString(); st != "" {
-					log.Info("frame attestations", "stats", s.String(), "stages", st)
+					log.Info("frame attestations", "seat", p.SelfSeat(), "stats", s.String(), "stages", st)
 				} else {
-					log.Info("frame attestations", "stats", s.String())
+					log.Info("frame attestations", "seat", p.SelfSeat(), "stats", s.String())
 				}
 				last = s
 			}

@@ -426,3 +426,26 @@ func TestPoolMemberKnowsOwnList(t *testing.T) {
 		t.Fatal("accepted without f+1 remote votes")
 	}
 }
+
+// TestPoolSeat: Seat is the sorted index of a frame's first committee
+// member (the covering seat at committee size 1), SelfSeat this node's
+// index; both -1 with attestation inactive.
+func TestPoolSeat(t *testing.T) {
+	addrs := SortAddresses(randAddrs(t, 7))
+	v := &Validators{Sorted: addrs, F: 2}
+	p := NewPool(Config{Validators: func() *Validators { return v }, Self: func() types.Address { return addrs[4] },
+		TestCommittee: 1})
+	for i := 0; i < 32; i++ {
+		h := randHash(t)
+		if got, want := p.Seat(h), Committee(h, 7, 1)[0]; got != want {
+			t.Fatalf("seat %d, want %d", got, want)
+		}
+	}
+	if s := p.SelfSeat(); s != 4 {
+		t.Fatalf("self seat %d", s)
+	}
+	off := NewPool(Config{})
+	if off.Seat(randHash(t)) != -1 || off.SelfSeat() != -1 {
+		t.Fatal("inactive pool reports a seat")
+	}
+}

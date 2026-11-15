@@ -350,7 +350,7 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 			"txs", len(env.txs), "skipped", skipped, "undecodable", dropped, "cachedSenders", cachedSenders, "gasEst", pick.gas, "gasUsed", header.GasUsed,
 			"storeFrames", bc.FrameStore().Len(), "pick", dPick, "decode", dDecode, "exec", time.Since(tExec),
 			"heldGateways", gw.held, "heldReady", gw.heldReady, "heldUnready", gw.heldUnready, "hurried", gw.hurried,
-			"headAgeUs", gw.wait.headAge.Microseconds(), "heldWaitUs", gw.wait.waited.Microseconds(),
+			"headAgeUs", gw.wait.headAge.Microseconds(), "headSeat", gw.wait.headSeat, "heldWaitUs", gw.wait.waited.Microseconds(),
 			"heldRepicks", gw.wait.repicks, "heldLocal", gw.wait.local, "heldGain", gw.wait.gained)
 		internal.LogFrameSkips("build", number, len(env.txs), skipped, reasons)
 		return nil
