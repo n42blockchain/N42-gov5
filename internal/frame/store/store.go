@@ -85,6 +85,11 @@ type Stats struct {
 	WithSenders    int
 	RecoverPending int64
 	Recovered      uint64
+	// ReadyAttested / ReadyLocal: frames whose senders became cached, by
+	// how long after admission (ReadyBucketsMs upper bounds, the last
+	// bucket unbounded), from attestations (SetSenders) or a recovery on
+	// this node (FinishRecover). Cumulative since start.
+	ReadyAttested, ReadyLocal [NReadyBuckets]uint64
 }
 
 // Senders are a frame's transaction senders, recovered at admission and
@@ -184,6 +189,8 @@ type Store struct {
 	nSenders  int // stored frames with cached senders
 
 	recoverer atomic.Pointer[recovererBox]
+	// readyLat: admission -> senders cached, by source (always on).
+	readyLat readyLatency
 
 	// Frames dropped after a block took them, or by Remove: a Put of one of
 	// these is answered as a duplicate. FIFO-bounded by tombstoneCap.
@@ -271,6 +278,7 @@ func (s *Store) SetSenders(h types.Hash, ss *Senders) bool {
 	}
 	if sl.senders == nil {
 		s.nSenders++
+		s.readyLat.observe(readyAttested, sl.at)
 	}
 	sl.senders = ss
 	if sl.recov == recNone {
@@ -331,6 +339,7 @@ func (s *Store) FinishRecover(t RecoverTicket, ss *Senders) {
 		if ss != nil {
 			if sl.senders == nil {
 				s.nSenders++
+				s.readyLat.observe(readyLocal, sl.at)
 			}
 			sl.senders = ss
 		}
@@ -388,6 +397,11 @@ func (s *Store) Hurry(hs []types.Hash) int {
 	if !ok {
 		return 0
 	}
+	return s.hurry(hs, hr.Hurry)
+}
+
+// hurry hands the frames among hs that need a recovery to take.
+func (s *Store) hurry(hs []types.Hash, take func(h types.Hash, raw []byte) bool) int {
 	type job struct {
 		h   types.Hash
 		raw []byte
@@ -402,7 +416,7 @@ func (s *Store) Hurry(hs []types.Hash) int {
 	s.mu.RUnlock()
 	n := 0
 	for _, j := range jobs {
-		if hr.Hurry(j.h, j.raw) {
+		if take(j.h, j.raw) {
 			n++
 		}
 	}
@@ -800,5 +814,6 @@ func (s *Store) Stats() Stats {
 	st.Hits = s.hits.Load()
 	st.Misses = s.misses.Load()
 	st.Removed = s.removed.Load()
+	st.ReadyAttested, st.ReadyLocal = s.readyLat.snapshot()
 	return st
 }

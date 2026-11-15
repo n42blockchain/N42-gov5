@@ -321,7 +321,8 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 				"committedHead", st.CommittedHead, "bypassed", st.Bypassed, "released", st.Released,
 				"evicted", st.Evicted, "removed", st.Removed,
 				"recovered", st.Recovered, "recoverPending", st.RecoverPending, "withSenders", st.WithSenders,
-				"outOfOrder", fi.outOfOrder.Load(), "outOfOrderByGateway", fi.oooString())
+				"outOfOrder", fi.outOfOrder.Load(), "outOfOrderByGateway", fi.oooString(),
+				"readyAttested", store.FormatReadyBuckets(st.ReadyAttested), "readyLocal", store.FormatReadyBuckets(st.ReadyLocal))
 			last, lastBusy = a, b
 		}
 	}

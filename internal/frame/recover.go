@@ -61,6 +61,9 @@ func RecoverWorkersFromEnv() int {
 type recoverJob struct {
 	h   types.Hash
 	raw []byte
+	// local: recover here even when another source (P8b attestations) is
+	// expected to answer the frame (HurryLocal).
+	local bool
 }
 
 // SenderRecoverer is the admission recovery pool. It implements
@@ -78,6 +81,7 @@ type SenderRecoverer struct {
 	dropped, gone, decodeKO atomic.Uint64
 	skipped, deferred       atomic.Uint64
 	attested, hurried       atomic.Uint64
+	hurriedLocal, localRec  atomic.Uint64
 
 	// src (optional) answers frames from another source (P8b: senders a
 	// committee attests) and is told every frame recovered here.
@@ -183,6 +187,28 @@ func (r *SenderRecoverer) Hurry(h types.Hash, raw []byte) bool {
 	}
 }
 
+// HurryLocal is Hurry for a frame a block builder is held on
+// (store.LocalHurrier, N42_FRAME_HELD_WAIT_MS): the frame is recovered here
+// even when attestations are expected for it, unless they have arrived by
+// its turn. It never blocks and reports whether h was queued.
+func (r *SenderRecoverer) HurryLocal(h types.Hash, raw []byte) bool {
+	r.pending.Add(1)
+	select {
+	case r.prio <- recoverJob{h: h, raw: raw, local: true}:
+		r.hurriedLocal.Add(1)
+		return true
+	default:
+		r.pending.Add(-1)
+		return false
+	}
+}
+
+// HurriedLocal returns the frames queued by HurryLocal since start and how
+// many of them this node recovered instead of waiting for attestations.
+func (r *SenderRecoverer) HurriedLocal() (queued, recovered uint64) {
+	return r.hurriedLocal.Load(), r.localRec.Load()
+}
+
 // Hurried returns the frames queued on the priority lane since start.
 func (r *SenderRecoverer) Hurried() uint64 { return r.hurried.Load() }
 
@@ -259,7 +285,10 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 			r.attested.Add(1)
 			return
 		}
-		if r.src.Pending(j.h) {
+		if j.local {
+			// A held builder needs it now: recover it here.
+			r.localRec.Add(1)
+		} else if r.src.Pending(j.h) {
 			// Another source answers for this frame: leave it.
 			r.deferred.Add(1)
 			return
