@@ -2499,6 +2499,12 @@ func (n *Node) enableFrameIngest() {
 		}
 		rec.Start(n.ctx)
 		log.Info("Frame sender recovery at admission", "workers", frame.RecoverWorkersFromEnv())
+		if after := frame.LocalAfterFromEnv(); after > 0 {
+			// N42_FRAME_LOCAL_AFTER_MS: frames still without senders that
+			// long after admission are recovered here, in the background.
+			frame.NewLocalAger(rec, after, frame.LocalWorkersFromEnv()).Start(n.ctx)
+			log.Info("Frame local recovery by age", "afterMs", after.Milliseconds(), "workers", frame.LocalWorkersFromEnv())
+		}
 	}
 }
 

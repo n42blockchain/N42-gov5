@@ -30,3 +30,21 @@ func (r *SenderRecoverer) StepForTest() (types.Hash, bool) {
 	r.pending.Add(-1)
 	return j.h, true
 }
+
+// Outcomes of a LocalAger step (StepForTest).
+const (
+	OutcomeNone     = outcomeNone
+	OutcomeAttested = outcomeAttested
+	OutcomeLocal    = outcomeLocal
+)
+
+// StepForTest recovers the next frame the ager queued, on the caller's
+// goroutine, and returns its hash and outcome (false when none is queued).
+func (a *LocalAger) StepForTest() (types.Hash, int, bool) {
+	select {
+	case j := <-a.jobs:
+		return j.h, a.run(j), true
+	default:
+		return types.Hash{}, 0, false
+	}
+}

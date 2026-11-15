@@ -64,6 +64,9 @@ type recoverJob struct {
 	// local: recover here even when another source (P8b attestations) is
 	// expected to answer the frame (HurryLocal).
 	local bool
+	// aged: queued by a LocalAger (N42_FRAME_LOCAL_AFTER_MS), not counted
+	// as a HurryLocal recovery.
+	aged bool
 }
 
 // SenderRecoverer is the admission recovery pool. It implements
@@ -254,7 +257,14 @@ func (r *SenderRecoverer) next(ctx context.Context) (recoverJob, bool) {
 	}
 }
 
-func (r *SenderRecoverer) recoverOne(j recoverJob) {
+// Outcomes of recoverOne.
+const (
+	outcomeNone     = iota // gone, skipped, deferred, no signer or undecodable
+	outcomeAttested        // the source's senders were taken
+	outcomeLocal           // recovered here
+)
+
+func (r *SenderRecoverer) recoverOne(j recoverJob) (outcome int) {
 	// A block already resolved it (its import's sender job recovers it),
 	// its senders are cached, or another path is recovering it right now:
 	// recovering it here would be the same work twice (P7, P8a). The claim
@@ -262,42 +272,46 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 	t := r.st.BeginRecover(j.h, true)
 	if !t.Stored {
 		r.gone.Add(1)
-		return
+		return outcomeNone
 	}
 	if !t.Own {
 		r.skipped.Add(1)
-		return
+		return outcomeNone
 	}
 	var ss *store.Senders
 	// A bad frame costs its own recovery, never the worker; the claim is
 	// released either way so a block recovers what this did not.
 	defer func() {
-		_ = recover()
+		if recover() != nil {
+			outcome = outcomeNone
+		}
 		r.st.FinishRecover(t, ss)
 	}()
 	signer := r.signer()
 	if signer == nil {
-		return
+		return outcomeNone
 	}
 	if r.src != nil {
 		if addrs := r.src.Senders(j.h, -1); addrs != nil {
 			ss = &store.Senders{Signer: signer, Addrs: addrs}
 			r.attested.Add(1)
-			return
+			return outcomeAttested
 		}
 		if j.local {
-			// A held builder needs it now: recover it here.
-			r.localRec.Add(1)
+			// A held builder needs it now (or it is late): recover it here.
+			if !j.aged {
+				r.localRec.Add(1)
+			}
 		} else if r.src.Pending(j.h) {
 			// Another source answers for this frame: leave it.
 			r.deferred.Add(1)
-			return
+			return outcomeNone
 		}
 	}
 	got, failed, err := RecoverSenders(signer, j.raw)
 	if err != nil {
 		r.decodeKO.Add(1)
-		return
+		return outcomeNone
 	}
 	ss = got
 	r.failed.Add(uint64(failed))
@@ -306,6 +320,7 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) {
 	if r.src != nil {
 		r.src.Recovered(j.h, got)
 	}
+	return outcomeLocal
 }
 
 // RecoverSenders decodes one frame and recovers its transactions' senders

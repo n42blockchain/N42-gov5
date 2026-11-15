@@ -49,6 +49,44 @@ func (s *Store) HurryLocal(hs []types.Hash) int {
 	return s.hurry(hs, hr.HurryLocal)
 }
 
+// AgedFrame is a frame AgedUnready returns.
+type AgedFrame struct {
+	H   types.Hash
+	Raw []byte
+}
+
+// AgedUnready returns, oldest first, up to max stored frames admitted at or
+// before cutoff (unix nanoseconds) that no block holds, that have no cached
+// senders, no running recovery and no block's claim, and for which skip
+// (optional; called under the store's read lock, it must not call back into
+// the store) is false (N42_FRAME_LOCAL_AFTER_MS). The scan stops at the
+// first frame admitted after cutoff: the ring is in admission order.
+func (s *Store) AgedUnready(cutoff int64, max int, skip func(types.Hash) bool) []AgedFrame {
+	if max <= 0 {
+		return nil
+	}
+	var out []AgedFrame
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, h := range s.ring[s.head:] {
+		sl, ok := s.m[h]
+		if !ok {
+			continue
+		}
+		if sl.at > cutoff {
+			break
+		}
+		if sl.included() || sl.senders != nil || sl.recov != recNone || sl.claimed || (skip != nil && skip(h)) {
+			continue
+		}
+		out = append(out, AgedFrame{H: h, Raw: sl.Raw})
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
 // HasSenders reports whether frame h is stored with cached senders.
 func (s *Store) HasSenders(h types.Hash) bool {
 	s.mu.RLock()
