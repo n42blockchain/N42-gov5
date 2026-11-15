@@ -1091,6 +1091,13 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	if waveCPUMeter != nil {
 		waveCPU0 = waveCPUMeter()
 	}
+	// N42_AHEAD_PREP_STAGGER / N42_WAVE_BG_CAP: the background stages see
+	// the wave in flight.
+	waveEnd := func() {}
+	if ahead {
+		waveEnd = waveBegin(concreteHeader.Number.Uint64())
+		defer waveEnd()
+	}
 	results := executor.Run()
 	if span != nil {
 		span.End()
@@ -1123,6 +1130,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	if waveCPUMeter != nil {
 		waveCPUNs.Add(int64(waveCPUMeter() - waveCPU0))
 	}
+	waveEnd()
 	tRunEnd := time.Now()
 	var waveReads, waveColdReads uint64
 	var waveColdMs int64

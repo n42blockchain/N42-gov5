@@ -137,7 +137,7 @@ func aheadPrepWorkers() int {
 	if n < 1 {
 		n = 1
 	}
-	return n
+	return capWaveBG(n)
 }
 
 // aheadPrepUsable: blocks of this chain may be prepared (they can run on
@@ -296,6 +296,10 @@ func (bc *BlockChain) heldAheadPrep(h types.Hash) bool {
 
 // runAheadPrep computes pr unless an import claimed or it was dropped first.
 func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
+	// N42_AHEAD_PREP_STAGGER: not beside the wave of a block two or more
+	// below this one; still pending meanwhile, so a claim cancels it as
+	// before and the import computes its own.
+	staggerAheadPrep(pr.number, func() bool { return pr.state.Load() != prepPending })
 	if !pr.state.CompareAndSwap(prepPending, prepRunning) {
 		return
 	}
