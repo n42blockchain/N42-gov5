@@ -100,6 +100,12 @@ type aheadPrep struct {
 	// dropping: the block will not use the preparation; its base prefill
 	// stops reading at the next key.
 	dropping atomic.Bool
+	// baseDetached: the claim detached base while it collected its keys
+	// (N42_AHEAD_PRE_DETACH): base is still running and must not be read;
+	// baseDetachWait is the claim's wait for its transaction readers. Set
+	// by the claimer.
+	baseDetached   bool
+	baseDetachWait time.Duration
 	// scan: the run's state-free scans (N42_AHEAD_PREP_SCAN), nil when not
 	// computed; set before done closes.
 	scan *prepScan
@@ -353,10 +359,19 @@ func (bc *BlockChain) claimAheadPrepCut(h types.Hash, cut bool) (*aheadPrep, tim
 	}
 	t0 := time.Now()
 	<-pr.done
-	if cut && pr.base != nil {
-		pr.base.cutAtClaim.Store(true)
+	if cut && pr.base != nil && aheadPreDetachOn {
+		// N42_AHEAD_PRE_DETACH: a prefill still collecting its keys would
+		// read nothing for this run; it finishes in the background.
+		if d, ok := pr.base.detach(); ok {
+			pr.baseDetached, pr.baseDetachWait = true, d
+		}
 	}
-	pr.base.halt()
+	if !pr.baseDetached {
+		if cut && pr.base != nil {
+			pr.base.cutAtClaim.Store(true)
+		}
+		pr.base.halt()
+	}
 	wait := time.Since(t0)
 	if !pr.ok {
 		return nil, wait

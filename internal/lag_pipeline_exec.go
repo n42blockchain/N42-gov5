@@ -802,7 +802,15 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	if claim.prep != nil {
 		a.prepStart, a.prepEnd = claim.prep.startedAt, claim.prep.computedAt
 	}
-	if ab := claim.prep.prefill(); ab != nil {
+	if d, ok := claim.prep.detachedPrefill(); ok {
+		// N42_AHEAD_PRE_DETACH: a cut claim that left its prefill running.
+		a.preFill, a.preCut = d, true
+		aheadPreCutClaims.Add(1)
+		if a.es != nil {
+			aheadPreCutEarlyClaims.Add(1)
+		}
+		aheadPreCuts.Add(1)
+	} else if ab := claim.prep.prefill(); ab != nil {
 		a.preFill, a.preCut = ab.claimWait, ab.cut.Load()
 		if cut {
 			aheadPreCutClaims.Add(1)

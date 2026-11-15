@@ -144,6 +144,60 @@ func SetAheadKeysCutForTest(on bool) func() {
 	return func() { aheadKeysCutOn = prev }
 }
 
+// N42_AHEAD_PRE_DETACH=1 (default off): a cut claim (N42_AHEAD_PRE_EARLY)
+// that finds its base prefill still collecting its keys does not wait for
+// the collection to end: it detaches the prefill and runs without one,
+// which is what such a claim got anyway (the prefill read nothing, skip "cut
+// while collecting the keys"). Run 72 (B1, node0): on 48% of early launches
+// the claim waited 11 / 27 (13) ms p50 / p90 (mean) for that collection,
+// because its block-start reads (blockStartKeys, on the collecting
+// goroutine, checked for the stop only before they start) queue on the
+// tree's reader lock behind the root that labelled the tree for the prefill
+// (ComputeRoot labels the tree as it takes the lock, then applies for
+// 15-25 ms): the collection took 29 ms p50 against 3.5 ms when the prefill
+// was used.
+//
+// What the claim still waits for: the key goroutines, the only part of the
+// prefill that reads the block's transactions (and, for a prefill started
+// after the computation, the preparation's prepared set) -- the run writes
+// senders and prepared entries once it starts, so nothing may read them
+// then. They check the stop every aheadKeysHaltEvery transactions. The rest
+// -- the block-start reads on the prefill's own read transaction -- finishes
+// in the background: the detached prefill releases its key lists itself,
+// exactly once, builds no prefill and closes done; nothing else references
+// it (the claim removed the preparation from the map, and prefill() reports
+// none). A prefill that already started reading (its keys complete) is not
+// detached: the claim cuts it as before and keeps what it read.
+var aheadPreDetachOn = parseOptIn(os.Getenv("N42_AHEAD_PRE_DETACH"))
+
+// SetAheadPreDetachForTest switches N42_AHEAD_PRE_DETACH and returns the
+// restore.
+func SetAheadPreDetachForTest(on bool) func() {
+	prev := aheadPreDetachOn
+	aheadPreDetachOn = on
+	return func() { aheadPreDetachOn = prev }
+}
+
+// aheadPreDetaches counts claims that detached a prefill collecting its keys
+// (process-wide, since start).
+var aheadPreDetaches atomic.Uint64
+
+// Phases of an aheadBase (phase).
+const (
+	abPhaseTree     int32 = iota // waiting for the tree
+	abPhaseKeys                  // collecting the keys
+	abPhaseFill                  // reading the tree
+	abPhaseDetached              // a claim detached it while it collected the keys
+)
+
+// aheadBaseSysKeysForTest runs on a prefill's collecting goroutine right
+// before its block-start reads (tests: hold them as the tree's lock does).
+var aheadBaseSysKeysForTest func(ab *aheadBase)
+
+// aheadBaseEndForTest sees every prefill as its goroutine ends, before done
+// closes (tests: key lists released exactly once).
+var aheadBaseEndForTest func(ab *aheadBase)
+
 // aheadBaseMaxWait bounds a prefill's wait for the tree to reach the
 // child's grandparent (the claim of the preparation ends it sooner).
 var aheadBaseMaxWait = 10 * time.Second
@@ -174,6 +228,45 @@ type aheadBase struct {
 	// claimWait: the claim's wait for the prefill to finish (set by the
 	// claimer).
 	claimWait time.Duration
+
+	// phase (abPhase*): a claim may detach the prefill only while it
+	// collects its keys (N42_AHEAD_PRE_DETACH); the fill moves on to reading
+	// only if no claim did.
+	phase atomic.Int32
+	// readersDone closes once the key goroutines (the only readers of the
+	// block's transactions and prepared set) are done.
+	readersDone chan struct{}
+	// keysReleased counts the releases of the key lists (at most one).
+	keysReleased atomic.Int32
+	// detachWait: a detaching claim's wait in nanoseconds (diagnostics).
+	detachWait atomic.Int64
+}
+
+// detach detaches a prefill still collecting its keys from its claim
+// (N42_AHEAD_PRE_DETACH): it stops the collection and waits only until
+// nothing reads the block's transactions any more. False when the prefill
+// is past that phase (or before it): the caller halts it as before.
+func (ab *aheadBase) detach() (time.Duration, bool) {
+	if ab == nil || !ab.phase.CompareAndSwap(abPhaseKeys, abPhaseDetached) {
+		return 0, false
+	}
+	t0 := time.Now()
+	ab.cutAtClaim.Store(true)
+	ab.once.Do(func() { close(ab.stop) })
+	select {
+	case <-ab.readersDone:
+	case <-ab.done:
+	}
+	aheadPreDetaches.Add(1)
+	d := time.Since(t0)
+	ab.detachWait.Store(int64(d))
+	return d, true
+}
+
+// releaseKeys hands the prefill's key lists back (once).
+func (ab *aheadBase) releaseKeys(keys [][]qmdb.Hash) {
+	ab.keysReleased.Add(1)
+	releaseAheadBaseKeys(keys)
 }
 
 // halt ends a prefill's wait for the tree, stops a fill still reading at
@@ -191,10 +284,20 @@ func (ab *aheadBase) halt() {
 
 // prefill returns the usable prefill of a claimed preparation, or nil.
 func (pr *aheadPrep) prefill() *aheadBase {
-	if pr == nil {
+	if pr == nil || pr.baseDetached {
+		// A detached prefill still runs: nothing of it may be read.
 		return nil
 	}
 	return pr.base
+}
+
+// detachedPrefill reports whether the claim detached pr's prefill, and its
+// wait for the prefill's transaction readers.
+func (pr *aheadPrep) detachedPrefill() (time.Duration, bool) {
+	if pr == nil || !pr.baseDetached {
+		return 0, false
+	}
+	return pr.baseDetachWait, true
 }
 
 // Ahead runs whose tree reads had a base prefill, those of them whose
@@ -238,7 +341,7 @@ func (bc *BlockChain) aheadBaseUsable() bool {
 // abort reports that the block will not use it: the fill stops at the next
 // key.
 func (bc *BlockChain) startAheadBase(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) *aheadBase {
-	ab := &aheadBase{stop: make(chan struct{}), done: make(chan struct{})}
+	ab := &aheadBase{stop: make(chan struct{}), done: make(chan struct{}), readersDone: make(chan struct{})}
 	go bc.runAheadBase(ab, hdr, txs, prepared, sp, abort)
 	return ab
 }
@@ -315,6 +418,9 @@ func aheadBaseMovedOK(c aheadBaseChain, at uint64, states []commitment.QMDBAppli
 
 func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) {
 	defer close(ab.done)
+	if fn := aheadBaseEndForTest; fn != nil {
+		defer fn(ab)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			ab.pf, ab.skip = nil, "panic"
@@ -380,22 +486,36 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 			return false
 		}
 	}
+	// From here a claim may detach the prefill (N42_AHEAD_PRE_DETACH) until
+	// its keys are complete.
+	ab.phase.Store(abPhaseKeys)
 	if fn := aheadBaseBeforeFillForTest; fn != nil {
 		fn(ab)
 	}
 	tFill := time.Now()
 	var keysHalt func() bool
-	if aheadKeysCutOn {
+	if aheadKeysCutOn || aheadPreDetachOn {
 		keysHalt = stop
 	}
-	keys, whole := bc.aheadBaseKeysHalt(hdr, txs, prepared, sp, keysHalt)
+	var beforeSys func()
+	if fn := aheadBaseSysKeysForTest; fn != nil {
+		beforeSys = func() { fn(ab) }
+	}
+	keys, whole := bc.aheadBaseKeysHaltDone(hdr, txs, prepared, sp, keysHalt, ab.readersDone, beforeSys)
 	ab.keys = time.Since(tFill)
+	if whole && !ab.phase.CompareAndSwap(abPhaseKeys, abPhaseFill) {
+		// Detached after the keys were complete: its claim runs without it.
+		whole = false
+	}
 	if !whole {
-		// N42_AHEAD_KEYS_CUT: the claim (or the block's drop) came while
-		// the keys were collected; nothing was read.
-		releaseAheadBaseKeys(keys)
+		// N42_AHEAD_KEYS_CUT / N42_AHEAD_PRE_DETACH: the claim (or the
+		// block's drop) came while the keys were collected; nothing was read.
+		ab.releaseKeys(keys)
 		ab.took = time.Since(tFill)
 		ab.skip = "cut while collecting the keys"
+		if ab.phase.Load() == abPhaseDetached {
+			ab.skip = "detached while collecting the keys"
+		}
 		if ab.cut.Load() {
 			aheadKeysCuts.Add(1)
 		}
@@ -404,7 +524,7 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 	pf, err := rc.FillBasePrefill(bc.ChainDB, keys, aheadPrepWorkers(), stop)
 	// The fill copied what it read and its workers are done: nothing reads
 	// the key lists any more.
-	releaseAheadBaseKeys(keys)
+	ab.releaseKeys(keys)
 	ab.took = time.Since(tFill)
 	if err != nil {
 		ab.skip = "fill: " + err.Error()
@@ -457,6 +577,14 @@ const aheadKeysHaltEvery = 1024
 // and before the block-start calls' tree reads; whole is false when it
 // stopped (keys is then partial, for release only).
 func (bc *BlockChain) aheadBaseKeysHalt(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, halt func() bool) (_ [][]qmdb.Hash, whole bool) {
+	return bc.aheadBaseKeysHaltDone(hdr, txs, prepared, sp, halt, nil, nil)
+}
+
+// aheadBaseKeysHaltDone is aheadBaseKeysHalt closing readersDone (when not
+// nil) as soon as no goroutine of it reads txs or prepared any more -- before
+// the block-start calls' tree reads end. beforeSys (tests) runs right before
+// those reads.
+func (bc *BlockChain) aheadBaseKeysHaltDone(hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, halt func() bool, readersDone chan struct{}, beforeSys func()) (_ [][]qmdb.Hash, whole bool) {
 	workers := aheadPrepWorkers()
 	keys := make([][]qmdb.Hash, workers+1)
 	per := (len(txs) + workers - 1) / workers
@@ -518,11 +646,20 @@ func (bc *BlockChain) aheadBaseKeysHalt(hdr *block.Header, txs []*transaction.Tr
 			keys[w] = ks
 		}(w, lo, hi)
 	}
+	if readersDone != nil {
+		go func() {
+			wg.Wait()
+			close(readersDone)
+		}()
+	}
 	extra := []qmdb.Hash{qmdb.Hash(commitment.AccountKeyHash(hdr.Coinbase))}
 	for _, a := range deferredFeeRecipients(sp.config, hdr) {
 		extra = append(extra, qmdb.Hash(commitment.AccountKeyHash(a)))
 	}
 	if !check() {
+		if beforeSys != nil {
+			beforeSys()
+		}
 		extra = append(extra, bc.blockStartKeys(hdr, sp)...)
 	}
 	wg.Wait()

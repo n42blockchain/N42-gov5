@@ -613,6 +613,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// The base prefill (ahead_base_prefill.go): the run's tree reads answer
 	// its keys without the tree's lock.
 	base := prep.prefill()
+	// N42_AHEAD_PRE_DETACH: a prefill the claim detached is still running;
+	// only the claim's wait is reported.
+	baseDetachWait, baseDetached := prep.detachedPrefill()
 	var basePF *commitment.BasePrefill
 	if ahead && base != nil && (claim != nil || base.depth <= 1) {
 		// A prefill read two or more blocks below the parent needs the
@@ -1456,6 +1459,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			if basePF != nil {
 				baseDepth = int64(base.depth)
 			}
+		} else if baseDetached {
+			baseClaimWait, baseCut, baseSkip = baseDetachWait, true, "detached while collecting the keys"
 		}
 		var wkTreeReads uint64
 		var wkTreeNs int64
