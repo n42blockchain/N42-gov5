@@ -313,6 +313,7 @@ func dumpTable(t *testing.T, db kv.RwDB, table string) map[string]string {
 // between two of them -- marker still at its old value, some rows put --
 // folds again to the same rows and marker.
 func TestBackfillSplitFoldMatchesOneTransaction(t *testing.T) {
+	defer SetHistoryFoldYieldForTest(false)() // the synced split; the yielding one: history_fold_yield_test.go
 	const blocks = 24
 	whole := memdb.NewTestDB(t)
 	seedChangesets(t, whole, blocks)

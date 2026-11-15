@@ -33,6 +33,7 @@ func foldAll(t *testing.T, blocks uint64, between func() error) (acc, sto map[st
 // off and on, also when every transaction yields to a waiting block write
 // after one key (no-sync commits, one key each).
 func TestHistoryFoldYieldSameTables(t *testing.T) {
+	defer SetLagWriteDeferBGForTest(false)() // its start deferral is not under test here
 	const blocks = 40
 	defer SetHistoryFoldYieldForTest(false)()
 	wantAcc, wantSto, wantMarker, ok := foldAll(t, blocks, nil)
@@ -63,6 +64,7 @@ func TestHistoryFoldYieldSameTables(t *testing.T) {
 // of its transactions leaves the marker where it was; the next step folds
 // again to the same rows and marker as an uninterrupted fold.
 func TestHistoryFoldYieldCrashResumes(t *testing.T) {
+	defer SetLagWriteDeferBGForTest(false)() // its start deferral is not under test here
 	const blocks = 24
 	defer SetHistoryFoldYieldForTest(false)()
 	wantAcc, _, wantMarker, _ := foldAll(t, blocks, nil)
@@ -99,6 +101,7 @@ func TestHistoryFoldYieldCrashResumes(t *testing.T) {
 // while an ordered block write is open or waiting (the gate), and starts
 // once it has committed.
 func TestHistoryFoldYieldWaitsForBlockWrite(t *testing.T) {
+	defer SetLagWriteDeferBGForTest(false)() // its start deferral is not under test here
 	const blocks = 8
 	defer SetHistoryFoldYieldForTest(true)()
 	db := memdb.NewTestDB(t)
