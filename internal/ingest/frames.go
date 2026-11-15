@@ -123,6 +123,9 @@ type frameIngest struct {
 	seqMu   sync.Mutex
 	lastSeq map[types.Address]uint64
 	oooByGW map[types.Address]uint64
+	// seqWait: sampled wait for seqMu (serial path) or for the combined
+	// admission's reply (N42_FRAME_ADMIT_COMBINE).
+	seqWait store.WaitStat
 }
 
 // EnableFrames turns on the gateway-signed frame path. Must be called
@@ -242,6 +245,9 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 		return reply, nil
 	}
 	st := fi.cfg.Store
+	if store.AdmitCombineOn() {
+		return fi.admitCombined(st, f, hash, raw, reply), nil
+	}
 	if st.Has(hash) {
 		fi.duplicate.Add(1)
 		reply[0] = FrameDuplicate
@@ -253,7 +259,13 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 	// seq at or below last is a resend (possibly of an evicted or already
 	// included frame) and goes to the store, which answers Duplicate for
 	// known hashes; it does not move the sequence.
-	fi.seqMu.Lock()
+	if store.Sampled() {
+		t0 := time.Now()
+		fi.seqMu.Lock()
+		fi.seqWait.Observe(time.Since(t0))
+	} else {
+		fi.seqMu.Lock()
+	}
 	defer fi.seqMu.Unlock()
 	if last, seen := fi.lastSeq[f.Gateway]; seen && f.Seq > last+1 {
 		fi.outOfOrder.Add(1)
@@ -287,6 +299,47 @@ func (s *Server) readFrame(r io.Reader) (reply [FrameReplySize]byte, err error) 
 	return reply, nil
 }
 
+// admitCombined is FRM1 admission under N42_FRAME_ADMIT_COMBINE: the gas
+// estimate is taken before any lock, then the duplicate check, the in-order
+// check and the insert run as one step of the store's write combiner
+// (store.AdmitInOrder). The replies and counters are those of the serial
+// path: a stored frame is a duplicate, then a seq gap is Busy (out of
+// order), then the store's own answer.
+func (fi *frameIngest) admitCombined(st *store.Store, f *frame.Frame, hash types.Hash, raw []byte, reply [FrameReplySize]byte) [FrameReplySize]byte {
+	e := store.Entry{Raw: raw, Gas: frame.GasEstimate(f), Txs: int(f.TxCount)}
+	var t0 time.Time
+	sampled := store.Sampled()
+	if sampled {
+		t0 = time.Now()
+	}
+	r := st.AdmitInOrder(hash, e, f.Gateway, f.Seq)
+	if sampled {
+		fi.seqWait.Observe(time.Since(t0))
+	}
+	switch {
+	case r.Known:
+		fi.duplicate.Add(1)
+		reply[0] = FrameDuplicate
+	case r.OutOfOrder:
+		fi.outOfOrder.Add(1)
+		fi.seqMu.Lock()
+		fi.oooByGW[f.Gateway]++
+		fi.seqMu.Unlock()
+		reply[0] = FrameBusy
+	case r.Result == store.Stored:
+		fi.accepted.Add(1)
+		fi.txsAccepted.Add(uint64(f.TxCount))
+		reply[0] = FrameAccepted
+	case r.Result == store.Busy:
+		fi.busy.Add(1)
+		reply[0] = FrameBusy
+	default:
+		fi.duplicate.Add(1)
+		reply[0] = FrameDuplicate
+	}
+	return reply
+}
+
 // oooString formats the per-gateway out-of-order counts for the stats line.
 func (fi *frameIngest) oooString() string {
 	fi.seqMu.Lock()
@@ -303,6 +356,7 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	var last, lastBusy uint64
+	lastAt := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -310,10 +364,24 @@ func (fi *frameIngest) statsLoop(ctx context.Context) {
 		case <-t.C:
 			a, b := fi.accepted.Load(), fi.busy.Load()
 			st := fi.cfg.Store.Stats()
+			// Sampled waits since the last line (r93): the sequencing lock
+			// (or the combined admission) and the store's write lock.
+			seqMean, seqMax, _ := fi.seqWait.Take()
+			stMean, stMax, _ := fi.cfg.Store.TakeAdmitLockWait()
+			now := time.Now()
+			el := now.Sub(lastAt).Seconds()
+			lastAt = now
 			if a == last && b == lastBusy && st.RecoverPending == 0 {
 				continue
 			}
-			log.Info("ingest frames", "accepted", a, "acceptedDelta", a-last, "txs", fi.txsAccepted.Load(),
+			perSec := 0.0
+			if el > 0 {
+				perSec = float64(a-last) / el
+			}
+			log.Info("ingest frames", "accepted", a, "acceptedDelta", a-last, "admitPerSec", int64(perSec),
+				"seqWaitMeanUs", seqMean.Microseconds(), "seqWaitMaxUs", seqMax.Microseconds(),
+				"storeWaitMeanUs", stMean.Microseconds(), "storeWaitMaxUs", stMax.Microseconds(),
+				"txs", fi.txsAccepted.Load(),
 				"busy", b, "busyDelta", b-lastBusy,
 				"dup", fi.duplicate.Load(), "badSig", fi.badSig.Load(),
 				"pulled", fi.pulled.Load(), "pullServed", fi.pullServed.Load(),
