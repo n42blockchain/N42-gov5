@@ -15,6 +15,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls/common"
@@ -208,28 +209,33 @@ type EpochManager struct {
 	// the immediately previous set covers every legitimate cross-boundary check.
 	prevSet      *ValidatorSet
 	setSinceView uint64
+
+	// published mirrors currentSet for lock-free readers outside the
+	// engine (PublishedValidatorSet). It is stored at every point that
+	// assigns currentSet, in the same critical section.
+	published atomic.Pointer[ValidatorSet]
 }
 
 const maxHistoricalEpochs = 3
 
 // NewEpochManager creates an EpochManager with epochs disabled (single static validator set).
 func NewEpochManager(validatorSet *ValidatorSet) *EpochManager {
-	return &EpochManager{
+	return publishedEM(&EpochManager{
 		epochLength:    0,
 		currentEpoch:   0,
 		currentSet:     validatorSet,
 		historicalSets: make(map[uint64]*ValidatorSet),
-	}
+	})
 }
 
 // NewEpochManagerWithLength creates an EpochManager with epoch transitions enabled.
 func NewEpochManagerWithLength(validatorSet *ValidatorSet, epochLength uint64) *EpochManager {
-	return &EpochManager{
+	return publishedEM(&EpochManager{
 		epochLength:    epochLength,
 		currentEpoch:   0,
 		currentSet:     validatorSet,
 		historicalSets: make(map[uint64]*ValidatorSet),
-	}
+	})
 }
 
 // EpochLength returns the epoch length (0 = disabled).
@@ -247,15 +253,28 @@ func (em *EpochManager) CurrentValidatorSet() *ValidatorSet {
 	return em.currentSet
 }
 
+// PublishedValidatorSet returns the active validator set without the
+// engine's lock: the same pointer CurrentValidatorSet returns, published in
+// the critical section that changes it, so a reader sees a change no later
+// than a locked reader that starts after it.
+func (em *EpochManager) PublishedValidatorSet() *ValidatorSet {
+	return em.published.Load()
+}
+
+func publishedEM(em *EpochManager) *EpochManager {
+	em.published.Store(em.currentSet)
+	return em
+}
+
 // NewEpochManagerFromEpoch creates an EpochManager starting at a non-genesis epoch.
 // Used for snapshot/checkpoint start (Rust: EpochManager::from_epoch).
 func NewEpochManagerFromEpoch(validatorSet *ValidatorSet, epochLength, startEpoch uint64) *EpochManager {
-	return &EpochManager{
+	return publishedEM(&EpochManager{
 		epochLength:    epochLength,
 		currentEpoch:   startEpoch,
 		currentSet:     validatorSet,
 		historicalSets: make(map[uint64]*ValidatorSet),
-	}
+	})
 }
 
 // NewEpochManagerFromSchedule rebuilds an EpochManager with historical sets
@@ -285,6 +304,7 @@ func NewEpochManagerFromSchedule(schedule *EpochSchedule, currentEpoch, epochLen
 		currentSet:     currentSet,
 		historicalSets: make(map[uint64]*ValidatorSet),
 	}
+	em.published.Store(currentSet)
 
 	// Rebuild historical sets from recovery window
 	startRecovery := uint64(0)
@@ -467,6 +487,7 @@ func (em *EpochManager) RestoreActiveSet(epoch uint64, validators []ValidatorInf
 		em.prevSet = em.currentSet
 	}
 	em.currentSet = newSet
+	em.published.Store(newSet)
 	em.currentEpoch = epoch
 }
 
@@ -492,6 +513,7 @@ func (em *EpochManager) AdvanceEpoch(boundaryView uint64) bool {
 	em.setSinceView = boundaryView
 	em.currentEpoch++
 	em.currentSet = em.nextSet
+	em.published.Store(em.currentSet)
 	em.nextSet = nil
 	return true
 }

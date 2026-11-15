@@ -936,6 +936,17 @@ func (e *ConsensusEngine) CurrentValidatorSet() *ValidatorSet {
 	return e.validatorSet()
 }
 
+// PublishedValidatorSet is CurrentValidatorSet without the engine's lock
+// (EpochManager.PublishedValidatorSet): the same set, visible no later than
+// to a locked reader that starts after the change. An epoch manager built
+// without publication falls back to the locked read.
+func (e *ConsensusEngine) PublishedValidatorSet() *ValidatorSet {
+	if vs := e.epochManager.PublishedValidatorSet(); vs != nil {
+		return vs
+	}
+	return e.CurrentValidatorSet()
+}
+
 // ReconfigManager returns the reconfiguration manager for proposing
 // validator set changes. The returned manager is safe for concurrent use
 // only when accessed through the engine's lock (via ProcessEvent).

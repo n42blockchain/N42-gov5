@@ -41,6 +41,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -2536,10 +2537,43 @@ func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *a
 		lastVS *hotstuff.ValidatorSet
 		lastV  *attest.Validators
 	)
+	build := func(vs *hotstuff.ValidatorSet) *attest.Validators {
+		v := &attest.Validators{Sorted: attest.SortAddresses(vs.Addresses()), F: int(vs.FaultTolerance())}
+		v.Verify = func(a types.Address, msg, sig []byte) bool {
+			i := vs.FindByAddress(a)
+			if i < 0 {
+				return false
+			}
+			pk, err := vs.GetPublicKey(hotstuff.ValidatorIndex(i))
+			return err == nil && hotstuff.VerifyBLSSignature(sig, pk, msg)
+		}
+		return v
+	}
+	// N42_ATTEST_VALIDATORS_CACHE: the set is read from the engine's
+	// published pointer (no engine lock; the same set the locked read
+	// returns, see EpochManager.PublishedValidatorSet) and the view built
+	// from it is cached in an atomic pair (no closure lock).
+	type vsView struct {
+		vs *hotstuff.ValidatorSet
+		v  *attest.Validators
+	}
+	var cached atomic.Pointer[vsView]
 	validators := func() *attest.Validators {
 		eng := hs.Engine()
 		if eng == nil {
 			return nil
+		}
+		if attest.ValidatorsCacheOn() {
+			vs := eng.PublishedValidatorSet()
+			if vs == nil || vs.IsEmpty() {
+				return nil
+			}
+			if c := cached.Load(); c != nil && c.vs == vs {
+				return c.v
+			}
+			v := build(vs)
+			cached.Store(&vsView{vs: vs, v: v})
+			return v
 		}
 		vs := eng.CurrentValidatorSet()
 		if vs == nil || vs.IsEmpty() {
@@ -2550,15 +2584,7 @@ func (n *Node) frameAttestPool(st *framestore.Store, bc *internal.BlockChain) *a
 		if vs == lastVS {
 			return lastV
 		}
-		v := &attest.Validators{Sorted: attest.SortAddresses(vs.Addresses()), F: int(vs.FaultTolerance())}
-		v.Verify = func(a types.Address, msg, sig []byte) bool {
-			i := vs.FindByAddress(a)
-			if i < 0 {
-				return false
-			}
-			pk, err := vs.GetPublicKey(hotstuff.ValidatorIndex(i))
-			return err == nil && hotstuff.VerifyBLSSignature(sig, pk, msg)
-		}
+		v := build(vs)
 		lastVS, lastV = vs, v
 		return v
 	}
