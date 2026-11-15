@@ -2505,6 +2505,14 @@ func (n *Node) enableFrameIngest() {
 			frame.NewLocalAger(rec, after, frame.LocalWorkersFromEnv()).Start(n.ctx)
 			log.Info("Frame local recovery by age", "afterMs", after.Milliseconds(), "workers", frame.LocalWorkersFromEnv())
 		}
+		if k, grace, workers := frame.HeadHedgeFromEnv(); k > 0 {
+			// N42_FRAME_HEAD_HEDGE: the first k unready frames of every
+			// gateway are recovered here once grace old.
+			hedge := frame.NewHeadHedge(rec, k, grace, workers)
+			hedge.SetSkip(realBC.FrameInFlight)
+			hedge.Start(n.ctx)
+			log.Info("Frame head hedge", "k", k, "graceMs", grace.Milliseconds(), "workers", workers)
+		}
 	}
 }
 

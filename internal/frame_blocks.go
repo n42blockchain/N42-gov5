@@ -163,6 +163,16 @@ func (bc *BlockChain) FramesInFlight() func(types.Hash) bool {
 	return func(h types.Hash) bool { _, ok := snap[h]; return ok }
 }
 
+// FrameInFlight reports whether an unwritten block holds frame h (a live
+// check of one frame, without FramesInFlight's snapshot).
+func (bc *BlockChain) FrameInFlight(h types.Hash) bool {
+	fs := &bc.frames
+	fs.mu.Lock()
+	_, ok := fs.inFlight[h]
+	fs.mu.Unlock()
+	return ok
+}
+
 // ReleaseFramesInFlight makes the frames of a block at number that lost
 // (a sealed sibling the miner dropped, a build abandoned after assembly)
 // fillable again at once: the in-flight entries recorded for exactly that

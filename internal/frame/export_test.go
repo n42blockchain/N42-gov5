@@ -48,3 +48,7 @@ func (a *LocalAger) StepForTest() (types.Hash, int, bool) {
 		return types.Hash{}, 0, false
 	}
 }
+
+// SetAfterRecoverForTest runs fn between a hedge job's local recovery and
+// its caching.
+func (h *HeadHedge) SetAfterRecoverForTest(fn func(types.Hash)) { h.afterRecover = fn }
