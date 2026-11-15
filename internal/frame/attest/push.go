@@ -69,7 +69,7 @@ func isLocalHost(h string) bool {
 // those frames itself), it never holds up the others.
 type Pusher struct {
 	peers   []string
-	queues  []chan []byte
+	queues  []chan pushMsg
 	dropped atomic.Uint64
 	sent    atomic.Uint64
 
@@ -83,9 +83,9 @@ const pushQueue = 1024
 
 // NewPusher returns a pusher to peers (host:port ingest addresses).
 func NewPusher(peers []string) *Pusher {
-	p := &Pusher{peers: peers, queues: make([]chan []byte, len(peers))}
+	p := &Pusher{peers: peers, queues: make([]chan pushMsg, len(peers))}
 	for i := range p.queues {
-		p.queues[i] = make(chan []byte, pushQueue)
+		p.queues[i] = make(chan pushMsg, pushQueue)
 	}
 	return p
 }
@@ -109,11 +109,22 @@ func (p *Pusher) Stop() {
 	p.wg.Wait()
 }
 
+// pushMsg is a queued message and, with the stage stamps on, when it was
+// queued.
+type pushMsg struct {
+	b  []byte
+	at time.Time
+}
+
 // Send queues msg (an EncodeWire message) for every peer. It never blocks.
 func (p *Pusher) Send(msg []byte) {
+	m := pushMsg{b: msg}
+	if stampsOn {
+		m.at = time.Now()
+	}
 	for _, q := range p.queues {
 		select {
-		case q <- msg:
+		case q <- m:
 		default:
 			p.dropped.Add(1)
 		}
@@ -123,7 +134,7 @@ func (p *Pusher) Send(msg []byte) {
 // Stats returns messages written and dropped.
 func (p *Pusher) Stats() (sent, dropped uint64) { return p.sent.Load(), p.dropped.Load() }
 
-func (p *Pusher) run(ctx context.Context, peer string, q chan []byte) {
+func (p *Pusher) run(ctx context.Context, peer string, q chan pushMsg) {
 	defer p.wg.Done()
 	var conn net.Conn
 	defer func() {
@@ -133,12 +144,13 @@ func (p *Pusher) run(ctx context.Context, peer string, q chan []byte) {
 	}()
 	backoff := 100 * time.Millisecond
 	for {
-		var msg []byte
+		var m pushMsg
 		select {
 		case <-ctx.Done():
 			return
-		case msg = <-q:
+		case m = <-q:
 		}
+		msg := m.b
 		for conn == nil {
 			var d net.Dialer
 			dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -171,5 +183,8 @@ func (p *Pusher) run(ctx context.Context, peer string, q chan []byte) {
 			continue
 		}
 		p.sent.Add(1)
+		if !m.at.IsZero() {
+			stPush.observe(time.Since(m.at))
+		}
 	}
 }

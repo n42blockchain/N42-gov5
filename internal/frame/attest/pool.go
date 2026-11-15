@@ -111,6 +111,8 @@ type Pool struct {
 
 	outMu sync.Mutex
 	out   []Entry
+	// outAt: when each out entry was queued (N42_FRAME_ATTEST_STAMPS only).
+	outAt []time.Time
 	kick  chan struct{}
 
 	batches, entries, accepted, published, publishedBatches atomic.Uint64
@@ -237,6 +239,15 @@ func (p *Pool) Recovered(h types.Hash, ss *store.Senders) {
 		p.fallback.Add(1)
 		return
 	}
+	var at time.Time
+	if stampsOn {
+		at = time.Now()
+		if p.cfg.Store != nil {
+			if ri := p.cfg.Store.RecoverInfoOf(h); ri.Stored {
+				stRecover.observe(ri.Age)
+			}
+		}
+	}
 	e := Entry{Frame: h, Digest: Digest(ss.Addrs), Senders: ss.Addrs}
 	// The list is known now: the other members' attestations of the same
 	// digest count without hashing their copies of it again (hasList).
@@ -246,6 +257,12 @@ func (p *Pool) Recovered(h types.Hash, ss *store.Senders) {
 	}
 	p.outMu.Lock()
 	p.out = append(p.out, e)
+	if stampsOn {
+		for len(p.outAt) < len(p.out)-1 {
+			p.outAt = append(p.outAt, at) // the switch went on meanwhile
+		}
+		p.outAt = append(p.outAt, at)
+	}
 	full := len(p.out) >= MaxEntries
 	p.outMu.Unlock()
 	if full {
@@ -264,6 +281,9 @@ var (
 
 // HandleWire takes one batch body off the ingest listener.
 func (p *Pool) HandleWire(body []byte) {
+	if stampsOn {
+		defer func(t0 time.Time) { stApply.observe(time.Since(t0)) }(time.Now())
+	}
 	b, err := DecodeBody(body)
 	if err != nil {
 		p.badBatch.Add(1)
@@ -296,6 +316,13 @@ func (p *Pool) Add(b *Batch) error {
 	var done []acc
 	for _, e := range b.Entries {
 		p.entries.Add(1)
+		if stampsOn && p.cfg.Store != nil {
+			if ri := p.cfg.Store.RecoverInfoOf(e.Frame); ri.Stored {
+				stRecv.observe(ri.Age)
+			} else {
+				stRecvEarly.Add(1)
+			}
+		}
 		members, need := p.committee(v, e.Frame)
 		member := false
 		for _, m := range members {
@@ -483,7 +510,11 @@ func (p *Pool) publishLoop(ctx context.Context) {
 			p.Flush()
 		case <-logT.C:
 			if s := p.Stats(); s != last {
-				log.Info("frame attestations", "stats", s.String())
+				if st := StagesString(); st != "" {
+					log.Info("frame attestations", "stats", s.String(), "stages", st)
+				} else {
+					log.Info("frame attestations", "stats", s.String())
+				}
 				last = s
 			}
 		}
@@ -493,9 +524,15 @@ func (p *Pool) publishLoop(ctx context.Context) {
 // Flush signs and sends the queued attestations now.
 func (p *Pool) Flush() {
 	p.outMu.Lock()
-	out := p.out
-	p.out = nil
+	out, outAt := p.out, p.outAt
+	p.out, p.outAt = nil, nil
 	p.outMu.Unlock()
+	if stampsOn && len(outAt) == len(out) {
+		now := time.Now()
+		for _, at := range outAt {
+			stBatch.observe(now.Sub(at))
+		}
+	}
 	self := p.self()
 	if len(out) == 0 || self == (types.Address{}) || p.cfg.Sign == nil || p.cfg.Send == nil {
 		return
@@ -507,7 +544,11 @@ func (p *Pool) Flush() {
 		}
 		b := &Batch{Attester: self, Entries: out[:n]}
 		msg := SigningHash(self, b.Entries)
+		tSign := time.Now()
 		sig, err := p.cfg.Sign(msg[:])
+		if stampsOn {
+			stSign.observe(time.Since(tSign))
+		}
 		if err != nil {
 			log.Debug("frame attestation: cannot sign", "err", err)
 			return
