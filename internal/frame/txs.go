@@ -66,6 +66,79 @@ func SetTxDecodePoolForTest(on bool) func() {
 	return func() { txDecodePoolOn.Store(prev) }
 }
 
+// EnvFrameDecodeSlab is N42_FRAME_DECODE_SLAB (default off): a block's
+// frames decode, per decode worker, into one run of slabs
+// (EthBatchDecoder.Continue) instead of fresh slabs per frame. A frame's
+// slab is a large object (500 transactions: ~150-240 KB), allocated under
+// the runtime heap lock; with 620 frames per block on 48 workers that lock
+// was the node's largest mutex wait (r93, run 77). The worker's slabs hold
+// only that block's transactions, which live and die together, so no slab
+// is ever reused or released early: nothing can alias a live transaction.
+// The cost is coarser retention: one transaction kept alive keeps its
+// worker's slab (all of that worker's frames of the block) reachable.
+const EnvFrameDecodeSlab = "N42_FRAME_DECODE_SLAB"
+
+var frameDecodeSlabOn atomic.Bool
+
+func init() {
+	switch os.Getenv(EnvFrameDecodeSlab) {
+	case "1", "true", "TRUE", "on", "ON", "yes":
+		frameDecodeSlabOn.Store(true)
+	}
+}
+
+// FrameDecodeSlabEnabled reports N42_FRAME_DECODE_SLAB.
+func FrameDecodeSlabEnabled() bool { return frameDecodeSlabOn.Load() }
+
+// SetFrameDecodeSlabForTest switches N42_FRAME_DECODE_SLAB and returns the restore.
+func SetFrameDecodeSlabForTest(on bool) func() {
+	prev := frameDecodeSlabOn.Swap(on)
+	return func() { frameDecodeSlabOn.Store(prev) }
+}
+
+// slabAheadFrames is how many frames past the current one a new slab is
+// sized for (N42_FRAME_DECODE_SLAB).
+const slabAheadFrames = 3
+
+// workerDecode is one decode worker's state for a block under
+// N42_FRAME_DECODE_SLAB: its batch decoder and a slab of transaction
+// pointers the frames' result slices are cut from.
+type workerDecode struct {
+	dec  *transaction.EthBatchDecoder
+	ptrs []*transaction.Transaction
+}
+
+// decodeTxsWorker is DecodeTxs on a worker's shared slabs; more is the
+// transactions the worker still expects after this frame (slab sizing).
+func (w *workerDecode) decodeTxsWorker(raw []byte, more int) ([]*transaction.Transaction, int, error) {
+	var f Frame
+	if err := decodeEnvelope(raw, &f); err != nil {
+		return nil, 0, err
+	}
+	n := int(f.TxCount)
+	if !(f.TxType == TxTypeEthereum && TxDecodePoolEnabled()) {
+		return decodeFrameInto(&f, nil, make([]*transaction.Transaction, 0, n))
+	}
+	if w.dec == nil {
+		w.dec = transaction.NewEthBatchDecoder(n + more)
+	} else {
+		w.dec.Continue(n, more)
+	}
+	if cap(w.ptrs)-len(w.ptrs) < n {
+		w.ptrs = make([]*transaction.Transaction, 0, n+more)
+	}
+	// Three-index cut: the decode cannot write past this frame's window.
+	l := len(w.ptrs)
+	txs, dropped, err := decodeFrameInto(&f, w.dec, w.ptrs[l:l:l+n])
+	if err != nil {
+		return nil, 0, err
+	}
+	w.ptrs = w.ptrs[:l+len(txs)]
+	// The next frame starts right after the last decoded entry: the slice
+	// handed out must not reach past it (dropped entries leave capacity).
+	return txs[:len(txs):len(txs)], dropped, nil
+}
+
 // decodeTx decodes one frame entry according to the frame's tx type. With
 // dec (an Ethereum frame under N42_TX_DECODE_POOL) the transaction comes
 // from dec's slab and its cached encoding aliases b, which frames allow:
@@ -174,15 +247,36 @@ func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []
 	per := make([][]*transaction.Transaction, len(frames))
 	drops := make([]int, len(frames))
 	errs := make([]error, len(frames))
-	one := func(i int) {
-		per[i], drops[i], errs[i] = DecodeTxs(frames[i])
+	slab := FrameDecodeSlabEnabled()
+	// moreFor estimates the transactions a worker still decodes after frame
+	// i: its share of the frames left, at MaxTxs each (slab sizing only).
+	// Capped at slabAheadFrames: a worker's share is only an estimate (the
+	// frames go to whichever worker is free), and a slab's unused tail is
+	// waste, so a slab covers a few frames, not the whole share.
+	moreFor := func(i int) int {
+		left := len(frames) - i - 1
+		return min((left+workers-1)/workers, slabAheadFrames) * MaxTxs
+	}
+	one := func(i int, w *workerDecode) {
+		if w != nil {
+			per[i], drops[i], errs[i] = w.decodeTxsWorker(frames[i], moreFor(i))
+		} else {
+			per[i], drops[i], errs[i] = DecodeTxs(frames[i])
+		}
 		if after != nil && errs[i] == nil {
 			after(i, per[i])
 		}
 	}
+	newWorker := func() *workerDecode {
+		if slab {
+			return new(workerDecode)
+		}
+		return nil
+	}
 	if workers <= 1 {
+		w := newWorker()
 		for i := range frames {
-			one(i)
+			one(i, w)
 		}
 	} else {
 		var wg sync.WaitGroup
@@ -192,12 +286,13 @@ func DecodeFramesEachWith(frames [][]byte, workers int, after func(i int, txs []
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				wd := newWorker()
 				for {
 					i := next.Add(1) - 1
 					if i >= n {
 						return
 					}
-					one(int(i))
+					one(int(i), wd)
 				}
 			}()
 		}

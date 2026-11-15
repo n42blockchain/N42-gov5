@@ -96,6 +96,17 @@ func (d *EthBatchDecoder) Reset(n int) {
 	d.now = time.Now()
 }
 
+// Continue starts the next buffer of about n transactions on d without
+// releasing anything: its slabs keep filling where the previous buffer
+// stopped, so transactions already decoded stay valid and share the slabs
+// with the new ones (they live and die together: one block's frames on one
+// decode worker, N42_FRAME_DECODE_SLAB). more is the transactions expected
+// in later buffers, used only to size the next slab.
+func (d *EthBatchDecoder) Continue(n, more int) {
+	d.left = n + more
+	d.now = time.Now()
+}
+
 // DecodeAliased decodes one canonical Ethereum transaction encoding.
 // data must not be modified while the transaction lives: its cached
 // encoding aliases data.
