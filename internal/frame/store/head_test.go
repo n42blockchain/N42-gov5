@@ -68,6 +68,48 @@ func TestHeadIndex(t *testing.T) {
 	}
 }
 
+// TestHeadIndexTrimsCommitted: the committed frames of the keep margin are
+// not walked; the index holds only frames that may still need senders, so
+// a reader of the head visits them and nothing else (the LocalAger's whole
+// store walk under the read lock, run 74).
+func TestHeadIndexTrimsCommitted(t *testing.T) {
+	s := NewWithKeep(1<<24, 64)
+	s.EnableHeadIndex()
+	const committed, fresh = 3000, 40
+	var blk []types.Hash
+	for i := 0; i < committed; i++ {
+		s.Admit(hashOf(i), Entry{Raw: []byte{1}}, false)
+		blk = append(blk, hashOf(i))
+		if len(blk) == 100 {
+			s.Commit(uint64(1+i/100), blk)
+			blk = nil
+		}
+	}
+	for i := committed; i < committed+fresh; i++ {
+		s.Admit(hashOf(i), Entry{Raw: []byte{1}}, false)
+	}
+	if s.Len() != committed+fresh {
+		t.Fatalf("store holds %d", s.Len())
+	}
+	if n := s.HeadIndexLen(); n != fresh {
+		t.Fatalf("index holds %d entries, want the %d unready ones", n, fresh)
+	}
+	// AgedUnready through the index returns what the full walk returns.
+	viaIndex := s.AgedUnready(1<<62, 1000, nil)
+	s.mu.Lock()
+	s.hqOn = false
+	s.mu.Unlock()
+	viaWalk := s.AgedUnready(1<<62, 1000, nil)
+	if len(viaIndex) != fresh || len(viaWalk) != fresh {
+		t.Fatalf("aged unready via index %d, via walk %d, want %d", len(viaIndex), len(viaWalk), fresh)
+	}
+	for i := range viaIndex {
+		if viaIndex[i].H != viaWalk[i].H || viaIndex[i].At != viaWalk[i].At {
+			t.Fatalf("position %d differs", i)
+		}
+	}
+}
+
 // TestFinishRecoverKeep: senders another source cached while a recovery
 // ran stand; the recovery's result is discarded and readiness is counted
 // once. FinishRecover (no keep) still replaces them.

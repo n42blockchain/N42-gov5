@@ -53,6 +53,7 @@ func (s *Store) HurryLocal(hs []types.Hash) int {
 type AgedFrame struct {
 	H   types.Hash
 	Raw []byte
+	At  int64 // admission time, unix nanoseconds
 }
 
 // AgedUnready returns, oldest first, up to max stored frames admitted at or
@@ -61,12 +62,31 @@ type AgedFrame struct {
 // (optional; called under the store's read lock, it must not call back into
 // the store) is false (N42_FRAME_LOCAL_AFTER_MS). The scan stops at the
 // first frame admitted after cutoff: the ring is in admission order.
+//
+// With the unready index on (EnableHeadIndex) only the frames that may
+// still need senders are visited; otherwise the walk passes every stored
+// frame older than cutoff, the committed frames of the keep margin
+// included, under the read lock.
 func (s *Store) AgedUnready(cutoff int64, max int, skip func(types.Hash) bool) []AgedFrame {
 	if max <= 0 {
 		return nil
 	}
 	var out []AgedFrame
 	s.mu.RLock()
+	if s.hqOn {
+		s.mu.RUnlock()
+		s.HeadUnready(0, func(f HeadFrame) bool {
+			if f.At > cutoff {
+				return false
+			}
+			if f.Running || f.Claimed || (skip != nil && skip(f.H)) {
+				return true
+			}
+			out = append(out, AgedFrame{H: f.H, Raw: f.Raw, At: f.At})
+			return len(out) < max
+		})
+		return out
+	}
 	defer s.mu.RUnlock()
 	for _, h := range s.ring[s.head:] {
 		sl, ok := s.m[h]
@@ -79,7 +99,7 @@ func (s *Store) AgedUnready(cutoff int64, max int, skip func(types.Hash) bool) [
 		if sl.included() || sl.senders != nil || sl.recov != recNone || sl.claimed || (skip != nil && skip(h)) {
 			continue
 		}
-		out = append(out, AgedFrame{H: h, Raw: sl.Raw})
+		out = append(out, AgedFrame{H: h, Raw: sl.Raw, At: sl.at})
 		if len(out) >= max {
 			break
 		}

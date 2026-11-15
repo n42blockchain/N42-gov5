@@ -92,7 +92,8 @@ func TestLocalAger(t *testing.T) {
 	rec := frame.NewSenderRecoverer(st, func() transaction.Signer { return signer }, 1)
 	rec.SetSource(src)
 	rec.AttachForTest()
-	ager := frame.NewLocalAger(rec, after, 1)
+	// Three workers: one queued frame per worker.
+	ager := frame.NewLocalAger(rec, after, 3)
 
 	t0 := time.Now()
 	for i := range raws {
@@ -256,4 +257,61 @@ func mustRecover(t *testing.T, signer transaction.Signer, raw []byte) []types.Ad
 		t.Fatalf("recover: %v (%d failed)", err, failed)
 	}
 	return ss.Addrs
+}
+
+// TestLocalAgerQueuesOnePerWorker: the ager chooses a frame one tick
+// before it runs, one queued per worker (run 74: 32 per worker, and 77% of
+// the queued frames were attested before their turn and skipped). Its scan
+// walks the store's unready index, not the committed frames.
+func TestLocalAgerQueuesOnePerWorker(t *testing.T) {
+	const after = 10 * time.Millisecond
+	keys := frametest.Keys(t, 5, 31)
+	fb := frametest.NewBuilder(keys[0], recoverChainID, keys[1:])
+	raws, hashes, _ := fb.Frames(t, 4, 8)
+	signer := transaction.LatestSignerForChainID(recoverChainID)
+	st := store.New(1 << 24)
+	src := &attestSource{}
+	rec := frame.NewSenderRecoverer(st, func() transaction.Signer { return signer }, 1)
+	rec.SetSource(src)
+	rec.AttachForTest()
+	ager := frame.NewLocalAger(rec, after, 2)
+	for i := range raws {
+		st.Admit(hashes[i], store.Entry{Raw: raws[i]}, false)
+	}
+	t1 := time.Now()
+	for {
+		if _, ok := rec.StepForTest(); !ok {
+			break
+		}
+	}
+	if n := st.HeadIndexLen(); n != 4 {
+		t.Fatalf("unready index holds %d", n)
+	}
+	if n := ager.Tick(t1.Add(after)); n != 2 {
+		t.Fatalf("queued %d frames with 2 workers, want 2", n)
+	}
+	// Frame 2 is attested meanwhile; one worker finishes frame 0.
+	src.attest(st, signer, hashes[2], mustRecover(t, signer, raws[2]))
+	if h, o, ok := ager.StepForTest(); !ok || h != hashes[0] || o != frame.OutcomeLocal {
+		t.Fatalf("step %x %d %v", h[:4], o, ok)
+	}
+	// The next tick queues the oldest frame still without senders (3), not
+	// the attested one.
+	if n := ager.Tick(t1.Add(after)); n != 1 {
+		t.Fatalf("queued %d", n)
+	}
+	var got []types.Hash
+	for {
+		h, _, ok := ager.StepForTest()
+		if !ok {
+			break
+		}
+		got = append(got, h)
+	}
+	if len(got) != 2 || got[0] != hashes[1] || got[1] != hashes[3] {
+		t.Fatalf("recovered %x, want frames 1 and 3", got)
+	}
+	if _, _, _, sk := ager.Stats(); sk != 0 {
+		t.Fatalf("skipped %d stale frames", sk)
+	}
 }

@@ -37,7 +37,12 @@ const (
 	EnvLocalAfterMs  = "N42_FRAME_LOCAL_AFTER_MS"
 	EnvLocalWorkers  = "N42_FRAME_LOCAL_WORKERS"
 	defaultLocalWkrs = 2
-	localQueuePerWkr = 32
+	// localQueuePerWkr: one queued frame per worker. The frames are chosen
+	// oldest first a tick before they run; a deeper queue (32 per worker
+	// in run 74) held frames whose attestations arrived while they waited
+	// (77% of the queued ones were skipped at their turn) and kept the
+	// workers on frames well behind the head of the stream.
+	localQueuePerWkr = 1
 	localTickMin     = 2 * time.Millisecond
 	localTickMax     = 10 * time.Millisecond
 	localLogEvery    = 10 * time.Second
@@ -85,6 +90,8 @@ func NewLocalAger(r *SenderRecoverer, after time.Duration, workers int) *LocalAg
 	if workers <= 0 {
 		workers = defaultLocalWkrs
 	}
+	// The scan walks the unready frames only, not the whole store.
+	r.st.EnableHeadIndex()
 	return &LocalAger{r: r, after: after, workers: workers,
 		jobs: make(chan recoverJob, workers*localQueuePerWkr), inq: make(map[types.Hash]struct{})}
 }
@@ -165,8 +172,8 @@ func (a *LocalAger) Tick(now time.Time) int {
 		case a.jobs <- recoverJob{h: f.H, raw: f.Raw, local: true, aged: true}:
 			n++
 			a.queued.Add(1)
-			if info := a.r.st.RecoverInfoOf(f.H); info.Stored && info.Age > a.after {
-				a.lateUs.Add(uint64((info.Age - a.after).Microseconds()))
+			if late := time.Duration(now.UnixNano()-f.At) - a.after; late > 0 {
+				a.lateUs.Add(uint64(late.Microseconds()))
 			}
 		default:
 			a.done(f.H)
