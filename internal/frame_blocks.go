@@ -464,14 +464,25 @@ func (bc *BlockChain) collectFrames(b block.IBlock, hashes []types.Hash) (raws [
 	fs := &bc.frames
 	raws = make([][]byte, len(hashes))
 	var missing []int
-	for i, h := range hashes {
-		if fs.store != nil {
-			if raw, ok := fs.store.Get(h); ok {
-				raws[i] = raw
-				continue
+	if fs.store != nil && store.StoreBatchOn() {
+		// N42_FRAME_STORE_BATCH: one read lock for the block's frames.
+		if fs.store.GetBatch(hashes, raws) > 0 {
+			for i := range raws {
+				if raws[i] == nil {
+					missing = append(missing, i)
+				}
 			}
 		}
-		missing = append(missing, i)
+	} else {
+		for i, h := range hashes {
+			if fs.store != nil {
+				if raw, ok := fs.store.Get(h); ok {
+					raws[i] = raw
+					continue
+				}
+			}
+			missing = append(missing, i)
+		}
 	}
 	if len(missing) > 0 && bc.ChainDB != nil {
 		if tx, err := bc.ChainDB.BeginRo(context.Background()); err == nil {
@@ -570,8 +581,16 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 		declared bool
 	}
 	var applied []frameSenders
+	// snap (N42_FRAME_STORE_BATCH): the block's cached senders read under
+	// one read lock; a frame without them is read again on its decode
+	// worker, as the serial path does, so senders cached meanwhile apply.
+	var snap []*store.Senders
 	if fs.store != nil {
 		applied = make([]frameSenders, len(hashes))
+		if store.StoreBatchOn() {
+			snap = make([]*store.Senders, len(hashes))
+			fs.store.SendersBatch(hashes, snap)
+		}
 	}
 	// N42_AVAIL_ADMIT_GAS: each frame's gas sum is taken on its decode
 	// worker, where the transactions are hot; the availability check then
@@ -582,7 +601,13 @@ func (bc *BlockChain) ResolveFrames(b block.IBlock) error {
 	}
 	per, dropped, err := frame.DecodeFramesEachWith(raws, 0, func(i int, txs []*transaction.Transaction) {
 		if applied != nil {
-			ss := fs.store.Senders(hashes[i])
+			var ss *store.Senders
+			if snap != nil {
+				ss = snap[i]
+			}
+			if ss == nil {
+				ss = fs.store.Senders(hashes[i])
+			}
 			n, d := frame.ApplySendersDeclared(txs, ss)
 			applied[i] = frameSenders{ss: ss, n: n, declared: d}
 		}

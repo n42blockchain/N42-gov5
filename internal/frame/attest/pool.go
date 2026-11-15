@@ -337,9 +337,26 @@ func (p *Pool) Add(b *Batch) error {
 		addrs []types.Address
 	}
 	var done []acc
-	for _, e := range b.Entries {
+	batch := store.StoreBatchOn()
+	var infos []store.RecoverInfo
+	if batch && stampsOn && p.cfg.Store != nil {
+		// N42_FRAME_STORE_BATCH: one read lock for the batch's stamps.
+		hs := make([]types.Hash, len(b.Entries))
+		for i := range b.Entries {
+			hs[i] = b.Entries[i].Frame
+		}
+		infos = make([]store.RecoverInfo, len(hs))
+		p.cfg.Store.RecoverInfoBatch(hs, infos)
+	}
+	for ei, e := range b.Entries {
 		p.entries.Add(1)
-		if stampsOn && p.cfg.Store != nil {
+		if infos != nil {
+			if ri := infos[ei]; ri.Stored {
+				stRecv.observe(ri.Age)
+			} else {
+				stRecvEarly.Add(1)
+			}
+		} else if stampsOn && p.cfg.Store != nil {
 			if ri := p.cfg.Store.RecoverInfoOf(e.Frame); ri.Stored {
 				stRecv.observe(ri.Age)
 			} else {
@@ -379,6 +396,23 @@ func (p *Pool) Add(b *Batch) error {
 		if addrs := p.record(e, b.Attester, need); addrs != nil {
 			done = append(done, acc{e.Frame, addrs})
 		}
+	}
+	if batch && len(done) > 0 {
+		// N42_FRAME_STORE_BATCH: the batch's senders are cached under one
+		// write lock, through the store's combiner.
+		p.accepted.Add(uint64(len(done)))
+		if p.cfg.Store != nil && p.cfg.Signer != nil {
+			if signer := p.cfg.Signer(); signer != nil {
+				hs := make([]types.Hash, len(done))
+				ss := make([]*store.Senders, len(done))
+				for i, a := range done {
+					hs[i] = a.h
+					ss[i] = &store.Senders{Signer: signer, Addrs: a.addrs}
+				}
+				p.cfg.Store.SetSendersAsync(hs, ss)
+			}
+		}
+		return nil
 	}
 	for _, a := range done {
 		p.accepted.Add(1)

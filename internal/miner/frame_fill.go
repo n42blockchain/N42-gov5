@@ -270,9 +270,20 @@ func pickFramesScan(st *store.Store, scan func(fn func(h types.Hash, e store.Ent
 	if frameReadyPick && len(p.hashes) > 0 && st.Recovering() {
 		// Observability: frames taken as ready only past the grace.
 		late := 0
-		for _, h := range p.hashes {
-			if st.Senders(h) == nil {
-				late++
+		if store.StoreBatchOn() {
+			// N42_FRAME_STORE_BATCH: one read lock for the pick.
+			ss := make([]*store.Senders, len(p.hashes))
+			st.SendersBatch(p.hashes, ss)
+			for _, s := range ss {
+				if s == nil {
+					late++
+				}
+			}
+		} else {
+			for _, h := range p.hashes {
+				if st.Senders(h) == nil {
+					late++
+				}
 			}
 		}
 		internal.CountPickedUnreadyAfterGrace(late)
@@ -316,8 +327,22 @@ func (w *worker) fillFrames(env *environment, ibs *state.IntraBlockState, getHea
 	// frame, while its transactions are still in that worker's cache; the
 	// build recovers the senders that were not cached.
 	applied := make([]int, len(pick.raws))
+	// snap (N42_FRAME_STORE_BATCH): the pick's cached senders under one read
+	// lock; a frame without them is read again on its decode worker.
+	var snap []*store.Senders
+	if store.StoreBatchOn() {
+		snap = make([]*store.Senders, len(pick.hashes))
+		st.SendersBatch(pick.hashes, snap)
+	}
 	per, dropped, err := frame.DecodeFramesEachWith(pick.raws, 0, func(i int, txs []*transaction.Transaction) {
-		applied[i] = frame.ApplySenders(txs, st.Senders(pick.hashes[i]))
+		var ss *store.Senders
+		if snap != nil {
+			ss = snap[i]
+		}
+		if ss == nil {
+			ss = st.Senders(pick.hashes[i])
+		}
+		applied[i] = frame.ApplySenders(txs, ss)
 		frame.HashTxs(txs)
 	})
 	if err != nil {

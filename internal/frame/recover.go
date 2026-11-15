@@ -265,11 +265,26 @@ const (
 )
 
 func (r *SenderRecoverer) recoverOne(j recoverJob) (outcome int) {
+	batch := store.StoreBatchOn()
+	if batch && r.src != nil && !j.local && r.src.Senders(j.h, -1) == nil && r.src.Pending(j.h) {
+		// N42_FRAME_STORE_BATCH: another source answers for this frame and
+		// has not yet. The serial path claims it, finds the same and
+		// releases the claim, leaving the store as it was; this leaves the
+		// store alone (two write locks per frame on every node outside the
+		// frame's committee). Frames gone or cached count as deferred here.
+		r.deferred.Add(1)
+		return outcomeNone
+	}
 	// A block already resolved it (its import's sender job recovers it),
 	// its senders are cached, or another path is recovering it right now:
 	// recovering it here would be the same work twice (P7, P8a). The claim
 	// is atomic with the store, so exactly one path recovers each frame.
-	t := r.st.BeginRecover(j.h, true)
+	var t store.RecoverTicket
+	if batch {
+		t = r.st.BeginRecoverCombined(j.h, true)
+	} else {
+		t = r.st.BeginRecover(j.h, true)
+	}
 	if !t.Stored {
 		r.gone.Add(1)
 		return outcomeNone
@@ -285,7 +300,11 @@ func (r *SenderRecoverer) recoverOne(j recoverJob) (outcome int) {
 		if recover() != nil {
 			outcome = outcomeNone
 		}
-		r.st.FinishRecover(t, ss)
+		if batch {
+			r.st.FinishRecoverAsync(t, ss)
+		} else {
+			r.st.FinishRecover(t, ss)
+		}
 	}()
 	signer := r.signer()
 	if signer == nil {
