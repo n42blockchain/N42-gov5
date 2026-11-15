@@ -402,6 +402,9 @@ func (p *StateProcessor) ExecuteParallelAhead(b *block.Block, ibs *state.IntraBl
 // already claimed (nil: the run claims it).
 func (p *StateProcessor) executeParallelAhead(b *block.Block, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, claim *aheadClaim) (*parallelRun, error) {
 	t0 := time.Now()
+	if claim != nil {
+		claim.entryAt = t0
+	}
 	applicable := false
 	if s := claim.prepScan(b, p.config); s != nil {
 		// N42_AHEAD_PREP_SCAN: the preparation scanned these transactions.
@@ -437,6 +440,10 @@ type aheadClaim struct {
 	// applicNs: executeParallelAhead's ParallelApplicable (or its adoption
 	// from the preparation's scan), stamped for the "parallel block" line.
 	applicNs time.Duration
+	// entryAt: executeParallelAhead's entry, the origin of the run's
+	// "parallel block" stamps (aheadEntryUs: to the start of the sender
+	// pass, the applicability check included).
+	entryAt time.Time
 	// sysProbe, when set, reports the run's state source's tree lookups so
 	// far (count and time, reader lock wait included) and its reads' wait
 	// for the parent's complete post-state (an early snapshot's held reads):
@@ -454,6 +461,15 @@ func (c *aheadClaim) prepScan(b *block.Block, cfg *params.ChainConfig) *prepScan
 		return nil
 	}
 	return c.prep.scanFor(b.Transactions(), transaction.MakeSignerWithTimestamp(cfg, hdr.Number.ToBig(), hdr.Time))
+}
+
+// entryTo is the time from executeParallelAhead's entry to t (zero without a
+// claim).
+func (c *aheadClaim) entryTo(t time.Time) time.Duration {
+	if c == nil || c.entryAt.IsZero() {
+		return 0
+	}
+	return t.Sub(c.entryAt)
 }
 
 // applicDur is applicNs (zero without a claim).
@@ -1474,7 +1490,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		}
 		blockLog := []any{"n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "skipped", nSkipped, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "affinityMs", tAffinity.Sub(tBlockStart).Milliseconds(), "sysStartMs", tExecutorMade.Sub(tAffinity).Milliseconds(), "sysCallUs", tSysCalls.Sub(tAffinity).Microseconds(), "sysCaptureUs", tExecutorMade.Sub(tSysCalls).Microseconds(), "sysTreeReads", sysTreeReads, "sysTreeUs", sysTreeNs / 1e3, "sysHeldUs", sysHeldNs / 1e3, "prepHit", prepHit, "prepWaitMs", prepWait.Milliseconds(), "prepSendersUs", prepSenders.Microseconds(), "prepComputeUs", prepCompute.Microseconds(), "prepKeysUs", prepKeys.Microseconds(), "prepPartUs", prepPart.Microseconds(), "partFast", parallel.WavePartitionFastOn(), "baseKeysUs", baseKeys.Microseconds(),
-			"applicUs", claim.applicDur().Microseconds(), "deferScanUs", deferScan.Microseconds(), "prepScanHit", scanHit,
+			"applicUs", claim.applicDur().Microseconds(), "aheadEntryUs", claim.entryTo(tStart).Microseconds(), "deferScanUs", deferScan.Microseconds(), "prepScanHit", scanHit,
 			// affinityMs's split: the result slots, the base cache, the
 			// executor, the adoption (or computation) of the affinity pass.
 			"affResUs", tTxResults.Sub(tBlockStart).Microseconds(), "affCacheUs", dCache.Microseconds(),

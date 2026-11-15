@@ -244,6 +244,49 @@ func (bc *BlockChain) startAvailEarlyPrep(b *block.Block) bool {
 	return true
 }
 
+// N42_OWN_BLOCK_PREP=1 (default off): a block this node built and sealed
+// starts its preparation (sender job, static scans, affinity keys and
+// partition, base prefill) when it is sealed, before it is pushed and
+// queued, as a block another node built does at its availability check.
+// Run 72 (B1, node0): node0's own blocks (12.6% of the blocks) had none, so
+// their ahead run computed the affinity pass (affAdoptUs 10.4 ms), the
+// applicability and fee scans (applicUs 5.2, deferScanUs 5.0) and read the
+// block-start keys through the tree (sysCallUs 4.9) on the run chain:
+// setup 24 ms against 2.2. The preparation only reads the transactions and
+// is claimed by the block's import exactly as a foreign block's is
+// (claimAheadPrep), so the run adopts what it would compute.
+var ownBlockPrepOn = parseOptIn(os.Getenv("N42_OWN_BLOCK_PREP"))
+
+// SetOwnBlockPrepForTest switches N42_OWN_BLOCK_PREP and returns the
+// restore.
+func SetOwnBlockPrepForTest(on bool) func() {
+	prev := ownBlockPrepOn
+	ownBlockPrepOn = on
+	return func() { ownBlockPrepOn = prev }
+}
+
+// ownBlockPreps counts preparations started at the seal of an own block
+// (process-wide, since start).
+var ownBlockPreps atomic.Uint64
+
+// PrepareOwnBlock starts the preparation of b, a block this node just sealed
+// (N42_OWN_BLOCK_PREP), before it is queued for the lag executor; false when
+// it did not (switch off, light node, already queued, or a preparation is
+// held or kept out by the cap): the queueing then starts its sender job as
+// before.
+func (bc *BlockChain) PrepareOwnBlock(b *block.Block) bool {
+	if !ownBlockPrepOn || b == nil || bc.E1Light() || bc.LagImportQueued(b.Hash()) {
+		return false
+	}
+	pr := bc.newAheadPrep(b)
+	if pr == nil {
+		return false
+	}
+	ownBlockPreps.Add(1)
+	bc.startAheadPrepFor(pr, b)
+	return true
+}
+
 // heldAheadPrep reports whether h has a registered preparation.
 func (bc *BlockChain) heldAheadPrep(h types.Hash) bool {
 	bc.aheadPreps.mu.Lock()

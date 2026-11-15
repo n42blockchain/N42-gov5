@@ -231,6 +231,9 @@ func (w *worker) finishLaggedSeal(blk block.IBlock, sealhash types.Hash, task *t
 		return
 	}
 	bc.RememberAvailable(concrete)
+	// N42_OWN_BLOCK_PREP: the preparation a foreign block gets at its
+	// availability check starts here, before the push and the queueing.
+	ownPrep := bc.PrepareOwnBlock(concrete)
 	tPush := time.Now()
 	if err := w.chain.SealedBlock(blk); err != nil {
 		log.Warn("miner: lag block push failed", "err", err)
@@ -256,7 +259,7 @@ func (w *worker) finishLaggedSeal(blk block.IBlock, sealhash types.Hash, task *t
 	}
 	log.Info("miner: lag block sealed and proposed", "n", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12],
 		"push", dPush, "total", time.Since(task.createdAt), "handoff", "local", "handoffLag", handoffLag,
-		"sealToEnqueue", tEnq.Sub(task.createdAt), "tMs", time.Now().UnixMilli())
+		"sealToEnqueue", tEnq.Sub(task.createdAt), "ownPrep", ownPrep, "tMs", time.Now().UnixMilli())
 }
 
 // markLocalFramesInFlight records the pool transactions of local frames a

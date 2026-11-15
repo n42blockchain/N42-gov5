@@ -558,7 +558,9 @@ func (bc *BlockChain) enqueueLagImportTimed(b *block.Block, prep bool, avail tim
 			if !bc.heldAheadPrep(b.Hash()) {
 				bc.startAheadPrep(b)
 			}
-		} else {
+		} else if !bc.heldAheadPrep(b.Hash()) {
+			// A preparation started at the seal (N42_OWN_BLOCK_PREP) runs the
+			// block's sender job itself.
 			bc.startSenderJob(b, nil)
 		}
 	}

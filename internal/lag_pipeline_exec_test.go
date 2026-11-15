@@ -344,6 +344,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		}
 		if arrival == arrivalSealed {
 			piped.bc.RememberAvailable(sealed)
+			// As the miner's finishLaggedSeal: the preparation starts at the
+			// seal when N42_OWN_BLOCK_PREP is on.
+			piped.bc.PrepareOwnBlock(sealed)
 			piped.bc.EnqueueLagImport(sealed)
 		} else {
 			checked, retry, err := piped.bc.CheckDeferredBlock(w)
