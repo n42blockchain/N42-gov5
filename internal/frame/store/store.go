@@ -192,6 +192,17 @@ type Store struct {
 	// readyLat: admission -> senders cached, by source (always on).
 	readyLat readyLatency
 
+	// Unready index (head.go; off until EnableHeadIndex): frames admitted
+	// while it is on, in admission order, until they are resolved (senders
+	// cached, committed or gone); hq[hqHead:] is live.
+	hqOn   bool
+	hq     []types.Hash
+	hqHead int
+	// onChange (optional) is told every change that can move the head of
+	// the unready frames (admission, senders cached, a recovery released,
+	// claims, pins, commits, removals). It must not block.
+	onChange atomic.Pointer[func()]
+
 	// Frames dropped after a block took them, or by Remove: a Put of one of
 	// these is answered as a duplicate. FIFO-bounded by tombstoneCap.
 	tomb     map[types.Hash]struct{}
@@ -270,6 +281,7 @@ func (s *Store) SetSenders(h types.Hash, ss *Senders) bool {
 	if ss == nil {
 		return false
 	}
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sl, ok := s.m[h]
@@ -331,8 +343,20 @@ func (s *Store) BeginRecover(h types.Hash, skipClaimed bool) RecoverTicket {
 // or was abandoned) is cached with the frame and every waiter is woken. A
 // frame that left the store meanwhile only wakes its waiters.
 func (s *Store) FinishRecover(t RecoverTicket, ss *Senders) {
+	s.finishRecover(t, ss, false)
+}
+
+// FinishRecoverKeep is FinishRecover that keeps senders another source
+// cached while the recovery ran (an attestation) instead of replacing them,
+// and reports whether ss became the frame's cached senders: false when it
+// lost that race (or the frame left the store, or ss is nil).
+func (s *Store) FinishRecoverKeep(t RecoverTicket, ss *Senders) bool {
+	return s.finishRecover(t, ss, true)
+}
+
+func (s *Store) finishRecover(t RecoverTicket, ss *Senders, keep bool) (first bool) {
 	if !t.Own || t.ch == nil {
-		return
+		return false
 	}
 	s.mu.Lock()
 	if sl, ok := s.m[t.H]; ok && sl.recWait == t.ch {
@@ -340,8 +364,11 @@ func (s *Store) FinishRecover(t RecoverTicket, ss *Senders) {
 			if sl.senders == nil {
 				s.nSenders++
 				s.readyLat.observe(readyLocal, sl.at)
+				first = true
 			}
-			sl.senders = ss
+			if first || !keep {
+				sl.senders = ss
+			}
 		}
 		if sl.senders != nil {
 			sl.recov = recDone
@@ -353,12 +380,15 @@ func (s *Store) FinishRecover(t RecoverTicket, ss *Senders) {
 	}
 	s.mu.Unlock()
 	close(t.ch)
+	s.changed()
+	return first
 }
 
 // Claim marks the stored frames among hs as resolved by a block: the
 // block's own sender job recovers them, so admission recovery skips them
 // instead of recovering them a second time.
 func (s *Store) Claim(hs []types.Hash) {
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, h := range hs {
@@ -464,8 +494,12 @@ func (s *Store) Admit(h types.Hash, e Entry, bypass bool) Result {
 	}
 	s.m[h] = slot{Entry: e, at: time.Now().UnixNano()}
 	s.ring = append(s.ring, h)
+	if s.hqOn {
+		s.hq = append(s.hq, h)
+	}
 	s.used += size
 	s.puts.Add(1)
+	defer s.changed()
 	if box := s.recoverer.Load(); box != nil {
 		// Under the store lock only to keep Submit ordered with the insert;
 		// Submit never blocks.
@@ -481,6 +515,7 @@ func (s *Store) Include(hs []types.Hash, number uint64) {
 	if number == 0 {
 		return
 	}
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.haveHead && number <= s.committed {
@@ -512,8 +547,10 @@ func (s *Store) Include(hs []types.Hash, number uint64) {
 // frames. Frames named but not stored are tombstoned so a resend is
 // refused.
 func (s *Store) Commit(number uint64, hs []types.Hash) {
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.trimHeadIndexLocked()
 	for _, h := range hs {
 		sl, ok := s.m[h]
 		if !ok {
@@ -752,6 +789,7 @@ func (s *Store) scan(fillable bool, fn func(h types.Hash, e Entry) bool) {
 // frames) and remembers their hashes so a resend is not admitted again.
 // Frames a block holds are left to Commit's eviction.
 func (s *Store) Remove(hs []types.Hash) {
+	defer s.changed()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, h := range hs {
