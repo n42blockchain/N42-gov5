@@ -58,23 +58,27 @@ import (
 // goes to the chain database and covers the pending record.
 var hsStateCoalesceOn = parseHSOptIn(os.Getenv("N42_HS_STATE_COALESCE"))
 
-// hsStateCoalesceIdle is N42_HS_STATE_COALESCE_MS (default 200 ms).
-var hsStateCoalesceIdle = func() time.Duration {
+// hsStateCoalesceIdle is N42_HS_STATE_COALESCE_MS (default 200 ms), in
+// nanoseconds (atomic: timer goroutines read it).
+var hsStateCoalesceIdle atomic.Int64
+
+func init() {
+	d := 200 * time.Millisecond
 	if n, err := strconv.Atoi(os.Getenv("N42_HS_STATE_COALESCE_MS")); err == nil && n > 0 {
-		return time.Duration(n) * time.Millisecond
+		d = time.Duration(n) * time.Millisecond
 	}
-	return 200 * time.Millisecond
-}()
+	hsStateCoalesceIdle.Store(int64(d))
+}
 
 // SetHSStateCoalesceForTest switches N42_HS_STATE_COALESCE (and, when idle
 // > 0, its idle flush) and returns the restore.
 func SetHSStateCoalesceForTest(on bool, idle time.Duration) func() {
-	prev, prevIdle := hsStateCoalesceOn, hsStateCoalesceIdle
+	prev, prevIdle := hsStateCoalesceOn, hsStateCoalesceIdle.Load()
 	hsStateCoalesceOn = on
 	if idle > 0 {
-		hsStateCoalesceIdle = idle
+		hsStateCoalesceIdle.Store(int64(idle))
 	}
-	return func() { hsStateCoalesceOn, hsStateCoalesceIdle = prev, prevIdle }
+	return func() { hsStateCoalesceOn = prev; hsStateCoalesceIdle.Store(prevIdle) }
 }
 
 // stateCoalescer holds the pending steady-state record.
@@ -148,7 +152,7 @@ func (s *Service) armCoalesceFlush() {
 	if c.timer != nil || c.stopped || c.pending == nil {
 		return
 	}
-	c.timer = time.AfterFunc(hsStateCoalesceIdle, s.flushCoalesced)
+	c.timer = time.AfterFunc(time.Duration(hsStateCoalesceIdle.Load()), s.flushCoalesced)
 }
 
 // flushCoalesced writes the pending record in a journal transaction of its
@@ -169,9 +173,12 @@ func (s *Service) flushCoalesced() {
 	if err := s.journalDB.Update(kv.WithRwTag(s.ctx, "hsStateJournal"), func(tx kv.RwTx) error {
 		return SaveConsensusState(tx, st)
 	}); err != nil {
+		// Kept for the next vote journal write (or the next persist's
+		// flush); not re-armed here, so a store that keeps failing is not
+		// retried in a loop.
 		log.Warn("hotstuff: failed to persist coalesced state", "err", err)
-		if s.ctx.Err() == nil && c.putBack(st, v) {
-			s.armCoalesceFlush()
+		if s.ctx.Err() == nil {
+			c.putBack(st, v)
 		}
 		return
 	}

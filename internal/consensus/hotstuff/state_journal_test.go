@@ -15,6 +15,7 @@ import (
 // writes the chain database; without the switch (or without a journal) the
 // steady-state persist writes the chain database as before.
 func TestHSStateJournalRoutesSteadyPersist(t *testing.T) {
+	defer SetHSStateCoalesceForTest(false, 0)()
 	for _, on := range []bool{false, true} {
 		s, _, _, _ := hsTNewNotifyService(t)
 		jdb := openTestVoteJournal(t)
@@ -57,6 +58,7 @@ func TestHSStateJournalRoutesSteadyPersist(t *testing.T) {
 	// No journal store: the switch changes nothing.
 	s, _, _, _ := hsTNewNotifyService(t)
 	defer SetHSStateJournalForTest(true)()
+	defer SetHSStateCoalesceForTest(false, 0)()
 	s.engine.Engine().RestoreState(9, QuorumCertificate{View: 8}, QuorumCertificate{View: 7}, 0)
 	s.persistState()
 	if got := vjLoad(t, s.db); got == nil || got.View != 9 {
@@ -73,6 +75,7 @@ func TestHSStateJournalRecoverySameState(t *testing.T) {
 		voted, commitVoted    ViewNumber
 		votedHash             types.Hash
 	}
+	defer SetHSStateCoalesceForTest(false, 0)()
 	run := func(on bool) restored {
 		defer SetHSStateJournalForTest(on)()
 		s, _, _, _ := hsTNewNotifyService(t)
@@ -123,6 +126,7 @@ func TestHSStateJournalRecoverySameState(t *testing.T) {
 // conflicting vote in that view is refused by the durable record.
 func TestHSStateJournalStalePersistKeepsVote(t *testing.T) {
 	defer SetHSStateJournalForTest(true)()
+	defer SetHSStateCoalesceForTest(false, 0)()
 	s, _, _, _ := hsTNewNotifyService(t)
 	jdb := openTestVoteJournal(t)
 	s.SetVoteJournalDB(jdb)
