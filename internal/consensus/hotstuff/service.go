@@ -652,6 +652,9 @@ type Service struct {
 	// commitCh feeds the commit loop (commit_loop.go).
 	commitCh        chan commitJob
 	persistInterval uint64
+	// coalesce holds the pending steady-state record under
+	// N42_HS_STATE_COALESCE (state_coalesce.go).
+	coalesce stateCoalescer
 }
 
 // SetAvailabilityProbe attaches the chain's available-block lookup (P2a): a
@@ -784,6 +787,7 @@ func (s *Service) Start() error {
 func (s *Service) Stop() {
 	s.cancel()
 	s.wg.Wait()
+	s.stopCoalesce()
 
 	// Final state persist. NOT on s.ctx — that was just cancelled, and MDBX
 	// will not begin a write transaction on a cancelled context.
@@ -1663,8 +1667,29 @@ func (s *Service) JournalVote(state *ConsensusState) error {
 	if db == nil {
 		return nil // no store configured (tests/embedded): journalling is a no-op
 	}
+	// N42_HS_STATE_COALESCE: a pending steady-state record rides this
+	// transaction (state_coalesce.go). The vote's own record is written as
+	// it is: the pending snapshot predates it, so the merge changes nothing
+	// of it.
+	rec := state
+	var pend *ConsensusState
+	var pendView ViewNumber
+	if hsStateCoalesceOn && s.voteDB == nil && db == s.journalDB && s.coalesce.has() {
+		pend, pendView = s.coalesce.take()
+		if pend != nil {
+			if m, err := mergeConsensusStates(state, pend); err == nil {
+				rec = m
+			} else {
+				log.Warn("hotstuff: coalesced state not merged into the vote journal write", "err", err)
+				if s.coalesce.putBack(pend, pendView) {
+					s.armCoalesceFlush()
+				}
+				pend = nil
+			}
+		}
+	}
 	write := func(tx kv.RwTx) error {
-		if err := SaveConsensusState(tx, state); err != nil {
+		if err := SaveConsensusState(tx, rec); err != nil {
 			return err
 		}
 		if s.voteDB != nil {
@@ -1673,9 +1698,6 @@ func (s *Service) JournalVote(state *ConsensusState) error {
 		return nil
 	}
 	jctx := kv.WithRwTag(s.ctx, "hsVote")
-	if !journalTrace {
-		return db.Update(jctx, write)
-	}
 	start := time.Now()
 	var acquire, save time.Duration
 	err := db.Update(jctx, func(tx kv.RwTx) error {
@@ -1685,6 +1707,26 @@ func (s *Service) JournalVote(state *ConsensusState) error {
 		save = time.Since(t)
 		return err
 	})
+	total := time.Since(start)
+	if pend != nil {
+		if err != nil {
+			if s.coalesce.putBack(pend, pendView) {
+				s.armCoalesceFlush()
+			}
+		} else {
+			s.coalesce.piggybacked.Add(1)
+			s.raiseLastPersistedView(pendView)
+		}
+	}
+	// Always on (r90a): the journal transaction's begin wait, its writes and
+	// its commit (sync), per vote.
+	log.Info("hotstuff: vote journal", "store", store, "view", state.View,
+		"waitUs", acquire.Microseconds(), "saveUs", save.Microseconds(), "commitUs", (total - acquire - save).Microseconds(),
+		"piggyback", pend != nil, "coalesced", s.coalesce.coalesced.Load(), "piggybacked", s.coalesce.piggybacked.Load(),
+		"flushed", s.coalesce.flushed.Load(), "err", err)
+	if !journalTrace {
+		return err
+	}
 	log.Info("hotstuff: vote journal phases", "store", store, "view", state.View,
 		"prepareView", state.LastVotedView, "commitView", state.LastCommitVotedView,
 		"prepareHash", state.LastVotedHash.Hex(), "commitHash", state.LastCommitVotedHash.Hex(),
@@ -1701,7 +1743,12 @@ func (s *Service) persistState() {
 	if h == nil {
 		return
 	}
-	s.persistHookTo(s.ctx, s.steadyStateDB(h), h)
+	db := s.steadyStateDB(h)
+	if hsStateCoalesceOn && db != s.db && db == s.journalDB && !h.staged {
+		s.coalescePersist(h)
+		return
+	}
+	s.persistHookTo(s.ctx, db, h)
 }
 
 // persistStateCtx is persistState with an explicit context. Shutdown must pass
@@ -1722,6 +1769,9 @@ type stateHook struct {
 	done bool // set by run on success; read only after the transaction returns
 	// staged: the snapshot carries a staged validator set (written with it).
 	staged bool
+	// state is the snapshot run writes (N42_HS_STATE_COALESCE keeps it
+	// pending instead).
+	state *ConsensusState
 }
 
 // stateHookCommitted reports whether the snapshot reached durable storage in
@@ -1749,7 +1799,7 @@ func (s *Service) newStateHook() *stateHook {
 	// to close.
 	state := ce.SnapshotState()
 	stagedEpoch, stagedVals, stagedF, hasStaged := ce.StagedEpochInfoSafe()
-	h := &stateHook{view: state.View, staged: hasStaged}
+	h := &stateHook{view: state.View, staged: hasStaged, state: state}
 	h.run = func(tx kv.RwTx) error {
 		if err := SaveConsensusState(tx, state); err != nil {
 			return err
