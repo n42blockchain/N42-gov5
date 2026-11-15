@@ -381,7 +381,9 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 		job.mark(lwpBegin)
 	}
 
-	lagTx := job != nil && lagWriteDeferBG
+	// The gate also tells a yielding history fold (N42_HISTORY_FOLD_YIELD)
+	// that a block write wants the writer.
+	lagTx := job != nil && (lagWriteDeferBG || historyFoldYieldOn)
 	if lagTx {
 		lagBGGate.enter()
 	}

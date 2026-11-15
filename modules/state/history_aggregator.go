@@ -186,6 +186,30 @@ func (p *PreparedHistory) ApplyFrom(rwTx kv.RwTx, from int, budget time.Duration
 	return i, nil
 }
 
+// ApplyFromUntil is ApplyFrom that also stops, at the first key boundary
+// after at least one key's rows, once stop reports true (nil: never). It
+// returns the next row and whether stop ended the transaction's puts.
+func (p *PreparedHistory) ApplyFromUntil(rwTx kv.RwTx, from int, budget time.Duration, stop func() bool) (int, bool, error) {
+	start := time.Now()
+	i := from
+	for i < len(p.rows) {
+		r := p.rows[i]
+		if err := rwTx.Put(r.bucket, r.key, r.value); err != nil {
+			return i, false, err
+		}
+		i++
+		if i < len(p.rows) && !sameHistoryKey(p.rows[i-1], p.rows[i]) {
+			if stop != nil && stop() {
+				return i, true, nil
+			}
+			if time.Since(start) >= budget {
+				break
+			}
+		}
+	}
+	return i, false, nil
+}
+
 // sameHistoryKey reports whether two rows are chunks of one key (a chunk key
 // is the key followed by an 8-byte block suffix).
 func sameHistoryKey(a, b preparedHistoryRow) bool {

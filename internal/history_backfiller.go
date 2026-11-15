@@ -59,6 +59,9 @@ type HistoryBackfiller struct {
 	// tests paid 10 s each until this existed.
 	started bool
 	mu      sync.Mutex
+	// nosyncUnsupported: the store has no UpdateNosync (fold yield falls
+	// back to synced commits). Fold goroutine only.
+	nosyncUnsupported bool
 }
 
 // NewHistoryBackfiller builds a backfiller. head must return the current chain
@@ -296,13 +299,16 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	// query read a gap as untouched.
 	stale := false
 	next := 0
+	yieldOn := historyFoldYieldOn
+	var ys historyFoldYieldStats
+	tFold := time.Now()
 	for {
 		last := false
-		if lagWriteDeferBG {
+		if lagWriteDeferBG || yieldOn {
 			// Begin right after a lag write commits, not in its way.
-			lagBGGate.waitClosed(lagWriteDeferBGWait, b.ctx.Done())
+			ys.gateWait += lagBGGate.waitClosed(lagWriteDeferBGWait, b.ctx.Done())
 		}
-		if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
+		body := func(tx kv.RwTx) error {
 			cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
 			if err != nil {
 				return err
@@ -311,17 +317,32 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 				stale = true
 				return nil
 			}
-			n, err := prepared.ApplyFrom(tx, next, historyFoldTxnBudget)
+			var n int
+			if yieldOn {
+				var yielded bool
+				n, yielded, err = prepared.ApplyFromUntil(tx, next, historyFoldYieldTxn, historyFoldWriterWanted)
+				if yielded {
+					ys.yields++
+				}
+			} else {
+				n, err = prepared.ApplyFrom(tx, next, historyFoldTxnBudget)
+			}
 			if err != nil {
 				return err
 			}
+			ys.rows += n - next
 			next = n
 			if next < prepared.Len() {
 				return nil
 			}
 			last = true
 			return rawdb.WriteHistoryIndexedThrough(tx, to)
-		}); err != nil {
+		}
+		if yieldOn {
+			if err := b.foldUpdateYield(body, &ys); err != nil {
+				return false, err
+			}
+		} else if err := b.db.Update(b.ctx, body); err != nil {
 			return false, err
 		}
 		if stale || last {
@@ -337,6 +358,11 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 			return false, b.ctx.Err()
 		case <-time.After(historyFoldYield):
 		}
+	}
+	if yieldOn {
+		log.Info("history fold", "from", from, "to", to, "rows", ys.rows, "txns", ys.txns, "yields", ys.yields,
+			"heldMaxUs", ys.heldMax.Microseconds(), "heldSumUs", ys.heldSum.Microseconds(),
+			"gateWaitUs", ys.gateWait.Microseconds(), "nosync", ys.nosync, "totalMs", time.Since(tFold).Milliseconds(), "stale", stale)
 	}
 	if stale {
 		log.Warn("history backfill: marker moved while the fold was prepared; dropped", "from", from, "to", to)
