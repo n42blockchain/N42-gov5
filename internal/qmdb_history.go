@@ -99,9 +99,11 @@ func unjournalQMDBBlock(tx kv.RwTx, active bool, block uint64, undo *qmdb.BlockU
 		// Below a mid-chain seed (its stamps are not per-block) or no undo
 		// record: the journal cannot be unwound exactly.
 		log.Error("QMDB history journal broken by an unwind it cannot follow", "block", block, "start", start, "haveUndo", undo != nil)
-		from := start
-		if block < from {
-			from = block
+		// Heights from the unwound block on are unreliable (from the start
+		// when the unwind went below it).
+		from := block
+		if from < start {
+			from = start
 		}
 		return commitment.MarkQMDBHistoryBroken(tx, from)
 	}

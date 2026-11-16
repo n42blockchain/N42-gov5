@@ -213,3 +213,43 @@ func TestQMDBHistoricalProofRootCheckAndBrokenJournal(t *testing.T) {
 	}
 	_ = modules.QMDBUndoWindow
 }
+
+// Unwinding persisted blocks removes their journal (exact inverse), and an
+// unwind the journal cannot follow marks it broken instead of failing.
+func TestUnjournalQMDBBlock(t *testing.T) {
+	const n, window = 10, 300
+	c := newHistProofChain(t, n, window)
+	if err := c.db.Update(context.Background(), func(tx kv.RwTx) error {
+		for b := uint64(n); b > n-3; b-- {
+			undo, err := readQMDBUndo(tx, b)
+			if err != nil || undo == nil {
+				t.Fatalf("undo %d: %v", b, err)
+			}
+			if err := unjournalQMDBBlock(tx, true, b, undo); err != nil {
+				return err
+			}
+		}
+		_, last, ok, err := commitment.NewMDBXQMDBHistoryStore(tx).BlockPosRange()
+		if err != nil || !ok || last != n-3 {
+			t.Fatalf("journal ends at %d (ok=%v err=%v), want %d", last, ok, err, n-3)
+		}
+		if _, broken, err := commitment.ReadQMDBHistoryBroken(tx); err != nil || broken {
+			t.Fatalf("exact unwind marked the journal broken (%v)", err)
+		}
+		// Flag off: untouched.
+		if err := unjournalQMDBBlock(tx, false, n-3, nil); err != nil {
+			return err
+		}
+		// No undo record: cannot follow, mark broken.
+		if err := unjournalQMDBBlock(tx, true, n-3, nil); err != nil {
+			return err
+		}
+		b, broken, err := commitment.ReadQMDBHistoryBroken(tx)
+		if err != nil || !broken || b != n-3 {
+			t.Fatalf("broken = %d %v %v, want %d", b, broken, err, n-3)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
