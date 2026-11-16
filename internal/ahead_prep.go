@@ -109,6 +109,11 @@ type aheadPrep struct {
 	// scan: the run's state-free scans (N42_AHEAD_PREP_SCAN), nil when not
 	// computed; set before done closes.
 	scan *prepScan
+	// startKeys: the start-keys prefill (N42_AHEAD_START_KEYS_PREFETCH,
+	// ahead_start_keys.go), set before done closes; startKeysUsed: the
+	// claim took it (settleStartKeys), so prefill() returns it.
+	startKeys     *aheadBase
+	startKeysUsed bool
 
 	// Timings for the "parallel block" line: registered (the block was
 	// queued), its senders settled (the computation started) and the
@@ -321,6 +326,10 @@ func (bc *BlockChain) runAheadPrep(pr *aheadPrep, b *block.Block) {
 	if !ok || hdr.Number == nil {
 		return
 	}
+	if aheadStartKeysOn && bc.aheadBaseUsable() {
+		// Reads only the header and the tree.
+		pr.startKeys = bc.startAheadStartKeys(hdr, sp, pr.dropping.Load)
+	}
 	if aheadPrepScanOn {
 		scanSigner := transaction.MakeSignerWithTimestamp(sp.config, hdr.Number.ToBig(), hdr.Time)
 		if s := sp.prepStaticScan(b, hdr, scanSigner); s != nil {
@@ -419,6 +428,7 @@ func (bc *BlockChain) claimAheadPrepCut(h types.Hash, cut bool) (*aheadPrep, tim
 		}
 		pr.base.halt()
 	}
+	pr.settleStartKeys()
 	wait := time.Since(t0)
 	if !pr.ok {
 		return nil, wait

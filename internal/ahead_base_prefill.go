@@ -284,6 +284,11 @@ func (ab *aheadBase) halt() {
 
 // prefill returns the usable prefill of a claimed preparation, or nil.
 func (pr *aheadPrep) prefill() *aheadBase {
+	if pr != nil && pr.startKeysUsed {
+		// N42_AHEAD_START_KEYS_PREFETCH: the claim took the start-keys
+		// prefill in place of a detached (or absent) base prefill.
+		return pr.startKeys
+	}
 	if pr == nil || pr.baseDetached {
 		// A detached prefill still runs: nothing of it may be read.
 		return nil
@@ -416,6 +421,51 @@ func aheadBaseMovedOK(c aheadBaseChain, at uint64, states []commitment.QMDBAppli
 	return true
 }
 
+// aheadBaseWaitTree waits for the tree to hold a block of hdr's chain within
+// the depth and records where (ab.depth, ab.at, ab.atHash, ab.waited); false
+// (ab.skip says why) when the prefill reads nothing.
+func (bc *BlockChain) aheadBaseWaitTree(ab *aheadBase, hdr *block.Header) (aheadBaseChain, commitment.QMDBAppliedState, bool) {
+	rc := bc.qmdbRootComputer
+	var st0 commitment.QMDBAppliedState
+	if hdr.Number.Uint64() < 2 {
+		ab.skip = "genesis child"
+		return aheadBaseChain{}, st0, false
+	}
+	chain := bc.aheadBaseChainOf(hdr, aheadBaseDepth)
+
+	// Wait for the tree to hold a block of the chain within the depth.
+	t0 := time.Now()
+	tick := time.NewTicker(250 * time.Microsecond)
+	defer tick.Stop()
+	for {
+		st0 = rc.AppliedState()
+		if d, ok := chain.holds(st0); ok {
+			ab.depth = d
+			break
+		}
+		if st0.Labelled && st0.Number+uint64(len(chain.hash)) > chain.top {
+			// The tree holds another block at a height the child's layers
+			// could cover, or it passed the parent: nothing this child reads
+			// comes from there.
+			ab.skip = "tree off the parent"
+			return chain, st0, false
+		}
+		if time.Since(t0) > aheadBaseMaxWait {
+			ab.skip = "tree below the chain"
+			return chain, st0, false
+		}
+		select {
+		case <-ab.stop:
+			ab.skip = "claimed before the tree reached the chain"
+			return chain, st0, false
+		case <-tick.C:
+		}
+	}
+	ab.waited = time.Since(t0)
+	ab.at, ab.atHash = st0.Number, st0.Hash
+	return chain, st0, true
+}
+
 func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*transaction.Transaction, prepared *preparedSet, sp *StateProcessor, abort func() bool) {
 	defer close(ab.done)
 	if fn := aheadBaseEndForTest; fn != nil {
@@ -433,43 +483,10 @@ func (bc *BlockChain) runAheadBase(ab *aheadBase, hdr *block.Header, txs []*tran
 		log.Debug("ahead base prefill", "number", n, "keys", ab.pf.Len(), "treeAt", ab.at, "depth", ab.depth,
 			"waitMs", ab.waited.Milliseconds(), "fillMs", ab.took.Milliseconds(), "cut", ab.cut.Load(), "skip", ab.skip)
 	}()
-	if n < 2 {
-		ab.skip = "genesis child"
+	chain, st0, ok := bc.aheadBaseWaitTree(ab, hdr)
+	if !ok {
 		return
 	}
-	chain := bc.aheadBaseChainOf(hdr, aheadBaseDepth)
-
-	// Wait for the tree to hold a block of the chain within the depth.
-	t0 := time.Now()
-	tick := time.NewTicker(250 * time.Microsecond)
-	defer tick.Stop()
-	var st0 commitment.QMDBAppliedState
-	for {
-		st0 = rc.AppliedState()
-		if d, ok := chain.holds(st0); ok {
-			ab.depth = d
-			break
-		}
-		if st0.Labelled && st0.Number+uint64(len(chain.hash)) > chain.top {
-			// The tree holds another block at a height the child's layers
-			// could cover, or it passed the parent: nothing this child reads
-			// comes from there.
-			ab.skip = "tree off the parent"
-			return
-		}
-		if time.Since(t0) > aheadBaseMaxWait {
-			ab.skip = "tree below the chain"
-			return
-		}
-		select {
-		case <-ab.stop:
-			ab.skip = "claimed before the tree reached the chain"
-			return
-		case <-tick.C:
-		}
-	}
-	ab.waited = time.Since(t0)
-	ab.at, ab.atHash = st0.Number, st0.Hash
 
 	stop := func() bool {
 		if abort() {

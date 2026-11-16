@@ -633,6 +633,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// The base prefill (ahead_base_prefill.go): the run's tree reads answer
 	// its keys without the tree's lock.
 	base := prep.prefill()
+	startKeysPF := prep != nil && prep.startKeysUsed
 	// N42_AHEAD_PRE_DETACH: a prefill the claim detached is still running;
 	// only the claim's wait is reported.
 	baseDetachWait, baseDetached := prep.detachedPrefill()
@@ -1530,7 +1531,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain}
 		blockLog = append(blockLog, "sysTreeWaitUs", sysTreeWaitNs/1e3, "sysTreeWaits", sysTreeWaits,
-			"sysTreeHolder", sysHolder, "sysTreeHolderAgeUs", sysHolderAgeNs/1e3)
+			"sysTreeHolder", sysHolder, "sysTreeHolderAgeUs", sysHolderAgeNs/1e3, "startKeysPF", startKeysPF)
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 
