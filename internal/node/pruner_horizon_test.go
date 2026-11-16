@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"testing"
@@ -98,6 +99,84 @@ func TestPruneHistoryTableResumes(t *testing.T) {
 			}
 			return nil
 		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// failHistoryCommitDB rolls back (and fails) any Update that changed the
+// AccountsHistory table, simulating a commit failure of the history pass.
+type failHistoryCommitDB struct {
+	kv.RwDB
+	fail bool
+}
+
+var errInjectedCommit = errors.New("injected commit failure")
+
+func countRows(tx kv.Tx, table string) (int, error) {
+	n := 0
+	err := tx.ForEach(table, nil, func(_, _ []byte) error { n++; return nil })
+	return n, err
+}
+
+func (d *failHistoryCommitDB) Update(ctx context.Context, f func(tx kv.RwTx) error) error {
+	tx, err := d.RwDB.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	before, _ := countRows(tx, modules.AccountsHistory)
+	if err := f(tx); err != nil {
+		return err
+	}
+	after, _ := countRows(tx, modules.AccountsHistory)
+	if d.fail && after != before {
+		return errInjectedCommit // deferred Rollback discards the pass
+	}
+	return tx.Commit()
+}
+
+// The history resume point only advances when the pass committed.
+func TestPrunerHistoryResumeAdvancesOnlyOnCommit(t *testing.T) {
+	inner := memdb.NewTestDB(t)
+	t.Cleanup(rawdb.ResetStatePrunedBelowForTesting)
+	db := &failHistoryCommitDB{RwDB: inner, fail: true}
+	key := func(addr byte, shard uint64) []byte {
+		k := make([]byte, 21+8)
+		k[0] = addr
+		binary.BigEndian.PutUint64(k[21:], shard)
+		return k
+	}
+	if err := inner.Update(testCtx(), func(tx kv.RwTx) error {
+		for a := byte(0); a < 30; a++ {
+			if err := tx.Put(modules.AccountsHistory, key(a, 10), []byte{1}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pruner := NewPruner(db, conf.PruneConfig{Mode: conf.PruneModeFull, BlockRetention: 50, PruneInterval: 10, PruneBatchLimit: 7},
+		&staticBlockProvider{block: 200}, nil)
+	if err := pruner.prune(150); !errors.Is(err, errInjectedCommit) {
+		t.Fatalf("prune err = %v, want the injected failure", err)
+	}
+	if len(pruner.historyResume[modules.AccountsHistory]) != 0 {
+		t.Fatalf("resume advanced over a rolled-back pass: %x", pruner.historyResume[modules.AccountsHistory])
+	}
+	db.fail = false
+	for i := 0; i < 10; i++ {
+		if err := pruner.prune(150); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := inner.View(testCtx(), func(tx kv.Tx) error {
+		n, err := countRows(tx, modules.AccountsHistory)
+		if err != nil || n != 0 {
+			t.Fatalf("rows left after retries: %d (%v)", n, err)
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

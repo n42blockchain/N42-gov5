@@ -191,11 +191,11 @@ func (p *Pruner) prune(pruneTo uint64) error {
 	// transaction; HistoryIndexMu keeps this prune from landing between that
 	// read and the fold's write, which would put pruned rows back.
 	state.HistoryIndexMu.Lock()
+	// Resume points advance only once the tx commits: a rolled-back pass must
+	// be retried from where it started, not skipped.
+	resume := map[string][]byte{}
 	err := p.db.Update(p.ctx, func(tx kv.RwTx) error {
 		// Prune account history (regular table, key = address + shard_id)
-		if p.historyResume == nil {
-			p.historyResume = map[string][]byte{}
-		}
 		for _, table := range []string{
 			modules.AccountsHistory, // key = address + shard_id
 			modules.StorageHistory,  // key = address + key + shard_id
@@ -204,7 +204,7 @@ func (p *Pruner) prune(pruneTo uint64) error {
 			if err != nil {
 				return err
 			}
-			p.historyResume[table] = next
+			resume[table] = next
 		}
 
 		// Optionally prune receipts and logs
@@ -223,6 +223,12 @@ func (p *Pruner) prune(pruneTo uint64) error {
 
 	if err != nil {
 		return err
+	}
+	if p.historyResume == nil {
+		p.historyResume = map[string][]byte{}
+	}
+	for table, next := range resume {
+		p.historyResume[table] = next
 	}
 
 	elapsed := time.Since(start)
