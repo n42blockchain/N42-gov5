@@ -48,6 +48,50 @@ func SetAheadStartKeysForTest(on bool) func() {
 	return func() { aheadStartKeysOn = prev }
 }
 
+// N42_AHEAD_START_KEYS_DEPTH2=1 (default off, r95a; acts with
+// N42_AHEAD_START_KEYS_PREFETCH): the start-keys prefill may read the tree
+// two blocks below the child's parent (h = N-3 for child N), not only one.
+// Run 81 (B3): the prefill was taken on 7 of 1,894 full blocks. It starts
+// at the block's preparation, 14 ms p50 before root(N-2) starts, while the
+// tree is at N-3 and free; at depth 1 it waits for root(N-2) and then
+// reads behind the N-2 capture, so it is not done at the claim (57-62% of
+// blocks claim before rootDone(N-2)). At depth 2 it reads at once.
+//
+// The value rules are the base prefill's at K = 2, unchanged: the fill
+// reads at a labelled block of the child's chain, is dropped unless every
+// mutation during it is a root of the chain above that block
+// (aheadBaseMovedOK), and the claim layers the post-states of every block
+// in (h, parent] over it -- the pipeline keeps one more written parent's
+// post-state for that (keepOlderLocked) -- or drops it when one is missing
+// (aheadBaseLayers, earlyPrefillUsable on an early snapshot). So every
+// value the run takes from it is still the value its tree read returns.
+var aheadStartKeysDepth2On = parseOptIn(os.Getenv("N42_AHEAD_START_KEYS_DEPTH2"))
+
+// SetAheadStartKeysDepth2ForTest switches N42_AHEAD_START_KEYS_DEPTH2 and
+// returns the restore.
+func SetAheadStartKeysDepth2ForTest(on bool) func() {
+	prev := aheadStartKeysDepth2On
+	aheadStartKeysDepth2On = on
+	return func() { aheadStartKeysDepth2On = prev }
+}
+
+// aheadStartKeysDepth is the depth K the start-keys prefill reads at.
+func aheadStartKeysDepth() int {
+	if aheadStartKeysOn && aheadStartKeysDepth2On && aheadBaseDepth < 2 {
+		return 2
+	}
+	return aheadBaseDepth
+}
+
+// aheadPrefillMaxDepth is the deepest K any prefill reads at: the written
+// parents' post-states the pipeline keeps are K-1.
+func aheadPrefillMaxDepth() int {
+	if k := aheadStartKeysDepth(); k > aheadBaseDepth {
+		return k
+	}
+	return aheadBaseDepth
+}
+
 // Claims that took a start-keys prefill, and those that found one not done
 // or not usable (process-wide, since start).
 var aheadStartKeysUsed, aheadStartKeysUnused atomic.Uint64
@@ -88,7 +132,7 @@ func (bc *BlockChain) runAheadStartKeys(ab *aheadBase, hdr *block.Header, sp *St
 			log.Warn("ahead start-keys prefill panicked", "number", hdr.Number.Uint64(), "err", r)
 		}
 	}()
-	chain, st0, ok := bc.aheadBaseWaitTree(ab, hdr)
+	chain, st0, ok := bc.aheadBaseWaitTreeDepth(ab, hdr, aheadStartKeysDepth())
 	if !ok {
 		return
 	}

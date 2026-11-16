@@ -30,11 +30,26 @@ import (
 // to the serial chain's, which the harness checks); every start-keys prefill
 // goroutine ends.
 func TestAheadStartKeysSameRows(t *testing.T) {
+	aheadStartKeysSameRows(t, []int{1, 5}, false)
+}
+
+// TestAheadStartKeysDepth2SameRows (N42_AHEAD_START_KEYS_DEPTH2): the same
+// chain with the start-keys prefill reading two blocks below the parent.
+// With the rotation 1 the extra key is written by the parent, with 2 by
+// the grandparent (whose post-state the pipeline keeps one block longer
+// for this), with 5 below every layer; the coinbase is written by every
+// block. Every chain must end with the same rows as with the switch off.
+func TestAheadStartKeysDepth2SameRows(t *testing.T) {
+	aheadStartKeysSameRows(t, []int{1, 2, 5}, true)
+}
+
+func aheadStartKeysSameRows(t *testing.T, mods []int, depth2 bool) {
 	const lockHold = 40 * time.Millisecond
-	for _, mod := range []int{1, 5} {
+	for _, mod := range mods {
 		mod := mod
 		run := func(t *testing.T, on bool) map[string]string {
 			defer SetAheadStartKeysForTest(on)()
+			defer SetAheadStartKeysDepth2ForTest(on && depth2)()
 			defer SetAheadPreDetachForTest(true)()
 			defer SetAheadKeysCutForTest(true)()
 			defer SetLagEarlySnapshotForTest(true)()
@@ -57,10 +72,14 @@ func TestAheadStartKeysSameRows(t *testing.T) {
 			var mu sync.Mutex
 			var skEnded []*aheadBase
 			var skPF []*commitment.BasePrefill
+			var skDeep int
 			aheadStartKeysEndForTest = func(ab *aheadBase) {
 				mu.Lock()
 				skEnded = append(skEnded, ab)
 				skPF = append(skPF, ab.pf)
+				if ab.pf != nil && ab.depth >= 2 {
+					skDeep++
+				}
 				mu.Unlock()
 			}
 			defer func() { aheadStartKeysEndForTest = nil }()
@@ -112,8 +131,8 @@ func TestAheadStartKeysSameRows(t *testing.T) {
 			}
 			nEnded := len(skEnded)
 			mu.Unlock()
-			t.Logf("mod=%d start-keys=%v: detached %d, start-keys used %d, not used %d, ended %d, prefill hits %d",
-				mod, on, detached, used, unused, nEnded, hits)
+			t.Logf("mod=%d start-keys=%v depth2=%v: detached %d, start-keys used %d, not used %d, ended %d (read at depth 2: %d), prefill hits %d",
+				mod, on, depth2, detached, used, unused, nEnded, skDeep, hits)
 			require.NotZero(t, detached, "no claim detached a base prefill")
 			if on {
 				require.NotZero(t, used, "no claim took a start-keys prefill")

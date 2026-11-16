@@ -425,13 +425,18 @@ func aheadBaseMovedOK(c aheadBaseChain, at uint64, states []commitment.QMDBAppli
 // the depth and records where (ab.depth, ab.at, ab.atHash, ab.waited); false
 // (ab.skip says why) when the prefill reads nothing.
 func (bc *BlockChain) aheadBaseWaitTree(ab *aheadBase, hdr *block.Header) (aheadBaseChain, commitment.QMDBAppliedState, bool) {
+	return bc.aheadBaseWaitTreeDepth(ab, hdr, aheadBaseDepth)
+}
+
+// aheadBaseWaitTreeDepth is aheadBaseWaitTree with the depth K given.
+func (bc *BlockChain) aheadBaseWaitTreeDepth(ab *aheadBase, hdr *block.Header, depth int) (aheadBaseChain, commitment.QMDBAppliedState, bool) {
 	rc := bc.qmdbRootComputer
 	var st0 commitment.QMDBAppliedState
 	if hdr.Number.Uint64() < 2 {
 		ab.skip = "genesis child"
 		return aheadBaseChain{}, st0, false
 	}
-	chain := bc.aheadBaseChainOf(hdr, aheadBaseDepth)
+	chain := bc.aheadBaseChainOf(hdr, depth)
 
 	// Wait for the tree to hold a block of the chain within the depth.
 	t0 := time.Now()

@@ -252,9 +252,10 @@ func (p *lagPipeline) dropParentLocked() {
 }
 
 // keepOlderLocked records a written parent's snapshot among the older ones
-// (p.mu held), dropping the oldest beyond aheadBaseDepth-1.
+// (p.mu held), dropping the oldest beyond K-1, K the deepest prefill depth
+// in use (aheadBaseDepth, or 2 for N42_AHEAD_START_KEYS_DEPTH2).
 func (p *lagPipeline) keepOlderLocked(par *lagPipeParent) {
-	keep := aheadBaseDepth - 1
+	keep := aheadPrefillMaxDepth() - 1
 	if keep <= 0 {
 		p.older = nil
 		return
