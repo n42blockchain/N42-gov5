@@ -2960,6 +2960,10 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				fields = append(fields, lag.idle.fields(tIter)...)
 				lag.idle.loggedAt, lag.idle.loggedSet = time.Now(), true
 			}
+			if lag != nil {
+				// r94a: GC since the previous lag import's line.
+				fields = append(fields, gcBlockFields()...)
+			}
 			fields = append(fields, senderSrcLogFields()...)
 			if procPhases.Skipped > 0 {
 				fields = append(fields, "skipped", procPhases.Skipped)
