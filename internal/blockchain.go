@@ -898,7 +898,7 @@ func (bc *BlockChain) healPlainStateAheadOfMarkerOnStartup() {
 		}
 		log.Warn("PlainState is ahead of the applied marker (half-healed discontinuity); rolling it back",
 			"plainState", last, "marker", appliedNum)
-		if err := realignAppliedToTree(tx, appliedNum, appliedHash, bc.qmdbHistoryActive.Load()); err != nil {
+		if err := realignAppliedToTree(tx, appliedNum, appliedHash, bc.qmdbHistoryRequested); err != nil {
 			return err
 		}
 		healed = true
@@ -950,7 +950,7 @@ func (bc *BlockChain) verifyAppliedStateOnStartup() {
 			log.Warn("applied marker was one block ahead of the executed state; rolling PlainState and marker back",
 				"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
 				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
-			return realignAppliedToTree(tx, appliedNum-1, hdr.ParentHash, bc.qmdbHistoryActive.Load())
+			return realignAppliedToTree(tx, appliedNum-1, hdr.ParentHash, bc.qmdbHistoryRequested)
 		}
 		// Root cause found (qs-canon-probe -qmdbroot/-qmdbdiff): failed-block
 		// executions used to leave their appends on the live tree (no undo row
@@ -3281,7 +3281,7 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 		if cr, ok := execRootOf(cur); ok && treeRoot == cr {
 			target, targetHash := cur.Number.Uint64(), cur.Hash()
 			if werr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-				return realignAppliedToTree(tx, target, targetHash, bc.qmdbHistoryActive.Load())
+				return realignAppliedToTree(tx, target, targetHash, bc.qmdbHistoryRequested)
 			}); werr != nil {
 				return fmt.Errorf("tree at %d/%x but three-state realign failed: %w", target, targetHash[:8], werr)
 			}
@@ -3740,7 +3740,7 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 			if err := commitment.UnwindPlainStateBlock(tx, appliedNum); err != nil {
 				return fmt.Errorf("unwind block %d: plain state: %w", appliedNum, err)
 			}
-			if err := unjournalQMDBBlock(tx, bc.qmdbHistoryActive.Load(), appliedNum, undo); err != nil {
+			if err := unjournalQMDBBlock(tx, bc.qmdbHistoryRequested, appliedNum, undo); err != nil {
 				return err
 			}
 			if err := tx.Delete(modules.QMDBUndoWindow, key); err != nil {

@@ -83,7 +83,10 @@ func (bc *BlockChain) journalQMDBBlock(tx kv.RwTx, block uint64, undo *qmdb.Bloc
 }
 
 // unjournalQMDBBlock removes an unwound block's journal in the unwind's tx.
-// No-op unless the flag is on and the database carries a journal.
+// No-op unless the flag is on and the database carries a journal. `active`
+// is the flag (requested), not the post-check state: the startup repairs
+// (speculative revert, realign) unwind blocks BEFORE the journal check runs,
+// and an unwound block must leave the journal with it.
 func unjournalQMDBBlock(tx kv.RwTx, active bool, block uint64, undo *qmdb.BlockUndo) error {
 	if !active {
 		return nil
