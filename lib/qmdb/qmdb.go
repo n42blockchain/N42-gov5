@@ -385,6 +385,10 @@ type Tree struct {
 	// entry-row retention at flush.
 	hist *HistoryRecorder
 
+	// archiveRows keeps dead entry rows on disk without an attached recorder
+	// (SetRetainDeadEntryRows: the live node's undo-driven history journal).
+	archiveRows bool
+
 	// Batched leaf folding (batch.go): when batchFolding is on, leaf writes skip
 	// the eager 11-hash path fold and record the touched leaf position instead;
 	// foldTouched later folds the UNION of ancestor paths per twig with level-
@@ -539,7 +543,7 @@ func (t *Tree) deactivate(slot uint64) {
 			t.entries[i].active = false
 		}
 	}
-	if slot < t.entriesBase || (slot < max(t.flushedThrough, t.flushedResident) && t.leafStore != nil && t.hist == nil) {
+	if slot < t.entriesBase || (slot < max(t.flushedThrough, t.flushedResident) && t.leafStore != nil && !t.retainDeadRows()) {
 		// A committed row can still be resident in a retained hot window.
 		// Disk reclamation must not depend on whether RAM was evicted.
 		t.deadFlushed = append(t.deadFlushed, slot)
