@@ -1106,6 +1106,14 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				rollUs, _, _ := rawdb.FrameLogRollStats()
 				fields = append(fields, "framesLockUs", ft.LockWait.Microseconds(), "framesIoUs", ft.IO.Microseconds(),
 					"framesIdxUs", ft.Index.Microseconds(), "framesRollUs", ft.Roll.Microseconds(), "frameLogRollUs", rollUs)
+				// r94a finer split: record build (CRC + copy), append vs
+				// data sync, the index's begin (frame store write lock),
+				// puts and commit, the whole call and the goroutine's own
+				// duration (framesTookUs - framesWholeUs = before the call).
+				fields = append(fields, "framesEncUs", ft.Encode.Microseconds(), "framesWriteUs", ft.Write.Microseconds(),
+					"framesSyncUs", ft.Sync.Microseconds(), "framesIdxBeginUs", ft.IdxBegin.Microseconds(),
+					"framesIdxPutUs", ft.IdxPut.Microseconds(), "framesIdxCommitUs", ft.IdxCommit.Microseconds(),
+					"framesWholeUs", ft.Whole.Microseconds(), "framesTookUs", framesW.took.Microseconds(), "framesKB", ft.Bytes>>10)
 			}
 		}
 		if job != nil {

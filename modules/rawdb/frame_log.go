@@ -122,8 +122,20 @@ func FrameLogRollStats() (lastUs int64, rolls, preallocated uint64) {
 // FrameWriteTimes splits one frame log write: the wait for the log's mutex,
 // the append and its data sync, the index update, and the segment roll it
 // did (zero for a write that did not roll, or without a frame log).
+//
+// The finer split (r94a): Encode is the record build under the mutex
+// (headers, CRC-32C and the copy of the frame data into the write buffer);
+// IO = Write + Sync; Index = IdxBegin (the frame store's write lock) +
+// IdxPut + IdxCommit; Whole is the call from entry to return, so Whole - LockWait
+// - Encode - Roll - IO - Index is what is left unaccounted. Bytes is the
+// appended volume.
 type FrameWriteTimes struct {
 	LockWait, IO, Index, Roll time.Duration
+
+	Encode, Write, Sync         time.Duration
+	IdxBegin, IdxPut, IdxCommit time.Duration
+	Whole                       time.Duration
+	Bytes                       int64
 }
 
 func frameLogSegmentName(seg uint32) string { return fmt.Sprintf("frames-%08d.log", seg) }
@@ -329,18 +341,17 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if times != nil {
-		times.LockWait = time.Since(tLock)
+		defer func() { times.Whole = time.Since(tLock) }()
+	}
+	tEnc := time.Now()
+	if times != nil {
+		times.LockWait = tEnc.Sub(tLock)
 	}
 	if l.f == nil {
 		return errors.New("frame log is closed")
 	}
 	buf := l.buf[:0]
-	type loc struct {
-		h   types.Hash
-		rel int64
-		n   int
-	}
-	locs := make([]loc, 0, len(hashes))
+	locs := make([]frameLogWriteLoc, 0, len(hashes))
 	for i, h := range hashes {
 		if i >= len(raws) || len(raws[i]) == 0 {
 			continue
@@ -355,10 +366,14 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 		copy(hdr[8:], h[:])
 		binary.LittleEndian.PutUint32(hdr[8+types.HashLength:], crc32.Checksum(raw, frameLogCRC))
 		buf = append(buf, hdr[:]...)
-		locs = append(locs, loc{h: h, rel: int64(len(buf)), n: len(raw)})
+		locs = append(locs, frameLogWriteLoc{h: h, rel: int64(len(buf)), n: len(raw)})
 		buf = append(buf, raw...)
 	}
 	l.buf = buf
+	if times != nil {
+		times.Encode = time.Since(tEnc)
+		times.Bytes = int64(len(buf))
+	}
 	if len(locs) == 0 {
 		return nil
 	}
@@ -376,6 +391,7 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 	if _, err := l.f.WriteAt(buf, l.off); err != nil {
 		return err
 	}
+	tSync := time.Now()
 	if err := frameLogSync(l.f); err != nil {
 		return err
 	}
@@ -383,23 +399,51 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 	end := base + int64(len(buf))
 	tIdx := time.Now()
 	if times != nil {
+		times.Write = tSync.Sub(tIO)
+		times.Sync = tIdx.Sub(tSync)
 		times.IO = tIdx.Sub(tIO)
 		defer func() { times.Index = time.Since(tIdx) }()
 	}
-	// The index needs no sync of its own: it is rebuilt from the log.
-	if err := l.db.UpdateNosync(kv.WithRwTag(ctx, "frameIndex"), func(tx kv.RwTx) error {
-		for _, c := range locs {
-			if err := tx.Put(modules.FrameLogIndex, c.h[:], encodeFrameLogLoc(seg, base+c.rel, c.n)); err != nil {
-				return err
-			}
-		}
-		return tx.Put(modules.FrameLogIndex, frameLogPosKey, encodeFrameLogPos(seg, end))
-	}); err != nil {
+	if err := l.updateIndex(ctx, seg, base, end, locs, times, tIdx); err != nil {
 		return err
 	}
 	l.off = end
 	l.startPreallocLocked()
 	return nil
+}
+
+// frameLogWriteLoc is one appended record: its hash, the data's offset
+// relative to the write's start and its length.
+type frameLogWriteLoc struct {
+	h   types.Hash
+	rel int64
+	n   int
+}
+
+// updateIndex puts the index rows of one write and the log position they
+// cover (l.mu held). The index needs no sync of its own: it is rebuilt from
+// the log.
+func (l *frameLog) updateIndex(ctx context.Context, seg uint32, base, end int64, locs []frameLogWriteLoc, times *FrameWriteTimes, tIdx time.Time) error {
+	var tIn, tPut time.Time
+	err := l.db.UpdateNosync(kv.WithRwTag(ctx, "frameIndex"), func(tx kv.RwTx) error {
+		tIn = time.Now()
+		for _, c := range locs {
+			if err := tx.Put(modules.FrameLogIndex, c.h[:], encodeFrameLogLoc(seg, base+c.rel, c.n)); err != nil {
+				return err
+			}
+		}
+		if err := tx.Put(modules.FrameLogIndex, frameLogPosKey, encodeFrameLogPos(seg, end)); err != nil {
+			return err
+		}
+		tPut = time.Now()
+		return nil
+	})
+	if times != nil && !tPut.IsZero() {
+		times.IdxBegin = tIn.Sub(tIdx)
+		times.IdxPut = tPut.Sub(tIn)
+		times.IdxCommit = time.Since(tPut)
+	}
+	return err
 }
 
 // roll starts the next segment (l.mu held). The index position moves with

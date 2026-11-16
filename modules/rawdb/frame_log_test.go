@@ -360,6 +360,17 @@ func TestFrameLogPreallocatesNextSegment(t *testing.T) {
 	if times.IO <= 0 || times.Index <= 0 || times.LockWait < 0 {
 		t.Fatalf("write split not recorded: %+v", times)
 	}
+	// The finer split adds up: IO = Write + Sync, the index's parts fit in
+	// Index, and Whole covers every stamped part.
+	if times.IO != times.Write+times.Sync || times.Bytes != int64(frameLogHeaderSize+len(raw)) || times.IdxPut <= 0 {
+		t.Fatalf("finer split: %+v", times)
+	}
+	if parts := times.IdxBegin + times.IdxPut + times.IdxCommit; parts > times.Index {
+		t.Fatalf("index parts %v over index %v", parts, times.Index)
+	}
+	if parts := times.LockWait + times.Encode + times.Roll + times.IO + times.Index; parts > times.Whole {
+		t.Fatalf("parts %v over whole %v", parts, times.Whole)
+	}
 	if us, rolls, _ := FrameLogRollStats(); rolls == 0 || us < 0 {
 		t.Fatalf("roll stats: %d us, %d rolls", us, rolls)
 	}
