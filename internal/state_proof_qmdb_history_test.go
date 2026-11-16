@@ -359,3 +359,39 @@ func TestQMDBDeepHeightsUseTheJournal(t *testing.T) {
 		t.Fatalf("undo-window fallback: %v", err)
 	}
 }
+
+// Without the applied marker the journal is seeded only on a genesis chain.
+func TestQMDBHistoryAppliedHeadWithoutMarker(t *testing.T) {
+	db := newRealignTestDB(t)
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		if n, err := qmdbHistoryAppliedHead(tx); err != nil || n != 0 {
+			t.Fatalf("empty db: %d %v", n, err)
+		}
+		var parent types.Hash
+		for b := uint64(0); b <= 3; b++ {
+			hdr := &block.Header{Number: uint256.NewInt(b), Difficulty: uint256.NewInt(1), ParentHash: parent}
+			rawdb.WriteHeader(tx, hdr)
+			if err := rawdb.WriteCanonicalHash(tx, hdr.Hash(), b); err != nil {
+				return err
+			}
+			rawdb.WriteHeadBlockHash(tx, hdr.Hash())
+			parent = hdr.Hash()
+			_, err := qmdbHistoryAppliedHead(tx)
+			if b == 0 && err != nil {
+				t.Fatalf("genesis head: %v", err)
+			}
+			if b > 0 && !errors.Is(err, commitment.ErrQMDBHistoryUnavailable) {
+				t.Fatalf("head %d without marker: err = %v", b, err)
+			}
+		}
+		if err := rawdb.WriteQMDBApplied(tx, 3, parent); err != nil {
+			return err
+		}
+		if n, err := qmdbHistoryAppliedHead(tx); err != nil || n != 3 {
+			t.Fatalf("with marker: %d %v", n, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -45,12 +45,9 @@ func (bc *BlockChain) prepareQMDBHistory() error {
 	}
 	var start uint64
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		applied, _, ok, err := rawdb.ReadQMDBApplied(tx)
+		applied, err := qmdbHistoryAppliedHead(tx)
 		if err != nil {
 			return err
-		}
-		if !ok {
-			applied = 0
 		}
 		start, err = bc.qmdbRootComputer.PrepareLiveHistory(tx, applied, bc.qmdbHistoryReseed)
 		return err
@@ -61,6 +58,22 @@ func (bc *BlockChain) prepareQMDBHistory() error {
 	bc.qmdbHistoryActive.Store(true)
 	log.Info("QMDB full-history journal active", "earliestProvable", start)
 	return nil
+}
+
+// qmdbHistoryAppliedHead is the height whose post-state the loaded tree
+// holds. Without the applied marker it is genesis only when the chain head is
+// genesis; seeding a non-genesis tree as "block 0" would attach the head's
+// state to height 0, so that is refused.
+func qmdbHistoryAppliedHead(tx kv.Tx) (uint64, error) {
+	applied, _, ok, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil || ok {
+		return applied, err
+	}
+	if n := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); n != nil && *n > 0 {
+		return 0, fmt.Errorf("%w: the database has no QMDB applied-head marker but the chain head is block %d, so the height of the loaded state is unknown; run the node once without --state.qmdb-history to let it write the marker, or rebuild with replay-v2 --tree qmdb --qmdb-history",
+			commitment.ErrQMDBHistoryUnavailable, *n)
+	}
+	return 0, nil
 }
 
 // journalQMDBBlock journals a just-written block in its write tx. A journal
