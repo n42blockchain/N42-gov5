@@ -302,3 +302,76 @@ func TestRetainDeadEntryRows(t *testing.T) {
 		}
 	}
 }
+
+// The undo-driven journal writes exactly what the inline recorder (offline
+// replay --qmdb-history) writes, so a replay-built journal can be continued by
+// a live node and vice versa.
+func TestUndoDrivenJournalEqualsInlineRecorder(t *testing.T) {
+	inline := New()
+	istore := newMapHistoryStore()
+	inline.SetHistoryRecorder(NewHistoryRecorder(istore))
+
+	live := New()
+	lstore := newMapHistoryStore()
+	for b := uint64(1); b <= 25; b++ {
+		if err := inline.BeginBlock(b); err != nil {
+			t.Fatal(err)
+		}
+		live.StartUndoRecording()
+		for i := uint64(0); i < 300; i++ {
+			k := (b*53 + i*7) % 2600
+			for _, tr := range []*Tree{inline, live} {
+				if i%11 == 10 {
+					tr.Delete(hKey(k))
+				} else {
+					tr.Set(hKey(k), hVal(k, b))
+				}
+			}
+		}
+		if err := inline.EndBlock(); err != nil {
+			t.Fatal(err)
+		}
+		if err := inline.FlushHistory(); err != nil {
+			t.Fatal(err)
+		}
+		u := live.StopUndoRecording()
+		if err := RecordBlockHistory(lstore, b, u, live.NextSlot(), live.TopBandRecord()); err != nil {
+			t.Fatal(err)
+		}
+		if inline.Root() != live.Root() {
+			t.Fatalf("block %d: roots differ", b)
+		}
+	}
+	if len(istore.stamps) != len(lstore.stamps) {
+		t.Fatalf("stamp twigs %d vs %d", len(istore.stamps), len(lstore.stamps))
+	}
+	for tw, blob := range istore.stamps {
+		if !bytes.Equal(blob, lstore.stamps[tw]) {
+			t.Fatalf("twig %d stamps differ", tw)
+		}
+	}
+	for b, pos := range istore.blockPos {
+		if lstore.blockPos[b] != pos {
+			t.Fatalf("block %d cursor %d vs %d", b, pos, lstore.blockPos[b])
+		}
+	}
+	for b, band := range istore.topBand {
+		if !bytes.Equal(band, lstore.topBand[b]) {
+			t.Fatalf("block %d top band differs", b)
+		}
+	}
+	if len(istore.keyVers) != len(lstore.keyVers) {
+		t.Fatalf("key count %d vs %d", len(istore.keyVers), len(lstore.keyVers))
+	}
+	for k, vs := range istore.keyVers {
+		got := lstore.keyVers[k]
+		if len(got) != len(vs) {
+			t.Fatalf("key versions differ: %v vs %v", vs, got)
+		}
+		for i := range vs {
+			if vs[i] != got[i] {
+				t.Fatalf("key versions differ: %v vs %v", vs, got)
+			}
+		}
+	}
+}
