@@ -2204,6 +2204,16 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 	// Only the child of the block whose write is in flight imports while
 	// that write runs; everything else sees the durable state.
 	if bc.lagWrite.inflight != nil && !bc.lagWriteFastCandidate(chain, lag) {
+		// N42_CATCHUP_SKIP_APPLIED (catchup_skip_applied.go): a catch-up or
+		// fetch-on-miss import of blocks already applied or in that write
+		// returns what the joined path would, without waiting for it.
+		if lag == nil && catchUpSkipAppliedOn && bc.chainAppliedOrInFlightLocked(chain) {
+			insertSkippedJoin.Add(1)
+			return len(chain), nil
+		}
+		if lag == nil {
+			insertJoinedWrite.Add(1)
+		}
 		if err := bc.joinLagWrite(); err != nil {
 			return 0, err
 		}
