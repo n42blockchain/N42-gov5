@@ -403,6 +403,9 @@ func (l *frameLog) startPreallocLocked() {
 // write appends the frames with data and returns once they are durable and
 // indexed; times, when set, receives the write's split.
 func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte, times *FrameWriteTimes) error {
+	if frameLogLeanLockOn {
+		return l.writeLean(ctx, hashes, raws, times)
+	}
 	tLock := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
