@@ -569,8 +569,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 					return fmt.Errorf("marking own block %d unverified: %w", blockNumber.Uint64(), err)
 				}
 			}
-			const qmdbUndoWindow = 256
-			if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {
+			if bn, qmdbUndoWindow := blockNumber.Uint64(), QMDBUndoWindow(); bn > qmdbUndoWindow {
 				if err := rawdb.PruneQMDBUndoBelow(tx, bn-qmdbUndoWindow); err != nil {
 					return fmt.Errorf("pruning QMDB undo window for block %d failed: %w", bn, err)
 				}

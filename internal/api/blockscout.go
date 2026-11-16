@@ -452,8 +452,10 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 			accountProofStrings = nil
 		}
 	}
-	// Fallback: hash-based proof when JMT is not available.
-	if len(accountProofStrings) == 0 {
+	// Fallback: hash-based proof when JMT is not available. Never for QMDB: a
+	// keccak anchor is not a QMDB proof, and an empty accountProof is the
+	// provider's honest "account absent, no membership proof".
+	if len(accountProofStrings) == 0 && !proofProviderIsQMDB(proofProvider) {
 		nonceBytes := new(uint256.Int).SetUint64(nonce).Bytes32()
 		balanceBytes := balance.Bytes32()
 		accountData := make([]byte, 0, 96)
@@ -553,12 +555,22 @@ func computeQueryTupleStorageHash(slots []types.Hash, values []*uint256.Int) typ
 	return crypto.Keccak256Hash(data)
 }
 
+// proofProviderErrorsAreFatal reports whether a provider error must reach the
+// caller instead of degrading to the hash-only placeholder. QMDB errors are
+// fatal: out-of-range heights and root-check failures would otherwise surface
+// as an unverifiable placeholder that looks like a proof.
 func proofProviderErrorsAreFatal(provider internal.StateProofProvider) bool {
 	if provider == nil {
 		return false
 	}
 	desc := provider.Descriptor()
-	return desc.Backend == internal.StateProofBackendEthereumMPT || desc.Semantics == internal.StateProofSemanticsCanonicalEIP1186
+	return desc.Backend == internal.StateProofBackendEthereumMPT ||
+		desc.Backend == internal.StateProofBackendQMDB ||
+		desc.Semantics == internal.StateProofSemanticsCanonicalEIP1186
+}
+
+func proofProviderIsQMDB(provider internal.StateProofProvider) bool {
+	return provider != nil && provider.Descriptor().Backend == internal.StateProofBackendQMDB
 }
 
 // BlockscoutCompatibilityInfo contains Blockscout compatibility metadata.

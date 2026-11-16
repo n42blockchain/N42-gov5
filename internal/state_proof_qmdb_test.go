@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -140,5 +141,88 @@ func TestQMDBProofSurvivesTxRotation(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("proof %d: %v", i, err)
 		}
+	}
+}
+
+// seedQMDBProofChain writes one account, seeds the QMDB forest and records
+// headers 0 and 1 (both carrying the seeded root) with 1 as committed and
+// applied head. Returns the account address.
+func seedQMDBProofChain(t *testing.T, db kv.RwDB) types.Address {
+	t.Helper()
+	addr := types.HexToAddress("0x00000000000000000000000000000000000000bb")
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		acct := account.NewAccount()
+		acct.Nonce = 3
+		acct.Balance = *uint256.NewInt(5)
+		enc := make([]byte, acct.EncodingLengthForStorage())
+		acct.EncodeForStorage(enc)
+		if err := tx.Put(modules.Account, addr[:], enc); err != nil {
+			return err
+		}
+		root, err := SeedQMDBGenesis(tx)
+		if err != nil {
+			return err
+		}
+		var parent types.Hash
+		for n := uint64(0); n <= 1; n++ {
+			hdr := &block.Header{Number: uint256.NewInt(n), Difficulty: uint256.NewInt(1), Root: root, ParentHash: parent}
+			rawdb.WriteHeader(tx, hdr)
+			if err := rawdb.WriteCanonicalHash(tx, hdr.Hash(), n); err != nil {
+				return err
+			}
+			parent = hdr.Hash()
+			if n == 1 {
+				rawdb.WriteHeadBlockHash(tx, hdr.Hash())
+				if err := rawdb.WriteQMDBApplied(tx, 1, hdr.Hash()); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+// TestQMDBProofOutsideWindowIsExplicitError pins the fix for silent
+// unverifiable output: a height the undo window cannot reach (and an
+// unresolvable block) must surface as a StateProofUnavailableError carrying
+// the provable range, never as an empty/placeholder proof.
+func TestQMDBProofOutsideWindowIsExplicitError(t *testing.T) {
+	db := newRealignTestDB(t)
+	addr := seedQMDBProofChain(t, db)
+	p := NewQMDBStateProofProvider(nil)
+
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		_, err := p.AccountProof(tx, addr, jsonrpc.BlockNumberOrHashWithNumber(0))
+		var ue *StateProofUnavailableError
+		if !errors.As(err, &ue) {
+			t.Fatalf("height 0 (no undo record): err = %v, want StateProofUnavailableError", err)
+		}
+		if !ue.HasRequested || ue.Requested != 0 || !ue.HasRange || ue.Earliest != 1 || ue.Latest != 1 {
+			t.Fatalf("unexpected error payload: %+v", ue)
+		}
+		if code := ue.ErrorCode(); code != -32000 {
+			t.Fatalf("error code = %d", code)
+		}
+		_, err = p.StorageProof(tx, addr, types.Hash{}, jsonrpc.BlockNumberOrHashWithNumber(99))
+		if !errors.As(err, &ue) {
+			t.Fatalf("future height: err = %v, want StateProofUnavailableError", err)
+		}
+		r, err := p.ProvableRange(tx)
+		if err != nil {
+			return err
+		}
+		if r.Earliest != 1 || r.Latest != 1 {
+			t.Fatalf("provable range = %+v, want 1..1", r)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d := p.Descriptor()
+	if d.SupportsHistorical || d.HistoricalMode != StateProofHistoricalRecent || d.RecentWindow != QMDBUndoWindow() {
+		t.Fatalf("descriptor overstates history support: %+v", d)
 	}
 }

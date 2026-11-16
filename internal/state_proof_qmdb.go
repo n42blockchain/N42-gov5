@@ -21,6 +21,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -37,11 +38,11 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// errQMDBHistorical is returned for queries outside the recent-blocks undo
-// window (QMDB cannot prove arbitrary past states — the root is
-// history-dependent). It is non-fatal — the RPC layer falls back to the
-// hash-only path.
-var errQMDBHistorical = fmt.Errorf("qmdb proof: height outside the recent-blocks proof window")
+// errQMDBOutsideWindow marks a height outside the recent-blocks undo window
+// (QMDB cannot prove arbitrary past states from the window alone — the root is
+// history-dependent). The provider turns it into a StateProofUnavailableError
+// carrying the provable range; it is never swallowed into a placeholder proof.
+var errQMDBOutsideWindow = errors.New("height outside the recent-blocks QMDB proof window")
 
 // QMDBStateProofProvider serves QMDB-native membership proofs for eth_getProof.
 type QMDBStateProofProvider struct {
@@ -66,7 +67,11 @@ func (*QMDBStateProofProvider) Descriptor() StateProofDescriptor {
 		ProofRootScheme:    state.RootSchemeQMDB,
 		Semantics:          StateProofSemanticsHashOnly, // not EIP-1186 node lists
 		StorageHash:        StorageHashSemanticsNone,    // QMDB has no per-account storage trie
-		SupportsHistorical: true,                        // recent-blocks undo window only
+		// Only the recent undo window is provable: not "historical" in the
+		// archive sense a client would assume from a bare true.
+		SupportsHistorical: false,
+		HistoricalMode:     StateProofHistoricalRecent,
+		RecentWindow:       QMDBUndoWindow(),
 	}
 }
 
@@ -108,7 +113,10 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 
 	target, ok := resolveProofTarget(tx, blockNrOrHash, heads.committed)
 	if !ok {
-		return nil, errQMDBHistorical
+		return nil, &StateProofUnavailableError{
+			Reason: "block is unknown, not canonical or above the committed head",
+			Latest: heads.committed, Earliest: p.earliestRecentLocked(tx, heads), HasRange: true,
+		}
 	}
 	if target == heads.applied {
 		proof, found := tree.GetProof(kh)
@@ -128,7 +136,12 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 		return nil, err
 	}
 	if undos == nil {
-		return nil, errQMDBHistorical // window does not reach back to the target
+		// The window does not reach back to the target.
+		return nil, &StateProofUnavailableError{
+			Requested: target, HasRequested: true,
+			Reason:   errQMDBOutsideWindow.Error(),
+			Earliest: p.earliestRecentLocked(tx, heads), Latest: heads.committed, HasRange: true,
+		}
 	}
 	proof, root, found, err := tree.ProofAt(kh, undos)
 	if err != nil {
@@ -156,6 +169,28 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 		return []string{}, nil
 	}
 	return []string{hexutil.Encode(proof.Marshal())}, nil
+}
+
+// earliestRecentLocked is the lowest committed height the undo window can
+// still prove: ProofAt for target t needs the records (t, applied].
+func (p *QMDBStateProofProvider) earliestRecentLocked(tx kv.Tx, heads qmdbProofHeads) uint64 {
+	first, ok, err := rawdb.FirstQMDBUndoBlock(tx)
+	if err != nil || !ok || first == 0 || first > heads.applied {
+		return heads.committed // only the applied head itself
+	}
+	if e := first - 1; e < heads.committed {
+		return e
+	}
+	return heads.committed
+}
+
+// ProvableRange reports the committed heights the provider can prove now.
+func (p *QMDBStateProofProvider) ProvableRange(tx kv.Tx) (StateProofRange, error) {
+	heads, err := readQMDBProofHeads(p.config, tx)
+	if err != nil {
+		return StateProofRange{}, err
+	}
+	return StateProofRange{Earliest: p.earliestRecentLocked(tx, heads), Latest: heads.committed}, nil
 }
 
 // StorageHash returns the zero hash: QMDB is a unified flat commitment with no
@@ -253,7 +288,9 @@ func resolveProofTarget(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash, head 
 			jsonrpc.SafeBlockNumber, jsonrpc.FinalizedBlockNumber:
 			return head, true
 		case jsonrpc.EarliestBlockNumber:
-			return 0, head == 0
+			// Genesis always resolves; whether it is provable is the
+			// prover's call (it reports the provable range if not).
+			return 0, true
 		}
 		n := uint64(blockNr.Int64())
 		return n, blockNr.Int64() >= 0 && n <= head

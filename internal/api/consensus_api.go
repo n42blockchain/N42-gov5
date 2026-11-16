@@ -354,8 +354,17 @@ type StateProofInfo struct {
 	ProofRootScheme       string `json:"proofRootScheme"`       // commitment behind the proof
 	Semantics             string `json:"semantics"`             // EIP-1186 conformance
 	StorageHash           string `json:"storageHash"`           // how AccountResult.storageHash is computed
-	SupportsHistorical    bool   `json:"supportsHistorical"`    // proofs for non-latest blocks
+	SupportsHistorical    bool   `json:"supportsHistorical"`    // proofs for arbitrary past blocks (archive-style)
 	HeaderStateRootScheme string `json:"headerStateRootScheme"` // header.stateRoot semantics
+	// HistoricalMode: "none", "recent-window" or "full" (see recentWindow and
+	// the provable range below).
+	HistoricalMode string `json:"historicalMode,omitempty"`
+	// RecentWindow is the recent-heights proof window in blocks (QMDB).
+	RecentWindow *hexutil.Uint64 `json:"recentWindow,omitempty"`
+	// OldestProvable / LatestProvable bound the heights eth_getProof can serve
+	// right now; requests outside fail with an explicit error.
+	OldestProvable *hexutil.Uint64 `json:"oldestProvable,omitempty"`
+	LatestProvable *hexutil.Uint64 `json:"latestProvable,omitempty"`
 }
 
 // GetStateProofInfo reports the proof backend serving eth_getProof. For a QMDB
@@ -368,14 +377,31 @@ func (c *ConsensusAPI) GetStateProofInfo(ctx context.Context) (*StateProofInfo, 
 		return nil, fmt.Errorf("state proof info unavailable: concrete blockchain required")
 	}
 	d := bc.StateProofDescriptor()
-	return &StateProofInfo{
+	info := &StateProofInfo{
 		Backend:               string(d.Backend),
 		ProofRootScheme:       string(d.ProofRootScheme),
 		Semantics:             string(d.Semantics),
 		StorageHash:           string(d.StorageHash),
 		SupportsHistorical:    d.SupportsHistorical,
 		HeaderStateRootScheme: string(d.HeaderStateRootScheme),
-	}, nil
+		HistoricalMode:        d.HistoricalMode,
+	}
+	if d.RecentWindow > 0 {
+		w := hexutil.Uint64(d.RecentWindow)
+		info.RecentWindow = &w
+	}
+	if rr, ok := bc.StateProofProvider().(internal.StateProofRangeReporter); ok && c.api.db != nil {
+		tx, err := c.api.db.BeginRo(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		if r, err := rr.ProvableRange(tx); err == nil {
+			lo, hi := hexutil.Uint64(r.Earliest), hexutil.Uint64(r.Latest)
+			info.OldestProvable, info.LatestProvable = &lo, &hi
+		}
+	}
+	return info, nil
 }
 
 // livePool resolves the live committee pool wired into the running chain (the

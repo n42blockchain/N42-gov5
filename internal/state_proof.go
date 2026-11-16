@@ -11,6 +11,7 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/holiman/uint256"
 
@@ -63,6 +64,76 @@ type StateProofDescriptor struct {
 	Semantics             StateProofSemantics
 	StorageHash           StorageHashSemantics
 	SupportsHistorical    bool
+	// HistoricalMode details SupportsHistorical: "none", "recent-window"
+	// (only the last RecentWindow heights are provable) or "full" (every
+	// height from the earliest provable one). Empty for providers that do not
+	// report it.
+	HistoricalMode string
+	// RecentWindow is the configured recent-heights proof window (blocks).
+	RecentWindow uint64
+}
+
+// Historical proof modes reported in StateProofDescriptor.HistoricalMode.
+const (
+	StateProofHistoricalNone   = "none"
+	StateProofHistoricalRecent = "recent-window"
+	StateProofHistoricalFull   = "full"
+)
+
+// StateProofRange is the inclusive height range a provider can prove right now.
+type StateProofRange struct {
+	Earliest uint64
+	Latest   uint64
+}
+
+// StateProofRangeReporter is implemented by providers whose provable range
+// depends on what the database holds (a recent undo window, a history journal).
+type StateProofRangeReporter interface {
+	ProvableRange(tx kv.Tx) (StateProofRange, error)
+}
+
+// StateProofUnavailableError is returned instead of a proof when the request
+// cannot be served with a verifiable proof (height outside the provable range,
+// unknown block). It is a JSON-RPC error carrying the provable range as data.
+type StateProofUnavailableError struct {
+	Requested    uint64
+	HasRequested bool
+	Earliest     uint64
+	Latest       uint64
+	HasRange     bool
+	Reason       string
+}
+
+func (e *StateProofUnavailableError) Error() string {
+	var b strings.Builder
+	b.WriteString("state proof unavailable")
+	if e.HasRequested {
+		fmt.Fprintf(&b, " for block %d", e.Requested)
+	}
+	if e.Reason != "" {
+		b.WriteString(": ")
+		b.WriteString(e.Reason)
+	}
+	if e.HasRange {
+		fmt.Fprintf(&b, " (provable blocks: %d..%d)", e.Earliest, e.Latest)
+	}
+	return b.String()
+}
+
+// ErrorCode implements jsonrpc.Error (generic server error).
+func (*StateProofUnavailableError) ErrorCode() int { return -32000 }
+
+// ErrorData implements jsonrpc.DataError.
+func (e *StateProofUnavailableError) ErrorData() interface{} {
+	d := map[string]interface{}{"reason": e.Reason}
+	if e.HasRequested {
+		d["requestedBlock"] = hexutil.Uint64(e.Requested)
+	}
+	if e.HasRange {
+		d["earliestProvableBlock"] = hexutil.Uint64(e.Earliest)
+		d["latestProvableBlock"] = hexutil.Uint64(e.Latest)
+	}
+	return d
 }
 
 // StateProofProvider isolates proof serving from RPC wiring so a future
@@ -88,6 +159,7 @@ func DefaultStateProofDescriptor(headerScheme state.RootScheme) StateProofDescri
 		Semantics:             StateProofSemanticsHashOnly,
 		StorageHash:           StorageHashSemanticsQueryTupleKeccak,
 		SupportsHistorical:    false,
+		HistoricalMode:        StateProofHistoricalNone,
 	}
 }
 

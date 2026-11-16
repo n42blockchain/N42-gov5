@@ -48,6 +48,20 @@ func ReadQMDBUndos(tx kv.Getter, target, head uint64) ([]*qmdb.BlockUndo, error)
 	return out, nil
 }
 
+// FirstQMDBUndoBlock returns the oldest block that still has an undo record.
+func FirstQMDBUndoBlock(tx kv.Tx) (uint64, bool, error) {
+	c, err := tx.Cursor(modules.QMDBUndoWindow)
+	if err != nil {
+		return 0, false, err
+	}
+	defer c.Close()
+	k, _, err := c.First()
+	if err != nil || len(k) != 8 {
+		return 0, false, err
+	}
+	return binary.BigEndian.Uint64(k), true, nil
+}
+
 // qmdbAppliedKey tracks the head of the APPLIED chain — the block whose state
 // the world state (PlainState + QMDB tree) currently reflects. Distinct from
 // the canonical head: under HotStuff, canonicalization is commit-driven and
