@@ -379,6 +379,24 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 			log.Warn("hotstuff catch-up: range contained only nil blocks", "peer", pid.String()[:12])
 			continue
 		}
+		fetchedN, skippedApplied, skippedHeld := len(blocks), 0, 0
+		if catchUpSkipAppliedOn {
+			rest, applied, held := s.trimCatchUpApplied(blocks)
+			s.notifyCatchUpApplied(applied)
+			skippedApplied, skippedHeld = len(applied), held
+			if len(rest) == 0 {
+				var newHeadNum uint64
+				if newHead := currentBlockNumber(s.cfg.chain); newHead != nil {
+					newHeadNum = newHead.Uint64()
+				}
+				log.Info("hotstuff catch-up: imported range",
+					"fetched", fetchedN, "newHead", newHeadNum, "authorized", authorized,
+					"skippedApplied", skippedApplied, "skippedHeld", skippedHeld, "inserted", 0)
+				return true, false
+			}
+			blocks = rest
+		}
+		catchUpInserted.Add(uint64(len(blocks)))
 		blocks, imported, ierr := s.insertCatchUpBlocks(s.ctx, blocks, authorized)
 		if len(blocks) == 0 {
 			log.Debug("hotstuff catch-up: dropped known bad range", "peer", pid.String()[:12])
@@ -423,7 +441,8 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 			newHeadNum = newHead.Uint64()
 		}
 		log.Info("hotstuff catch-up: imported range",
-			"fetched", len(blocks), "newHead", newHeadNum, "authorized", authorized)
+			"fetched", len(blocks)+skippedApplied+skippedHeld, "newHead", newHeadNum, "authorized", authorized,
+			"skippedApplied", skippedApplied, "skippedHeld", skippedHeld, "inserted", len(blocks))
 		return true, false
 	}
 	// Every peer failed. Only a consistent unknown-ancestor is fixable by
