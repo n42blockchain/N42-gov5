@@ -59,6 +59,37 @@ import (
 // transactions) and the same marker, after the same last rows.
 var historyFoldYieldOn = parseOptIn(os.Getenv("N42_HISTORY_FOLD_YIELD"))
 
+// historyBackfillYieldWriterOn is N42_HISTORY_BACKFILL_YIELD_WRITER (default
+// off, r95a): N42_HISTORY_FOLD_YIELD without its no-sync commit.
+//
+// Run 81 (node0): the history fold held the MDBX writer 36-51 ms on 2-4% of
+// block writes (HistoryBackfiller.stepFold on 66 of the 76 begin waits of
+// 1 ms or more); N42_HISTORY_FOLD_YIELD, which cuts that, was off because
+// its fold transactions commit without a data sync, which moves what is
+// durable when. With this switch each fold write transaction begins only
+// while no ordered block write is open or waiting (lagBGGate) and stops
+// putting at the next key boundary once a block write waits for the writer
+// or after N42_HISTORY_FOLD_YIELD_TXN_MS of puts, exactly as under
+// N42_HISTORY_FOLD_YIELD, but commits with its data sync as today. What is
+// written and when it is durable are unchanged: the same rows, cut into
+// more, shorter transactions, each synced; the marker with the last rows.
+// With both switches on, N42_HISTORY_FOLD_YIELD's no-sync commit applies.
+var historyBackfillYieldWriterOn = parseOptIn(os.Getenv("N42_HISTORY_BACKFILL_YIELD_WRITER"))
+
+// SetHistoryBackfillYieldWriterForTest switches
+// N42_HISTORY_BACKFILL_YIELD_WRITER and returns the restore.
+func SetHistoryBackfillYieldWriterForTest(on bool) func() {
+	prev := historyBackfillYieldWriterOn
+	historyBackfillYieldWriterOn = on
+	return func() { historyBackfillYieldWriterOn = prev }
+}
+
+// historyFoldYields reports whether fold transactions yield to block writes
+// (either switch), and whether they commit without a data sync.
+func historyFoldYields() (yield, nosync bool) {
+	return historyFoldYieldOn || historyBackfillYieldWriterOn, historyFoldYieldOn
+}
+
 // historyFoldYieldTxn bounds the puts of one yielding fold transaction.
 var historyFoldYieldTxn = envMillis("N42_HISTORY_FOLD_YIELD_TXN_MS", 5*time.Millisecond)
 
@@ -84,12 +115,12 @@ type historyFoldYieldStats struct {
 }
 
 // foldUpdateYield runs one yielding fold write transaction: without a data
-// sync where the store supports it.
-func (b *HistoryBackfiller) foldUpdateYield(body func(tx kv.RwTx) error, ys *historyFoldYieldStats) error {
+// sync where the store supports it and nosync is set, else synced.
+func (b *HistoryBackfiller) foldUpdateYield(body func(tx kv.RwTx) error, ys *historyFoldYieldStats, nosync bool) error {
 	ctx := kv.WithRwTag(b.ctx, "historyFoldYield")
 	t0 := time.Now()
 	var err error
-	if b.nosyncUnsupported {
+	if !nosync || b.nosyncUnsupported {
 		err = b.db.Update(ctx, body)
 	} else {
 		ran := false

@@ -299,7 +299,7 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	// query read a gap as untouched.
 	stale := false
 	next := 0
-	yieldOn := historyFoldYieldOn
+	yieldOn, nosync := historyFoldYields()
 	var ys historyFoldYieldStats
 	tFold := time.Now()
 	for {
@@ -339,7 +339,7 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 			return rawdb.WriteHistoryIndexedThrough(tx, to)
 		}
 		if yieldOn {
-			if err := b.foldUpdateYield(body, &ys); err != nil {
+			if err := b.foldUpdateYield(body, &ys, nosync); err != nil {
 				return false, err
 			}
 		} else if err := b.db.Update(b.ctx, body); err != nil {

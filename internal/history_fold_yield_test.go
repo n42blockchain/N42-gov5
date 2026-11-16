@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -120,4 +121,61 @@ func TestHistoryFoldYieldWaitsForBlockWrite(t *testing.T) {
 	m, ok := markerOf(t, b)
 	require.True(t, ok)
 	require.Equal(t, uint64(blocks), m)
+}
+
+// nosyncCountingDB counts the store's no-sync write transactions.
+type nosyncCountingDB struct {
+	kv.RwDB
+	nosync int
+}
+
+func (d *nosyncCountingDB) UpdateNosync(ctx context.Context, f func(tx kv.RwTx) error) error {
+	d.nosync++
+	return d.RwDB.UpdateNosync(ctx, f)
+}
+
+// TestHistoryBackfillYieldWriterSynced (N42_HISTORY_BACKFILL_YIELD_WRITER):
+// the fold yields like N42_HISTORY_FOLD_YIELD -- one key per transaction
+// while a block write waits -- and writes the same rows and marker, but
+// every transaction commits with its data sync.
+func TestHistoryBackfillYieldWriterSynced(t *testing.T) {
+	defer SetLagWriteDeferBGForTest(false)()
+	defer SetHistoryFoldYieldForTest(false)()
+	const blocks = 40
+	wantAcc, wantSto, wantMarker, ok := foldAll(t, blocks, nil)
+	require.True(t, ok)
+
+	defer SetHistoryBackfillYieldWriterForTest(true)()
+	prev := historyFoldWriterWanted
+	historyFoldWriterWanted = func() bool { return true }
+	defer func() { historyFoldWriterWanted = prev }()
+	db := &nosyncCountingDB{RwDB: memdb.NewTestDB(t)}
+	seedChangesets(t, db.RwDB, blocks)
+	b := NewHistoryBackfiller(db, func() uint64 { return blocks }, 1000, time.Hour)
+	txns := 0
+	historyFoldBetweenTxnsForTest = func() error { txns++; return nil }
+	defer func() { historyFoldBetweenTxnsForTest = nil }()
+	require.NoError(t, b.step())
+	require.Equal(t, blocks-1, txns, "one key per yielding transaction")
+	require.Zero(t, db.nosync, "a fold transaction committed without its data sync")
+	require.Equal(t, wantAcc, dumpTable(t, db, modules.AccountsHistory))
+	require.Equal(t, wantSto, dumpTable(t, db, modules.StorageHistory))
+	m, ok := markerOf(t, b)
+	require.True(t, ok)
+	require.Equal(t, wantMarker, m)
+
+	// With N42_HISTORY_FOLD_YIELD also on, its no-sync commit applies.
+	defer SetHistoryFoldYieldForTest(true)()
+	if y, ns := historyFoldYields(); !y || !ns {
+		t.Fatalf("historyFoldYields() = %v, %v with both on", y, ns)
+	}
+}
+
+// The new switch alone makes the fold yield, with synced commits.
+func TestHistoryBackfillYieldWriterYields(t *testing.T) {
+	defer SetHistoryFoldYieldForTest(false)()
+	defer SetHistoryBackfillYieldWriterForTest(true)()
+	if y, ns := historyFoldYields(); !y || ns {
+		t.Fatalf("historyFoldYields() = %v, %v, want true, false", y, ns)
+	}
 }
