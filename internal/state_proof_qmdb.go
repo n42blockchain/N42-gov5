@@ -45,6 +45,12 @@ import (
 // carrying the provable range; it is never swallowed into a placeholder proof.
 var errQMDBOutsideWindow = errors.New("height outside the recent-blocks QMDB proof window")
 
+// qmdbProofReplayThreshold: with the history journal on, heights more than
+// this many blocks below the applied head are proven from the journal rather
+// than by replaying undo records (a large --state.qmdb-undo-window would
+// otherwise replay thousands of records while holding the prover lock).
+const qmdbProofReplayThreshold = DefaultQMDBUndoWindow
+
 // QMDBStateProofProvider serves QMDB-native membership proofs for eth_getProof.
 type QMDBStateProofProvider struct {
 	mu         sync.Mutex
@@ -127,10 +133,7 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 
 	target, ok := resolveProofTarget(tx, blockNrOrHash, heads.committed)
 	if !ok {
-		return nil, &StateProofUnavailableError{
-			Reason: "block is unknown, not canonical or above the committed head",
-			Latest: heads.committed, Earliest: p.earliestLocked(tx, heads), HasRange: true,
-		}
+		return nil, p.unavailableLocked(tx, heads, 0, false, "block is unknown, not canonical or above the committed head")
 	}
 	if target == heads.applied {
 		proof, found := tree.GetProof(kh)
@@ -138,6 +141,27 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 			return []string{}, nil
 		}
 		return []string{hexutil.Encode(proof.Marshal())}, nil
+	}
+
+	// Deep heights with the journal on: prove from the journal instead of
+	// replaying hundreds of undo records under p.mu. Falls back to the undo
+	// window when the journal cannot serve the height (below its start,
+	// broken, ...).
+	if p.history.Load() && heads.applied-target > qmdbProofReplayThreshold {
+		proof, root, found, herr := p.historyProofLocked(tx, tree, kh, target, heads)
+		var ue *StateProofUnavailableError
+		switch {
+		case herr == nil:
+			if err := p.checkExecutedRoot(tx, target, root); err != nil {
+				return nil, err
+			}
+			if !found {
+				return []string{}, nil
+			}
+			return []string{hexutil.Encode(proof.Marshal())}, nil
+		case !errors.As(herr, &ue):
+			return nil, herr
+		}
 	}
 
 	// Recent-height path: replay the undo window from the actually-applied
@@ -161,11 +185,7 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 		// Older than the window: the full-history journal.
 		proof, root, found, err = p.historyProofLocked(tx, tree, kh, target, heads)
 	default:
-		return nil, &StateProofUnavailableError{
-			Requested: target, HasRequested: true,
-			Reason:   errQMDBOutsideWindow.Error() + " (full history needs --state.qmdb-history)",
-			Earliest: p.earliestRecentLocked(tx, heads), Latest: heads.committed, HasRange: true,
-		}
+		return nil, p.unavailableLocked(tx, heads, target, true, errQMDBOutsideWindow.Error()+" (full history needs --state.qmdb-history)")
 	}
 	if err != nil {
 		return nil, err
@@ -213,10 +233,7 @@ func (p *QMDBStateProofProvider) historyProofLocked(tx kv.Tx, tree *qmdb.Tree, k
 		return nil, qmdb.Hash{}, false, err
 	}
 	unavailable := func(reason string) error {
-		return &StateProofUnavailableError{
-			Requested: target, HasRequested: true, Reason: reason,
-			Earliest: p.earliestLocked(tx, heads), Latest: heads.committed, HasRange: true,
-		}
+		return p.unavailableLocked(tx, heads, target, true, reason)
 	}
 	if !haveStart {
 		return nil, qmdb.Hash{}, false, unavailable("the QMDB history journal is not initialised")
@@ -245,18 +262,51 @@ func (p *QMDBStateProofProvider) EnableHistory() {
 	p.history.Store(true)
 }
 
-// earliestLocked is the lowest provable committed height: the journal start
-// when the journal is usable, otherwise the undo window's reach.
-func (p *QMDBStateProofProvider) earliestLocked(tx kv.Tx, heads qmdbProofHeads) uint64 {
+// unavailableLocked builds the explicit refusal with the current provable
+// range (and its segments when a broken journal leaves a gap).
+func (p *QMDBStateProofProvider) unavailableLocked(tx kv.Tx, heads qmdbProofHeads, target uint64, hasTarget bool, reason string) error {
+	r := p.rangeLocked(tx, heads)
+	return &StateProofUnavailableError{
+		Requested: target, HasRequested: hasTarget, Reason: reason,
+		Earliest: r.Earliest, Latest: r.Latest, HasRange: true, Segments: r.Segments,
+	}
+}
+
+// rangeLocked computes the provable committed heights: the undo window
+// [recent, committed] and, with the journal on, [start, committed] -- or
+// [start, broken-1] when the journal is broken from `broken` (heights below
+// the break stay provable from the journal).
+func (p *QMDBStateProofProvider) rangeLocked(tx kv.Tx, heads qmdbProofHeads) StateProofRange {
 	recent := p.earliestRecentLocked(tx, heads)
+	r := StateProofRange{Earliest: recent, Latest: heads.committed}
 	if !p.history.Load() {
-		return recent
+		return r
 	}
-	start, haveStart, _, haveBroken, err := commitment.QMDBHistoryRange(tx)
-	if err != nil || !haveStart || haveBroken || start >= recent {
-		return recent
+	start, haveStart, broken, haveBroken, err := commitment.QMDBHistoryRange(tx)
+	if err != nil || !haveStart || start >= recent {
+		if err == nil && haveBroken {
+			r.HistoryBrokenFrom, r.HasHistoryBrokenFrom = broken, true
+		}
+		return r
 	}
-	return start
+	if !haveBroken {
+		r.Earliest = start
+		return r
+	}
+	r.HistoryBrokenFrom, r.HasHistoryBrokenFrom = broken, true
+	if broken <= start {
+		return r // nothing of the journal is usable
+	}
+	r.Earliest = start
+	if broken < recent {
+		r.Segments = []StateProofSegment{{From: start, To: broken - 1}, {From: recent, To: heads.committed}}
+	}
+	return r
+}
+
+// earliestLocked is the lowest provable committed height.
+func (p *QMDBStateProofProvider) earliestLocked(tx kv.Tx, heads qmdbProofHeads) uint64 {
+	return p.rangeLocked(tx, heads).Earliest
 }
 
 // earliestRecentLocked is the lowest committed height the undo window can
@@ -280,7 +330,7 @@ func (p *QMDBStateProofProvider) ProvableRange(tx kv.Tx) (StateProofRange, error
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return StateProofRange{Earliest: p.earliestLocked(tx, heads), Latest: heads.committed}, nil
+	return p.rangeLocked(tx, heads), nil
 }
 
 // StorageHash returns the zero hash: QMDB is a unified flat commitment with no

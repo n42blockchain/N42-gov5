@@ -261,3 +261,101 @@ func TestUnjournalQMDBBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A broken journal still serves [start, broken) and the recent window; the
+// reported range lists both segments instead of collapsing to the window.
+func TestQMDBProvableRangeWithBrokenJournal(t *testing.T) {
+	const n, window = 30, 4
+	c := newHistProofChain(t, n, window)
+	hist := NewQMDBStateProofProvider(nil)
+	hist.EnableHistory()
+	if err := c.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return commitment.MarkQMDBHistoryBroken(tx, 10)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.db.View(context.Background(), func(tx kv.Tx) error {
+		r, err := hist.ProvableRange(tx)
+		if err != nil {
+			return err
+		}
+		recent := uint64(n - window - 1)
+		want := []StateProofSegment{{0, 9}, {recent, n}}
+		if r.Earliest != 0 || r.Latest != n || !r.HasHistoryBrokenFrom || r.HistoryBrokenFrom != 10 ||
+			len(r.Segments) != 2 || r.Segments[0] != want[0] || r.Segments[1] != want[1] {
+			t.Fatalf("range = %+v, want segments %v broken 10", r, want)
+		}
+		for _, h := range []uint64{0, 9, recent, n} {
+			if _, err := hist.AccountProof(tx, histAddr(7), jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.BlockNumber(h))); err != nil {
+				t.Fatalf("h=%d inside a provable segment: %v", h, err)
+			}
+		}
+		_, err = hist.AccountProof(tx, histAddr(7), jsonrpc.BlockNumberOrHashWithNumber(15))
+		var ue *StateProofUnavailableError
+		if !errors.As(err, &ue) || len(ue.Segments) != 2 {
+			t.Fatalf("h=15 in the gap: err = %v", err)
+		}
+		data := ue.ErrorData().(map[string]interface{})
+		if _, ok := data["provableRanges"]; !ok {
+			t.Fatalf("error data without provableRanges: %v", data)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// With the journal on, heights deeper than qmdbProofReplayThreshold come from
+// the journal (no undo replay); when the journal cannot serve them the undo
+// window still does.
+func TestQMDBDeepHeightsUseTheJournal(t *testing.T) {
+	const n, window = qmdbProofReplayThreshold + 12, qmdbProofReplayThreshold + 100
+	c := newHistProofChain(t, n, window)
+	hist := NewQMDBStateProofProvider(nil)
+	hist.EnableHistory()
+	const deep = 3 // n - deep > threshold
+	prove := func() error {
+		return c.db.View(context.Background(), func(tx kv.Tx) error {
+			_, err := hist.AccountProof(tx, histAddr(9), jsonrpc.BlockNumberOrHashWithNumber(deep))
+			return err
+		})
+	}
+	// Drop one undo record the replay from the head down to `deep` needs:
+	// only the journal can still answer.
+	if err := c.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return tx.Delete(modules.QMDBUndoWindow, modules.EncodeBlockNumber(n/2))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := prove(); err != nil {
+		t.Fatalf("deep height with an intact journal: %v", err)
+	}
+	// Journal broken below the target, missing undo record: nothing can
+	// answer, and the refusal is explicit.
+	if err := c.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return commitment.MarkQMDBHistoryBroken(tx, 1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var ue *StateProofUnavailableError
+	if err := prove(); !errors.As(err, &ue) {
+		t.Fatalf("journal broken and undo record missing: err = %v", err)
+	}
+
+	// Fallback: a journal that cannot serve the height, a complete undo
+	// window: the replay answers.
+	c2 := newHistProofChain(t, n, window)
+	if err := c2.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return commitment.MarkQMDBHistoryBroken(tx, 1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hist2 := NewQMDBStateProofProvider(nil)
+	hist2.EnableHistory()
+	if err := c2.db.View(context.Background(), func(tx kv.Tx) error {
+		_, err := hist2.AccountProof(tx, histAddr(9), jsonrpc.BlockNumberOrHashWithNumber(deep))
+		return err
+	}); err != nil {
+		t.Fatalf("undo-window fallback: %v", err)
+	}
+}

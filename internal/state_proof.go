@@ -78,12 +78,29 @@ const (
 	StateProofHistoricalNone   = "none"
 	StateProofHistoricalRecent = "recent-window"
 	StateProofHistoricalFull   = "full"
+	// StateProofHistoricalFullBroken: --state.qmdb-history is on but the
+	// journal is broken from some height; see the provable ranges.
+	StateProofHistoricalFullBroken = "full-broken"
 )
 
+// StateProofSegment is one inclusive range of provable heights.
+type StateProofSegment struct {
+	From uint64
+	To   uint64
+}
+
 // StateProofRange is the inclusive height range a provider can prove right now.
+// Segments lists the provable heights exactly when they are not contiguous
+// (a broken history journal leaves a gap below the recent window); Earliest
+// and Latest are the outer bounds.
 type StateProofRange struct {
 	Earliest uint64
 	Latest   uint64
+	Segments []StateProofSegment
+	// HistoryBrokenFrom is set when the history journal is broken: heights
+	// from it up to the recent window are not provable.
+	HistoryBrokenFrom    uint64
+	HasHistoryBrokenFrom bool
 }
 
 // StateProofRangeReporter is implemented by providers whose provable range
@@ -101,6 +118,7 @@ type StateProofUnavailableError struct {
 	Earliest     uint64
 	Latest       uint64
 	HasRange     bool
+	Segments     []StateProofSegment // set when the provable heights have gaps
 	Reason       string
 }
 
@@ -114,7 +132,16 @@ func (e *StateProofUnavailableError) Error() string {
 		b.WriteString(": ")
 		b.WriteString(e.Reason)
 	}
-	if e.HasRange {
+	if len(e.Segments) > 1 {
+		b.WriteString(" (provable blocks:")
+		for i, sg := range e.Segments {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, " %d..%d", sg.From, sg.To)
+		}
+		b.WriteString(")")
+	} else if e.HasRange {
 		fmt.Fprintf(&b, " (provable blocks: %d..%d)", e.Earliest, e.Latest)
 	}
 	return b.String()
@@ -133,8 +160,22 @@ func (e *StateProofUnavailableError) ErrorData() interface{} {
 		d["earliestProvableBlock"] = hexutil.Uint64(e.Earliest)
 		d["latestProvableBlock"] = hexutil.Uint64(e.Latest)
 	}
+	if len(e.Segments) > 1 {
+		d["provableRanges"] = segmentsJSON(e.Segments)
+	}
 	return d
 }
+
+func segmentsJSON(segs []StateProofSegment) [][2]hexutil.Uint64 {
+	out := make([][2]hexutil.Uint64, len(segs))
+	for i, sg := range segs {
+		out[i] = [2]hexutil.Uint64{hexutil.Uint64(sg.From), hexutil.Uint64(sg.To)}
+	}
+	return out
+}
+
+// SegmentsJSON renders provable ranges as [[from, to], ...] (hex quantities).
+func SegmentsJSON(segs []StateProofSegment) [][2]hexutil.Uint64 { return segmentsJSON(segs) }
 
 // StateProofProvider isolates proof serving from RPC wiring so a future
 // canonical Ethereum MPT backend can be plugged in without rewriting APIs.

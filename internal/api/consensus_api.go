@@ -365,6 +365,11 @@ type StateProofInfo struct {
 	// right now; requests outside fail with an explicit error.
 	OldestProvable *hexutil.Uint64 `json:"oldestProvable,omitempty"`
 	LatestProvable *hexutil.Uint64 `json:"latestProvable,omitempty"`
+	// ProvableRanges lists the provable heights exactly when they have a gap
+	// (a broken history journal); HistoryBrokenFrom is the first height the
+	// journal can no longer prove (historicalMode is then "full-broken").
+	ProvableRanges    [][2]hexutil.Uint64 `json:"provableRanges,omitempty"`
+	HistoryBrokenFrom *hexutil.Uint64     `json:"historyBrokenFrom,omitempty"`
 }
 
 // GetStateProofInfo reports the proof backend serving eth_getProof. For a QMDB
@@ -399,6 +404,16 @@ func (c *ConsensusAPI) GetStateProofInfo(ctx context.Context) (*StateProofInfo, 
 		if r, err := rr.ProvableRange(tx); err == nil {
 			lo, hi := hexutil.Uint64(r.Earliest), hexutil.Uint64(r.Latest)
 			info.OldestProvable, info.LatestProvable = &lo, &hi
+			if len(r.Segments) > 1 {
+				info.ProvableRanges = internal.SegmentsJSON(r.Segments)
+			}
+			if r.HasHistoryBrokenFrom {
+				b := hexutil.Uint64(r.HistoryBrokenFrom)
+				info.HistoryBrokenFrom = &b
+				if info.HistoricalMode == internal.StateProofHistoricalFull {
+					info.HistoricalMode = internal.StateProofHistoricalFullBroken
+				}
+			}
 		}
 	}
 	return info, nil
