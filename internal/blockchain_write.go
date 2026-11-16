@@ -1114,6 +1114,10 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 					"framesSyncUs", ft.Sync.Microseconds(), "framesIdxBeginUs", ft.IdxBegin.Microseconds(),
 					"framesIdxPutUs", ft.IdxPut.Microseconds(), "framesIdxCommitUs", ft.IdxCommit.Microseconds(),
 					"framesWholeUs", ft.Whole.Microseconds(), "framesTookUs", framesW.took.Microseconds(), "framesKB", ft.Bytes>>10)
+				if ft.IdxPruned > 0 {
+					// N42_FRAME_INDEX_FLAT: dropped-segment rows deleted.
+					fields = append(fields, "framesIdxPruneUs", ft.IdxPrune.Microseconds(), "framesIdxPruned", ft.IdxPruned)
+				}
 			}
 		}
 		if job != nil {

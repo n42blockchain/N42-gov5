@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,62 @@ type frameLog struct {
 
 	rmu     sync.RWMutex
 	readers map[uint32]*os.File
+
+	// flat (N42_FRAME_INDEX_FLAT, with keepSegments > 0): the index rows of
+	// frames in a dropped segment are deleted, a few per write, so the index
+	// holds about keepSegments segments' rows and its per-write cost stays
+	// flat through a run (l.mu guards segHashes and pruneQ).
+	flat      bool
+	segHashes map[uint32][]types.Hash
+	pruneQ    []frameLogPruneItem
+}
+
+// frameLogPruneItem is an index row to delete if it still names seg.
+type frameLogPruneItem struct {
+	h   types.Hash
+	seg uint32
+}
+
+// frameIndexFlatOn is N42_FRAME_INDEX_FLAT (default off; "1", "true", "on"
+// or "yes" enables). It only acts with a segment retention
+// (N42_FRAME_LOG_KEEP_SEGMENTS, BENCH ONLY): without one no segment is
+// dropped and every index row stays live.
+var frameIndexFlatOn = parseFrameOptIn(os.Getenv("N42_FRAME_INDEX_FLAT"))
+
+func parseFrameOptIn(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// SetFrameIndexFlatForTest switches N42_FRAME_INDEX_FLAT for logs opened
+// afterwards and returns the restore.
+func SetFrameIndexFlatForTest(on bool) func() {
+	prev := frameIndexFlatOn
+	frameIndexFlatOn = on
+	return func() { frameIndexFlatOn = prev }
+}
+
+// frameIndexPruneMin is the least number of dropped rows a write deletes
+// when any are pending; a write deletes up to twice its own rows, so the
+// backlog of a dropped segment clears within half a segment of writes.
+const frameIndexPruneMin = 512
+
+// frameIndexPruned counts the index rows a FLAT index deleted.
+var frameIndexPruned atomic.Uint64
+
+// FrameIndexPruneStats returns the index rows deleted by a FLAT index since
+// start and the rows still waiting.
+func FrameIndexPruneStats() (pruned uint64, pending int) {
+	pruned = frameIndexPruned.Load()
+	if h := frameStore.Load(); h != nil && h.log != nil {
+		h.log.mu.Lock()
+		pending = len(h.log.pruneQ)
+		h.log.mu.Unlock()
+	}
+	return pruned, pending
 }
 
 // frameLogPrealloc is the next segment being made ready off the writer's
@@ -134,8 +191,12 @@ type FrameWriteTimes struct {
 
 	Encode, Write, Sync         time.Duration
 	IdxBegin, IdxPut, IdxCommit time.Duration
-	Whole                       time.Duration
-	Bytes                       int64
+	// IdxPrune is the part of IdxPut that deleted a FLAT index's dropped
+	// rows, IdxPruned how many it deleted.
+	IdxPrune  time.Duration
+	IdxPruned int
+	Whole     time.Duration
+	Bytes     int64
 }
 
 func frameLogSegmentName(seg uint32) string { return fmt.Sprintf("frames-%08d.log", seg) }
@@ -178,6 +239,11 @@ func openFrameLog(dir string, db kv.RwDB, keepSegments int) (*frameLog, error) {
 		return nil, err
 	}
 	l := &frameLog{dir: dir, db: db, keepSegments: keepSegments, readers: make(map[uint32]*os.File)}
+	if frameIndexFlatOn && keepSegments > 0 {
+		l.flat = true
+		l.segHashes = make(map[uint32][]types.Hash)
+		log.Info("frame log index: FLAT (N42_FRAME_INDEX_FLAT), rows of dropped segments are deleted", "keepSegments", keepSegments)
+	}
 	segs, err := frameLogSegments(dir)
 	if err != nil {
 		return nil, err
@@ -407,6 +473,13 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 	if err := l.updateIndex(ctx, seg, base, end, locs, times, tIdx); err != nil {
 		return err
 	}
+	if l.flat {
+		hs := l.segHashes[seg]
+		for _, c := range locs {
+			hs = append(hs, c.h)
+		}
+		l.segHashes[seg] = hs
+	}
 	l.off = end
 	l.startPreallocLocked()
 	return nil
@@ -425,8 +498,38 @@ type frameLogWriteLoc struct {
 // the log.
 func (l *frameLog) updateIndex(ctx context.Context, seg uint32, base, end int64, locs []frameLogWriteLoc, times *FrameWriteTimes, tIdx time.Time) error {
 	var tIn, tPut time.Time
+	var dPrune time.Duration
+	nPrune, pruned := 0, 0
+	if l.flat && len(l.pruneQ) > 0 {
+		nPrune = 2 * len(locs)
+		if nPrune < frameIndexPruneMin {
+			nPrune = frameIndexPruneMin
+		}
+		if nPrune > len(l.pruneQ) {
+			nPrune = len(l.pruneQ)
+		}
+	}
 	err := l.db.UpdateNosync(kv.WithRwTag(ctx, "frameIndex"), func(tx kv.RwTx) error {
 		tIn = time.Now()
+		pruned = 0
+		if nPrune > 0 {
+			// Rows of a dropped segment whose frame was not written again
+			// since: a read of them finds no file either way.
+			for _, p := range l.pruneQ[:nPrune] {
+				v, err := tx.GetOne(modules.FrameLogIndex, p.h[:])
+				if err != nil {
+					return err
+				}
+				if len(v) != frameLogLocSize || binary.LittleEndian.Uint32(v) != p.seg {
+					continue
+				}
+				if err := tx.Delete(modules.FrameLogIndex, p.h[:]); err != nil {
+					return err
+				}
+				pruned++
+			}
+			dPrune = time.Since(tIn)
+		}
 		for _, c := range locs {
 			if err := tx.Put(modules.FrameLogIndex, c.h[:], encodeFrameLogLoc(seg, base+c.rel, c.n)); err != nil {
 				return err
@@ -442,6 +545,13 @@ func (l *frameLog) updateIndex(ctx context.Context, seg uint32, base, end int64,
 		times.IdxBegin = tIn.Sub(tIdx)
 		times.IdxPut = tPut.Sub(tIn)
 		times.IdxCommit = time.Since(tPut)
+		times.IdxPrune, times.IdxPruned = dPrune, pruned
+	}
+	if err == nil && nPrune > 0 {
+		if l.pruneQ = l.pruneQ[nPrune:]; len(l.pruneQ) == 0 {
+			l.pruneQ = nil
+		}
+		frameIndexPruned.Add(uint64(pruned))
 	}
 	return err
 }
@@ -481,6 +591,19 @@ func (l *frameLog) roll() error {
 	old.Close()
 	if l.keepSegments > 0 && next >= uint32(l.keepSegments) {
 		drop := next - uint32(l.keepSegments)
+		if l.flat {
+			// The dropped segment's rows (and those of any older one this
+			// process wrote) go to the prune queue.
+			for seg, hs := range l.segHashes {
+				if seg > drop {
+					continue
+				}
+				for _, h := range hs {
+					l.pruneQ = append(l.pruneQ, frameLogPruneItem{h: h, seg: seg})
+				}
+				delete(l.segHashes, seg)
+			}
+		}
 		l.bg.Add(1)
 		go func() {
 			defer l.bg.Done()
