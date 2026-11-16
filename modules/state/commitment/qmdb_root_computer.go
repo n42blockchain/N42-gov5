@@ -60,6 +60,10 @@ type QMDBRootComputer struct {
 
 	histStore *MDBXQMDBHistoryStore // non-nil when full-history journaling is on
 
+	// liveHistory: the block write journals history from undo records
+	// (EnableLiveHistory, qmdb_live_history.go).
+	liveHistory bool
+
 	// readers serialises out-of-band point reads (Lookup: the txpool, RPC
 	// and the miner's build under N42_STATE_WRITE_QMDB_ONLY) against the
 	// owner's mutations. Every method that changes the tree takes it

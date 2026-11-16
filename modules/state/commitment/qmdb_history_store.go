@@ -157,3 +157,61 @@ func (s *MDBXQMDBHistoryStore) FloorTopBand(block uint64) ([]byte, bool, error) 
 	copy(out, v)
 	return out, true, nil
 }
+
+// DeleteBlockPos removes one block's cursor record (history revert).
+func (s *MDBXQMDBHistoryStore) DeleteBlockPos(block uint64) error {
+	rw, err := s.rw()
+	if err != nil {
+		return err
+	}
+	return rw.Delete(modules.QMDBBlockPos, be8h(block))
+}
+
+// DeleteTopBand removes one block's top-band record (history revert).
+func (s *MDBXQMDBHistoryStore) DeleteTopBand(block uint64) error {
+	rw, err := s.rw()
+	if err != nil {
+		return err
+	}
+	return rw.Delete(modules.QMDBTopBand, be8h(block))
+}
+
+// DeleteKeyVersion removes exactly one (keyHash, pos) version (history revert).
+func (s *MDBXQMDBHistoryStore) DeleteKeyVersion(keyHash qmdb.Hash, pos uint64) error {
+	rw, err := s.rw()
+	if err != nil {
+		return err
+	}
+	c, err := rw.RwCursorDupSort(modules.QMDBKeyVers)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	v, err := c.SeekBothRange(keyHash[:], be8h(pos))
+	if err != nil {
+		return err
+	}
+	if v == nil || binary.BigEndian.Uint64(v) != pos {
+		return nil // absent: nothing to revert
+	}
+	return c.DeleteCurrent()
+}
+
+// BlockPosRange returns the lowest and highest blocks with a cursor record.
+func (s *MDBXQMDBHistoryStore) BlockPosRange() (first, last uint64, ok bool, err error) {
+	c, err := s.tx.Cursor(modules.QMDBBlockPos)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer c.Close()
+	k, _, err := c.First()
+	if err != nil || len(k) != 8 {
+		return 0, 0, false, err
+	}
+	first = binary.BigEndian.Uint64(k)
+	k, _, err = c.Last()
+	if err != nil || len(k) != 8 {
+		return 0, 0, false, err
+	}
+	return first, binary.BigEndian.Uint64(k), true, nil
+}
