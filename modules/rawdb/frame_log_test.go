@@ -20,7 +20,7 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-func newFrameLogTestStore(t *testing.T) kv.RwDB {
+func newFrameLogTestStore(t testing.TB) kv.RwDB {
 	t.Helper()
 	db := mdbx.NewMDBX(log2.New()).InMem(t.TempDir()).
 		WithTableCfg(func(c kv.TableCfg) kv.TableCfg { return FrameLogIndexTables(FrameStoreTables(c)) }).MustOpen()

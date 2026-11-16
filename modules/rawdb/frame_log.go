@@ -443,7 +443,18 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 	if len(locs) == 0 {
 		return nil
 	}
-	if l.off > 0 && l.off+int64(len(buf)) > frameLogSegmentBytes {
+	return l.appendLocked(ctx, int64(len(buf)), func(f *os.File, off int64) error {
+		_, err := f.WriteAt(buf, off)
+		return err
+	}, locs, times)
+}
+
+// appendLocked appends one write of size bytes at the log's end (l.mu
+// held): it rolls the segment when the write does not fit, writes the
+// records with writeAt, syncs them and indexes locs.
+func (l *frameLog) appendLocked(ctx context.Context, size int64, writeAt func(f *os.File, off int64) error,
+	locs []frameLogWriteLoc, times *FrameWriteTimes) error {
+	if l.off > 0 && l.off+size > frameLogSegmentBytes {
 		tRoll := time.Now()
 		err := l.roll()
 		if times != nil {
@@ -454,7 +465,7 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 		}
 	}
 	tIO := time.Now()
-	if _, err := l.f.WriteAt(buf, l.off); err != nil {
+	if err := writeAt(l.f, l.off); err != nil {
 		return err
 	}
 	tSync := time.Now()
@@ -462,7 +473,7 @@ func (l *frameLog) write(ctx context.Context, hashes []types.Hash, raws [][]byte
 		return err
 	}
 	seg, base := l.seg, l.off
-	end := base + int64(len(buf))
+	end := base + size
 	tIdx := time.Now()
 	if times != nil {
 		times.Write = tSync.Sub(tIO)
