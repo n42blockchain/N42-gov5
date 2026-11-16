@@ -3012,6 +3012,10 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 					"chkStartTMs", chkStart, "chkEndTMs", chkEnd,
 					"qTMs", q, "insDispatchTMs", insDispatch, "insStartTMs", insStart)
 			}
+			// Cumulative non-lag imports that skipped / joined the write in
+			// flight (N42_CATCHUP_SKIP_APPLIED, catchup_skip_applied.go).
+			insSkipJoin, insJoined := InsertJoinStats()
+			fields = append(fields, "insSkipJoin", insSkipJoin, "insJoinedWrite", insJoined)
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
 			} else {
