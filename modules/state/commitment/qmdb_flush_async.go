@@ -59,7 +59,7 @@ func (c *FlushCapture) Took() time.Duration {
 // lock is released.
 func (r *QMDBRootComputer) StartFlushTo(p qmdb.Putter, evictFirst bool) *FlushCapture {
 	c := &FlushCapture{done: make(chan struct{})}
-	r.readers.Lock()
+	unlock := r.lockWriter(holderFlushAsync)
 	go func() {
 		t0 := time.Now()
 		if evictFirst {
@@ -70,7 +70,7 @@ func (r *QMDBRootComputer) StartFlushTo(p qmdb.Putter, evictFirst bool) *FlushCa
 			r.abortFlushedLocked()
 		}
 		c.took = time.Since(t0)
-		r.readers.Unlock()
+		unlock()
 		close(c.done)
 	}()
 	return c

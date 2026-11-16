@@ -449,6 +449,10 @@ type aheadClaim struct {
 	// for the parent's complete post-state (an early snapshot's held reads):
 	// sampled around the block-start system calls (diagnostics).
 	sysProbe func() (treeReads uint64, treeNs, heldNs int64)
+	// treeTiming, when set, is the run's state source's lookup timing,
+	// whose reader lock wait and holder are sampled around the block-start
+	// system calls (r94a stamp).
+	treeTiming *commitment.LookupTiming
 }
 
 // prepScan returns the claimed preparation's scans of txs, or nil.
@@ -1031,8 +1035,13 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	var sysTreeReads0 uint64
 	var sysTreeNs0, sysHeldNs0 int64
 	probe := ahead && claim != nil && claim.sysProbe != nil
+	var sysWait0 int64
+	var sysWaits0 uint64
 	if probe {
 		sysTreeReads0, sysTreeNs0, sysHeldNs0 = claim.sysProbe()
+		if tt := claim.treeTiming; tt != nil {
+			sysWait0, sysWaits0 = tt.Wait.Load(), tt.Waits.Load()
+		}
 	}
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		executor.Release()
@@ -1041,9 +1050,20 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	tSysCalls := time.Now()
 	var sysTreeReads uint64
 	var sysTreeNs, sysHeldNs int64
+	// sysTreeUs's split: the reader lock wait and, when a lookup waited
+	// over 50 µs, the writer that held the lock and for how long already.
+	var sysTreeWaitNs, sysHolderAgeNs int64
+	var sysTreeWaits uint64
+	sysHolder := "-"
 	if probe {
 		r, tn, hn := claim.sysProbe()
 		sysTreeReads, sysTreeNs, sysHeldNs = r-sysTreeReads0, tn-sysTreeNs0, hn-sysHeldNs0
+		if tt := claim.treeTiming; tt != nil {
+			sysTreeWaitNs, sysTreeWaits = tt.Wait.Load()-sysWait0, tt.Waits.Load()-sysWaits0
+			if sysTreeWaits > 0 {
+				sysHolder, sysHolderAgeNs = commitment.QMDBHolderName(tt.Holder.Load()), tt.HolderAge.Load()
+			}
+		}
 	}
 	// An early snapshot answers the block-start writes from this capture
 	// (the state holds nothing else yet).
@@ -1509,6 +1529,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			"execMs", execNs / 1e6, "validateMs", valNs / 1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds(),
 			"waveReads", waveReads, "waveColdReads", waveColdReads, "waveColdMs", waveColdMs, "waveBusyMs", waveBusyMs,
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain}
+		blockLog = append(blockLog, "sysTreeWaitUs", sysTreeWaitNs/1e3, "sysTreeWaits", sysTreeWaits,
+			"sysTreeHolder", sysHolder, "sysTreeHolderAgeUs", sysHolderAgeNs/1e3)
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 

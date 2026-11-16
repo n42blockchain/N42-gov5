@@ -139,6 +139,14 @@ type LookupSource struct {
 type LookupTiming struct {
 	N     atomic.Uint64
 	Nanos atomic.Int64
+	// Wait: the part of Nanos spent waiting for the tree's reader lock
+	// (unlocked sources); Waits: the lookups whose wait was over 50 µs;
+	// Holder (QMDBHolderName) and HolderAge: the writer holding the lock
+	// when the last such wait began, and how long it had held it (r94a).
+	Wait      atomic.Int64
+	Waits     atomic.Uint64
+	Holder    atomic.Uint32
+	HolderAge atomic.Int64
 }
 
 // SetTiming makes the source accumulate its tree lookups into t.
@@ -195,7 +203,7 @@ func (s *LookupSource) lookup(keyHash qmdb.Hash) ([]byte, bool) {
 	if s.locked {
 		v, found, evicted = s.rc.LookupLocked(keyHash, s.cold)
 	} else {
-		v, found, evicted = s.rc.Lookup(keyHash, s.cold)
+		v, found, evicted = s.rc.LookupTimed(keyHash, s.cold, s.timing)
 	}
 	if !found && evicted && s.fresh != nil && !s.locked {
 		if tx, err := kv.BeginRoNested(context.Background(), s.fresh); err == nil {

@@ -852,6 +852,7 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 		}
 		return a.treeTiming.N.Load(), a.treeTiming.Nanos.Load(), held
 	}
+	claim.treeTiming = &a.treeTiming
 	if fn := lagPipeAheadClaimedForTest; fn != nil {
 		fn(bc, a.blk)
 	}
