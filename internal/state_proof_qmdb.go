@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/holiman/uint256"
 
@@ -49,6 +50,8 @@ type QMDBStateProofProvider struct {
 	mu         sync.Mutex
 	rc         *commitment.QMDBRootComputer
 	loadedRoot types.Hash
+	// history: older heights come from the full-history journal.
+	history atomic.Bool
 	// config decides what a header's Root means (its own state before the
 	// deferred-execution fork, the parent's after it).
 	config *params.ChainConfig
@@ -61,7 +64,18 @@ func NewQMDBStateProofProvider(config *params.ChainConfig) *QMDBStateProofProvid
 
 // Descriptor reports the QMDB proof semantics so clients route verification to
 // qmdb.VerifyEncodedProofForKey and do not expect MPT/EIP-1186 node lists.
-func (*QMDBStateProofProvider) Descriptor() StateProofDescriptor {
+func (p *QMDBStateProofProvider) Descriptor() StateProofDescriptor {
+	if p.history.Load() {
+		return StateProofDescriptor{
+			Backend:            StateProofBackendQMDB,
+			ProofRootScheme:    state.RootSchemeQMDB,
+			Semantics:          StateProofSemanticsHashOnly,
+			StorageHash:        StorageHashSemanticsNone,
+			SupportsHistorical: true, // every height from the journal start
+			HistoricalMode:     StateProofHistoricalFull,
+			RecentWindow:       QMDBUndoWindow(),
+		}
+	}
 	return StateProofDescriptor{
 		Backend:            StateProofBackendQMDB,
 		ProofRootScheme:    state.RootSchemeQMDB,
@@ -115,7 +129,7 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 	if !ok {
 		return nil, &StateProofUnavailableError{
 			Reason: "block is unknown, not canonical or above the committed head",
-			Latest: heads.committed, Earliest: p.earliestRecentLocked(tx, heads), HasRange: true,
+			Latest: heads.committed, Earliest: p.earliestLocked(tx, heads), HasRange: true,
 		}
 	}
 	if target == heads.applied {
@@ -135,40 +149,114 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 	if err != nil {
 		return nil, err
 	}
-	if undos == nil {
-		// The window does not reach back to the target.
+	var (
+		proof *qmdb.Proof
+		root  qmdb.Hash
+		found bool
+	)
+	switch {
+	case undos != nil:
+		proof, root, found, err = tree.ProofAt(kh, undos)
+	case p.history.Load():
+		// Older than the window: the full-history journal.
+		proof, root, found, err = p.historyProofLocked(tx, tree, kh, target, heads)
+	default:
 		return nil, &StateProofUnavailableError{
 			Requested: target, HasRequested: true,
-			Reason:   errQMDBOutsideWindow.Error(),
+			Reason:   errQMDBOutsideWindow.Error() + " (full history needs --state.qmdb-history)",
 			Earliest: p.earliestRecentLocked(tx, heads), Latest: heads.committed, HasRange: true,
 		}
 	}
-	proof, root, found, err := tree.ProofAt(kh, undos)
 	if err != nil {
 		return nil, err
 	}
-	// The reconstructed root must equal the target block's header root — a
-	// mismatch means corrupt window data and must never serve a proof.
-	targetHash, err := rawdb.ReadCanonicalHash(tx, target)
-	if err != nil {
+	// The reconstructed root must equal the target block's executed root — a
+	// mismatch means corrupt window/journal data and must never serve a proof.
+	if err := p.checkExecutedRoot(tx, target, root); err != nil {
 		return nil, err
-	}
-	targetHeader := rawdb.ReadHeader(tx, targetHash, target)
-	if targetHeader == nil {
-		return nil, fmt.Errorf("qmdb proof: header %d unavailable", target)
-	}
-	targetExec, terr := ExecutedResultOfHeader(p.config, tx, targetHeader)
-	if terr != nil {
-		return nil, terr
-	}
-	if types.Hash(root) != targetExec.Root {
-		return nil, fmt.Errorf("qmdb proof: reconstructed root %x != executed root %x at block %d",
-			root[:8], targetExec.Root[:8], target)
 	}
 	if !found {
 		return []string{}, nil
 	}
 	return []string{hexutil.Encode(proof.Marshal())}, nil
+}
+
+// checkExecutedRoot compares a reconstructed root with the canonical block's
+// executed state root (the header's own Root before the deferred-execution
+// fork, the stored executed result after it).
+func (p *QMDBStateProofProvider) checkExecutedRoot(tx kv.Tx, target uint64, root qmdb.Hash) error {
+	targetHash, err := rawdb.ReadCanonicalHash(tx, target)
+	if err != nil {
+		return err
+	}
+	targetHeader := rawdb.ReadHeader(tx, targetHash, target)
+	if targetHeader == nil {
+		return fmt.Errorf("qmdb proof: header %d unavailable", target)
+	}
+	targetExec, terr := ExecutedResultOfHeader(p.config, tx, targetHeader)
+	if terr != nil {
+		return terr
+	}
+	if types.Hash(root) != targetExec.Root {
+		return fmt.Errorf("qmdb proof: reconstructed root %x != executed root %x at block %d",
+			root[:8], targetExec.Root[:8], target)
+	}
+	return nil
+}
+
+// historyProofLocked proves keyHash at target from the full-history journal
+// (qmdb.Tree.ProofAtHeightFrom). Only heights inside the journal's valid range
+// are attempted; the caller root-checks the result.
+func (p *QMDBStateProofProvider) historyProofLocked(tx kv.Tx, tree *qmdb.Tree, kh qmdb.Hash, target uint64, heads qmdbProofHeads) (*qmdb.Proof, qmdb.Hash, bool, error) {
+	start, haveStart, broken, haveBroken, err := commitment.QMDBHistoryRange(tx)
+	if err != nil {
+		return nil, qmdb.Hash{}, false, err
+	}
+	unavailable := func(reason string) error {
+		return &StateProofUnavailableError{
+			Requested: target, HasRequested: true, Reason: reason,
+			Earliest: p.earliestLocked(tx, heads), Latest: heads.committed, HasRange: true,
+		}
+	}
+	if !haveStart {
+		return nil, qmdb.Hash{}, false, unavailable("the QMDB history journal is not initialised")
+	}
+	if target < start {
+		return nil, qmdb.Hash{}, false, unavailable(fmt.Sprintf("below the QMDB history journal start (block %d)", start))
+	}
+	if haveBroken && target >= broken {
+		return nil, qmdb.Hash{}, false, unavailable(fmt.Sprintf("the QMDB history journal is broken from block %d (rebuild or --state.qmdb-history.reseed)", broken))
+	}
+	// The journal must reach the state the loaded forest holds: a journal
+	// that stopped earlier (flag off for a while) resolves every later height
+	// to a stale cursor.
+	store := commitment.NewMDBXQMDBHistoryStore(tx)
+	if e, ok, err := store.FloorBlockPos(heads.applied); err != nil {
+		return nil, qmdb.Hash{}, false, err
+	} else if !ok || e != tree.NextSlot() {
+		return nil, qmdb.Hash{}, false, unavailable("the QMDB history journal does not reach the applied head")
+	}
+	return tree.ProofAtHeightFrom(store, kh, target)
+}
+
+// EnableHistory serves heights older than the undo window from the
+// full-history journal (--state.qmdb-history). Call before serving.
+func (p *QMDBStateProofProvider) EnableHistory() {
+	p.history.Store(true)
+}
+
+// earliestLocked is the lowest provable committed height: the journal start
+// when the journal is usable, otherwise the undo window's reach.
+func (p *QMDBStateProofProvider) earliestLocked(tx kv.Tx, heads qmdbProofHeads) uint64 {
+	recent := p.earliestRecentLocked(tx, heads)
+	if !p.history.Load() {
+		return recent
+	}
+	start, haveStart, _, haveBroken, err := commitment.QMDBHistoryRange(tx)
+	if err != nil || !haveStart || haveBroken || start >= recent {
+		return recent
+	}
+	return start
 }
 
 // earliestRecentLocked is the lowest committed height the undo window can
@@ -190,7 +278,9 @@ func (p *QMDBStateProofProvider) ProvableRange(tx kv.Tx) (StateProofRange, error
 	if err != nil {
 		return StateProofRange{}, err
 	}
-	return StateProofRange{Earliest: p.earliestRecentLocked(tx, heads), Latest: heads.committed}, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return StateProofRange{Earliest: p.earliestLocked(tx, heads), Latest: heads.committed}, nil
 }
 
 // StorageHash returns the zero hash: QMDB is a unified flat commitment with no
