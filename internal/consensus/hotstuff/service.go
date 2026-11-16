@@ -811,12 +811,7 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 	// second and third fsync for the block), so they belong in the
 	// block-write cost picture alongside "blockwrite phases".
 	tObserve := time.Now()
-	if s.availableHere(output.Hash) {
-		// P2a: committed on availability; its execution runs behind in
-		// the lag executor, which retries the canonical commit on import.
-	} else if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
-		s.requestCommittedCatchUp(output.Hash, number)
-	}
+	s.observeCommitted(output.Hash)
 	dObserve := time.Since(tObserve)
 	var dCanon, dPersist time.Duration
 	// Make the committed block the canonical head so every node's chain follows
