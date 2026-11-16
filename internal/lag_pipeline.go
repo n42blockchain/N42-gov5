@@ -99,6 +99,10 @@ type lagExecutor struct {
 
 	imported atomic.Uint64
 	lastNum  atomic.Uint64
+
+	// idle: the import's idle split between two lag imports (r94a,
+	// lag_import_idle.go); the lag loop's goroutine only.
+	idle lagIdle
 }
 
 // RememberAvailable records a frame block this node holds every frame of
@@ -586,11 +590,14 @@ func (bc *BlockChain) lagLoop() {
 		ctx = context.Background()
 	}
 	for {
+		tWait := time.Now()
 		select {
 		case <-ctx.Done():
 			return
 		case <-le.kick:
+			le.idle.slept(time.Since(tWait), "kick")
 		case <-t.C:
+			le.idle.slept(time.Since(tWait), "tick")
 		}
 		for bc.lagStep() {
 		}
@@ -619,9 +626,11 @@ func (bc *BlockChain) lagStep() bool {
 		return false
 	}
 	le := &bc.lagExec
+	le.idle.passBegin()
 	le.mu.Lock()
 	if len(le.queued) == 0 {
 		le.mu.Unlock()
+		le.idle.passEmpty("queued")
 		return false
 	}
 	list := make([]*lagQueued, 0, len(le.queued))
@@ -639,6 +648,7 @@ func (bc *BlockChain) lagStep() bool {
 		// E=1: stored with the executor's result, never executed here.
 		return bc.e1LightStep(list, committedNum)
 	}
+	skipWhy := "queued"
 	for _, q := range list {
 		b := q.blk
 		n := b.Number64().Uint64()
@@ -650,11 +660,13 @@ func (bc *BlockChain) lagStep() bool {
 		stored := bc.blockStored(b.Hash(), n)
 		if stored && bc.lagStoredApplied(b.Hash(), n) {
 			bc.lagDone(b, false)
+			le.idle.passEmpty("other")
 			return true
 		}
 		if n <= committedNum {
 			// A height already decided without this block: a losing fork.
 			bc.lagForget(b.Hash())
+			le.idle.passEmpty("other")
 			return true
 		}
 		ready := bc.lagParentReady(b.ParentHash(), n-1)
@@ -662,6 +674,9 @@ func (bc *BlockChain) lagStep() bool {
 		if !ready {
 			if !bc.blockStored(b.ParentHash(), n-1) || time.Since(q.since) < lagAuthorizedGrace ||
 				time.Since(q.lastAuth) < lagAuthorizedGrace {
+				if skipWhy == "queued" {
+					skipWhy = "parent"
+				}
 				continue
 			}
 			authorized = true
@@ -670,10 +685,13 @@ func (bc *BlockChain) lagStep() bool {
 			// descends from the applied head, execute it (and any stored
 			// block between) first (S132).
 			if bc.lagReplayStoredAncestors(b) {
+				le.idle.passEmpty("other")
 				return true
 			}
 		}
-		handed, err := bc.insertChainLag(b, authorized)
+		idle := le.idle.pick(q.since)
+		handed, err := bc.insertChainLagIdle(b, authorized, idle)
+		le.idle.done(idle)
 		if handed {
 			// Applied; the ordered writer reports it once durable
 			// (lag_writer.go). It leaves the queue now so it is not imported
@@ -699,6 +717,7 @@ func (bc *BlockChain) lagStep() bool {
 			log.Warn("lag executor: block not importable yet", "number", n, "hash", b.Hash().Hex()[:12], "authorized", authorized, "err", err)
 		}
 	}
+	le.idle.passEmpty(skipWhy)
 	return false
 }
 

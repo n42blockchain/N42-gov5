@@ -574,6 +574,9 @@ func (f *qmdbFlushRows) replay(tx kv.RwTx) error {
 // handed to the ordered writer, and whether it was.
 type lagInsert struct {
 	handed bool
+	// idle: the lag loop's idle split before this import (r94a), nil
+	// for other lag imports.
+	idle *lagIdleSnap
 }
 
 // lagWriteUsable reports whether blk's write can be handed off: a native

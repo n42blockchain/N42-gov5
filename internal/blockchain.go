@@ -2123,13 +2123,25 @@ func (bc *BlockChain) InsertChain(chain []block.IBlock) (int, error) {
 // insertChainLag is the lag executor's import of one block: its write may
 // be handed to the ordered writer (lag_writer.go), reported in handed.
 func (bc *BlockChain) insertChainLag(b block.IBlock, authorizedSwitch bool) (handed bool, err error) {
+	return bc.insertChainLagIdle(b, authorizedSwitch, nil)
+}
+
+// insertChainLagIdle is insertChainLag filling idle (when set) with the
+// frame resolution and bc.lock wait before the import (lag_import_idle.go).
+func (bc *BlockChain) insertChainLagIdle(b block.IBlock, authorizedSwitch bool, idle *lagIdleSnap) (handed bool, err error) {
 	chain := []block.IBlock{b}
+	tResolve := time.Now()
 	if err := bc.resolveChainFrames(chain); err != nil {
 		return false, err
 	}
+	tLock := time.Now()
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
-	lag := &lagInsert{}
+	if idle != nil {
+		idle.lockAt = time.Now()
+		idle.resolve, idle.lockWait = tLock.Sub(tResolve), idle.lockAt.Sub(tLock)
+	}
+	lag := &lagInsert{idle: idle}
 	_, err = bc.insertChainMode(chain, authorizedSwitch, lag)
 	return lag.handed, err
 }
@@ -2943,6 +2955,11 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				fields = append(fields, bc.lagWaitSplitFields()...)
 			}
 			fields = append(fields, bc.lagPipeLogFields()...)
+			if lag != nil && lag.idle != nil {
+				// r94a: the import's idle before this block (lag_import_idle.go).
+				fields = append(fields, lag.idle.fields(tIter)...)
+				lag.idle.loggedAt, lag.idle.loggedSet = time.Now(), true
+			}
 			fields = append(fields, senderSrcLogFields()...)
 			if procPhases.Skipped > 0 {
 				fields = append(fields, "skipped", procPhases.Skipped)
