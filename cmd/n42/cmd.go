@@ -93,6 +93,24 @@ var nodeFlg = []cli.Flag{
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.ParallelEVM,
 	},
+	&cli.BoolFlag{
+		Name:        "state.qmdb-history",
+		Usage:       "Keep the QMDB full-history journal so eth_getProof serves verifiable proofs at any height from the journal start (QMDB chains; more disk; see docs/ops/QMDB_HISTORICAL_PROOFS.md)",
+		Category:    "NODE",
+		Destination: &DefaultConfig.NodeCfg.QMDBHistory,
+	},
+	&cli.BoolFlag{
+		Name:        "state.qmdb-history.reseed",
+		Usage:       "With --state.qmdb-history: discard a journal that cannot continue (node ran without the flag) and start a new one at the current head instead of refusing to start",
+		Category:    "NODE",
+		Destination: &DefaultConfig.NodeCfg.QMDBHistoryReseed,
+	},
+	&cli.Uint64Flag{
+		Name:        "state.qmdb-undo-window",
+		Usage:       "Recent blocks whose QMDB undo records are kept (recent-heights eth_getProof and sibling-switch reach); minimum and default 256",
+		Category:    "NODE",
+		Destination: &DefaultConfig.NodeCfg.QMDBUndoWindow,
+	},
 }
 
 var rpcFlags = []cli.Flag{

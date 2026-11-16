@@ -529,6 +529,11 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := rawdb.WriteQMDBUndo(tx, blockNumber.Uint64(), undo); err != nil {
 				return fmt.Errorf("writing QMDB undo for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			// Opt-in full-history journal, from the same undo record and in
+			// the same tx (no-op unless --state.qmdb-history).
+			if err := bc.journalQMDBBlock(tx, blockNumber.Uint64(), undo); err != nil {
+				return err
+			}
 			// Track the applied-chain head (which block's state the world state
 			// reflects) — the branch-switch unwind reverts to this marker's
 			// lineage until it matches an incoming block's parent.

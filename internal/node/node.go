@@ -940,6 +940,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if stateScheme == state.RootSchemeLegacyKeccak && cfg.NodeCfg.JMTCommitment {
 		stateScheme = state.RootSchemeJMTBlake3 // backward compat
 	}
+	if cfg.NodeCfg.QMDBHistory && stateScheme != state.RootSchemeQMDB {
+		return nil, fmt.Errorf("--state.qmdb-history requires a QMDB chain (state scheme is %s)", stateScheme)
+	}
 
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		switch stateScheme {
@@ -1101,7 +1104,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			}
 			qmdbRC.EnableUndoRecording()
 			realBC.SetQMDBRootComputer(qmdbRC)
-			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider(realBC.Config()))
+			undoWindow := internal.SetQMDBUndoWindow(cfg.NodeCfg.QMDBUndoWindow)
+			proofProvider := internal.NewQMDBStateProofProvider(realBC.Config())
+			if cfg.NodeCfg.QMDBHistory {
+				// Validated (or seeded) in BlockChain.Start, after the
+				// startup repairs settle the applied head.
+				realBC.EnableQMDBHistory(cfg.NodeCfg.QMDBHistoryReseed)
+				proofProvider.EnableHistory()
+				log.Info("QMDB full-history journal requested (--state.qmdb-history)", "undoWindow", undoWindow)
+			} else if undoWindow != internal.DefaultQMDBUndoWindow {
+				log.Info("QMDB undo window", "blocks", undoWindow)
+			}
+			realBC.SetStateProofProvider(proofProvider)
 			log.Info("State commitment: QMDB (twig forest, live block production)",
 				"root", fmt.Sprintf("%x", qmdbRC.Root()))
 			if commitment.QMDBStateReadMode() == commitment.QMDBReadOn {

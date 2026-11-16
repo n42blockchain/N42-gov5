@@ -832,6 +832,10 @@ func (bc *BlockChain) Start() error {
 	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
 	bc.logStartupStateFingerprint()
+	// After every startup repair: the journal must match the final applied head.
+	if err := bc.prepareQMDBHistory(); err != nil {
+		return err
+	}
 
 	// Pre-warm the speculative build computer off the leader's critical path:
 	// the FIRST build after a restart otherwise pays the full ~5s index
@@ -894,7 +898,7 @@ func (bc *BlockChain) healPlainStateAheadOfMarkerOnStartup() {
 		}
 		log.Warn("PlainState is ahead of the applied marker (half-healed discontinuity); rolling it back",
 			"plainState", last, "marker", appliedNum)
-		if err := realignAppliedToTree(tx, appliedNum, appliedHash); err != nil {
+		if err := realignAppliedToTree(tx, appliedNum, appliedHash, bc.qmdbHistoryActive.Load()); err != nil {
 			return err
 		}
 		healed = true
@@ -946,7 +950,7 @@ func (bc *BlockChain) verifyAppliedStateOnStartup() {
 			log.Warn("applied marker was one block ahead of the executed state; rolling PlainState and marker back",
 				"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
 				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
-			return realignAppliedToTree(tx, appliedNum-1, hdr.ParentHash)
+			return realignAppliedToTree(tx, appliedNum-1, hdr.ParentHash, bc.qmdbHistoryActive.Load())
 		}
 		// Root cause found (qs-canon-probe -qmdbroot/-qmdbdiff): failed-block
 		// executions used to leave their appends on the live tree (no undo row
@@ -3277,7 +3281,7 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 		if cr, ok := execRootOf(cur); ok && treeRoot == cr {
 			target, targetHash := cur.Number.Uint64(), cur.Hash()
 			if werr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-				return realignAppliedToTree(tx, target, targetHash)
+				return realignAppliedToTree(tx, target, targetHash, bc.qmdbHistoryActive.Load())
 			}); werr != nil {
 				return fmt.Errorf("tree at %d/%x but three-state realign failed: %w", target, targetHash[:8], werr)
 			}
@@ -3315,7 +3319,7 @@ const qmdbRealignMaxDepth = 512
 // Everything above target is unwound via the changeset pre-values and its
 // per-block bookkeeping (undo record, consensus evidence, receipts) consumed;
 // the re-imported blocks rewrite all of it.
-func realignAppliedToTree(tx kv.RwTx, target uint64, targetHash types.Hash) error {
+func realignAppliedToTree(tx kv.RwTx, target uint64, targetHash types.Hash, history bool) error {
 	from, err := highestChangesetBlock(tx)
 	if err != nil {
 		return err
@@ -3327,6 +3331,15 @@ func realignAppliedToTree(tx kv.RwTx, target uint64, targetHash types.Hash) erro
 		for h := from; h > target; h-- {
 			if err := commitment.UnwindPlainStateBlock(tx, h); err != nil {
 				return fmt.Errorf("plain-state unwind of block %d: %w", h, err)
+			}
+			if history {
+				undo, err := readQMDBUndo(tx, h)
+				if err != nil {
+					return err
+				}
+				if err := unjournalQMDBBlock(tx, true, h, undo); err != nil {
+					return err
+				}
 			}
 			key := modules.EncodeBlockNumber(h)
 			if err := tx.Delete(modules.QMDBUndoWindow, key); err != nil {
@@ -3726,6 +3739,9 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 			*mutated = true
 			if err := commitment.UnwindPlainStateBlock(tx, appliedNum); err != nil {
 				return fmt.Errorf("unwind block %d: plain state: %w", appliedNum, err)
+			}
+			if err := unjournalQMDBBlock(tx, bc.qmdbHistoryActive.Load(), appliedNum, undo); err != nil {
+				return err
 			}
 			if err := tx.Delete(modules.QMDBUndoWindow, key); err != nil {
 				return err
