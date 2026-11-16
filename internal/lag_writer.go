@@ -696,6 +696,7 @@ func (bc *BlockChain) lagAppliedIs(hash types.Hash, number uint64) bool {
 //   - A failed write N-1 reloads the tree from the store (recoverLagWrite)
 //     and re-queues N-1; N's capture would then be of a tree that no longer
 //     exists and must be dropped with it.
+//
 // A capture at rootDone(N) (N42_LAG_QCAP_EARLY, run 81's change C) therefore
 // needs two staged windows in both the computer and the tree, per-window
 // dead-row lists, and an eviction-aware FlushTo; it was not shipped (r95a).
