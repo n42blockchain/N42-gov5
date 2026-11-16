@@ -194,6 +194,16 @@ func Validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("invalid prune mode %q (want %q or %q)", cfg.PruneCfg.Mode, PruneModeArchive, PruneModeFull)
 	}
+	if cfg.NodeCfg.QMDBUndoWindow > MaxQMDBUndoWindow {
+		return fmt.Errorf("qmdb undo window %d exceeds the maximum %d (recent-height proofs replay that many undo records; use --state.qmdb-history for deep history)",
+			cfg.NodeCfg.QMDBUndoWindow, MaxQMDBUndoWindow)
+	}
+	if cfg.PruneCfg.Mode == PruneModeFull {
+		if min := MinPruneRetention(cfg.NodeCfg.QMDBUndoWindow); cfg.PruneCfg.BlockRetention < min {
+			return fmt.Errorf("prune retention %d is below the minimum %d: sibling-switch and realign unwinds rewind state through changesets up to max(undo window %d, realign depth %d) blocks back (plus a %d-block margin)",
+				cfg.PruneCfg.BlockRetention, min, EffectiveQMDBUndoWindow(cfg.NodeCfg.QMDBUndoWindow), QMDBRealignMaxDepth, PruneRetentionMargin)
+		}
+	}
 	if cfg.ChainCfg != nil && !profile.SupportsConsensus(cfg.ChainCfg.Consensus) {
 		return fmt.Errorf("execution profile %q does not support consensus %q", profile.String(), cfg.ChainCfg.Consensus)
 	}

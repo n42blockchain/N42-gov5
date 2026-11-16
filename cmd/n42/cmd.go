@@ -95,7 +95,7 @@ var nodeFlg = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:        "state.qmdb-history",
-		Usage:       "Keep the QMDB full-history journal so eth_getProof serves verifiable proofs at any height from the journal start (QMDB chains; more disk; see docs/ops/QMDB_HISTORICAL_PROOFS.md)",
+		Usage:       "Keep the QMDB full-history journal so eth_getProof serves verifiable proofs at any height from the journal start (QMDB chains; more disk; see docs/QMDB_HISTORICAL_PROOFS.md)",
 		Category:    "NODE",
 		Destination: &DefaultConfig.NodeCfg.QMDBHistory,
 	},
@@ -113,13 +113,13 @@ var nodeFlg = []cli.Flag{
 	},
 	&cli.Uint64Flag{
 		Name:        "prune.retention",
-		Usage:       "Blocks of state history kept in full prune mode (default 90000)",
+		Usage:       "Blocks of state history kept in full prune mode (default 90000; at least max(undo window, 512) + 128, the changesets unwinds need)",
 		Category:    "NODE",
 		Destination: &DefaultConfig.PruneCfg.BlockRetention,
 	},
 	&cli.Uint64Flag{
 		Name:        "state.qmdb-undo-window",
-		Usage:       "Recent blocks whose QMDB undo records are kept (recent-heights eth_getProof and sibling-switch reach); minimum and default 256",
+		Usage:       "Recent blocks whose QMDB undo records are kept (recent-heights eth_getProof and sibling-switch reach); default and minimum 256, maximum 8192",
 		Category:    "NODE",
 		Destination: &DefaultConfig.NodeCfg.QMDBUndoWindow,
 	},

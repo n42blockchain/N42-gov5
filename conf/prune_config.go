@@ -66,3 +66,39 @@ const (
 func (c *PruneConfig) IsEnabled() bool {
 	return c.Mode == PruneModeFull
 }
+
+// QMDB unwind reach. The QMDB undo window (recent-height proofs and the
+// HotStuff sibling-switch unwind) and the startup three-state realign both
+// rewind PlainState through changesets (UnwindPlainStateBlock), so full-mode
+// pruning must keep at least that many recent blocks of changesets.
+const (
+	// DefaultQMDBUndoWindow is the default and minimum undo window.
+	DefaultQMDBUndoWindow = 256
+	// MaxQMDBUndoWindow caps the undo window: a recent-height proof replays
+	// up to that many undo records while holding the prover lock.
+	MaxQMDBUndoWindow = 8192
+	// QMDBRealignMaxDepth is the deepest startup realign (blocks).
+	QMDBRealignMaxDepth = 512
+	// PruneRetentionMargin is kept on top of the unwind reach so the pruner,
+	// which runs between blocks, never races an unwind at the boundary.
+	PruneRetentionMargin = 128
+)
+
+// EffectiveQMDBUndoWindow returns the undo window a configured value yields
+// (0 or below the minimum = the minimum).
+func EffectiveQMDBUndoWindow(n uint64) uint64 {
+	if n < DefaultQMDBUndoWindow {
+		return DefaultQMDBUndoWindow
+	}
+	return n
+}
+
+// MinPruneRetention is the smallest full-mode retention that keeps every
+// changeset an unwind (sibling switch, realign) can still need.
+func MinPruneRetention(undoWindow uint64) uint64 {
+	reach := EffectiveQMDBUndoWindow(undoWindow)
+	if reach < QMDBRealignMaxDepth {
+		reach = QMDBRealignMaxDepth
+	}
+	return reach + PruneRetentionMargin
+}

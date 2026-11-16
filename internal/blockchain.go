@@ -53,6 +53,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
@@ -3304,7 +3305,7 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 // beyond it means the changesets needed for a faithful PlainState rewind may
 // already be consumed, and a partial heal is worse than staying wedged behind
 // the root/nonce verification walls.
-const qmdbRealignMaxDepth = 512
+const qmdbRealignMaxDepth = conf.QMDBRealignMaxDepth // full-mode pruning keeps changesets at least this deep
 
 // realignAppliedToTree rolls PlainState and the applied marker back to
 // `target` — the height whose header root the live QMDB tree ALREADY holds —
