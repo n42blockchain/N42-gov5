@@ -432,6 +432,14 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address types.Address, sto
 
 	ibs := s.api.State(tx, blockNrOrHash)
 	if ibs == nil {
+		if pp, _ := s.stateProofProvider(); proofProviderIsQMDB(pp) {
+			// A QMDB proof can exist for a height whose account values are
+			// not readable here (pruned state history): say so instead of
+			// answering null.
+			return nil, &internal.StateProofUnavailableError{
+				Reason: "state values for this block are unavailable (unknown block, or state history pruned below the prune horizon)",
+			}
+		}
 		return nil, nil
 	}
 
