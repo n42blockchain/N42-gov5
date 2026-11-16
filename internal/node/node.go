@@ -2161,6 +2161,19 @@ func (n *Node) Start() error {
 		n.historyBackfiller.Start()
 	}
 
+	// A database pruned in an earlier run (in any mode now) cannot answer
+	// state queries below the persisted horizon: publish it before serving.
+	if err := n.db.View(context.Background(), func(tx kv.Tx) error {
+		pb, ok, err := rawdb.ReadStatePrunedBelow(tx)
+		if err == nil && ok {
+			rawdb.SetStatePrunedBelow(pb)
+			log.Info("historical state below the prune horizon is refused", "prunedBelow", pb)
+		}
+		return err
+	}); err != nil {
+		log.Warn("reading the state prune horizon failed", "err", err)
+	}
+
 	// Start pruner if enabled
 	if n.config.PruneCfg.IsEnabled() {
 		hp := &nodeHealthProvider{node: n}

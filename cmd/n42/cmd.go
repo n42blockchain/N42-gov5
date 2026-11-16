@@ -105,6 +105,18 @@ var nodeFlg = []cli.Flag{
 		Category:    "NODE",
 		Destination: &DefaultConfig.NodeCfg.QMDBHistoryReseed,
 	},
+	&cli.StringFlag{
+		Name:        "prune.mode",
+		Usage:       "History pruning: archive (keep everything, default) or full (keep --prune.retention recent blocks of changesets/history; older state queries are refused)",
+		Category:    "NODE",
+		Destination: (*string)(&DefaultConfig.PruneCfg.Mode),
+	},
+	&cli.Uint64Flag{
+		Name:        "prune.retention",
+		Usage:       "Blocks of state history kept in full prune mode (default 90000)",
+		Category:    "NODE",
+		Destination: &DefaultConfig.PruneCfg.BlockRetention,
+	},
 	&cli.Uint64Flag{
 		Name:        "state.qmdb-undo-window",
 		Usage:       "Recent blocks whose QMDB undo records are kept (recent-heights eth_getProof and sibling-switch reach); minimum and default 256",

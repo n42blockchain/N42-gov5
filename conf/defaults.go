@@ -189,6 +189,11 @@ func Validate(cfg *Config) error {
 	if cfg.ChainCfg == nil && cfg.NodeCfg.Chain != "private" {
 		return ErrMissingChainConfig
 	}
+	switch cfg.PruneCfg.Mode {
+	case "", PruneModeArchive, PruneModeFull:
+	default:
+		return fmt.Errorf("invalid prune mode %q (want %q or %q)", cfg.PruneCfg.Mode, PruneModeArchive, PruneModeFull)
+	}
 	if cfg.ChainCfg != nil && !profile.SupportsConsensus(cfg.ChainCfg.Consensus) {
 		return fmt.Errorf("execution profile %q does not support consensus %q", profile.String(), cfg.ChainCfg.Consensus)
 	}
