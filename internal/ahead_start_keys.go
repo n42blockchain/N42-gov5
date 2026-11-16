@@ -151,17 +151,45 @@ func (pr *aheadPrep) settleStartKeys() {
 	if sk == nil {
 		return
 	}
-	if pr.ok && (pr.baseDetached || pr.base == nil) {
+	switch {
+	case !pr.ok:
+		pr.startKeysWhy = "prep not ok"
+	case !pr.baseDetached && pr.base != nil:
+		pr.startKeysWhy = "base usable"
+	default:
 		select {
 		case <-sk.done:
+			pr.startKeysAt, pr.startKeysDepth = sk.at, sk.depth
 			if sk.pf != nil {
 				pr.startKeysUsed = true
+				pr.startKeysWhy = "used"
 				aheadStartKeysUsed.Add(1)
 				return
 			}
+			pr.startKeysWhy = "skip: " + sk.skip
 		default:
+			if sk.phase.Load() == abPhaseFill {
+				pr.startKeysWhy = "not done: filling"
+			} else {
+				pr.startKeysWhy = "not done: waiting for the tree"
+			}
 		}
 	}
 	aheadStartKeysUnused.Add(1)
 	sk.once.Do(func() { close(sk.stop) })
+}
+
+// startKeysLogFields returns the start-keys stamps for the "parallel block"
+// line: why the claim took the prefill or not (a taken one the claim's
+// layering dropped afterwards reads "dropped: " and its reason), and the
+// tree height and depth it read at (0 when it never read).
+func (pr *aheadPrep) startKeysLogFields() []any {
+	if pr == nil || pr.startKeys == nil {
+		return []any{"startKeysWhy", "", "startKeysAt", uint64(0), "startKeysDepth", uint64(0)}
+	}
+	why := pr.startKeysWhy
+	if pr.startKeysUsed && pr.startKeys.pf == nil {
+		why = "dropped: " + pr.startKeys.skip
+	}
+	return []any{"startKeysWhy", why, "startKeysAt", pr.startKeysAt, "startKeysDepth", pr.startKeysDepth}
 }

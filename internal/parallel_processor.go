@@ -1532,6 +1532,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain}
 		blockLog = append(blockLog, "sysTreeWaitUs", sysTreeWaitNs/1e3, "sysTreeWaits", sysTreeWaits,
 			"sysTreeHolder", sysHolder, "sysTreeHolderAgeUs", sysHolderAgeNs/1e3, "startKeysPF", startKeysPF)
+		blockLog = append(blockLog, prep.startKeysLogFields()...)
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 

@@ -114,6 +114,11 @@ type aheadPrep struct {
 	// claim took it (settleStartKeys), so prefill() returns it.
 	startKeys     *aheadBase
 	startKeysUsed bool
+	// startKeysWhy: why the claim took the start-keys prefill or not, and
+	// where it read (settleStartKeys; the "parallel block" line, r95a).
+	startKeysWhy   string
+	startKeysAt    uint64
+	startKeysDepth uint64
 
 	// Timings for the "parallel block" line: registered (the block was
 	// queued), its senders settled (the computation started) and the
