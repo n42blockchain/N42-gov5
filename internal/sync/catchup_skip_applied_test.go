@@ -135,3 +135,14 @@ func TestBlockArrivingTracksPushInflight(t *testing.T) {
 		t.Fatal("still arriving after the push")
 	}
 }
+
+// A chain without the applied-lineage probe skips nothing (a stored body
+// is not applied evidence).
+func TestTrimCatchUpAppliedNeedsTheProbe(t *testing.T) {
+	r := skipRange()
+	svc := newBadBlockTestService(t, &catchUpTestChain{})
+	rest, applied, held := svc.trimCatchUpApplied(r)
+	if len(rest) != len(r) || len(applied) != 0 || held != 0 {
+		t.Fatalf("rest %d applied %d held %d, want the whole range kept", len(rest), len(applied), held)
+	}
+}

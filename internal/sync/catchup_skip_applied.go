@@ -22,7 +22,7 @@ import (
 // ranges per leg).
 //
 // With the switch on, the range's leading blocks that are applied (the
-// applied-lineage probe, exactly what alignAndImport skips on) or held by
+// chain's applied-lineage probe, HasAppliedBlock) or held by
 // the lag pipeline (its write in flight, or queued for its executor) are
 // not inserted. An applied one is reported to the engine as an import
 // would; a held one is left to the lag executor, which imports and reports
@@ -67,6 +67,16 @@ func (s *Service) BlockArriving(hash types.Hash) bool {
 	return ok
 }
 
+// hasAppliedLineage reports whether the chain has applied blk (its
+// applied-lineage probe). Unlike blockApplied there is no fallback to body
+// presence: a chain without the probe skips nothing.
+func (s *Service) hasAppliedLineage(blk block.IBlock) bool {
+	a, ok := s.cfg.chain.(interface {
+		HasAppliedBlock(types.Hash, uint64) bool
+	})
+	return ok && a.HasAppliedBlock(blk.Hash(), blk.Number64().Uint64())
+}
+
 // lagPipelineHolds reports whether the chain's lag pipeline will import
 // blk itself: it is the write in flight, or queued for the lag executor.
 func (s *Service) lagPipelineHolds(blk block.IBlock) bool {
@@ -84,7 +94,7 @@ func (s *Service) lagPipelineHolds(blk block.IBlock) bool {
 func (s *Service) trimCatchUpApplied(blocks []block.IBlock) (rest, applied []block.IBlock, held int) {
 	for i, b := range blocks {
 		switch {
-		case s.blockApplied(b.Hash(), b.Number64().Uint64()):
+		case s.hasAppliedLineage(b):
 			applied = append(applied, b)
 		case s.lagPipelineHolds(b):
 			held++
