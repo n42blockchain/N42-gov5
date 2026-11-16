@@ -158,6 +158,13 @@ func (s *MDBXQMDBHistoryStore) FloorTopBand(block uint64) ([]byte, bool, error) 
 	return out, true, nil
 }
 
+// HasBlockPos reports whether `block` itself has a cursor record, i.e. was
+// journaled (blocks that changed nothing have none).
+func (s *MDBXQMDBHistoryStore) HasBlockPos(block uint64) (bool, error) {
+	v, err := s.tx.GetOne(modules.QMDBBlockPos, be8h(block))
+	return len(v) != 0, err
+}
+
 // DeleteBlockPos removes one block's cursor record (history revert).
 func (s *MDBXQMDBHistoryStore) DeleteBlockPos(block uint64) error {
 	rw, err := s.rw()

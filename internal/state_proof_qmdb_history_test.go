@@ -240,7 +240,15 @@ func TestUnjournalQMDBBlock(t *testing.T) {
 		if err := unjournalQMDBBlock(tx, false, n-3, nil); err != nil {
 			return err
 		}
-		// No undo record: cannot follow, mark broken.
+		// No undo record and no journal record above the journal: nothing to
+		// unwind, the journal stays intact.
+		if err := unjournalQMDBBlock(tx, true, n+5, nil); err != nil {
+			return err
+		}
+		if _, broken, err := commitment.ReadQMDBHistoryBroken(tx); err != nil || broken {
+			t.Fatalf("unwinding a never-journaled block marked the journal broken (%v)", err)
+		}
+		// No undo record for a journaled block: cannot follow, mark broken.
 		if err := unjournalQMDBBlock(tx, true, n-3, nil); err != nil {
 			return err
 		}

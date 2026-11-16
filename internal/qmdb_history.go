@@ -95,6 +95,17 @@ func unjournalQMDBBlock(tx kv.RwTx, active bool, block uint64, undo *qmdb.BlockU
 	if err != nil || !ok {
 		return err
 	}
+	if block >= start && undo == nil {
+		// Without the undo record the journal can only be unwound if the
+		// block left no journal record (never journaled, or changed nothing).
+		journaled, err := commitment.NewMDBXQMDBHistoryStore(tx).HasBlockPos(block)
+		if err != nil {
+			return err
+		}
+		if !journaled {
+			return nil
+		}
+	}
 	if block < start || undo == nil {
 		// Below a mid-chain seed (its stamps are not per-block) or no undo
 		// record: the journal cannot be unwound exactly.
