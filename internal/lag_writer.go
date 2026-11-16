@@ -667,6 +667,38 @@ func (bc *BlockChain) lagAppliedIs(hash types.Hash, number uint64) bool {
 //
 // early is the block's state write preparation when it was started inside
 // the root (lagWriteEarlyPrep), else nil.
+//
+// The capture's invariant (r95a, why it runs after the join): block N's
+// rows are FlushTo of the tree from the ADOPTED cursor, i.e. after write
+// N-1 committed (CommitFlushed) and after N-1's flushed window was evicted
+// (StartFlushTo's evictFirst). Both facts shape the rows, not only their
+// timing:
+//   - The cursor: FlushTo writes entries [flushedThrough, nextSlot). Before
+//     N-1 commits, flushedThrough is N-2's end and N-1's end exists only as
+//     the single staged cursor (QMDBRootComputer.stagedFlushed, and
+//     qmdb.Tree.stagedFlushThrough). A second FlushTo would re-capture
+//     N-1's entries and overwrite the one staged slot; CommitFlushed(N-1)
+//     would then adopt N's end.
+//   - The dead-row reclaims: FlushTo moves deadFlushed into the one staged
+//     list (stagedDead); CommitFlush forgets it whole, AbortFlush re-queues
+//     it whole. N-1's and N's deletes would share it, so a commit of N-1
+//     drops N's re-queue on an abort of N.
+//   - The twig rows: FlushTo writes meta and leaf blob of every RESIDENT
+//     twig (only evicted, clean ones are skipped). N-1's window may only be
+//     evicted once N-1 is durable (a cold read must find its rows), so a
+//     capture before the join sees the twigs that eviction would drop as
+//     resident and writes their blobs (64 KiB each) again: the same final
+//     values, but more rows and dirty pages in N's transaction. Matching
+//     today's rows needs FlushTo to apply EvictTwigsThrough's predicate
+//     (id < through/TwigSize, resident, not pruned, not dirty, after
+//     foldTouched) with the cursor evictLaggedLocked would use
+//     (retainedEntries, the N42_QMDB_EVICT_LAG_BLOCKS ring).
+//   - A failed write N-1 reloads the tree from the store (recoverLagWrite)
+//     and re-queues N-1; N's capture would then be of a tree that no longer
+//     exists and must be dropped with it.
+// A capture at rootDone(N) (N42_LAG_QCAP_EARLY, run 81's change C) therefore
+// needs two staged windows in both the computer and the tree, per-window
+// dead-row lists, and an eviction-aware FlushTo; it was not shipped (r95a).
 func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receipt, ibs *state.IntraBlockState,
 	nopay map[types.Address]*uint256.Int, ahead *aheadExec, early *stateWritePrep) error {
 	handAt := time.Now()
