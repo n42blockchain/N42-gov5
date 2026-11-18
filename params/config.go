@@ -362,6 +362,18 @@ type ChainConfig struct {
 	// Nil = never.
 	UnchangedAccountNoOpTime *big.Int `json:"unchangedAccountNoOpTime,omitempty"`
 
+	// StorageNetChangeTime activates the net-change rule for storage in the
+	// state root: from a block whose timestamp is at or past it, a slot whose
+	// value at the end of the block equals its value at the start writes no
+	// leaf, and does not count as a storage write for
+	// UnchangedAccountNoOpTime. Before it, every slot the block stored to was
+	// written with its final value, so a slot set and restored (a reentrancy
+	// guard, approve-then-reset) rewrote its contract's leaf, and its own when
+	// non-zero, while go-ethereum (a slot set back to its original value is
+	// not dirty) and n42-rs (a bundle holds only slots whose value differs
+	// from the original) write nothing. N42 extension. Nil = never.
+	StorageNetChangeTime *big.Int `json:"storageNetChangeTime,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.

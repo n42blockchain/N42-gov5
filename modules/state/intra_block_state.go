@@ -164,6 +164,10 @@ type IntraBlockState struct {
 	// skipUnchanged: the block is past UnchangedAccountNoOpTime, so the root
 	// leaves out touched but unchanged accounts (SetSkipUnchangedAccounts).
 	skipUnchanged bool
+	// storageNetChange: the block is past StorageNetChangeTime, so the root
+	// leaves out slots that end the block at their starting value
+	// (SetStorageNetChange).
+	storageNetChange bool
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
@@ -355,8 +359,25 @@ func (sdb *IntraBlockState) SetSkipUnchangedAccounts(on bool) {
 // is unset (or there is no config). It is the one decision every path that
 // computes a block's state root takes -- block import, block production,
 // HotStuff's Finalize and replay -- so they cannot disagree on the rule.
+//
+// It sets the storage net-change rule (ChainConfig.StorageNetChangeTime) the
+// same way, for the same reason.
 func (sdb *IntraBlockState) ApplyUnchangedAccountRule(config *params.ChainConfig, blockTime uint64) {
 	sdb.SetSkipUnchangedAccounts(config != nil && config.IsUnchangedAccountNoOp(blockTime))
+	sdb.SetStorageNetChange(config != nil && config.IsStorageNetChange(blockTime))
+}
+
+// SetStorageNetChange sets whether the state root leaves out a slot the block
+// stored to but left at its starting value (ChainConfig.IsStorageNetChange at
+// the block's time); see rootStorageKeys.
+func (sdb *IntraBlockState) SetStorageNetChange(on bool) {
+	sdb.storageNetChange = on
+}
+
+// StorageNetChange reports whether the state root leaves out slots that end
+// the block at their starting value (SetStorageNetChange).
+func (sdb *IntraBlockState) StorageNetChange() bool {
+	return sdb.storageNetChange
 }
 
 // SkipUnchangedAccounts reports whether the state root leaves out touched but
@@ -1763,14 +1784,15 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		// after recreation: seed every captured pre-block slot to zero, then overlay
 		// the new dirtyStorage values.
 		wiped := s.activeWipedSlots(addr)
-		if len(wiped) == 0 && len(obj.dirtyKeys) == 0 {
+		dirtyKeys := s.rootStorageKeys(obj)
+		if len(wiped) == 0 && len(dirtyKeys) == 0 {
 			continue
 		}
-		slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(obj.dirtyKeys))
+		slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(dirtyKeys))
 		for key := range wiped {
 			slots[key] = new(uint256.Int) // zero = delete old slot
 		}
-		for _, key := range obj.dirtyKeys {
+		for _, key := range dirtyKeys {
 			v := obj.dirtyValue(key)
 			slots[key] = new(uint256.Int).Set(&v)
 		}
@@ -1785,7 +1807,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 				ov := origVal
 				origSlots[key] = new(uint256.Int).Set(&ov)
 			}
-			for _, key := range obj.dirtyKeys {
+			for _, key := range dirtyKeys {
 				if origVal, ok := obj.blockOrigin(key); ok {
 					origSlots[key] = new(uint256.Int).Set(&origVal)
 				} else if _, seeded := origSlots[key]; !seeded {
@@ -1827,13 +1849,43 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	return root
 }
 
+// rootStorageKeys returns the slots of a live object the state root writes:
+// every slot the block stored to, or under StorageNetChangeTime only those
+// whose final value differs from the value at the start of the block. A slot
+// whose starting value was never captured is kept: it was first stored to in
+// the transaction that created its contract (GetCommittedState answers zero
+// for it without a read), and where it ends at zero its write is the delete
+// of a leaf that is not there.
+func (s *IntraBlockState) rootStorageKeys(obj *stateObject) []types.Hash {
+	if !s.storageNetChange {
+		return obj.dirtyKeys
+	}
+	var keys []types.Hash
+	for i, key := range obj.dirtyKeys {
+		origin, ok := obj.blockOrigin(key)
+		if ok && obj.dirtyValue(key) == origin {
+			if keys == nil {
+				keys = append(make([]types.Hash, 0, len(obj.dirtyKeys)), obj.dirtyKeys[:i]...)
+			}
+			continue
+		}
+		if keys != nil {
+			keys = append(keys, key)
+		}
+	}
+	if keys == nil {
+		return obj.dirtyKeys
+	}
+	return keys
+}
+
 // unchangedThisBlock reports whether a live object ends the block as it was
 // read at its start: not created or recreated, no code or storage written,
 // no wiped storage, and the same nonce, balance and code hash as its
 // original (a zero code hash read as the empty-code hash, as newObject
 // normalises the live copy).
 func (s *IntraBlockState) unchangedThisBlock(addr types.Address, obj *stateObject) bool {
-	if addr == SystemAddress || obj.created || obj.dirtyCode || len(obj.dirtyKeys) != 0 || len(s.activeWipedSlots(addr)) != 0 {
+	if addr == SystemAddress || obj.created || obj.dirtyCode || len(s.rootStorageKeys(obj)) != 0 || len(s.activeWipedSlots(addr)) != 0 {
 		return false
 	}
 	if !obj.original.Initialised {
