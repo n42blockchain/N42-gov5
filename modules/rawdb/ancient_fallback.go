@@ -197,6 +197,11 @@ func CheckHistoricalState(blockNr uint64) error {
 	if se := AncientSealedEnd(); se > 0 && blockNr < se {
 		return fmt.Errorf("%w: block %d < %d", ErrHistoricalStatePruned, blockNr, se)
 	}
+	// Same lie, different cause: the full-mode pruner deleted the changesets
+	// and history shards below its horizon.
+	if pb := StatePrunedBelow(); pb > 0 && blockNr < pb {
+		return fmt.Errorf("%w: block %d is below the prune horizon %d", ErrHistoricalStatePruned, blockNr, pb)
+	}
 	return nil
 }
 

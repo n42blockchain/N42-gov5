@@ -274,6 +274,14 @@ func (r *portableReader) byte() (byte, error) {
 	return data[0], nil
 }
 
+func (r *portableReader) u16() (uint16, error) {
+	data, err := r.take(2)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint16(data), nil
+}
+
 func (r *portableReader) u32() (uint32, error) {
 	data, err := r.take(4)
 	if err != nil {

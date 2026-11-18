@@ -49,3 +49,29 @@ func TestExecViewReusesCachedFusedCodeAcrossContracts(t *testing.T) {
 		t.Fatalf("expected execView to populate the contract's local analysis from the cache entry")
 	}
 }
+
+// TestExecViewDoesNotCacheTheCallersCode: code with nothing to fuse comes
+// back from fuseCode as the caller's own slice, and the caller's slice is a
+// view of the database's memory map that is only valid for its read
+// transaction. The cached view must be a copy: a later execution of the same
+// code hash otherwise runs whatever those pages hold by then (zeroes execute
+// as STOP, so a call that stores returns at once with no gas used).
+func TestExecViewDoesNotCacheTheCallersCode(t *testing.T) {
+	saved := GlobalCodeAnalysisCache
+	GlobalCodeAnalysisCache = NewCodeAnalysisCache(16)
+	defer func() { GlobalCodeAnalysisCache = saved }()
+
+	// PUSH1 1 PUSH1 0 SSTORE PUSH1 0 PUSH1 0 SSTORE STOP: no static jump.
+	want := []byte{byte(PUSH1), 1, byte(PUSH1), 0, byte(SSTORE), byte(PUSH1), 0, byte(PUSH1), 0, byte(SSTORE), byte(STOP)}
+	mapped := append([]byte(nil), want...) // stands for the transaction's memory
+	codeHash := types.BytesToHash([]byte("exec-view-owns-its-bytes"))
+
+	execView(&Contract{Code: mapped, CodeHash: codeHash})
+	clear(mapped) // the read transaction ended and its pages were reused
+
+	fresh := append([]byte(nil), want...)
+	view := execView(&Contract{Code: fresh, CodeHash: codeHash})
+	if string(view) != string(want) {
+		t.Fatalf("cached view follows the first caller's memory: got %x, want %x", view, want)
+	}
+}

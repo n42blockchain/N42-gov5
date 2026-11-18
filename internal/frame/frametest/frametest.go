@@ -58,7 +58,10 @@ type Builder struct {
 	To      types.Address
 	// ToFn, when set, names each transfer's recipient from its sequence
 	// number (counted from zero across Tx calls) instead of To.
-	ToFn     func(n uint64) types.Address
+	ToFn func(n uint64) types.Address
+	// TipFn, when set, is each transfer's priority fee cap from the same
+	// sequence number (1 otherwise).
+	TipFn    func(n uint64) uint64
 	txSeq    uint64
 	seq      uint64
 	next     int
@@ -89,11 +92,15 @@ func (b *Builder) Tx(tb testing.TB, nonceDelta int64) *transaction.Transaction {
 	if b.ToFn != nil {
 		to = b.ToFn(b.txSeq)
 	}
+	tip := uint64(1)
+	if b.TipFn != nil {
+		tip = b.TipFn(b.txSeq)
+	}
 	b.txSeq++
 	tx, err := transaction.SignNewTx(b.Senders[i], b.signer, &transaction.DynamicFeeTx{
 		ChainID:   b.chainU64,
 		Nonce:     nonce,
-		GasTipCap: uint256.NewInt(1),
+		GasTipCap: uint256.NewInt(tip),
 		GasFeeCap: uint256.NewInt(b.FeeCap),
 		Gas:       b.Gas,
 		To:        &to,

@@ -20,7 +20,7 @@ func TestResolvePragueSystemContractRegistryPrePragueIsEmpty(t *testing.T) {
 	}
 	rules := cfg.RulesWithTimestamp(1, 1)
 
-	registry := resolvePragueSystemContractRegistry(rules)
+	registry := resolvePragueSystemContractRegistry(cfg, rules, 1)
 	require.Zero(t, registry.historyStorage)
 	require.Nil(t, registry.executionRequests)
 }
@@ -28,8 +28,9 @@ func TestResolvePragueSystemContractRegistryPrePragueIsEmpty(t *testing.T) {
 func TestResolvePragueSystemContractRegistryReturnsCanonicalContracts(t *testing.T) {
 	t.Parallel()
 
-	rules := testPragueConfig().RulesWithTimestamp(1, 1)
-	registry := resolvePragueSystemContractRegistry(rules)
+	cfg := testPragueConfig()
+	rules := cfg.RulesWithTimestamp(1, 1)
+	registry := resolvePragueSystemContractRegistry(cfg, rules, 1)
 
 	require.Equal(t, vm.HistoryStorageAddress, registry.historyStorage)
 	require.Equal(t, []executionRequestSystemContract{
@@ -46,7 +47,7 @@ func TestResolvePragueSystemContractRegistryAmsterdamBuilderQueues(t *testing.T)
 	cfg := testPragueConfig()
 	cfg.OsakaTime = big.NewInt(0)
 	cfg.GlamsterdamTime = big.NewInt(0)
-	registry := resolvePragueSystemContractRegistry(cfg.RulesWithTimestamp(1, 1))
+	registry := resolvePragueSystemContractRegistry(cfg, cfg.RulesWithTimestamp(1, 1), 1)
 
 	require.Equal(t, []executionRequestSystemContract{
 		{contract: vm.WithdrawalRequestsAddress, requestType: vm.WithdrawalRequestType},
@@ -68,4 +69,23 @@ func TestPragueSystemContractDeploymentsReturnCanonicalAlloc(t *testing.T) {
 	require.Equal(t, vm.ConsolidationRequestQueueCode, deployments[1].Account.Code)
 	require.Equal(t, vm.HistoryStorageAddress, deployments[2].Address)
 	require.Equal(t, vm.HistoryStorageCode, deployments[2].Account.Code)
+}
+
+// N42 native chains run Amsterdam execution without the EIP-8282 builder
+// request queues (params.ChainConfig.UsesEIP8282BuilderRequests).
+func TestResolvePragueSystemContractRegistryNativeSkipsBuilderQueues(t *testing.T) {
+	t.Parallel()
+
+	cfg := testPragueConfig()
+	cfg.Consensus = params.HotStuffConsensus
+	cfg.OsakaTime = big.NewInt(0)
+	cfg.GlamsterdamTime = big.NewInt(0)
+	require.True(t, cfg.IsGlamsterdam(1))
+	require.False(t, cfg.UsesEIP8282BuilderRequests(1))
+	registry := resolvePragueSystemContractRegistry(cfg, cfg.RulesWithTimestamp(1, 1), 1)
+
+	require.Equal(t, []executionRequestSystemContract{
+		{contract: vm.WithdrawalRequestsAddress, requestType: vm.WithdrawalRequestType},
+		{contract: vm.ConsolidationRequestsAddress, requestType: vm.ConsolidationRequestType},
+	}, registry.executionRequests)
 }

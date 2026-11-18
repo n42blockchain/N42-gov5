@@ -250,6 +250,12 @@ type BlockChain struct {
 	minerRCMu        sync.Mutex                   // serializes the startup pre-warm against the first leader build
 	qmdbEnabled      bool
 
+	// Opt-in QMDB full-history journal (qmdb_history.go): requested by the
+	// flag, active once Start validated/seeded it.
+	qmdbHistoryRequested bool
+	qmdbHistoryReseed    bool
+	qmdbHistoryActive    atomic.Bool
+
 	// S11 diagnostics (N42_BUILD_STALL_DIAG=1 only; see docs/QS_BLOCK_TIME_BUDGET.md
 	// 6by). buildStallLockWaitNs accumulates the time AlignAppliedBranch and
 	// InsertChainAuthorized spend blocked on bc.lock -- the mutex both the

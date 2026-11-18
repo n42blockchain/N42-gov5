@@ -11,6 +11,7 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/holiman/uint256"
 
@@ -63,7 +64,118 @@ type StateProofDescriptor struct {
 	Semantics             StateProofSemantics
 	StorageHash           StorageHashSemantics
 	SupportsHistorical    bool
+	// HistoricalMode details SupportsHistorical: "none", "recent-window"
+	// (only the last RecentWindow heights are provable) or "full" (every
+	// height from the earliest provable one). Empty for providers that do not
+	// report it.
+	HistoricalMode string
+	// RecentWindow is the configured recent-heights proof window (blocks).
+	RecentWindow uint64
 }
+
+// Historical proof modes reported in StateProofDescriptor.HistoricalMode.
+const (
+	StateProofHistoricalNone   = "none"
+	StateProofHistoricalRecent = "recent-window"
+	StateProofHistoricalFull   = "full"
+	// StateProofHistoricalFullBroken: --state.qmdb-history is on but the
+	// journal is broken from some height; see the provable ranges.
+	StateProofHistoricalFullBroken = "full-broken"
+)
+
+// StateProofSegment is one inclusive range of provable heights.
+type StateProofSegment struct {
+	From uint64
+	To   uint64
+}
+
+// StateProofRange is the inclusive height range a provider can prove right now.
+// Segments lists the provable heights exactly when they are not contiguous
+// (a broken history journal leaves a gap below the recent window); Earliest
+// and Latest are the outer bounds.
+type StateProofRange struct {
+	Earliest uint64
+	Latest   uint64
+	Segments []StateProofSegment
+	// HistoryBrokenFrom is set when the history journal is broken: heights
+	// from it up to the recent window are not provable.
+	HistoryBrokenFrom    uint64
+	HasHistoryBrokenFrom bool
+}
+
+// StateProofRangeReporter is implemented by providers whose provable range
+// depends on what the database holds (a recent undo window, a history journal).
+type StateProofRangeReporter interface {
+	ProvableRange(tx kv.Tx) (StateProofRange, error)
+}
+
+// StateProofUnavailableError is returned instead of a proof when the request
+// cannot be served with a verifiable proof (height outside the provable range,
+// unknown block). It is a JSON-RPC error carrying the provable range as data.
+type StateProofUnavailableError struct {
+	Requested    uint64
+	HasRequested bool
+	Earliest     uint64
+	Latest       uint64
+	HasRange     bool
+	Segments     []StateProofSegment // set when the provable heights have gaps
+	Reason       string
+}
+
+func (e *StateProofUnavailableError) Error() string {
+	var b strings.Builder
+	b.WriteString("state proof unavailable")
+	if e.HasRequested {
+		fmt.Fprintf(&b, " for block %d", e.Requested)
+	}
+	if e.Reason != "" {
+		b.WriteString(": ")
+		b.WriteString(e.Reason)
+	}
+	if len(e.Segments) > 1 {
+		b.WriteString(" (provable blocks:")
+		for i, sg := range e.Segments {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, " %d..%d", sg.From, sg.To)
+		}
+		b.WriteString(")")
+	} else if e.HasRange {
+		fmt.Fprintf(&b, " (provable blocks: %d..%d)", e.Earliest, e.Latest)
+	}
+	return b.String()
+}
+
+// ErrorCode implements jsonrpc.Error (generic server error).
+func (*StateProofUnavailableError) ErrorCode() int { return -32000 }
+
+// ErrorData implements jsonrpc.DataError.
+func (e *StateProofUnavailableError) ErrorData() interface{} {
+	d := map[string]interface{}{"reason": e.Reason}
+	if e.HasRequested {
+		d["requestedBlock"] = hexutil.Uint64(e.Requested)
+	}
+	if e.HasRange {
+		d["earliestProvableBlock"] = hexutil.Uint64(e.Earliest)
+		d["latestProvableBlock"] = hexutil.Uint64(e.Latest)
+	}
+	if len(e.Segments) > 1 {
+		d["provableRanges"] = segmentsJSON(e.Segments)
+	}
+	return d
+}
+
+func segmentsJSON(segs []StateProofSegment) [][2]hexutil.Uint64 {
+	out := make([][2]hexutil.Uint64, len(segs))
+	for i, sg := range segs {
+		out[i] = [2]hexutil.Uint64{hexutil.Uint64(sg.From), hexutil.Uint64(sg.To)}
+	}
+	return out
+}
+
+// SegmentsJSON renders provable ranges as [[from, to], ...] (hex quantities).
+func SegmentsJSON(segs []StateProofSegment) [][2]hexutil.Uint64 { return segmentsJSON(segs) }
 
 // StateProofProvider isolates proof serving from RPC wiring so a future
 // canonical Ethereum MPT backend can be plugged in without rewriting APIs.
@@ -88,6 +200,7 @@ func DefaultStateProofDescriptor(headerScheme state.RootScheme) StateProofDescri
 		Semantics:             StateProofSemanticsHashOnly,
 		StorageHash:           StorageHashSemanticsQueryTupleKeccak,
 		SupportsHistorical:    false,
+		HistoricalMode:        StateProofHistoricalNone,
 	}
 }
 

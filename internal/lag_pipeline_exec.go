@@ -881,6 +881,9 @@ func (bc *BlockChain) runAhead(a *aheadExec, par *lagPipeParent) {
 	ibs.SetDetachedPendingCredits(true)
 	ibs.SetPostStateLayers(layers)
 	hdr := a.blk.Header().(*block.Header)
+	// The root rules for this block (UnchangedAccountNoOpTime,
+	// StorageNetChangeTime), as the serial import sets them.
+	ibs.ApplyUnchangedAccountRule(bc.chainConfig, hdr.Time)
 	getHeader := func(hash types.Hash, number uint64) *block.Header {
 		if hash == par.hash {
 			return par.header

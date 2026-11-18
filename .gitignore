@@ -163,6 +163,7 @@ verify*.log
 *.diag.txt
 old_*_diag.txt
 n42_*.json
+!internal/testdata/glamsterdam_native/n42_devnet_mobileanchor.json
 n42_*.txt
 reth_*.json
 

@@ -72,7 +72,9 @@ type Archive struct {
 	checkedAt time.Time
 	hold      *segHold // the current generation's segments, kept loaded
 
-	pool chan *pooledReader
+	pool       chan *pooledReader
+	permitOnce sync.Once
+	permits    chan struct{}
 }
 
 type pooledReader struct {
@@ -134,7 +136,9 @@ func (a *Archive) Dir() string { return a.dir }
 
 // Range is the block range the archive proves: [start, head).
 func (a *Archive) Range() (start, head uint64) {
-	_ = a.refresh(false)
+	if err := a.refresh(false); err != nil {
+		return 0, 0
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.start, a.head
@@ -185,7 +189,6 @@ func (a *Archive) refresh(force bool) error {
 	if !force && (a.opts.RefreshEvery < 0 || time.Since(a.checkedAt) < a.opts.RefreshEvery) {
 		return nil
 	}
-	a.checkedAt = time.Now()
 	stamp := a.stampOf()
 	tx, err := a.db.BeginRo(context.Background())
 	if err != nil {
@@ -198,7 +201,14 @@ func (a *Archive) refresh(force bool) error {
 	}
 	q.Close()
 	var start uint64
-	if v, err := tx.GetOne(tDatcMeta, []byte("start")); err == nil && len(v) == 8 {
+	v, err := tx.GetOne(tDatcMeta, []byte("start"))
+	if err != nil {
+		return fmt.Errorf("datc: read archive start: %w", err)
+	}
+	if len(v) != 0 {
+		if len(v) != 8 {
+			return fmt.Errorf("datc: malformed archive start: %d bytes", len(v))
+		}
 		start = beUint64(v)
 	}
 	if start > 0 {
@@ -224,6 +234,7 @@ func (a *Archive) refresh(force bool) error {
 		a.gen++
 		a.stamp, a.head, a.start = stamp, head, start
 	}
+	a.checkedAt = time.Now()
 	return nil
 }
 
@@ -233,6 +244,25 @@ func beUint64(b []byte) uint64 {
 		v = v<<8 | uint64(x)
 	}
 	return v
+}
+
+func (a *Archive) acquireReader(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.permitOnce.Do(func() {
+		n := a.opts.Readers
+		if n <= 0 {
+			n = 16
+		}
+		a.permits = make(chan struct{}, n)
+	})
+	select {
+	case a.permits <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // reader takes a pooled reader of the current generation (or builds one).
@@ -311,7 +341,9 @@ var emptyCodeHash = keccak(nil)
 // and ErrProofMismatch is returned if one does not verify or disagrees with
 // the value the archive holds — the node serves nothing it has not checked.
 func (a *Archive) Prove(ctx context.Context, address types.Address, slots []types.Hash, n uint64, stateRoot *types.Hash) (*Proof, error) {
-	_ = a.refresh(false)
+	if err := a.refresh(false); err != nil {
+		return nil, err
+	}
 	a.mu.Lock()
 	start, head := a.start, a.head
 	a.mu.Unlock()
@@ -321,6 +353,10 @@ func (a *Archive) Prove(ctx context.Context, address types.Address, slots []type
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := a.acquireReader(ctx); err != nil {
+		return nil, err
+	}
+	defer func() { <-a.permits }()
 	r, err := a.reader()
 	if err != nil {
 		return nil, err
@@ -395,13 +431,22 @@ func (a *Archive) Covers(n uint64) bool {
 
 // withReader runs fn on a pooled reader for a covered height.
 func (a *Archive) withReader(ctx context.Context, n uint64, fn func(q *querier) error) error {
-	if !a.Covers(n) {
-		start, head := a.Range()
+	if err := a.refresh(false); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	start, head := a.start, a.head
+	a.mu.Unlock()
+	if n < start || n >= head {
 		return fmt.Errorf("%w: block %d, archive [%d, %d)", ErrNotCovered, n, start, head)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := a.acquireReader(ctx); err != nil {
+		return err
+	}
+	defer func() { <-a.permits }()
 	r, err := a.reader()
 	if err != nil {
 		return err
