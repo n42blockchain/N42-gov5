@@ -379,8 +379,9 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 	// Sealed horizon gate: below it the changeset rows live in aux era
 	// files while the history index still points at them — GetAsOf would
 	// silently resolve to zero/latest values. Refuse instead of lying.
-	if se := rawdb.AncientSealedEnd(); se > 0 && *blockNr < se {
-		log.Debug("historical state below sealed horizon refused", "block", *blockNr, "sealedEnd", se)
+	// The pruner's horizon (full prune mode) is the same rule.
+	if err := rawdb.CheckHistoricalState(*blockNr); err != nil {
+		log.Debug("historical state refused", "block", *blockNr, "err", err)
 		return nil
 	}
 

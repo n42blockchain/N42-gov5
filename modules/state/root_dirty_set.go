@@ -167,7 +167,7 @@ func (s *IntraBlockState) detachedCredit(addr types.Address, seeded *AccountPref
 		return nil
 	}
 	bi, ok := s.balanceInc[addr]
-	if !ok || bi == nil || bi.transferred {
+	if !ok || bi == nil || bi.transferred || s.creditNeedsObject(bi) {
 		return nil
 	}
 	base, ok := seeded.lookupSeeded(addr)
@@ -187,6 +187,16 @@ func (s *IntraBlockState) detachedCredit(addr types.Address, seeded *AccountPref
 	}
 	a.Balance.Add(&a.Balance, &bi.increase)
 	return a
+}
+
+// creditNeedsObject reports whether a pending credit must be materialised
+// rather than detached because a root rule decides on its object: under
+// UnchangedAccountNoOpTime a zero credit may leave an existing account
+// unchanged, and only the dirty-object walk (unchangedThisBlock) leaves such
+// an account out of the root. A non-zero credit always changes the balance,
+// so its detached account is the one the walk would write.
+func (s *IntraBlockState) creditNeedsObject(bi *BalanceIncrease) bool {
+	return s.skipUnchanged && bi.increase.IsZero()
 }
 
 // accountIsEmpty is stateObject.empty on an account value.

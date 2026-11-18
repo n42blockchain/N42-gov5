@@ -55,6 +55,15 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		return errors.New("qmdb: ApplyUndo while undo recording is active")
 	}
 
+	// A revival needs the slot's key and value: a slot imported from a
+	// tombstone (portable_tombstone.go) has neither. Refused before any
+	// mutation.
+	for i := range u.Entries {
+		if s := u.Entries[i].Slot; s < u.PrevNextSlot && (t.isHashOnly(s) || t.hollowTwig(int(s/TwigSize))) {
+			return &HashOnlySlotError{Slot: s, Op: "an undo revival"}
+		}
+	}
+
 	t.Root() // settle deferred batch folding + dirty twigs onto a clean base
 
 	prev := u.PrevNextSlot

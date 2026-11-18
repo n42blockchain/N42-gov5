@@ -147,6 +147,10 @@ type lagWriteJob struct {
 	flush    qmdbFlushRows
 	undo     *qmdb.BlockUndo
 	root     types.Hash // the live tree's root right after the block
+	// hist: the QMDB history journal's tree inputs at the hand-off (the
+	// tree then holds exactly this block's post-state); zero unless the
+	// journal is active.
+	hist qmdbHistoryInputs
 	// execRoot: the block's computed state root (ibs.LastIntermediateRoot,
 	// what the write stores as the executed result's root), read on the
 	// import goroutine at the hand-off; execRootOK false when there is none.
@@ -727,6 +731,8 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 			j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
 		}
 		j.root = rc.Root()
+		// Before StartFlushTo takes the tree's lock.
+		j.hist = bc.captureQMDBHistoryInputs()
 		j.gen = rc.AppliedState().Gen
 		j.capture = rc.StartFlushTo(&j.flush, joined)
 		lagLeanCaptures.Add(1)
@@ -740,6 +746,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 			j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
 		}
 		j.root = rc.Root()
+		j.hist = bc.captureQMDBHistoryInputs()
 	}
 	j.execRoot, j.execRootOK = ibs.LastIntermediateRoot()
 	p := &bc.lagPipe

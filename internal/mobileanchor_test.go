@@ -40,7 +40,9 @@ func mobileAnchorConfig(active bool) *params.ChainConfig {
 		CancunBlock:           big.NewInt(0),
 	}
 	if active {
+		// The root rides behind the EIP-7843 slot number, so it needs both forks.
 		cfg.MobileAnchorTime = big.NewInt(0)
+		cfg.GlamsterdamTime = big.NewInt(0)
 	}
 	return cfg
 }
@@ -91,7 +93,7 @@ func TestMobileAnchorHeaderIsPureCommitment(t *testing.T) {
 // active. Kept in lockstep with the miner so the determinism validation
 // exercises the real activation logic, not a stand-in.
 func stampLikeMiner(cfg *params.ChainConfig, header *block.Header, root *types.Hash) {
-	if root != nil && cfg.IsMobileAnchor(header.Time) {
+	if root != nil && cfg.IsMobileRegistryRootInHeader(header.Time) {
 		header.MobileRegistryRoot = root
 	}
 }

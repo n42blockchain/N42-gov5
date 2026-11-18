@@ -52,6 +52,14 @@ type lagChain struct {
 	signer transaction.Signer
 }
 
+// lagChainConfigForTest, when set, adjusts every new lagChain's chain config
+// before its genesis is written.
+var lagChainConfigForTest func(cfg *params.ChainConfig)
+
+// lagChainSetupForTest, when set, runs on every new lagChain once its QMDB
+// root computer is installed.
+var lagChainSetupForTest func(lc *lagChain)
+
 func newLagChain(t *testing.T) *lagChain {
 	t.Helper()
 	return newLagChainKeys(t, nil)
@@ -80,6 +88,9 @@ func newLagChainEngine(t *testing.T, keys []*ecdsa.PrivateKey, engine consensus.
 		IstanbulBlock: big.NewInt(0), BerlinBlock: big.NewInt(0), LondonBlock: big.NewInt(0),
 		StateScheme:           string(params.StateCommitmentPresetQMDB),
 		DeferredExecutionTime: big.NewInt(1),
+	}
+	if lagChainConfigForTest != nil {
+		lagChainConfigForTest(cfg)
 	}
 	lc := &lagChain{t: t, db: db, cfg: cfg, signer: transaction.NewLondonSigner(cfg.ChainID)}
 	alloc := conf.GenesisAlloc{}
@@ -118,6 +129,9 @@ func newLagChainEngine(t *testing.T, keys []*ecdsa.PrivateKey, engine consensus.
 	rc.SetCold(nil)
 	rc.EnableUndoRecording()
 	lc.bc.SetQMDBRootComputer(rc)
+	if lagChainSetupForTest != nil {
+		lagChainSetupForTest(lc)
+	}
 	return lc
 }
 

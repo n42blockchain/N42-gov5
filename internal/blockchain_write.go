@@ -776,6 +776,20 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 				if err := rawdb.WriteQMDBUndo(tx, blockNumber.Uint64(), undo); err != nil {
 					return fmt.Errorf("writing QMDB undo for block %d failed: %w", blockNumber.Uint64(), err)
 				}
+				// Opt-in full-history journal, from the same undo record and in
+				// the same tx (no-op unless --state.qmdb-history). A lag write
+				// journals from the tree's cursor and top band captured at its
+				// hand-off: the live tree may hold its child's root by now.
+				if job != nil {
+					if fn := lagWriteBeforeJournalForTest; fn != nil {
+						fn(job)
+					}
+					if err := bc.journalQMDBBlockAt(tx, blockNumber.Uint64(), undo, job.hist); err != nil {
+						return err
+					}
+				} else if err := bc.journalQMDBBlock(tx, blockNumber.Uint64(), undo); err != nil {
+					return err
+				}
 				// Track the applied-chain head (which block's state the world state
 				// reflects) — the branch-switch unwind reverts to this marker's
 				// lineage until it matches an incoming block's parent.
@@ -827,8 +841,7 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 						return fmt.Errorf("marking own block %d unverified: %w", blockNumber.Uint64(), err)
 					}
 				}
-				const qmdbUndoWindow = 256
-				if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {
+				if bn, qmdbUndoWindow := blockNumber.Uint64(), QMDBUndoWindow(); bn > qmdbUndoWindow {
 					if err := rawdb.PruneQMDBUndoBelow(tx, bn-qmdbUndoWindow); err != nil {
 						return fmt.Errorf("pruning QMDB undo window for block %d failed: %w", bn, err)
 					}

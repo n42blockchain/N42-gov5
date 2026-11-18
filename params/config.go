@@ -346,6 +346,34 @@ type ChainConfig struct {
 	// transactions are includable against that post-state. Nil = never.
 	DeferredExecutionTime *big.Int `json:"deferredExecutionTime,omitempty"`
 
+	// UnchangedAccountNoOpTime activates the unchanged-account rule for the
+	// state root: from a block whose timestamp is at or past it, an account
+	// the block touched but left as it was read -- same nonce, balance and
+	// code hash, no storage write, not created, not destroyed -- writes no
+	// leaf. Before it, such an account was written whenever its first access
+	// in the block was an AddBalance (the coinbase credited a zero tip, the
+	// recipient of a zero-value transfer not yet loaded), which re-appends an
+	// unchanged QMDB leaf and moves the positional root, while the parallel
+	// commit (zero CoinbaseDelta skipped) and an account loaded earlier in the
+	// block wrote nothing: one block could commit to two roots by path. With
+	// it the root is the function of the state change the Ethereum root
+	// already is, and the one n42-rs computes (audit R3-E2). N42 extension;
+	// a rebuilt base (replay-v2) carries the time it was rebuilt under.
+	// Nil = never.
+	UnchangedAccountNoOpTime *big.Int `json:"unchangedAccountNoOpTime,omitempty"`
+
+	// StorageNetChangeTime activates the net-change rule for storage in the
+	// state root: from a block whose timestamp is at or past it, a slot whose
+	// value at the end of the block equals its value at the start writes no
+	// leaf, and does not count as a storage write for
+	// UnchangedAccountNoOpTime. Before it, every slot the block stored to was
+	// written with its final value, so a slot set and restored (a reentrancy
+	// guard, approve-then-reset) rewrote its contract's leaf, and its own when
+	// non-zero, while go-ethereum (a slot set back to its original value is
+	// not dirty) and n42-rs (a bundle holds only slots whose value differs
+	// from the original) write nothing. N42 extension. Nil = never.
+	StorageNetChangeTime *big.Int `json:"storageNetChangeTime,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.
@@ -463,6 +491,16 @@ func (c *ChainConfig) UsesDirectBeaconRootWrites() bool {
 // that is not N42 native. N42 native chains keep their own access list
 // behind BALTime.
 func (c *ChainConfig) UsesEIP7928AccessList(time uint64) bool {
+	return c != nil && c.IsGlamsterdam(time) && !c.IsN42Native()
+}
+
+// UsesEIP8282BuilderRequests reports whether a block at time dequeues the
+// Ethereum (Amsterdam) EIP-8282 builder deposit and exit request queues at
+// its end: Glamsterdam on a chain that is not N42 native. N42 native chains
+// have no builder market and deploy no builder request contracts, so, like
+// the EIP-7928 access list, the calls are skipped there; the rest of the
+// Amsterdam execution rules still apply.
+func (c *ChainConfig) UsesEIP8282BuilderRequests(time uint64) bool {
 	return c != nil && c.IsGlamsterdam(time) && !c.IsN42Native()
 }
 

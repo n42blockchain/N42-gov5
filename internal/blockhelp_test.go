@@ -448,3 +448,51 @@ func TestProcessExecutionBlockStartDelegatesPragueBlockStart(t *testing.T) {
 	historyValue.WriteToSlice(storedParentHash[:])
 	require.Equal(t, parentHash, storedParentHash)
 }
+
+// An Amsterdam block on an N42 native chain is valid without the EIP-8282
+// builder request contracts; on any other chain their missing code still
+// invalidates it.
+func TestProcessPragueSystemCallsAmsterdamBuilderContractsOnlyOffNative(t *testing.T) {
+	t.Parallel()
+
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Time:       1,
+		GasLimit:   30_000_000,
+		BaseFee:    uint256.NewInt(7),
+		Difficulty: uint256.NewInt(0),
+	}
+	amsterdam := func(consensus params.ConsensusType) *params.ChainConfig {
+		cfg := testPragueConfig()
+		cfg.Consensus = consensus
+		cfg.OsakaTime = big.NewInt(0)
+		cfg.GlamsterdamTime = big.NewInt(0)
+		return cfg
+	}
+	pragueQueuesOnly := func(t *testing.T) *state.IntraBlockState {
+		db := memdb.NewTestDB(t)
+		txDb := memdb.BeginRw(t, db)
+		ibs := state.New(state.NewPlainState(txDb, 1))
+		for _, addr := range []types.Address{vm.WithdrawalRequestsAddress, vm.ConsolidationRequestsAddress} {
+			ibs.CreateAccount(addr, true)
+			ibs.SetCode(addr, []byte{byte(vm.STOP)})
+		}
+		return ibs
+	}
+
+	t.Run("native", func(t *testing.T) {
+		cfg := amsterdam(params.HotStuffConsensus)
+		require.True(t, cfg.IsN42Native())
+		_, err := ProcessPragueSystemCalls(cfg, pragueQueuesOnly(t), header, nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("ethereum", func(t *testing.T) {
+		cfg := amsterdam(params.Faker)
+		require.False(t, cfg.IsN42Native())
+		requests, err := ProcessPragueSystemCalls(cfg, pragueQueuesOnly(t), header, nil)
+		require.Nil(t, requests)
+		require.ErrorContains(t, err, "System contract address")
+		require.ErrorContains(t, err, vm.BuilderDepositRequestsAddress.Hex())
+	})
+}

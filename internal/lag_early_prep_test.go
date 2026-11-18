@@ -21,6 +21,10 @@ var lagPipeTablesSinkForTest func(piped *lagChain)
 // block to its own account, the same accounts in every block.
 var lagPipeDistinctToForTest bool
 
+// lagPipeTipFnForTest, when set, is the harness's transfer priority fee cap
+// by transfer sequence number (frametest.Builder.TipFn).
+var lagPipeTipFnForTest func(n uint64) uint64
+
 // TestLagWriterEarlyPrepSameRows (r67a, N42_LAG_WRITE_EARLY_PREP): the
 // ordered-writer pipeline harness -- every block executed ahead, every write
 // handed off, one injected write failure that leaves an early preparation

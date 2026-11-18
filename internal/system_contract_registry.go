@@ -22,7 +22,10 @@ type SystemContractDeployment struct {
 	Account conf.GenesisAccount
 }
 
-func resolvePragueSystemContractRegistry(rules *params.Rules) pragueSystemContractRegistry {
+// resolvePragueSystemContractRegistry lists the system contracts a block at
+// time calls. chainConfig decides the chain-specific parts (EIP-8282 is
+// skipped on N42 native chains); it may be nil, which keeps the Ethereum set.
+func resolvePragueSystemContractRegistry(chainConfig *params.ChainConfig, rules *params.Rules, time uint64) pragueSystemContractRegistry {
 	if rules == nil || !rules.IsPrague {
 		return pragueSystemContractRegistry{}
 	}
@@ -33,9 +36,10 @@ func resolvePragueSystemContractRegistry(rules *params.Rules) pragueSystemContra
 			{contract: vm.ConsolidationRequestsAddress, requestType: vm.ConsolidationRequestType},
 		},
 	}
-	if rules.IsGlamsterdam {
+	if rules.IsGlamsterdam && (chainConfig == nil || chainConfig.UsesEIP8282BuilderRequests(time)) {
 		// EIP-8282: the builder deposit and exit queues are dequeued after
-		// the Prague ones, in request-type order.
+		// the Prague ones, in request-type order. N42 native chains skip
+		// them (params.ChainConfig.UsesEIP8282BuilderRequests).
 		registry.executionRequests = append(registry.executionRequests,
 			executionRequestSystemContract{contract: vm.BuilderDepositRequestsAddress, requestType: vm.BuilderDepositRequestType},
 			executionRequestSystemContract{contract: vm.BuilderExitRequestsAddress, requestType: vm.BuilderExitRequestType},

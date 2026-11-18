@@ -83,6 +83,7 @@ func runFFBlock(t *testing.T, seed int64, nAccts, nOps int, detach bool) *ffBloc
 			continue // absent
 		}
 		a := account.NewAccount()
+		a.Initialised = ffInitialised
 		a.Balance.SetUint64(uint64(1e12 + i))
 		a.Nonce = uint64(i % 5)
 		if i%13 == 1 {
@@ -176,6 +177,9 @@ func runFFBlock(t *testing.T, seed int64, nAccts, nOps int, detach bool) *ffBloc
 	}
 	out.fin = ibs.FinalizeDigestForTest()
 	ibs.AddBalance(addr(1), uint256.NewInt(2)) // the reward
+	if ffBeforeRoot != nil {
+		ffBeforeRoot(ibs)
+	}
 	ibs.SetRootPostStateHook(func(p *PostState) { out.post = p })
 	ibs.IntermediateRoot()
 	out.accts, out.stor = rc.accts, rc.stor
@@ -186,6 +190,13 @@ func runFFBlock(t *testing.T, seed int64, nAccts, nOps int, detach bool) *ffBloc
 	out.rows = w.log
 	return out
 }
+
+// ffBeforeRoot (tests only) runs inside runFFBlock right before the root.
+var ffBeforeRoot func(*IntraBlockState)
+
+// ffInitialised (tests only) marks runFFBlock's stored accounts initialised,
+// as a stored account decodes (the unchanged-account rule needs it).
+var ffInitialised bool
 
 func requireSameFFBlock(t *testing.T, tag string, want, got *ffBlock) {
 	t.Helper()

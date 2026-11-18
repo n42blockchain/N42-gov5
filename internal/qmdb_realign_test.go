@@ -170,7 +170,7 @@ func TestRealignAppliedToTree_ThreeStateRollback(t *testing.T) {
 	}
 
 	target := types.Hash{0x10}
-	if err := realignAppliedToTree(tx, 10, target); err != nil {
+	if err := realignAppliedToTree(tx, 10, target, false); err != nil {
 		t.Fatalf("realign: %v", err)
 	}
 	assertRealignedToBlock10(t, tx, existing, fresh, pre, target)
@@ -197,7 +197,7 @@ func TestRealignAppliedToTree_HalfHealedMarker(t *testing.T) {
 	if last, _ := highestChangesetBlock(tx); last != 12 {
 		t.Fatalf("detector: changeset head = %d, want 12", last)
 	}
-	if err := realignAppliedToTree(tx, 10, target); err != nil {
+	if err := realignAppliedToTree(tx, 10, target, false); err != nil {
 		t.Fatalf("realign: %v", err)
 	}
 	assertRealignedToBlock10(t, tx, existing, fresh, pre, target)
@@ -214,7 +214,7 @@ func TestRealignAppliedToTree_NothingAhead(t *testing.T) {
 	defer tx.Rollback()
 
 	target := types.Hash{0x10}
-	if err := realignAppliedToTree(tx, 10, target); err != nil {
+	if err := realignAppliedToTree(tx, 10, target, false); err != nil {
 		t.Fatalf("realign on an empty store: %v", err)
 	}
 	num, hash, ok, err := rawdb.ReadQMDBApplied(tx)
@@ -245,7 +245,7 @@ func TestRealignAppliedToTree_RefusesBeyondWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := realignAppliedToTree(tx, 100, types.Hash{0x01}); err == nil {
+	if err := realignAppliedToTree(tx, 100, types.Hash{0x01}, false); err == nil {
 		t.Fatal("realign across 9900 blocks succeeded, want refusal beyond the changeset window")
 	}
 }
