@@ -479,6 +479,12 @@ func (c *ChainConfig) IsUnchangedAccountNoOp(time uint64) bool {
 	return isForked(c.UnchangedAccountNoOpTime, time)
 }
 
+// IsStorageNetChange returns whether a block at time leaves a slot it stored
+// to but did not change out of the state root (StorageNetChangeTime).
+func (c *ChainConfig) IsStorageNetChange(time uint64) bool {
+	return isForked(c.StorageNetChangeTime, time)
+}
+
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
 func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
 	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)
