@@ -611,7 +611,8 @@ func (bc *BlockChain) lagWriteUsable(blk block.IBlock, ibs *state.IntraBlockStat
 // nothing it checks needs the pending one's rows.
 func (bc *BlockChain) lagWriteFastCandidate(chain []block.IBlock, lag *lagInsert) bool {
 	j := bc.lagWrite.inflight
-	if j == nil || lag == nil || len(chain) != 1 {
+	if j == nil || lag == nil || len(chain) != 1 || j.failed() {
+		// A failed write: the join must restore the durable state first.
 		return false
 	}
 	b := chain[0]
@@ -631,7 +632,7 @@ func (bc *BlockChain) lagWriteFastCandidate(chain []block.IBlock, lag *lagInsert
 // appends of anything else waiting to be peeled.
 func (bc *BlockChain) lagWriteFastReady() bool {
 	j := bc.lagWrite.inflight
-	if j == nil {
+	if j == nil || j.failed() {
 		return false
 	}
 	rc := bc.qmdbRootComputer
@@ -866,12 +867,18 @@ func (bc *BlockChain) joinLagWriteMode(skipEvict bool) (time.Duration, bool, err
 	t0 := time.Now()
 	<-j.done
 	wait := time.Since(t0)
-	bc.lagWrite.inflight = nil
 	rc := bc.qmdbRootComputer
 	if j.err != nil {
-		bc.recoverLagWrite(j)
+		if err := bc.recoverLagWrite(j); err != nil {
+			// The failed job stays the barrier: every later import joins
+			// it and retries the recovery instead of executing on a tree
+			// that may be partly reloaded.
+			return wait, false, err
+		}
+		bc.lagWrite.inflight = nil
 		return wait, false, fmt.Errorf("lag writer: block %d not written: %w", j.number, j.err)
 	}
+	bc.lagWrite.inflight = nil
 	rc.CommitFlushed()
 	if !skipEvict {
 		rc.EvictFlushed()
@@ -882,8 +889,9 @@ func (bc *BlockChain) joinLagWriteMode(skipEvict bool) (time.Duration, bool, err
 // recoverLagWrite restores the memory-equals-store invariant after a failed
 // write: the tree (and anything applied on it since) is reloaded from the
 // store, the pipeline's snapshot and ahead run are dropped and the block is
-// handed to the lag executor again.
-func (bc *BlockChain) recoverLagWrite(j *lagWriteJob) {
+// handed to the lag executor again. A failed reload is returned: memory
+// does not match the store yet, so nothing after it runs.
+func (bc *BlockChain) recoverLagWrite(j *lagWriteJob) error {
 	rc := bc.qmdbRootComputer
 	rc.AbortFlushed()
 	rc.TakeUndo()
@@ -893,13 +901,25 @@ func (bc *BlockChain) recoverLagWrite(j *lagWriteJob) {
 		rc.SetCold(nil)
 		return lerr
 	}); err != nil {
-		log.Error("lag writer: reloading the QMDB tree after a failed write FAILED -- state may diverge", "err", err)
-	} else {
-		log.Warn("lag writer: QMDB tree reloaded from the store after a failed write", "number", j.number)
+		log.Error("lag writer: reloading the QMDB tree after a failed write FAILED -- the write stays the import barrier", "number", j.number, "err", err)
+		return fmt.Errorf("lag writer: recover block %d: %w", j.number, err)
 	}
+	log.Warn("lag writer: QMDB tree reloaded from the store after a failed write", "number", j.number)
 	bc.clearReadThroughCache()
 	bc.lagPipeReset()
 	bc.EnqueueLagImport(j.blk)
+	return nil
+}
+
+// failed reports whether the write finished and failed (it has not
+// finished: false).
+func (j *lagWriteJob) failed() bool {
+	select {
+	case <-j.done:
+		return j.err != nil
+	default:
+		return false
+	}
 }
 
 // waitLagWrite waits for a write in flight to finish (shutdown).
