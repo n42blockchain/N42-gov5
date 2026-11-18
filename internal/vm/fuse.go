@@ -104,6 +104,12 @@ func execView(c *Contract) []byte {
 		c.analysis = analysis
 	}
 	fused := fuseCode(c.Code, analysis)
+	if len(fused) > 0 && &fused[0] == &c.Code[0] {
+		// Nothing fused: fuseCode handed back c.Code, which a state reader
+		// may have returned straight from the database's memory map and is
+		// then valid only for that read transaction. The cache outlives it.
+		fused = append([]byte(nil), fused...)
+	}
 	GlobalCodeAnalysisCache.putFused(c.CodeHash, analysis, fused)
 	return fused
 }
