@@ -172,7 +172,7 @@ func (w *worker) commitWorkLagged(parentHash types.Hash, timestamp int64, trigge
 		return fmt.Errorf("lag build: deferred execution: %w", err)
 	}
 	header.Root, header.ReceiptHash, header.Bloom, header.GasUsed = res.Root, res.ReceiptHash, res.Bloom, res.GasUsed
-	if w.mobileAnchorRoot != nil && w.chainConfig.IsMobileAnchor(header.Time) {
+	if w.mobileAnchorRoot != nil && w.chainConfig.IsMobileRegistryRootInHeader(header.Time) {
 		header.MobileRegistryRoot = w.mobileAnchorRoot()
 	}
 
