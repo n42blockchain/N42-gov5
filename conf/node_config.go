@@ -104,6 +104,20 @@ type NodeConfig struct {
 	// Pruned to keep ~7 days of changesets in <2.5 GB vs ~400 GB raw.
 	CSWarmDir string `json:"cs_warm_dir,omitempty" yaml:"cs_warm_dir,omitempty"`
 
+	// QMDBHistory keeps the QMDB full-history journal so eth_getProof can
+	// serve verifiable proofs at any height from the journal's start (QMDB
+	// chains only; off by default). Dead entry rows are kept on disk and each
+	// block journals its death stamps, key versions, cursor and top band.
+	QMDBHistory bool `json:"qmdb_history,omitempty" yaml:"qmdb_history,omitempty"`
+	// QMDBHistoryReseed discards a journal that cannot continue (the node ran
+	// without QMDBHistory for a while) and starts a new one at the applied
+	// head, instead of refusing to start.
+	QMDBHistoryReseed bool `json:"qmdb_history_reseed,omitempty" yaml:"qmdb_history_reseed,omitempty"`
+	// QMDBUndoWindow is the number of recent blocks whose QMDB undo records
+	// are kept (recent-heights proofs, sibling-switch unwinds). 0 = default
+	// 256; values below 256 are raised to 256.
+	QMDBUndoWindow uint64 `json:"qmdb_undo_window,omitempty" yaml:"qmdb_undo_window,omitempty"`
+
 	// ZKProving enables ZK proof generation and/or verification.
 	ZKProving bool `json:"zk_proving" yaml:"zk_proving"`
 

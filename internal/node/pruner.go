@@ -51,6 +51,12 @@ type Pruner struct {
 	done   chan struct{}
 
 	lastPrunedBlock uint64 // tracks the last block at which pruning was triggered
+
+	// historyResume is where the next pass over each history table continues
+	// (nil = from the start). A pass deletes at most `limit` rows; without a
+	// resume point every cycle rescanned the table from First() through the
+	// rows it had just decided to keep.
+	historyResume map[string][]byte
 }
 
 // NewPruner creates a new Pruner. Does not start pruning until Start is called.
@@ -158,6 +164,15 @@ func (p *Pruner) prune(pruneTo uint64) error {
 	logEvery := time.NewTicker(30 * time.Second)
 	defer logEvery.Stop()
 
+	// Publish the new horizon BEFORE deleting anything: historical state
+	// queries below it are refused from now on instead of silently reading
+	// half-pruned changesets (api.State / rawdb.CheckHistoricalState).
+	if err := p.db.Update(p.ctx, func(tx kv.RwTx) error {
+		return rawdb.RaiseStatePrunedBelow(tx, pruneTo)
+	}); err != nil {
+		return err
+	}
+
 	// Drain the two DupSort changeset tables in bounded, separately-committed
 	// batches. Each batch is its own MDBX write transaction, so dirty pages flush
 	// between commits — a first-time prune of a large backlog no longer deletes
@@ -176,15 +191,20 @@ func (p *Pruner) prune(pruneTo uint64) error {
 	// transaction; HistoryIndexMu keeps this prune from landing between that
 	// read and the fold's write, which would put pruned rows back.
 	state.HistoryIndexMu.Lock()
+	// Resume points advance only once the tx commits: a rolled-back pass must
+	// be retried from where it started, not skipped.
+	resume := map[string][]byte{}
 	err := p.db.Update(p.ctx, func(tx kv.RwTx) error {
 		// Prune account history (regular table, key = address + shard_id)
-		if err := pruneHistoryTable(tx, modules.AccountsHistory, pruneTo, limit, p.ctx); err != nil {
-			return err
-		}
-
-		// Prune storage history (regular table, key = address + key + shard_id)
-		if err := pruneHistoryTable(tx, modules.StorageHistory, pruneTo, limit, p.ctx); err != nil {
-			return err
+		for _, table := range []string{
+			modules.AccountsHistory, // key = address + shard_id
+			modules.StorageHistory,  // key = address + key + shard_id
+		} {
+			next, err := pruneHistoryTableFrom(tx, table, p.historyResume[table], pruneTo, limit, p.ctx)
+			if err != nil {
+				return err
+			}
+			resume[table] = next
 		}
 
 		// Optionally prune receipts and logs
@@ -203,6 +223,12 @@ func (p *Pruner) prune(pruneTo uint64) error {
 
 	if err != nil {
 		return err
+	}
+	if p.historyResume == nil {
+		p.historyResume = map[string][]byte{}
+	}
+	for table, next := range resume {
+		p.historyResume[table] = next
 	}
 
 	elapsed := time.Since(start)
@@ -239,19 +265,34 @@ func (p *Pruner) pruneDupSortBatched(table string, pruneTo uint64, limit int, lo
 // pruneHistoryTable prunes a history table where the last 8 bytes of the key
 // are the shard ID (block number). We delete entries whose shard ID < pruneTo.
 func pruneHistoryTable(tx kv.RwTx, table string, pruneTo uint64, limit int, ctx context.Context) error {
+	_, err := pruneHistoryTableFrom(tx, table, nil, pruneTo, limit, ctx)
+	return err
+}
+
+// pruneHistoryTableFrom is pruneHistoryTable starting at key `from` (nil: the
+// first key). It returns the key to resume from on the next call: the first
+// key not yet examined when the delete limit was hit, nil when the pass
+// reached the end of the table (the next pass starts over).
+func pruneHistoryTableFrom(tx kv.RwTx, table string, from []byte, pruneTo uint64, limit int, ctx context.Context) ([]byte, error) {
 	c, err := tx.RwCursor(table)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer c.Close()
 
+	var k []byte
+	if from == nil {
+		k, _, err = c.First()
+	} else {
+		k, _, err = c.Seek(from)
+	}
 	i := 0
-	for k, _, err := c.First(); k != nil; k, _, err = c.Next() {
+	for ; k != nil; k, _, err = c.Next() {
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if i >= limit {
-			break
+			return append([]byte(nil), k...), nil
 		}
 
 		// History table keys end with 8-byte shard ID (block number)
@@ -265,14 +306,17 @@ func pruneHistoryTable(tx kv.RwTx, table string, pruneTo uint64, limit int, ctx 
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		default:
 		}
 
 		if err := c.DeleteCurrent(); err != nil {
-			return err
+			return nil, err
 		}
 		i++
 	}
-	return nil
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
 }

@@ -34,7 +34,8 @@ import (
 // fails, the joined path returned its error; the skipped path returned
 // success, and the failed write's recovery (recoverLagWrite, run by the lag
 // loop or the next join) re-queues the block for the lag executor, which
-// imports and reports it.
+// imports and reports it. A write already known to have failed is never
+// skipped: the import joins it (and retries its recovery).
 var catchUpSkipAppliedOn = parseOptIn(os.Getenv("N42_CATCHUP_SKIP_APPLIED"))
 
 // SetCatchUpSkipAppliedForTest switches N42_CATCHUP_SKIP_APPLIED (chain half)
@@ -72,6 +73,12 @@ func (bc *BlockChain) LagPipelineHolds(hash types.Hash, number uint64) bool {
 func (bc *BlockChain) chainAppliedOrInFlightLocked(chain []block.IBlock) bool {
 	j := bc.lagWrite.inflight
 	if j == nil || len(chain) == 0 || !bc.qmdbEnabled || bc.ChainDB == nil || !bc.canonicalByCommitOnly() {
+		return false
+	}
+	if j.failed() {
+		// A failed write whose recovery has not succeeded yet stays the
+		// import barrier (joinLagWriteMode): the import joins it, which
+		// retries the recovery, instead of reporting its block imported.
 		return false
 	}
 	for _, b := range chain {

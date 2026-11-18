@@ -443,6 +443,18 @@ func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
 	return isForked(c.MobileAnchorTime, time)
 }
 
+// IsMobileRegistryRootInHeader returns whether a header at time carries
+// Header.MobileRegistryRoot: the MobileAnchor fork AND the EIP-7843 slot
+// number (Glamsterdam). The root is RLP element 24, behind the slot at 23, so
+// it exists only on headers that carry a slot; a MobileAnchor time earlier
+// than Glamsterdam takes effect at Glamsterdam. Headers chain 94 stamped
+// before this rule (root at element 23, no slot) are not readable under it;
+// that history is rebuilt with replay-v2 (docs in n42-rs
+// docs/HEADER_FIELD_PARITY.md).
+func (c *ChainConfig) IsMobileRegistryRootInHeader(time uint64) bool {
+	return c.IsMobileAnchor(time) && c.IsGlamsterdam(time)
+}
+
 // IsNativeAsset returns whether time is at or past the native asset module
 // activation. N42 extension; nil on every Ethereum chainspec.
 func (c *ChainConfig) IsNativeAsset(time uint64) bool {
@@ -459,6 +471,18 @@ func (c *ChainConfig) IsTxRootBlake3(time uint64) bool {
 // execution fields (DeferredExecutionTime).
 func (c *ChainConfig) IsDeferredExecution(time uint64) bool {
 	return isForked(c.DeferredExecutionTime, time)
+}
+
+// IsUnchangedAccountNoOp returns whether a block at time leaves an account it
+// touched but did not change out of the state root (UnchangedAccountNoOpTime).
+func (c *ChainConfig) IsUnchangedAccountNoOp(time uint64) bool {
+	return isForked(c.UnchangedAccountNoOpTime, time)
+}
+
+// IsStorageNetChange returns whether a block at time leaves a slot it stored
+// to but did not change out of the state root (StorageNetChangeTime).
+func (c *ChainConfig) IsStorageNetChange(time uint64) bool {
+	return isForked(c.StorageNetChangeTime, time)
 }
 
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.

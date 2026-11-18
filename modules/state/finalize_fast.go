@@ -85,6 +85,7 @@ const finalizeFastChunk = 1024
 // dirtyEntry is one dirty object's contribution to the root's maps.
 type dirtyEntry struct {
 	acct  *account.StateAccount // nil: deleted
+	skip  bool                  // left out of the root (UnchangedAccountNoOpTime)
 	slots map[types.Hash]*uint256.Int
 	wiped bool   // post-state: reads as absent / its old storage as zero
 	code  []byte // post-state: deployed code (non-nil: record it)
@@ -157,6 +158,9 @@ func (s *IntraBlockState) collectDirtyParallel(addrs []types.Address, accounts m
 	}
 	for i, addr := range addrs {
 		e := &out[i]
+		if e.skip {
+			continue
+		}
 		accounts[addr] = e.acct
 		if e.slots != nil {
 			storage[addr] = e.slots
@@ -209,6 +213,11 @@ func (s *IntraBlockState) dirtyEntryOf(addr types.Address, obj *stateObject, acc
 		}
 		return
 	}
+	// UnchangedAccountNoOpTime, as the single loop applies it.
+	if s.skipUnchanged && s.unchangedThisBlock(addr, obj) {
+		e.skip = true
+		return
+	}
 	acct.Copy(&obj.data)
 	e.acct = acct
 	if obj.empty() {
@@ -222,14 +231,15 @@ func (s *IntraBlockState) dirtyEntryOf(addr types.Address, obj *stateObject, acc
 		}
 	}
 	wiped := s.activeWipedSlots(addr)
-	if len(wiped) == 0 && len(obj.dirtyKeys) == 0 {
+	dirtyKeys := s.rootStorageKeys(obj) // StorageNetChangeTime, as the single loop
+	if len(wiped) == 0 && len(dirtyKeys) == 0 {
 		return
 	}
-	slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(obj.dirtyKeys))
+	slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(dirtyKeys))
 	for key := range wiped {
 		slots[key] = new(uint256.Int)
 	}
-	for _, key := range obj.dirtyKeys {
+	for _, key := range dirtyKeys {
 		v := obj.dirtyValue(key)
 		slots[key] = new(uint256.Int).Set(&v)
 	}
@@ -319,7 +329,7 @@ func (s *IntraBlockState) detachedCreditInto(addr types.Address, seeded *Account
 		return nil
 	}
 	bi, ok := s.balanceInc[addr]
-	if !ok || bi == nil || bi.transferred {
+	if !ok || bi == nil || bi.transferred || s.creditNeedsObject(bi) {
 		return nil
 	}
 	base, ok := seeded.lookupSeeded(addr)

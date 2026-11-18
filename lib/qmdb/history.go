@@ -143,16 +143,7 @@ func (t *Tree) EndBlock() error {
 	// upCap prefix pins the heap LAYOUT the nodes were recorded under — a
 	// reader may only use the band when its historical upCap matches (node j
 	// covers different twig ranges across doublings).
-	t.ensureUpper()
-	n := topBandNodes
-	if 2*t.upCap < n {
-		n = 2 * t.upCap
-	}
-	packed := make([]byte, 8, 8+(n-1)*32)
-	binary.LittleEndian.PutUint64(packed, uint64(t.upCap))
-	for j := 1; j < n; j++ {
-		packed = append(packed, t.upper[j][:]...)
-	}
+	packed := t.TopBandRecord()
 	if err := r.store.PutTopBand(r.block, packed); err != nil {
 		return err
 	}
@@ -280,7 +271,13 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 	if t.hist == nil {
 		return nil, Hash{}, false, errors.New("qmdb history: no recorder/store attached")
 	}
-	store := t.hist.store
+	return t.proofAtHeight(t.hist.store, t.hist.stampsAt, keyHash, h)
+}
+
+// proofAtHeight is ProofAtHeight over an explicit store; stampsAt returns a
+// twig's death-stamp blob as of now (the recorder overlays its pending delta,
+// a read-only prover reads the store directly).
+func (t *Tree) proofAtHeight(store HistoryStore, stampsAt func(twigID uint64) ([]byte, error), keyHash Hash, h uint64) (proof *Proof, root Hash, found bool, err error) {
 	eH, ok, err := store.FloorBlockPos(h)
 	if err != nil {
 		return nil, Hash{}, false, err
@@ -303,7 +300,7 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 			continue
 		}
 		tSlot = versions[i]
-		stamps, err := t.hist.stampsAt(tSlot / TwigSize)
+		stamps, err := stampsAt(tSlot / TwigSize)
 		if err != nil {
 			return nil, Hash{}, false, err
 		}
@@ -354,7 +351,7 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 			if twigID >= uint64(twigCountH) {
 				return nullHash, nil // padding
 			}
-			stamps, err := t.hist.stampsAt(twigID)
+			stamps, err := stampsAt(twigID)
 			if err != nil {
 				return Hash{}, err
 			}
@@ -396,7 +393,7 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 	if err != nil {
 		return nil, Hash{}, false, err
 	}
-	stamps, err := t.hist.stampsAt(targetTwig)
+	stamps, err := stampsAt(targetTwig)
 	if err != nil {
 		return nil, Hash{}, false, err
 	}

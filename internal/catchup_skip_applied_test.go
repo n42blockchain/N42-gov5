@@ -5,6 +5,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -150,5 +151,25 @@ func TestChainAppliedOrInFlightNeedsAWrite(t *testing.T) {
 	bc.lagWrite.inflight = nil
 	if bc.chainAppliedOrInFlightLocked(b[1:2]) {
 		t.Fatal("skip allowed without a write in flight")
+	}
+}
+
+// A write that finished with an error and is still the barrier (its
+// recovery has not succeeded) is joined, not skipped: the join retries the
+// recovery instead of reporting the block imported.
+func TestInsertJoinsAFailedWrite(t *testing.T) {
+	defer SetCatchUpSkipAppliedForTest(true)()
+	bc, b := skipAppliedFixture(t)
+	j := bc.lagWrite.inflight
+	j.err = errors.New("injected write failure")
+	close(j.done)
+	bc.lagWrite.visible.Store(nil)
+	for name, chain := range map[string][]block.IBlock{
+		"durably applied": b[1:2],
+		"failed write":    b[2:3],
+	} {
+		if joined, _, _ := insertJoins(t, bc, chain); !joined {
+			t.Fatalf("%s: skipped the failed write", name)
+		}
 	}
 }

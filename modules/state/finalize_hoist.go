@@ -302,7 +302,7 @@ func (s *IntraBlockState) takeDetachHoist(ltEnabled bool) (pendingCredits, []typ
 				}
 				ch.pending++
 				// detachedCreditInto's checks, on the state at the root.
-				if s.lastObj != nil && s.lastAddr == addr {
+				if s.creditNeedsObject(bi) || (s.lastObj != nil && s.lastAddr == addr) {
 					ch.rest = append(ch.rest, addr)
 					continue
 				}

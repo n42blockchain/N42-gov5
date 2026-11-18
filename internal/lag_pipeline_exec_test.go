@@ -89,6 +89,10 @@ var lagPipeBlocksForTest int
 // harness's blocks are all imported and compared.
 var lagPipeEngineDoneForTest func(lc *lagChain)
 
+// lagPipeSerialDoneForTest, when set, inspects the serial reference chain
+// once the harness is done with both chains.
+var lagPipeSerialDoneForTest func(lc *lagChain)
+
 func testLagPipelineAhead(t *testing.T, await bool, arrival lagArrival) {
 	testLagPipelineAheadEngine(t, await, arrival, false)
 }
@@ -295,6 +299,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 			return a
 		}
 	}
+	if lagPipeTipFnForTest != nil {
+		fb.TipFn = lagPipeTipFnForTest
+	}
 	parent := piped.bc.genesisBlock.Header().(*block.Header)
 	wire := make([]*block.Block, 0, blocks)
 	for n := uint64(1); n <= uint64(blocks); n++ {
@@ -396,6 +403,9 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		require.NoError(t, err, "serial availability check of block %d", w.Number64().Uint64())
 	}
 	waitLag(serial, uint64(blocks))
+	if fn := lagPipeSerialDoneForTest; fn != nil {
+		defer fn(serial)
+	}
 
 	for _, w := range wire {
 		n := w.Number64().Uint64()
