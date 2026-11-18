@@ -148,3 +148,51 @@ func TestApplyStorageNetChangeRule(t *testing.T) {
 		t.Fatal("an unset time activates the rule")
 	}
 }
+
+// TestStorageNetChangeKeepsWipedContractSlots: a contract destroyed and
+// created again in the block reads zero for every slot from then on, so the
+// starting value captured for a slot after the wipe is zero and not what the
+// tree holds. A slot the new contract sets and resets to zero must still be
+// written (as a delete): the wipe capture may not list it (a reader that
+// cannot enumerate storage), and the old leaf would stay in the tree.
+func TestStorageNetChangeKeepsWipedContractSlots(t *testing.T) {
+	recreated := types.HexToAddress("0xb1")
+	s0 := types.Hash{}
+	acc := account.NewAccount()
+	acc.Initialised = true
+	acc.Nonce = 1
+	acc.CodeHash = types.HexToHash("0xc0de")
+	reader := netChangeReader{
+		unchangedReader: unchangedReader{accounts: map[types.Address]account.StateAccount{recreated: acc}},
+		storage:         map[types.Address]map[types.Hash]uint64{recreated: {s0: 7}},
+	}
+	rules := &params.Rules{IsSpuriousDragon: true}
+	for _, on := range []bool{false, true} {
+		ibs := New(reader)
+		rc := &netChangeRootComputer{}
+		ibs.SetRootComputer(rc)
+		ibs.SetSkipUnchangedAccounts(true)
+		ibs.SetStorageNetChange(on)
+
+		ibs.Selfdestruct(recreated)
+		if err := ibs.FinalizeTx(rules, NewNoopWriter()); err != nil {
+			t.Fatal(err)
+		}
+		ibs.CreateAccount(recreated, true)
+		ibs.SetNonce(recreated, 1)
+		if err := ibs.FinalizeTx(rules, NewNoopWriter()); err != nil {
+			t.Fatal(err)
+		}
+		ibs.SetState(recreated, &s0, *uint256.NewInt(1))
+		ibs.SetState(recreated, &s0, *uint256.NewInt(0))
+		if err := ibs.FinalizeTx(rules, NewNoopWriter()); err != nil {
+			t.Fatal(err)
+		}
+		ibs.IntermediateRoot()
+
+		v, ok := rc.storage[recreated][s0]
+		if !ok || v == nil || !v.IsZero() {
+			t.Errorf("rule=%v: wiped contract's slot in the root's storage = %v (present %v), want a zero write", on, v, ok)
+		}
+	}
+}

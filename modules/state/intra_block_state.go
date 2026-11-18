@@ -1860,6 +1860,14 @@ func (s *IntraBlockState) rootStorageKeys(obj *stateObject) []types.Hash {
 	if !s.storageNetChange {
 		return obj.dirtyKeys
 	}
+	if _, wiped := s.storageWipes[obj.address]; wiped {
+		// Destroyed and created again in this block: every slot reads zero
+		// after the wipe, so a starting value captured from then on is zero,
+		// not what the tree holds. A slot set and reset to zero must still be
+		// written as a delete; the wipe capture cannot be relied on to list it
+		// (a reader that cannot enumerate storage captures nothing).
+		return obj.dirtyKeys
+	}
 	var keys []types.Hash
 	for i, key := range obj.dirtyKeys {
 		origin, ok := obj.blockOrigin(key)
