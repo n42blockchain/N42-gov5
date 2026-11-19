@@ -28,12 +28,15 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -66,6 +69,8 @@ func parseTransferLanes(v string) int {
 	switch v {
 	case "1", "true", "TRUE", "on", "ON", "yes":
 		return lanesOn
+	case "2", "check":
+		return lanesCheck
 	}
 	return lanesOff
 }
@@ -77,6 +82,8 @@ func SetTransferLanesForTest(mode string) func() {
 	switch mode {
 	case "on", "1":
 		transferLanesMode = lanesOn
+	case "check":
+		transferLanesMode = lanesCheck
 	default:
 		transferLanesMode = lanesOff
 	}
@@ -612,5 +619,104 @@ func runLanesOrRun(mode int, executor *parallel.Executor, in *laneInputs, txResu
 		}
 		return executor.Run(), out
 	}
-	return executor.Run(), laneOutcome{why: "unknown mode"}
+	scratchMVS := parallel.NewMVS()
+	scratch := make([]parallelTxResult, in.numTxs)
+	out := runTransferLanes(in, scratchMVS, scratch)
+	results := executor.Run()
+	if out.used {
+		diff := compareLaneRun(in.numTxs, scratchMVS, executor.MVS(), scratch, txResults, results)
+		out.check = "same"
+		if diff != "" {
+			out.check = "diff"
+		}
+		noteLaneCheck(in.header.Number.Uint64(), diff)
+	}
+	out.used = false
+	return results, out
+}
+
+// laneFinal is one location's final version as the store's consumers read
+// it (ApplyAll).
+type laneFinal struct {
+	value []byte
+	delta *uint256.Int
+}
+
+// mvsFinals collects mvs's final versions by location.
+func mvsFinals(mvs *parallel.MVS, numTxs int) (map[parallel.LocationKey]laneFinal, error) {
+	out := make(map[parallel.LocationKey]laneFinal)
+	err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte, delta *uint256.Int) error {
+		out[key] = laneFinal{value: value, delta: delta}
+		return nil
+	})
+	return out, err
+}
+
+// compareLaneRun is the check mode's comparison of a lane run (laneMVS,
+// laneRes) with today's run of the same block (oldMVS, oldRes, results):
+// every transaction's outcome and result slot, and every final version of
+// the store. It returns the first difference, "" when there is none.
+func compareLaneRun(numTxs int, laneMVS, oldMVS *parallel.MVS, laneRes, oldRes []parallelTxResult, results []parallel.TxResult) string {
+	for i := 0; i < numTxs; i++ {
+		if i < len(results) && results[i].Err != nil {
+			return fmt.Sprintf("tx %d failed on today's path: %v", i, results[i].Err)
+		}
+		a, b := &laneRes[i], &oldRes[i]
+		switch {
+		case a.err != nil || b.err != nil:
+			return fmt.Sprintf("tx %d error: lanes %v, today %v", i, a.err, b.err)
+		case a.gasUsed != b.gasUsed:
+			return fmt.Sprintf("tx %d gas: lanes %d, today %d", i, a.gasUsed, b.gasUsed)
+		case len(a.logs) != 0 || len(b.logs) != 0:
+			return fmt.Sprintf("tx %d logs: lanes %d, today %d", i, len(a.logs), len(b.logs))
+		case (a.receipt == nil) != (b.receipt == nil):
+			return fmt.Sprintf("tx %d receipt presence: lanes %v, today %v", i, a.receipt != nil, b.receipt != nil)
+		case a.receipt != nil && !reflect.DeepEqual(*a.receipt, *b.receipt):
+			return fmt.Sprintf("tx %d receipt: lanes %+v, today %+v", i, *a.receipt, *b.receipt)
+		case len(a.fees) != len(b.fees):
+			return fmt.Sprintf("tx %d fees: lanes %d, today %d", i, len(a.fees), len(b.fees))
+		}
+		for k := range a.fees {
+			if a.fees[k].recipient != b.fees[k].recipient || a.fees[k].amount != b.fees[k].amount {
+				return fmt.Sprintf("tx %d fee %d: lanes %x %s, today %x %s", i, k, a.fees[k].recipient, a.fees[k].amount.Hex(), b.fees[k].recipient, b.fees[k].amount.Hex())
+			}
+		}
+	}
+	lf, err := mvsFinals(laneMVS, numTxs)
+	if err != nil {
+		return fmt.Sprintf("lane store: %v", err)
+	}
+	of, err := mvsFinals(oldMVS, numTxs)
+	if err != nil {
+		return fmt.Sprintf("today's store: %v", err)
+	}
+	if len(lf) != len(of) {
+		return fmt.Sprintf("store locations: lanes %d, today %d", len(lf), len(of))
+	}
+	for k, o := range of {
+		l, ok := lf[k]
+		switch {
+		case !ok:
+			return fmt.Sprintf("store %x field %d: missing from the lanes", k.Address, k.Field)
+		case !bytes.Equal(l.value, o.value) || (l.value == nil) != (o.value == nil):
+			return fmt.Sprintf("store %x field %d value: lanes %x, today %x", k.Address, k.Field, l.value, o.value)
+		case (l.delta == nil) != (o.delta == nil) || (l.delta != nil && !l.delta.Eq(o.delta)):
+			return fmt.Sprintf("store %x field %d delta: lanes %v, today %v", k.Address, k.Field, l.delta, o.delta)
+		}
+	}
+	return ""
+}
+
+// noteLaneCheck counts and reports a check mode comparison; a difference
+// panics in test binaries.
+func noteLaneCheck(number uint64, diff string) {
+	transferLanesStats.checked.Add(1)
+	if diff == "" {
+		return
+	}
+	transferLanesStats.mismatches.Add(1)
+	log.Error("transfer lanes check: lanes differ from today's path; today's result used", "n", number, "diff", diff)
+	if testing.Testing() {
+		panic("transfer lanes check: " + diff)
+	}
 }
