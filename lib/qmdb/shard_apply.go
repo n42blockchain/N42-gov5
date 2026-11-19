@@ -66,6 +66,18 @@ type ApplyPhases struct {
 	Serial  time.Duration // owner: undo record, deactivations, liveness bits, in-order index writes
 	Commit  time.Duration // parallel: entries, values, leaves, appended keys, sharded index writes
 	Fold    time.Duration // EndLeafBatch + Root
+
+	// Serial's split (r97a stamps, appended): Serial = SerialPrep +
+	// SerialDeact + SerialLive + SerialIndex. SerialDeact runs while the
+	// workers commit (it overlaps Commit); CommitWait is the owner's wait for
+	// the workers after its deactivations (Commit = SerialDeact + CommitWait).
+	SerialPrep  time.Duration // offsets, window growth, value block, BeginLeafBatch
+	SerialDeact time.Duration // undo entries + deactivations in op order (beside the commit)
+	CommitWait  time.Duration // owner waits for the commit workers
+	SerialLive  time.Duration // the new slots' liveness bits and touched sets
+	SerialIndex time.Duration // index counters, in-order index writes, key versions, cursor
+	Deacts      int           // ops with a live old slot (deactivations)
+	ColdDeacts  int           // of them, recorded through the cold path (no resident undo copy)
 }
 
 // LastApplyPhases reports the split of the tree's most recent ApplyOps.
@@ -297,10 +309,14 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 			t.shardCommit(ops, pre, c, sx, vals, base, keyOff, undo)
 		}(&chunks[i])
 	}
+	coldDeacts := 0
 	for i := range ops {
 		p := &pre[i]
 		if !p.hasOld {
 			continue
+		}
+		if !p.undoOK {
+			coldDeacts++
 		}
 		if p.undoOK {
 			t.rec.Entries = append(t.rec.Entries, UndoEntry{Slot: p.old, KeyHash: ops[i].KeyHash, Value: p.undoVal})
@@ -326,6 +342,7 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 		}
 		t.setTwigBit(tw, id, (stop-1)%TwigSize, true) // already set: marks the twig touched
 	}
+	t4l := time.Now()
 	if sx != nil {
 		var hit, miss, puts, dels uint64
 		for i := range chunks {
@@ -373,6 +390,14 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 		Serial:  t2.Sub(t1) + t3.Sub(t2) + t5.Sub(t4),
 		Commit:  t4.Sub(t2),
 		Fold:    time.Since(t5),
+
+		SerialPrep:  t2.Sub(t1),
+		SerialDeact: t3.Sub(t2),
+		CommitWait:  t4.Sub(t3),
+		SerialLive:  t4l.Sub(t4),
+		SerialIndex: t5.Sub(t4l),
+		Deacts:      olds,
+		ColdDeacts:  coldDeacts,
 	}
 }
 

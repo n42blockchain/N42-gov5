@@ -952,7 +952,14 @@ func (r *QMDBRootComputer) ComputeRoot(
 			"shardWorkers", ap.Workers, "shardProbeNs", ap.Probe.Nanoseconds(), "shardSerialNs", ap.Serial.Nanoseconds(),
 			"shardCommitNs", ap.Commit.Nanoseconds(), "shardFoldNs", ap.Fold.Nanoseconds(),
 			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds(),
-			"coldReads", dCold, "residentHits", dHits, "evictLag", r.evictLag.K)
+			"coldReads", dCold, "residentHits", dHits, "evictLag", r.evictLag.K,
+			// shardSerialNs's split (r97a): prep + deact (beside the
+			// commit) + live + index; commitWaitNs is the owner's wait for
+			// the commit workers after its deactivations.
+			"serPrepNs", ap.SerialPrep.Nanoseconds(), "serDeactNs", ap.SerialDeact.Nanoseconds(),
+			"commitWaitNs", ap.CommitWait.Nanoseconds(), "serLiveNs", ap.SerialLive.Nanoseconds(),
+			"serIndexNs", ap.SerialIndex.Nanoseconds(), "deacts", ap.Deacts, "coldDeacts", ap.ColdDeacts,
+			"opsNs", dOps.Nanoseconds(), "lockWaitNs", dLock.Nanoseconds())
 	}
 	return root, nil
 }

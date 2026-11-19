@@ -176,6 +176,18 @@ func saEquivalence(t *testing.T, idx string, hist bool, size, workers, blocks in
 		if size >= 2*shardApplyMinChunk && sh.tr.LastApplyPhases().Workers == 0 {
 			t.Fatalf("block %d: sharded path not taken", b)
 		}
+		if ap := sh.tr.LastApplyPhases(); ap.Workers > 0 {
+			// The serial split sums to Serial, the commit to its two sides.
+			if sum := ap.SerialPrep + ap.SerialDeact + ap.SerialLive + ap.SerialIndex; sum != ap.Serial {
+				t.Fatalf("block %d: serial split %v != serial %v", b, sum, ap.Serial)
+			}
+			if ap.SerialDeact+ap.CommitWait != ap.Commit {
+				t.Fatalf("block %d: deact %v + wait %v != commit %v", b, ap.SerialDeact, ap.CommitWait, ap.Commit)
+			}
+			if ap.ColdDeacts > ap.Deacts {
+				t.Fatalf("block %d: cold deacts %d > deacts %d", b, ap.ColdDeacts, ap.Deacts)
+			}
+		}
 		saCompare(t, fmt.Sprintf("block %d", b), seq, sh, space)
 	}
 	if hist {
