@@ -200,17 +200,21 @@ type laneFuzz struct {
 	delegate types.Address
 	addrs    []types.Address
 	rnd      *rand.Rand
+	// delegatedSender: sender laneFuzzDelegated carries an EIP-7702
+	// delegation in the base.
+	delegatedSender bool
 }
 
 // Sender roles in laneFuzz.senders.
 const (
-	laneFuzzPoor   = 0                     // pays for two transfers
-	laneFuzzDrain  = 1                     // pays for exactly its transfers
-	laneFuzzMega   = 2                     // 2^200
-	laneFuzzPerTx  = 21000 * 1_000_000_000 // gas * fee cap
-	laneFuzzValue  = 1000
-	laneFuzzChains = 12
-	laneFuzzChain  = 25
+	laneFuzzPoor      = 0                     // pays for two transfers
+	laneFuzzDrain     = 1                     // pays for exactly its transfers
+	laneFuzzMega      = 2                     // 2^200
+	laneFuzzDelegated = 3                     // delegated with "delegatedSender"
+	laneFuzzPerTx     = 21000 * 1_000_000_000 // gas * fee cap
+	laneFuzzValue     = 1000
+	laneFuzzChains    = 12
+	laneFuzzChain     = 25
 )
 
 func newLaneFuzz(t *testing.T, seed int64) *laneFuzz {
@@ -282,6 +286,9 @@ func (f *laneFuzz) fund(t *testing.T, db kv.RwDB, specs []laneTxSpec) {
 		}
 		ibs.CreateAccount(f.full, true)
 		ibs.SetBalance(f.full, new(uint256.Int).Sub(new(uint256.Int).SetAllOne(), uint256.NewInt(10)))
+		if f.delegatedSender {
+			ibs.SetCode(f.senders[laneFuzzDelegated], append([]byte{0xef, 0x01, 0x00}, f.recips[1][:]...))
+		}
 		ibs.CreateAccount(f.contract, true)
 		ibs.SetCode(f.contract, leanCounterCode)
 		ibs.CreateAccount(f.delegate, true)
@@ -336,6 +343,7 @@ var laneFuzzPerturbations = []string{
 	"senderRecipient", "self", "zeroValue", "absent", "empty", "coinbase", "maxValue", "nearFull",
 	"nonceGap", "nonceDup", "poor", "gasHigh", "gasLow", "feeCapLow", "tipOverCap", "accessListEmpty",
 	"accessList", "contract", "delegate", "precompile", "call", "legacy", "drain", "blockGasLimit",
+	"delegatedSender",
 }
 
 // block builds a block's specs: every sender's chain in round-robin order,
@@ -415,6 +423,8 @@ func (f *laneFuzz) block(perturb []string) []laneTxSpec {
 			sp.data = []byte{1}
 		case "legacy":
 			sp.txType = transaction.LegacyTxType
+		case "delegatedSender":
+			f.delegatedSender = true
 		}
 	}
 	return specs
@@ -497,7 +507,7 @@ func TestTransferLanesQualification(t *testing.T) {
 		{"nearFull", declined}, {"nonceGap", declined}, {"nonceDup", declined}, {"poor", declined},
 		{"gasHigh", declined}, {"gasLow", declined}, {"feeCapLow", declined}, {"tipOverCap", declined},
 		{"accessListEmpty", declined}, {"accessList", declined}, {"contract", declined}, {"delegate", declined},
-		{"blockGasLimit", declined},
+		{"blockGasLimit", declined}, {"delegatedSender", declined},
 		{"coinbase", untried}, {"precompile", untried}, {"call", untried},
 	} {
 		t.Run(c.perturb, func(t *testing.T) {
