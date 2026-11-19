@@ -983,6 +983,14 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 
 		return err
 	}
+	// laneEnv is a worker context's EVM and reader (transfer lanes).
+	laneEnv := func(ctx any) (*vm2.EVM, *parallel.ParallelStateReader, bool) {
+		wc, ok := ctx.(*workerCtx)
+		if !ok || wc == nil || wc.reader == nil {
+			return nil, nil, false
+		}
+		return wc.evm, wc.reader, true
+	}
 	tExecStart := time.Now()
 	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, runTx)
 	tExecMade := time.Now()
@@ -1123,7 +1131,25 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 	// Transfer counters across the wave (transfer_shape_stamp.go).
 	fast0, direct0, plan0 := fastTransfers.Load(), directTransfers.Load(), planTransfers.Load()
-	results := executor.Run()
+	// N42_EXEC_TRANSFER_LANES (transfer_lanes.go): a strict run with deferred
+	// fees may apply a block of plain transfers as lanes instead of Run;
+	// off, every block takes Run as before.
+	var results []parallel.TxResult
+	laneMode := transferLanesMode
+	laneTried := laneMode != lanesOff && !lenient && deferFees
+	if laneTried {
+		results, _ = runLanesOrRun(laneMode, executor, &laneInputs{
+			numTxs:     numTxs,
+			queues:     executor.FirstWaveQueues(),
+			prepared:   prepared,
+			header:     concreteHeader,
+			setup:      setup,
+			env:        laneEnv,
+			noReceipts: cfg.NoReceipts,
+		}, txResults)
+	} else {
+		results = executor.Run()
+	}
 	if span != nil {
 		span.End()
 		span = nil

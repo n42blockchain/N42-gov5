@@ -598,3 +598,19 @@ func (r *laneRun) publish(w int) {
 		r.mvs.WriteDelta(parallel.LocationKey{Address: rc.addr, Field: parallel.FieldBalance}, rc.last, 0, &rc.sum)
 	}
 }
+
+// runLanesOrRun is the run's executor step with the lanes switch on (mode
+// lanesOn or lanesCheck): the lanes when they take the block, else Run. In
+// check mode the lanes run into a scratch store and result slots, Run runs
+// as without the switch, and the two are compared; Run's results are used.
+func runLanesOrRun(mode int, executor *parallel.Executor, in *laneInputs, txResults []parallelTxResult) ([]parallel.TxResult, laneOutcome) {
+	if mode == lanesOn {
+		out := runTransferLanes(in, executor.MVS(), txResults)
+		if out.used {
+			transferLanesStats.used.Add(1)
+			return executor.Results(), out
+		}
+		return executor.Run(), out
+	}
+	return executor.Run(), laneOutcome{why: "unknown mode"}
+}
