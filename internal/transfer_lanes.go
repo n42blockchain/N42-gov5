@@ -31,6 +31,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,7 @@ import (
 	"github.com/n42blockchain/N42/common/u256"
 	"github.com/n42blockchain/N42/internal/parallel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -195,6 +197,61 @@ func laneShard(a *types.Address, n int) int {
 	return int(h % uint64(n))
 }
 
+// runTransferLanes applies a block of plain transfers as lanes into mvs and
+// res (the run's store and result slots, or a check's scratch ones). On
+// decline nothing has been written to mvs; res may hold lane results for
+// some transactions, which today's path overwrites (every transaction it
+// runs sets every field of its slot).
+func runTransferLanes(in *laneInputs, mvs *parallel.MVS, res []parallelTxResult) (out laneOutcome) {
+	t0 := time.Now()
+	if why := laneBlockDeclines(in); why != "" {
+		out.why = why
+		out.classify = time.Since(t0)
+		transferLanesStats.declined.Add(1)
+		return out
+	}
+	r := &laneRun{in: in, mvs: mvs, res: res, workers: len(in.queues)}
+	r.wk = make([]laneWorker, r.workers)
+	r.recips = make([][]laneRecipient, r.workers)
+	for k := range r.barrier {
+		r.barrier[k].Add(r.workers)
+	}
+	var done sync.WaitGroup
+	for w := 0; w < r.workers; w++ {
+		done.Add(1)
+		go func(w int) {
+			defer done.Done()
+			r.worker(w)
+		}(w)
+	}
+	done.Wait()
+	t4 := time.Now()
+	if !r.tPhase[2].IsZero() {
+		out.classify = r.tPhase[0].Sub(t0)
+		out.merge = r.tPhase[1].Sub(r.tPhase[0])
+		out.run = r.tPhase[2].Sub(r.tPhase[1])
+		out.publish = t4.Sub(r.tPhase[2])
+	} else {
+		out.classify = t4.Sub(t0)
+	}
+	for w := range r.wk {
+		out.lanes += len(r.wk[w].lanes)
+		for i := range r.wk[w].lanes {
+			out.top = max(out.top, r.wk[w].lanes[i].n)
+		}
+		out.recipients += len(r.recips[w])
+	}
+	if r.declined.Load() {
+		if p := r.why.Load(); p != nil {
+			out.why = *p
+		}
+		transferLanesStats.declined.Add(1)
+		return out
+	}
+	out.used = true
+	return out
+}
+
 // laneBlockDeclines is the lanes' block-level qualification: the facts
 // that need no transaction. "" when the block may take the lanes.
 func laneBlockDeclines(in *laneInputs) string {
@@ -220,6 +277,65 @@ func laneBlockDeclines(in *laneInputs) string {
 		return "partition incomplete"
 	}
 	return ""
+}
+
+// worker runs worker w's part of every phase. A phase is skipped once the
+// block is declined; every worker passes every barrier, a panicking one
+// included.
+func (r *laneRun) worker(w int) {
+	passed := 0
+	defer func() {
+		if p := recover(); p != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			r.decline("panic in lane worker %d: %v", w, p)
+			log.Error("transfer lanes: worker panic, block declined", "worker", w, "panic", p, "stack", string(buf[:n]))
+		}
+		for ; passed < len(r.barrier); passed++ {
+			r.barrier[passed].Done()
+		}
+	}()
+	wait := func() {
+		passed++
+		r.barrier[passed-1].Done()
+		r.barrier[passed-1].Wait()
+		if w == 0 {
+			r.tPhase[passed-1] = time.Now()
+		}
+	}
+	ctx, teardown, err := r.in.setup(w)
+	if teardown != nil {
+		defer teardown()
+	}
+	var evm *vm2.EVM
+	var rd *parallel.ParallelStateReader
+	var bp planBlock
+	if err != nil {
+		r.decline("worker %d setup: %v", w, err)
+	} else if e, reader, ok := r.in.env(ctx); !ok || e == nil || reader == nil {
+		r.decline("worker %d has no state reader", w)
+	} else {
+		evm, rd = e, reader
+		bp = newPlanBlock(evm)
+		if !bp.ok || bp.baseFee == nil {
+			r.decline("block admits no plan transfer")
+		}
+	}
+	if !r.declined.Load() {
+		r.classify(w, &bp)
+	}
+	wait()
+	if !r.declined.Load() {
+		r.merge(w, evm, rd, &bp)
+	}
+	wait()
+	if !r.declined.Load() {
+		r.runLanes(w, rd, &bp)
+	}
+	wait()
+	if !r.declined.Load() {
+		r.publish(w)
+	}
 }
 
 // classify is phase 1 on worker w's queue: every transaction must be a plan
@@ -465,5 +581,20 @@ func (r *laneRun) runLanes(w int, rd *parallel.ParallelStateReader, bp *planBloc
 		res := &r.res[i]
 		res.receipt, res.gasUsed, res.err, res.logs = rc, gas, nil, nil
 		res.setFees(fees[:nFees])
+	}
+}
+
+// publish is phase 4 on worker w: its lanes' final accounts (one full write
+// each, at the lane's last transaction) and shard w's pure recipients (one
+// balance delta each, at the last transaction that credited it).
+func (r *laneRun) publish(w int) {
+	wk := &r.wk[w]
+	for li := range wk.lanes {
+		ln := &wk.lanes[li]
+		r.mvs.Write(parallel.LocationKey{Address: ln.addr, Field: parallel.FieldBalance}, ln.last, 0, ln.acc.MarshalV2())
+	}
+	for j := range r.recips[w] {
+		rc := &r.recips[w][j]
+		r.mvs.WriteDelta(parallel.LocationKey{Address: rc.addr, Field: parallel.FieldBalance}, rc.last, 0, &rc.sum)
 	}
 }
