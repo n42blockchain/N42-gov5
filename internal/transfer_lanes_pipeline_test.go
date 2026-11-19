@@ -21,6 +21,8 @@ type lanesPipelineRun struct {
 	used     uint64
 	declined uint64
 	checked  uint64
+	// earlyPub, earlyUsed: early snapshots published and used.
+	earlyPub, earlyUsed uint64
 }
 
 // runLanesPipeline runs the lag pipeline harness (frame blocks executed
@@ -30,7 +32,10 @@ type lanesPipelineRun struct {
 // StorageNetChangeTime from genesis, sends every transfer of a block to its
 // own account (created by the first block) and pays a priority fee only in
 // the first block; without rules every transfer goes to one recipient.
-func runLanesPipeline(t *testing.T, mode string, rules bool) lanesPipelineRun {
+// early publishes each block's final writes as an early snapshot its child
+// starts on (N42_LAG_EARLY_SNAPSHOT, deferred depth 3, recipients the
+// parent did not write).
+func runLanesPipeline(t *testing.T, mode string, rules, early bool) lanesPipelineRun {
 	t.Helper()
 	var out lanesPipelineRun
 	defer SetTransferLanesForTest(mode)()
@@ -53,6 +58,20 @@ func runLanesPipeline(t *testing.T, mode string, rules bool) lanesPipelineRun {
 		}
 		defer func() { lagPipeTipFnForTest = nil }()
 	}
+	arrival := arrivalBeforeSnapshot
+	if early {
+		defer SetLagEarlySnapshotForTest(true)()
+		lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 3, true, 2
+		defer func() { lagPipeDeferDepthForTest, lagPipeRotateToForTest, lagPipeRotateModForTest = 0, false, 0 }()
+		lagPipeAheadClaimedForTest = waitOwnChildForTest
+		defer func() { lagPipeAheadClaimedForTest = nil }()
+		arrival = arrivalAny
+		lagPipeEngineDoneForTest = func(piped *lagChain) {
+			s := &piped.bc.lagPipe.earlyStats
+			out.earlyPub, out.earlyUsed = s.published.Load(), s.used.Load()
+		}
+		defer func() { lagPipeEngineDoneForTest = nil }()
+	}
 	defer SetLagWriteAsyncForTest(true)()
 	defer SetLagWritePrepareForTest(true)()
 	lagWriteBeforeCommitForTest = func(uint64) error {
@@ -65,7 +84,7 @@ func runLanesPipeline(t *testing.T, mode string, rules bool) lanesPipelineRun {
 	lagPipeTablesSinkForTest = func(piped *lagChain) { out.tables = dumpTables(t, piped.db) }
 	defer func() { lagPipeResultSinkForTest, lagPipeTablesSinkForTest = nil, nil }()
 	u0, d0, c0, m0 := TransferLanesStats()
-	testLagPipelineAheadEngine(t, false, arrivalBeforeSnapshot, true)
+	testLagPipelineAheadEngine(t, false, arrival, true)
 	u1, d1, c1, m1 := TransferLanesStats()
 	require.Equal(t, m0, m1, "check mode found a difference")
 	out.used, out.declined, out.checked = u1-u0, d1-d0, c1-c0
@@ -78,20 +97,23 @@ func runLanesPipeline(t *testing.T, mode string, rules bool) lanesPipelineRun {
 // StorageNetChange) on and off, end with the same executed results (each
 // equal to the serial chain's plain import, block by block) and the same
 // rows in every table with the lanes off, on and checking; the lanes take
-// every block whose recipients exist in its base.
+// every block whose recipients exist in its base. The earlySnapshot case
+// starts each child on its parent's final writes, which the lanes published.
 func TestTransferLanesLagPipeline(t *testing.T) {
-	for _, rules := range []bool{false, true} {
-		name := "rulesOff"
-		if rules {
-			name = "rulesOn"
-		}
-		t.Run(name, func(t *testing.T) {
-			off := runLanesPipeline(t, "off", rules)
+	for _, c := range []struct {
+		name         string
+		rules, early bool
+	}{{"rulesOff", false, false}, {"rulesOn", true, false}, {"earlySnapshot", false, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			off := runLanesPipeline(t, "off", c.rules, c.early)
 			require.Zero(t, off.used+off.declined+off.checked, "the lanes ran with the switch off")
-			on := runLanesPipeline(t, "on", rules)
-			t.Logf("on: lanes used %d, declined %d", on.used, on.declined)
+			on := runLanesPipeline(t, "on", c.rules, c.early)
+			t.Logf("on: lanes used %d, declined %d, early snapshots published %d, used %d", on.used, on.declined, on.earlyPub, on.earlyUsed)
 			require.GreaterOrEqual(t, on.used, uint64(8), "the lanes took few blocks")
-			check := runLanesPipeline(t, "check", rules)
+			if c.early {
+				require.GreaterOrEqual(t, on.earlyUsed, uint64(4), "few children started on a lane block's early snapshot")
+			}
+			check := runLanesPipeline(t, "check", c.rules, c.early)
 			t.Logf("check: compared %d, declined %d", check.checked, check.declined)
 			require.Zero(t, check.used, "check mode used the lanes' result")
 			require.Equal(t, on.used, check.checked, "check mode compared other blocks than the lanes took")
