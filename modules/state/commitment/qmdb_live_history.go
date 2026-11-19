@@ -87,6 +87,7 @@ func IsQMDBHistoryJournalError(err error) bool {
 func (r *QMDBRootComputer) EnableLiveHistory() {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.adoptColdLocked(holderNone) // qmdb_cold_lean.go
 	r.liveHistory = true
 	r.t.SetRetainDeadEntryRows(true)
 }
@@ -104,6 +105,7 @@ func (r *QMDBRootComputer) LiveHistoryEnabled() bool {
 func (r *QMDBRootComputer) RecordBlockHistory(tx kv.RwTx, block uint64, undo *qmdb.BlockUndo) error {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.adoptColdLocked(holderNone) // qmdb_cold_lean.go
 	next := r.t.NextSlot()
 	if qmdb.UndoIsEmpty(undo) && undo.PrevNextSlot == next {
 		return nil
@@ -118,6 +120,7 @@ func (r *QMDBRootComputer) RecordBlockHistory(tx kv.RwTx, block uint64, undo *qm
 func (r *QMDBRootComputer) LiveHistoryInputs() (next uint64, band []byte) {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.adoptColdLocked(holderNone) // qmdb_cold_lean.go
 	return r.t.NextSlot(), r.t.TopBandRecord()
 }
 
@@ -156,6 +159,7 @@ func RevertQMDBBlockHistory(tx kv.RwTx, block uint64, undo *qmdb.BlockUndo) erro
 func (r *QMDBRootComputer) PrepareLiveHistory(tx kv.RwTx, appliedNum uint64, reseed bool) (uint64, error) {
 	r.readers.Lock()
 	defer r.readers.Unlock()
+	r.adoptColdLocked(holderNone) // qmdb_cold_lean.go
 	store := NewMDBXQMDBHistoryStore(tx)
 	start, haveStart, err := ReadQMDBHistoryStart(tx)
 	if err != nil {

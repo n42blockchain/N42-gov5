@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-
 // SetCold stamps its wait for the tree's lock, the install and the holder.
 func TestSetColdStamp(t *testing.T) {
 	r := NewQMDBRootComputer()

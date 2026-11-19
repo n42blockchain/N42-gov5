@@ -56,6 +56,9 @@ func (r *QMDBRootComputer) lockWriter(code uint32) func() {
 	r.readers.Lock()
 	r.holderSince.Store(time.Now().UnixNano())
 	r.holder.Store(code)
+	// A SetColdLean parked while the lock was held is installed before
+	// this section's body (qmdb_cold_lean.go).
+	r.adoptColdLocked(code)
 	return func() {
 		r.holder.Store(holderNone)
 		r.readers.Unlock()

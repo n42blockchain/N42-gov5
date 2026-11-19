@@ -98,8 +98,10 @@ type QMDBRootComputer struct {
 	appliedLog [appliedLogLen]QMDBAppliedState
 
 	// lastSetCold is the most recent SetCold's split (stamps,
-	// qmdb_setcold_stamp.go).
+	// qmdb_setcold_stamp.go); coldNext a SetColdLean parked while the lock
+	// was held, installed by the next exclusive section (qmdb_cold_lean.go).
 	lastSetCold atomic.Pointer[SetColdStamp]
+	coldNext    atomic.Pointer[coldBinding]
 }
 
 // evictLagFromEnv parses N42_QMDB_EVICT_LAG_BLOCKS (unset, invalid or <= 0
@@ -729,13 +731,14 @@ func (r *QMDBRootComputer) abortFlushedLocked() {
 // one read. The engine re-points both at the current batch's tx each batch.
 //
 // It waits for the tree's lock (the previous block's capture holds it from
-// the hand-off); the split is stamped (LastSetCold).
+// the hand-off); the split is stamped (LastSetCold). SetColdLean does not
+// wait.
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
 	t0 := time.Now()
 	holder := r.holder.Load()
 	unlock := r.lockWriter(holderSetCold)
 	tw := time.Now()
-	r.setColdLocked(g)
+	r.installColdLocked(g)
 	st := &SetColdStamp{Wait: tw.Sub(t0), Work: time.Since(tw)}
 	if st.Wait > lookupWaitNote {
 		st.Holder = holder
