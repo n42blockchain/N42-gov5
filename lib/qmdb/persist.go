@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/n42blockchain/N42/log"
@@ -364,16 +365,43 @@ func flushWritesTwig(tw *twig) bool {
 
 // selectFlushTwigs returns, ascending, the ids of the twigs FlushTo writes
 // a meta row for. The slice is t.twigSel, reused across flushes.
+//
+// With N42_QMDB_FLUSH_TWIG_SET the ids come from the changed-twig set
+// (twig_set.go) instead of a scan of the whole forest: after compaction
+// the set holds, ascending, exactly the twigs the full scan selects.
 func (t *Tree) selectFlushTwigs(st *FlushStats) []int {
-	sel := t.twigSel[:0]
+	mode := FlushTwigSetMode()
+	st.SetMode = mode
+	use, rebuilt := t.useTwigSet(mode)
+	st.SetRebuilt = rebuilt
+	if !use {
+		t.twigSel = t.scanFlushTwigs(t.twigSel[:0])
+		st.TwigsVisited = len(t.twigs)
+		return t.twigSel
+	}
+	st.TwigsVisited = t.compactTwigSet()
+	if mode == TwigWalkCheck {
+		full := t.scanFlushTwigs(nil)
+		st.TwigsVisited += len(t.twigs)
+		if !slices.Equal(full, t.tset.ids) {
+			twigSetMismatch("FlushTo", full, t.tset.ids)
+			t.rebuildTwigSet()
+			t.twigSel = full
+			return full
+		}
+	}
+	t.twigSel = append(t.twigSel[:0], t.tset.ids...)
+	return t.twigSel
+}
+
+// scanFlushTwigs appends to sel, ascending, every twig id flushWritesTwig
+// selects: the full scan.
+func (t *Tree) scanFlushTwigs(sel []int) []int {
 	for id, tw := range t.twigs {
 		if flushWritesTwig(tw) {
 			sel = append(sel, id)
 		}
 	}
-	st.TwigsVisited = len(t.twigs)
-	st.SetMode = TwigWalkFull
-	t.twigSel = sel
 	return sel
 }
 
