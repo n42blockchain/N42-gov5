@@ -307,13 +307,16 @@ func ImportPortableSnapshot(encoded []byte, chainID uint64, genesisHash Hash) (*
 			}
 			id := int(slot / TwigSize)
 			for len(t.twigs) < id {
-				t.twigs = append(t.twigs, newTwig())
+				nt := newTwig()
+				t.twigs = append(t.twigs, nt)
+				t.noteTwig(nt, len(t.twigs)-1)
 			}
 			tw := newBareTwig()
 			tw.leafRoot = leafRoot
 			tw.root = hashNode(leafRoot, zeroBitsRoot)
 			tw.pruned = true
 			t.twigs = append(t.twigs, tw)
+			t.noteTwig(tw, id)
 			for s := slot; s < slot+TwigSize; s++ {
 				t.entries[s] = entry{hashOnly: true}
 			}

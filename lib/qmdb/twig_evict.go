@@ -100,6 +100,7 @@ func (t *Tree) ensureHydrated(id int) error {
 	}
 	// Proven identical to the retained root: commit the scratch heap.
 	tw.nodes = a
+	t.noteTwig(tw, id) // resident again
 	tw.leafRoot = leafRoot
 	tw.bitsRoot = bitsRoot
 	// live derives from the resident bitmap, not leaf nullness (dead leaves are

@@ -171,6 +171,9 @@ func (t *Tree) loadIncremental(g Getter, prev uint64) error {
 		}
 	}
 
+	// Twigs are re-read in place from here on: the next walk rebuilds the
+	// changed-twig set (twig_set.go) with one full scan.
+	t.invalidateTwigSet()
 	if numTwigs > len(t.twigs) {
 		grown := make([]*twig, numTwigs)
 		copy(grown, t.twigs)

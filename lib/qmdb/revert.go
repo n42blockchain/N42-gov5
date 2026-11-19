@@ -136,6 +136,7 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		tw.setBit(a.slot%TwigSize, false)
 		tw.live--
 		tw.metaDirty = true
+		t.noteTwig(tw, id)
 	}
 
 	// --- 2. Install the precomputed boundary twig + drop tail twigs. -------
@@ -150,7 +151,11 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		tw.leafRoot = boundaryNodes[1]
 		tw.refreshBitsRoot()
 		tw.metaDirty = true
+		t.noteTwig(tw, boundaryID)
 	}
+	// Twigs above the cursor go; their ids stay in the changed-twig set
+	// until its next compaction drops ids beyond the forest. A twig
+	// appended at such an id later is a new object and is noted anew.
 	if len(t.twigs) > twigCountPrev {
 		t.twigs = t.twigs[:twigCountPrev]
 	}
@@ -198,6 +203,7 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		}
 		tw.pruned = false // a fully-dead (pruned) twig has a live slot again
 		tw.metaDirty = true
+		t.noteTwig(tw, id)
 		touched[id] = struct{}{}
 		t.idx.Put(e.KeyHash, e.Slot)
 		if e.Slot >= t.entriesBase {

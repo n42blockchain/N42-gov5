@@ -475,6 +475,7 @@ var ErrIndexReconcile = errors.New("qmdb: trusted-index reload reconciliation fa
 // as decisively as a non-empty store does.
 func (t *Tree) resetForLoad() {
 	t.twigs = nil
+	t.invalidateTwigSet() // twigs replaced wholesale: rebuilt by the next walk
 	t.entries = nil
 	t.entriesBase = 0
 	t.flushedThrough = 0

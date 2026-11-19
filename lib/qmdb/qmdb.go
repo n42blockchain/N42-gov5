@@ -192,6 +192,8 @@ type twig struct {
 	// "evicted ⇒ unchanged since its last flush" stopped holding — FlushTo now
 	// skips an evicted twig only when its meta is clean.
 	metaDirty bool
+	// inSet: the twig is in the tree's changed-twig set (twig_set.go).
+	inSet bool
 }
 
 var bitsDomain = [1]byte{0x03}
@@ -428,8 +430,13 @@ type Tree struct {
 	lastFlush FlushStats
 	lastEvict EvictStats
 
-	// twigSel is FlushTo's scratch list of the twig ids that get a meta row.
-	twigSel []int
+	// twigSel is FlushTo's scratch list of the twig ids that get a meta row;
+	// evictSel is EvictTwigsThrough's list of the twigs it drops.
+	twigSel  []int
+	evictSel []int
+
+	// tset is the changed-twig set (twig_set.go, N42_QMDB_FLUSH_TWIG_SET).
+	tset twigSet
 }
 
 // arenaChunkSize is the value-arena allocation unit.
@@ -526,7 +533,9 @@ func (t *Tree) NextSlot() uint64 { return t.nextSlot }
 func (t *Tree) twigFor(slot uint64) *twig {
 	id := int(slot / TwigSize)
 	for len(t.twigs) <= id {
-		t.twigs = append(t.twigs, newTwig())
+		tw := newTwig()
+		t.twigs = append(t.twigs, tw)
+		t.noteTwig(tw, len(t.twigs)-1) // a new twig is resident
 	}
 	return t.twigs[id]
 }
@@ -569,6 +578,7 @@ func (t *Tree) deactivate(slot uint64) {
 func (t *Tree) setTwigBit(tw *twig, id int, local uint64, on bool) {
 	tw.setBit(local, on)
 	tw.metaDirty = true
+	t.noteTwig(tw, id)
 	if t.batchFolding {
 		if t.bitsTouched == nil {
 			t.bitsTouched = make(map[int]struct{}, 16)

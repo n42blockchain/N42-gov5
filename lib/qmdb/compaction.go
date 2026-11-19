@@ -43,6 +43,7 @@ func (t *Tree) markPruned(id int) {
 	tw.nodes = nil
 	tw.dirty = false
 	tw.pruned = true
+	t.noteTwig(tw, id) // pruned twigs get a meta row on every flush
 	t.markUpperDirty(id)
 	// Free the entry records for this twig's slot range (resident slots only;
 	// evicted slots are already out of RAM). NOTE (split commitment): the
