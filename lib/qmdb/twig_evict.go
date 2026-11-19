@@ -21,7 +21,10 @@
 
 package qmdb
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // LeafStore serves a twig's persisted leaf array (TwigSize*32 raw bytes) so an
 // evicted twig rehydrates in ONE read instead of a 2048-entry cold scan. Optional:
@@ -128,18 +131,29 @@ func (t *Tree) EvictTwigsThrough(through uint64) {
 	if t.cold == nil {
 		return
 	}
+	t0 := time.Now()
 	t.foldTouched() // eviction retains tw.root — settle deferred batch leaves first
+	t1 := time.Now()
 	maxID := int(through / TwigSize) // twigs with id < maxID are fully below `through`
 	if maxID > len(t.twigs) {
 		maxID = len(t.twigs)
 	}
+	evicted := 0
 	for id := 0; id < maxID; id++ {
 		tw := t.twigs[id]
-		if tw == nil || tw.nodes == nil || tw.pruned || tw.dirty {
+		if !evictDropsTwig(tw) {
 			continue
 		}
 		tw.nodes = nil // free 128 KiB; root retained for the upper tree
+		evicted++
 	}
+	t.lastEvict = EvictStats{Fold: t1.Sub(t0), Walk: time.Since(t1), Visited: maxID, Evicted: evicted, SetMode: TwigWalkFull}
+}
+
+// evictDropsTwig is EvictTwigsThrough's per-twig rule (for a twig below the
+// watermark): resident, not pruned, internal nodes current.
+func evictDropsTwig(tw *twig) bool {
+	return tw != nil && tw.nodes != nil && !tw.pruned && !tw.dirty
 }
 
 // NumTwigs reports the total number of twigs in the forest (grows with history).

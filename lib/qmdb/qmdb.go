@@ -422,6 +422,14 @@ type Tree struct {
 	// lastApply is the most recent sharded ApplyOps' time split
 	// (shard_apply.go); zero after a batch on another path.
 	lastApply ApplyPhases
+
+	// lastFlush / lastEvict: the split of the last FlushTo and
+	// EvictTwigsThrough (flush_stats.go).
+	lastFlush FlushStats
+	lastEvict EvictStats
+
+	// twigSel is FlushTo's scratch list of the twig ids that get a meta row.
+	twigSel []int
 }
 
 // arenaChunkSize is the value-arena allocation unit.

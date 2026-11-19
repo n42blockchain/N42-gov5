@@ -218,7 +218,10 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		entryBytes, twigBytes, leafBytes int
 		flushStart                       = time.Now()
 	)
+	st := FlushStats{TwigsForest: len(t.twigs)}
 	defer func() {
+		st.EntryRows, st.TwigRowsN, st.LeafRowsN = entryRows, twigRows, leafRows
+		t.lastFlush = st
 		if entryRows+twigRows+leafRows > 0 {
 			log.Debug("qmdb flush tables",
 				"entryRows", entryRows, "entryKB", entryBytes>>10,
@@ -231,6 +234,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	// CURRENT root (resume's fast path trusts these stored roots). Without this a
 	// dirty twig would flush a stale root.
 	root := t.Root()
+	tPhase := time.Now()
+	st.Root = tPhase.Sub(flushStart)
 	// Append new entries [flushedThrough, nextSlot). These are always in the
 	// resident window (eviction only drops already-flushed slots). Under the
 	// split commitment DEAD slots' frozen leaf hashes stay part of the twig
@@ -260,6 +265,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		entryRows++
 		entryBytes += 8 + len(val)
 	}
+	now := time.Now()
+	st.Entries, tPhase = now.Sub(tPhase), now
 	// Reclaim rows of slots that were flushed earlier but have since died —
 	// ONLY when a leaf store is wired: the persisted leaf blob then carries the
 	// dead slots' frozen hashes, so their rows are never needed again. Without
@@ -272,21 +279,29 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		}
 		// Stage instead of dropping: the deletes live in the caller's tx, which
 		// may still roll back. CommitFlush finalizes, AbortFlush re-queues.
+		st.DeadRows = len(t.deadFlushed)
 		t.stagedDead = append(t.stagedDead, t.deadFlushed...)
 		t.deadFlushed = t.deadFlushed[:0]
 	}
+	now = time.Now()
+	st.Dead, tPhase = now.Sub(tPhase), now
 	// Twig metadata v2: root + leafRoot + activeBits. Skip twigs whose leaves
 	// were EVICTED (nodes==nil, not pruned) ONLY when their meta is clean —
 	// under the split commitment a deactivation flips bits WITHOUT rehydrating,
 	// so an evicted twig's meta can go stale (metaDirty tracks this). Pruned
 	// twigs still flush their meta.
-	for id, tw := range t.twigs {
-		if tw == nil {
-			continue
-		}
-		if tw.nodes == nil && !tw.pruned && !tw.metaDirty {
-			continue // evicted-clean: on-disk meta is current
-		}
+	//
+	// Two phases: choose the twigs (ascending id), then write their rows in
+	// that order. Writing a twig's rows changes only its own metaDirty, never
+	// another twig's eligibility, so this is the single loop it replaces:
+	// the same rows in the same order, and on a Put error the same twigs
+	// before it have had metaDirty cleared.
+	sel := t.selectFlushTwigs(&st)
+	now = time.Now()
+	st.TwigWalk, tPhase = now.Sub(tPhase), now
+	var leafTime time.Duration
+	for _, id := range sel {
+		tw := t.twigs[id]
 		meta := make([]byte, 32+32+TwigSize/8)
 		copy(meta[:32], tw.root[:])
 		copy(meta[32:64], tw.leafRoot[:])
@@ -304,8 +319,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		// them forever (sparse encoding still elides never-appended tail slots).
 		// Skipped for evicted twigs (nodes==nil): their frozen blob is current.
 		if t.leafStore != nil && tw.nodes != nil {
+			tLeaf := time.Now()
 			blob := encodeSparseLeaves(tw.nodes)
-			if err := p.Put(LeavesTable, be8(uint64(id)), blob); err != nil {
+			err := p.Put(LeavesTable, be8(uint64(id)), blob)
+			leafTime += time.Since(tLeaf)
+			if err != nil {
 				return flushedThrough, bytesW, err
 			}
 			bytesW += 8 + len(blob)
@@ -313,6 +331,9 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			leafBytes += 8 + len(blob)
 		}
 	}
+	now = time.Now()
+	st.TwigRows, st.Leaf, tPhase = now.Sub(tPhase)-leafTime, leafTime, now
+	defer func() { st.Meta = time.Since(tPhase) }()
 	if err := p.Put(MetaTable, []byte("root"), root[:]); err != nil {
 		return flushedThrough, bytesW, err
 	}
@@ -333,6 +354,27 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	bytesW += 8
 	t.stagedFlushThrough, t.stagedFlushValid = t.nextSlot, true
 	return t.nextSlot, bytesW, nil
+}
+
+// flushWritesTwig is FlushTo's per-twig rule: a twig gets a meta row when it
+// is resident, pruned or has changed meta since its last row.
+func flushWritesTwig(tw *twig) bool {
+	return tw != nil && (tw.nodes != nil || tw.pruned || tw.metaDirty)
+}
+
+// selectFlushTwigs returns, ascending, the ids of the twigs FlushTo writes
+// a meta row for. The slice is t.twigSel, reused across flushes.
+func (t *Tree) selectFlushTwigs(st *FlushStats) []int {
+	sel := t.twigSel[:0]
+	for id, tw := range t.twigs {
+		if flushWritesTwig(tw) {
+			sel = append(sel, id)
+		}
+	}
+	st.TwigsVisited = len(t.twigs)
+	st.SetMode = TwigWalkFull
+	t.twigSel = sel
+	return sel
 }
 
 // CommitFlush finalizes the last FlushTo after its surrounding transaction
