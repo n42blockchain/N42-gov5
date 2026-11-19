@@ -39,8 +39,10 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
+	cmath "github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/u256"
 	"github.com/n42blockchain/N42/internal/parallel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/params"
@@ -116,7 +118,7 @@ type laneOutcome struct {
 	why string
 	// lanes: distinct senders; top: the longest lane; recipients: distinct
 	// pure recipients.
-	lanes, top, recipients int
+	lanes, top, recipients        int
 	classify, merge, run, publish time.Duration
 	// check: the check mode's verdict ("same", "diff"; "" when not compared).
 	check string
@@ -372,4 +374,96 @@ func (r *laneRun) merge(p int, evm *vm2.EVM, rd *parallel.ParallelStateReader, b
 // burnt base fee.
 func (r *laneRun) isFeeRecipient(a types.Address, bp *planBlock) bool {
 	return a == bp.tipTo || (bp.burn && bp.burnTo != nil && a == *bp.burnTo)
+}
+
+// runLanes is phase 3 on worker w: its queue in index order, each
+// transaction on its lane's private account, with tryDirectTransferPlan's
+// checks, arithmetic, receipt and fee credits.
+func (r *laneRun) runLanes(w int, rd *parallel.ParallelStateReader, bp *planBlock) {
+	q := r.in.queues[w]
+	wk := &r.wk[w]
+	hdr := r.in.header
+	wk.receipts = make([]block.Receipt, len(q))
+	const gas = params.TxGas
+	var gasU, feeCap, tip, value, mgval, balanceCheck, amount, burn, tipRoom uint256.Int
+	gasU.SetUint64(gas)
+	var fees [2]deferredFee
+	for k, i := range q {
+		if k&255 == 0 && r.declined.Load() {
+			return
+		}
+		ln := &wk.lanes[wk.laneOf[k]]
+		pm := &r.in.prepared.txs[i]
+		pl := &pm.plan
+		if !ln.loaded {
+			// The lane's first transaction reads the sender as a
+			// transaction's read does while nothing in the block has
+			// written it: the base account, through the block's cache.
+			base, err := rd.ReadBaseAccount(ln.addr)
+			if err != nil {
+				r.decline("sender %x: %v", ln.addr, err)
+				return
+			}
+			if base == nil {
+				r.decline("tx %d: sender %x absent", i, ln.addr)
+				return
+			}
+			ln.acc = *base
+			normaliseLoaded(&ln.acc)
+			if ln.acc.CodeHash != emptyCodeHash {
+				r.decline("tx %d: sender %x has code", i, ln.addr)
+				return
+			}
+			ln.loaded = true
+		}
+		a := &ln.acc
+		if a.Nonce != pl.nonce || a.Nonce+1 < a.Nonce {
+			r.decline("tx %d: nonce %d, sender's %d", i, pl.nonce, a.Nonce)
+			return
+		}
+		feeCap.SetUint64(pl.feeCap)
+		tip.SetUint64(pl.tip)
+		value.SetUint64(pl.value)
+		mgval.SetUint64(pl.gasPrice)
+		mgval.Mul(&mgval, &gasU)
+		balanceCheck.Mul(&feeCap, &gasU)
+		balanceCheck.Add(&balanceCheck, &value)
+		if a.Balance.Lt(&balanceCheck) {
+			r.decline("tx %d: insufficient funds", i)
+			return
+		}
+		// buyGas, the nonce bump, the transfer (the zero refund changes
+		// nothing).
+		a.Balance.Sub(&a.Balance, &mgval)
+		a.Nonce++
+		a.Balance.Sub(&a.Balance, &value)
+		ln.last = i
+
+		rc := &wk.receipts[k]
+		rc.Type = pl.txType
+		rc.Status = block.ReceiptStatusSuccessful
+		rc.TxHash = pm.hash
+		rc.GasUsed = gas
+		rc.BlockNumber = hdr.Number
+		rc.TransactionIndex = uint(i)
+
+		// creditTransferFees under London, as tryDirectTransferPlan.
+		effectiveTip := u256.Num0
+		if feeCap.Gt(bp.baseFee) {
+			effectiveTip = cmath.Min256(&tip, tipRoom.Sub(&feeCap, bp.baseFee))
+		}
+		amount.SetUint64(gas)
+		amount.Mul(&amount, effectiveTip)
+		fees[0] = deferredFee{recipient: bp.tipTo, amount: amount}
+		nFees := 1
+		if bp.burn {
+			burn.SetUint64(gas)
+			burn.Mul(&burn, bp.baseFee)
+			fees[1] = deferredFee{recipient: *bp.burnTo, amount: burn}
+			nFees = 2
+		}
+		res := &r.res[i]
+		res.receipt, res.gasUsed, res.err, res.logs = rc, gas, nil, nil
+		res.setFees(fees[:nFees])
+	}
 }
