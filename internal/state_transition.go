@@ -573,10 +573,12 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 
 // checkSetCodeTxShape applies geth's EIP-7702 transaction checks: no set-code
 // transaction before Prague, none without a recipient, none with an empty
-// authorization list. N42 native chains are left to their own rules.
+// authorization list. The shape is part of the transaction type, so N42
+// native chains are held to it too, as the Rust client's executor holds them
+// (the pool has refused such transactions since ecfcd65d).
 func (st *StateTransition) checkSetCodeTxShape() error {
 	m, ok := st.msg.(setCodeTxMessage)
-	if !ok || !m.IsSetCodeTx() || st.evm.ChainConfig().IsN42Native() {
+	if !ok || !m.IsSetCodeTx() {
 		return nil
 	}
 	if !st.evm.ChainRules().IsPrague {

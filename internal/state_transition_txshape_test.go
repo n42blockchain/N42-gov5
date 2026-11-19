@@ -55,7 +55,7 @@ func nativeShapeTestConfig() *params.ChainConfig {
 
 // A set-code transaction is held to geth's EIP-7702 shape rules on Ethereum
 // chains: not before Prague, never a contract creation, and never with an
-// empty authorization list. N42 native chains keep their own rules.
+// empty authorization list. N42 native chains are held to the same shape.
 func TestApplyTransactionRejectsMalformedSetCodeTx(t *testing.T) {
 	prePrague := testStateTransitionChainConfig()
 	prePrague.PragueTime = nil
@@ -109,7 +109,9 @@ func TestApplyTransactionRejectsMalformedSetCodeTx(t *testing.T) {
 		{"create", testStateTransitionChainConfig(), nil, transaction.AuthorizationList{auth}, ErrSetCodeTxCreate},
 		{"empty auth list", testStateTransitionChainConfig(), &recipient, transaction.AuthorizationList{}, ErrEmptyAuthList},
 		{"pre-prague", prePrague, &recipient, transaction.AuthorizationList{auth}, ErrTxTypeNotSupported},
-		{"native empty auth list", nativeShapeTestConfig(), &recipient, transaction.AuthorizationList{}, nil},
+		{"native valid", nativeShapeTestConfig(), &recipient, transaction.AuthorizationList{auth}, nil},
+		{"native create", nativeShapeTestConfig(), nil, transaction.AuthorizationList{auth}, ErrSetCodeTxCreate},
+		{"native empty auth list", nativeShapeTestConfig(), &recipient, transaction.AuthorizationList{}, ErrEmptyAuthList},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := applyShapeTestTx(t, tc.config, setCode(tc.to, tc.auths), sign)
