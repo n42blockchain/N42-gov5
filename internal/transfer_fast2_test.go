@@ -62,8 +62,11 @@ func runFast2Ahead(t *testing.T, db kv.RwDB, fx *transferBlockFixture, on bool) 
 // TestTransferFast2Equivalence runs transfer blocks shaped like the bench's
 // (sender chains and distinct senders, Zipf recipients) on the ahead path
 // and the builder's path with N42_TRANSFER_FAST2 off and on, and requires
-// the same state root, receipts and gas.
+// the same state root, receipts and gas. The transfer lanes stay off: they
+// take these blocks without applying plans (their own differential tests
+// cover them).
 func TestTransferFast2Equivalence(t *testing.T) {
+	defer SetTransferLanesForTest("off")()
 	for _, c := range []struct {
 		name                 string
 		txs, senders, recips int
