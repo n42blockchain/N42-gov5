@@ -52,3 +52,28 @@ func TestSettleStartKeysWhy(t *testing.T) {
 		t.Fatal("nil prep: non-empty why")
 	}
 }
+
+// The run drops its preparation before it logs (parallel_processor.go): the
+// snapshot taken before the drop keeps the stamps, including a later drop of
+// the prefill by the claim's layering.
+func TestStartKeysStampOutlivesPrep(t *testing.T) {
+	ab := &aheadBase{stop: make(chan struct{}), done: make(chan struct{}), pf: &commitment.BasePrefill{}, at: 9, depth: 3}
+	ab.phase.Store(abPhaseFill)
+	close(ab.done)
+	prep := &aheadPrep{ok: true, startKeys: ab}
+	prep.settleStartKeys()
+	snap := prep.startKeysLog()
+	prep = nil
+	f := snap.fields()
+	if f[1] != "used" || f[3] != uint64(9) || f[5] != uint64(3) {
+		t.Fatalf("snapshot fields = %v, want used/9/3", f)
+	}
+	_ = prep
+	ab.pf, ab.skip = nil, "gone"
+	if why := snap.fields()[1]; why != "dropped: gone" {
+		t.Fatalf("dropped after the snapshot: why = %q", why)
+	}
+	if f := (*aheadPrep)(nil).startKeysLog().fields(); f[1] != "" {
+		t.Fatal("nil prep: non-empty why")
+	}
+}

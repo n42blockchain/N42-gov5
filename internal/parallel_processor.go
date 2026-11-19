@@ -1029,6 +1029,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			aheadPrepMisses.Add(1)
 		}
 	}
+	// The start-keys stamps outlive prep for the "parallel block" line.
+	startKeysLog := prep.startKeysLog()
 	prep = nil
 	tAffinity := time.Now()
 	// sysStartMs's split (diagnostics): the system calls, the capture below,
@@ -1532,7 +1534,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			"wkWallMaxMs", wkStats.WallMaxMs, "wkWallMinMs", wkStats.WallMinMs, "wkWallMeanMs", wkStats.WallMeanMs, "wkQMax", wkStats.QMax, "wkQMin", wkStats.QMin, "wkSetupMs", wkStats.SetupMs, "wkMvsWrMs", wkStats.MvsWriteMs, "wkMvsDelMs", wkStats.MvsDeleteMs, "wkKeys", wkStats.Keys, "wkTopChain", wkStats.TopChain}
 		blockLog = append(blockLog, "sysTreeWaitUs", sysTreeWaitNs/1e3, "sysTreeWaits", sysTreeWaits,
 			"sysTreeHolder", sysHolder, "sysTreeHolderAgeUs", sysHolderAgeNs/1e3, "startKeysPF", startKeysPF)
-		blockLog = append(blockLog, prep.startKeysLogFields()...)
+		blockLog = append(blockLog, startKeysLog.fields()...)
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 

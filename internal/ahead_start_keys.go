@@ -228,12 +228,36 @@ func (pr *aheadPrep) settleStartKeys() {
 // layering dropped afterwards reads "dropped: " and its reason), and the
 // tree height and depth it read at (0 when it never read).
 func (pr *aheadPrep) startKeysLogFields() []any {
-	if pr == nil || pr.startKeys == nil {
+	return pr.startKeysLog().fields()
+}
+
+// startKeysStamp is the start-keys part of a preparation, kept by a run
+// that drops its preparation (parallel_processor.go clears prep once the
+// affinity pass is adopted, before it logs). sk stays referenced so a
+// prefill the claim's layering dropped afterwards still reads "dropped: ".
+type startKeysStamp struct {
+	sk        *aheadBase
+	used      bool
+	why       string
+	at, depth uint64
+}
+
+// startKeysLog snapshots pr's start-keys stamps (zero for a nil pr).
+func (pr *aheadPrep) startKeysLog() startKeysStamp {
+	if pr == nil {
+		return startKeysStamp{}
+	}
+	return startKeysStamp{sk: pr.startKeys, used: pr.startKeysUsed, why: pr.startKeysWhy, at: pr.startKeysAt, depth: pr.startKeysDepth}
+}
+
+// fields returns the stamps as startKeysLogFields documents them.
+func (s startKeysStamp) fields() []any {
+	if s.sk == nil {
 		return []any{"startKeysWhy", "", "startKeysAt", uint64(0), "startKeysDepth", uint64(0)}
 	}
-	why := pr.startKeysWhy
-	if pr.startKeysUsed && pr.startKeys.pf == nil {
-		why = "dropped: " + pr.startKeys.skip
+	why := s.why
+	if s.used && s.sk.pf == nil {
+		why = "dropped: " + s.sk.skip
 	}
-	return []any{"startKeysWhy", why, "startKeysAt", pr.startKeysAt, "startKeysDepth", pr.startKeysDepth}
+	return []any{"startKeysWhy", why, "startKeysAt", s.at, "startKeysDepth", s.depth}
 }
