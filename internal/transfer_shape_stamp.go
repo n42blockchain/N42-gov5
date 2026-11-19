@@ -49,8 +49,10 @@ type blockTransferShape struct {
 	sharedTxs     int // transactions sent by those senders
 }
 
-// measureTransferShape computes txs' shape.
-func measureTransferShape(txs []*transaction.Transaction) blockTransferShape {
+// measureTransferShape computes txs' shape. A sender is taken from the
+// transaction's declared from, else from the memo the run's sender recovery
+// left under signer (never recovered here).
+func measureTransferShape(signer transaction.Signer, txs []*transaction.Transaction) blockTransferShape {
 	s := blockTransferShape{txs: len(txs)}
 	perSender := make(map[types.Address]int, len(txs)/16+16)
 	recipients := make(map[types.Address]struct{}, len(txs)/4+16)
@@ -61,12 +63,21 @@ func measureTransferShape(txs []*transaction.Transaction) blockTransferShape {
 				s.plainShape++
 			}
 		}
-		from := tx.From()
-		if from == nil {
+		var from types.Address
+		if f := tx.From(); f != nil {
+			from = *f
+		} else if tx.HasSenderMemo(signer) {
+			a, err := transaction.Sender(signer, tx)
+			if err != nil {
+				s.noSender++
+				continue
+			}
+			from = a
+		} else {
 			s.noSender++
 			continue
 		}
-		perSender[*from]++
+		perSender[from]++
 	}
 	s.senders, s.recipients = len(perSender), len(recipients)
 	for addr, n := range perSender {
@@ -91,12 +102,12 @@ func (s blockTransferShape) fields() []any {
 
 // sampleTransferShape logs the "transfer shape" line for block n on its own
 // goroutine when n is a sampled full block.
-func sampleTransferShape(n uint64, txs []*transaction.Transaction) {
+func sampleTransferShape(n uint64, signer transaction.Signer, txs []*transaction.Transaction) {
 	if n%transferShapeEvery != 0 || len(txs) < transferShapeMinTxs {
 		return
 	}
 	go func() {
-		s := measureTransferShape(txs)
+		s := measureTransferShape(signer, txs)
 		log.Info("transfer shape", append([]any{"n", n}, s.fields()...)...)
 	}()
 }

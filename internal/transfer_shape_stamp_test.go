@@ -30,7 +30,7 @@ func TestMeasureTransferShape(t *testing.T) {
 		mk(&e, nil, []byte{0x60}), // e: create, e also receives
 		mk(nil, &a, nil),          // no cached sender; a receives
 	}
-	s := measureTransferShape(txs)
+	s := measureTransferShape(nil, txs)
 	want := blockTransferShape{txs: 6, noSender: 1, plainShape: 4, senders: 4, multiSenders: 1, maxChain: 2,
 		recipients: 5, sharedSenders: 4, sharedTxs: 5}
 	if s != want {
@@ -39,7 +39,7 @@ func TestMeasureTransferShape(t *testing.T) {
 	if f := s.fields(); len(f) != 18 {
 		t.Fatalf("fields: %d values", len(f))
 	}
-	if z := measureTransferShape(nil); z != (blockTransferShape{}) {
+	if z := measureTransferShape(nil, nil); z != (blockTransferShape{}) {
 		t.Fatalf("empty block: %+v", z)
 	}
 }

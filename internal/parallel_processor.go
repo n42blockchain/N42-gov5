@@ -1540,7 +1540,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		blockLog = append(blockLog, startKeysLog.fields()...)
 		// r97a: plain-transfer shares (transfer_shape_stamp.go).
 		blockLog = append(blockLog, "fastTx", fastTx, "directTx", directTx, "planTx", planTx)
-		sampleTransferShape(concreteHeader.Number.Uint64(), txs)
+		sampleTransferShape(concreteHeader.Number.Uint64(), signer, txs)
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 
