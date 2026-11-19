@@ -96,6 +96,10 @@ type QMDBRootComputer struct {
 	// (AppliedSince), under appliedMu.
 	appliedMu  sync.Mutex
 	appliedLog [appliedLogLen]QMDBAppliedState
+
+	// lastSetCold is the most recent SetCold's split (stamps,
+	// qmdb_setcold_stamp.go).
+	lastSetCold atomic.Pointer[SetColdStamp]
 }
 
 // evictLagFromEnv parses N42_QMDB_EVICT_LAG_BLOCKS (unset, invalid or <= 0
@@ -723,9 +727,21 @@ func (r *QMDBRootComputer) abortFlushedLocked() {
 // tree can evict flushed entries from RAM and fault them back on demand. It also
 // attaches the leaf-blob store (same backing tx) so an evicted twig rehydrates in
 // one read. The engine re-points both at the current batch's tx each batch.
+//
+// It waits for the tree's lock (the previous block's capture holds it from
+// the hand-off); the split is stamped (LastSetCold).
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
-	defer r.lockWriter(holderSetCold)()
+	t0 := time.Now()
+	holder := r.holder.Load()
+	unlock := r.lockWriter(holderSetCold)
+	tw := time.Now()
 	r.setColdLocked(g)
+	st := &SetColdStamp{Wait: tw.Sub(t0), Work: time.Since(tw)}
+	if st.Wait > lookupWaitNote {
+		st.Holder = holder
+	}
+	r.lastSetCold.Store(st)
+	unlock()
 }
 
 func (r *QMDBRootComputer) setColdLocked(g qmdb.Getter) {

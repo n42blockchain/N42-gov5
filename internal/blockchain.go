@@ -3026,6 +3026,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			// flight (N42_CATCHUP_SKIP_APPLIED, catchup_skip_applied.go).
 			insSkipJoin, insJoined := InsertJoinStats()
 			fields = append(fields, "insSkipJoin", insSkipJoin, "insJoinedWrite", insJoined)
+			fields = append(fields, bc.setColdLogFields()...)
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
 			} else {
