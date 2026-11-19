@@ -166,6 +166,16 @@ func (r *ParallelStateReader) baseAccountVia(mv *mvEntry, address types.Address)
 	return e.acc, e.enc, nil
 }
 
+// ReadBaseAccount reads address from the block's base state only (through
+// the block's base cache when there is one): no store lookup, nothing
+// recorded. It is the value a transaction's read returns while no
+// preceding transaction has written the account. The account is shared
+// with the cache and must not be mutated; nil when absent.
+func (r *ParallelStateReader) ReadBaseAccount(address types.Address) (*account.StateAccount, error) {
+	acc, _, err := r.baseAccountVia(nil, address)
+	return acc, err
+}
+
 // NewParallelStateReader creates a state reader that reads from MVS first,
 // then falls back to the base reader.
 func NewParallelStateReader(base state.StateReader, mvs *MVS, rw *ReadWriteSet, txIndex int) *ParallelStateReader {

@@ -986,6 +986,22 @@ func (e *Executor) AdoptAffinity(p *AffinityPrep) bool {
 	return true
 }
 
+// FirstWaveQueues returns the first wave's per-worker queues that
+// PrepareAffinity or AdoptAffinity computed for the next Run (nil when
+// none are): every transaction once, each queue in index order, all
+// transactions of one affinity key on one queue. Read-only; Run uses them.
+func (e *Executor) FirstWaveQueues() [][]int {
+	if e.prePart == nil {
+		return nil
+	}
+	return e.prePart.queues
+}
+
+// Results returns the executor's per-transaction results. Before Run every
+// entry is zero (no error): a caller that applied the transactions without
+// Run (the transfer lanes) reports them through it.
+func (e *Executor) Results() []TxResult { return e.results }
+
 // PreparedAffinityForTest returns the keys and first-wave queues prepared
 // for the next Run (nil when none are).
 func (e *Executor) PreparedAffinityForTest() (keys []uint64, queues [][]int) {
