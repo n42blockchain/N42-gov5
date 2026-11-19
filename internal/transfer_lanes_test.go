@@ -204,9 +204,9 @@ type laneFuzz struct {
 
 // Sender roles in laneFuzz.senders.
 const (
-	laneFuzzPoor   = 0 // pays for two transfers
-	laneFuzzDrain  = 1 // pays for exactly its transfers
-	laneFuzzMega   = 2 // 2^200
+	laneFuzzPoor   = 0                     // pays for two transfers
+	laneFuzzDrain  = 1                     // pays for exactly its transfers
+	laneFuzzMega   = 2                     // 2^200
 	laneFuzzPerTx  = 21000 * 1_000_000_000 // gas * fee cap
 	laneFuzzValue  = 1000
 	laneFuzzChains = 12
