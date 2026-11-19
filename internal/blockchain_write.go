@@ -1140,7 +1140,29 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			fields = append(fields, "qCapWaitUs", job.qCapWait.Microseconds(), "qPrepBusy", job.qPrepBusy)
 			if job.capture != nil {
 				fields = append(fields, "qCapTookUs", job.capture.Took().Microseconds())
+				// r96 stage 0: the capture's split. Eviction of the previous
+				// window (whole, fold, twig walk; twigs visited / evicted),
+				// history settle, root, entry rows, dead rows, the flush's
+				// twig walk, twig meta rows, leaf blobs; the forest size, the
+				// twigs the walk visited and the twig rows written; the walk
+				// kind (0 full scan, 1 changed-twig set, 2 check).
+				cs := job.capture.Stats()
+				fs := &cs.Flush
+				fields = append(fields,
+					"qcEvUs", cs.Evict.Microseconds(), "qcEvFoldUs", cs.EvictTwig.Fold.Microseconds(),
+					"qcEvWalkUs", cs.EvictTwig.Walk.Microseconds(), "qcEvVisit", cs.EvictTwig.Visited,
+					"qcEvicted", cs.EvictTwig.Evicted, "qcHistUs", cs.Hist.Microseconds(),
+					"qcRootUs", fs.Root.Microseconds(), "qcEntUs", fs.Entries.Microseconds(),
+					"qcDeadUs", fs.Dead.Microseconds(), "qcWalkUs", fs.TwigWalk.Microseconds(),
+					"qcTwigUs", fs.TwigRows.Microseconds(), "qcLeafUs", fs.Leaf.Microseconds(),
+					"qcMetaUs", fs.Meta.Microseconds(), "qcTwigs", fs.TwigsForest,
+					"qcVisit", fs.TwigsVisited, "qcTwigRows", fs.TwigRowsN, "qcLeafRows", fs.LeafRowsN,
+					"qcWalkMode", fs.SetMode)
 			}
+			// The writer's queue at the hand-off: whether the previous write
+			// was still running when the hand-off began, and how many blocks
+			// were waiting in the lag import queue.
+			fields = append(fields, "qHandBusy", job.handBusy, "qHandQueued", job.handQueued)
 			if txnEarly && lagWriteQFlushReady {
 				fields = append(fields, "qFirst", job.qFirst)
 			}

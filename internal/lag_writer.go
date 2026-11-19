@@ -190,6 +190,11 @@ type lagWriteJob struct {
 	qCapWait  time.Duration
 	qPrepBusy bool
 	qFirst    bool
+	// handBusy: the previous write was still running when the hand-off
+	// began (1) or not (0); handQueued: blocks waiting in the lag import
+	// queue at that moment (stamps).
+	handBusy   int
+	handQueued int
 
 	// marks: when the writer entered each phase (zero: never), end: when
 	// the job finished; written by the writer goroutine before done closes.
@@ -742,6 +747,11 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	tWait := time.Now()
 	lean := lagHandoffLean
 	prevJob := bc.lagWrite.inflight
+	handBusy := 0
+	if prevJob != nil && !chanClosed(prevJob.done) {
+		handBusy = 1
+	}
+	_, _, handQueued := bc.LagStats()
 	doneWait, joined, err := bc.joinLagWriteMode(lean)
 	if err != nil {
 		return failed(err)
@@ -756,7 +766,8 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	hdr, _ := blk.Header().(*block.Header)
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
-		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{})}
+		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{}),
+		handBusy: handBusy, handQueued: handQueued}
 	rc := bc.qmdbRootComputer
 	if lean {
 		// The undo record and the root first (neither depends on the
