@@ -90,6 +90,17 @@ func SetTransferLanesForTest(mode string) func() {
 	return func() { transferLanesMode = prev }
 }
 
+// transferLanesModeName is the switch for the "parallel block" line.
+func transferLanesModeName() string {
+	switch transferLanesMode {
+	case lanesOn:
+		return "on"
+	case lanesCheck:
+		return "check"
+	}
+	return "off"
+}
+
 // transferLanesStats: blocks the lanes applied, blocks they declined, check
 // mode comparisons and check mode differences (must stay 0).
 var transferLanesStats struct {
@@ -633,6 +644,22 @@ func runLanesOrRun(mode int, executor *parallel.Executor, in *laneInputs, txResu
 	}
 	out.used = false
 	return results, out
+}
+
+// fields are the lanes' "parallel block" stamps.
+func (o *laneOutcome) fields() []any {
+	why := o.why
+	if why == "" {
+		why = "-"
+	}
+	check := o.check
+	if check == "" {
+		check = "-"
+	}
+	return []any{"lanes", transferLanesModeName(), "lanesUsed", o.used, "lanesWhy", why, "lanesCheck", check,
+		"lanesN", o.lanes, "lanesTop", o.top, "lanesRecips", o.recipients,
+		"lanesClassifyUs", o.classify.Microseconds(), "lanesMergeUs", o.merge.Microseconds(),
+		"lanesRunUs", o.run.Microseconds(), "lanesPublishUs", o.publish.Microseconds()}
 }
 
 // laneFinal is one location's final version as the store's consumers read

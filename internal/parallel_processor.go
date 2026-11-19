@@ -1135,10 +1135,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// fees may apply a block of plain transfers as lanes instead of Run;
 	// off, every block takes Run as before.
 	var results []parallel.TxResult
+	var laneOut laneOutcome
 	laneMode := transferLanesMode
 	laneTried := laneMode != lanesOff && !lenient && deferFees
 	if laneTried {
-		results, _ = runLanesOrRun(laneMode, executor, &laneInputs{
+		results, laneOut = runLanesOrRun(laneMode, executor, &laneInputs{
 			numTxs:     numTxs,
 			queues:     executor.FirstWaveQueues(),
 			prepared:   prepared,
@@ -1148,6 +1149,12 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			noReceipts: cfg.NoReceipts,
 		}, txResults)
 	} else {
+		if laneMode != lanesOff {
+			laneOut.why = "lenient run"
+			if !deferFees {
+				laneOut.why = "fees not deferred"
+			}
+		}
 		results = executor.Run()
 	}
 	if span != nil {
@@ -1567,7 +1574,12 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		// r97a: plain-transfer shares (transfer_shape_stamp.go).
 		blockLog = append(blockLog, "fastTx", fastTx, "directTx", directTx, "planTx", planTx)
 		sampleTransferShape(concreteHeader.Number.Uint64(), signer, txs)
-		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
+		blockLog = append(blockLog, wkStats.CPUFields()...)
+		if laneMode != lanesOff {
+			// r98a: the transfer lanes (transfer_lanes.go).
+			blockLog = append(blockLog, laneOut.fields()...)
+		}
+		log.Info("parallel block", blockLog...)
 	}
 
 	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Skipped: nSkipped, SkipReasons: skipReasons, Nopay: nopay, phases: aheadPhases}, nil
