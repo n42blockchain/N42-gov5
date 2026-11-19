@@ -567,8 +567,8 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 			tQC := time.Now()
 			vs := ce.ResolveQCValidatorSet(qc.View, len(qc.Signers))
 			if vs != nil && !vs.IsEmpty() {
-				vErr := ce.verifyQCAnyDomainWithSet(qc, vs)
-				sp.QC = time.Since(tQC)
+				how, vErr := ce.verifyHeaderQC(qc, vs) // N42_IMPORT_HEADER_VERIFY_CACHE
+				sp.QC, sp.QCCache = time.Since(tQC), how
 				if vErr != nil {
 					return fmt.Errorf("QC verification failed: %w", vErr)
 				}

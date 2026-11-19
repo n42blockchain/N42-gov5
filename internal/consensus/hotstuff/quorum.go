@@ -409,5 +409,6 @@ func verifyAggregateSignature(qc *QuorumCertificate, vs *ValidatorSet, message [
 	if !sig.Verify(aggPK, message) {
 		return &InvalidQCError{View: qc.View, Reason: fmt.Sprintf("%s aggregated signature verification failed", certKind)}
 	}
+	noteVerifiedAggregate(qc, vs, message) // N42_IMPORT_HEADER_VERIFY_CACHE (qc_verify_cache.go)
 	return nil
 }
