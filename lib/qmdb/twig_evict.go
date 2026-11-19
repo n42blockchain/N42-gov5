@@ -131,6 +131,7 @@ func popcount8(b byte) int {
 // left alone. Requires a cold reader (rehydration source).
 func (t *Tree) EvictTwigsThrough(through uint64) {
 	if t.cold == nil {
+		t.lastEvict = EvictStats{} // no stale split on the stamp line
 		return
 	}
 	t0 := time.Now()
