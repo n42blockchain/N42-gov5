@@ -2441,7 +2441,19 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 			// QMDB faults flushed entries back from the committed positional log
 			// via this block's read tx; the in-RAM index keeps key->slot resident.
-			bc.qmdbRootComputer.SetCold(tx)
+			// N42_IMPORT_SETCOLD_LEAN: a block executed ahead does not wait
+			// here for the previous block's row capture; the source is
+			// installed by the next section that takes the tree's lock (its
+			// root at the latest). Only for a block executed ahead: its
+			// readers are lock-taking lookup sources with their own
+			// transaction, while the plain path's N42_STATE_READ_QMDB reader
+			// reads the tree without the lock and relies on this wait
+			// (qmdb_cold_lean.go).
+			if ahead != nil && commitment.ImportSetColdLeanOn() {
+				bc.qmdbRootComputer.SetColdLean(tx)
+			} else {
+				bc.qmdbRootComputer.SetCold(tx)
+			}
 			ibs.SetRootComputer(bc.qmdbRootComputer)
 		}
 		// The unchanged-account rule (UnchangedAccountNoOpTime) for this
