@@ -1121,6 +1121,8 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		waveEnd = waveBegin(concreteHeader.Number.Uint64())
 		defer waveEnd()
 	}
+	// Transfer counters across the wave (transfer_shape_stamp.go).
+	fast0, direct0, plan0 := fastTransfers.Load(), directTransfers.Load(), planTransfers.Load()
 	results := executor.Run()
 	if span != nil {
 		span.End()
@@ -1155,6 +1157,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	}
 	waveEnd()
 	tRunEnd := time.Now()
+	fastTx, directTx, planTx := fastTransfers.Load()-fast0, directTransfers.Load()-direct0, planTransfers.Load()-plan0
 	var waveReads, waveColdReads uint64
 	var waveColdMs int64
 	if useQMDB {
@@ -1535,6 +1538,9 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		blockLog = append(blockLog, "sysTreeWaitUs", sysTreeWaitNs/1e3, "sysTreeWaits", sysTreeWaits,
 			"sysTreeHolder", sysHolder, "sysTreeHolderAgeUs", sysHolderAgeNs/1e3, "startKeysPF", startKeysPF)
 		blockLog = append(blockLog, startKeysLog.fields()...)
+		// r97a: plain-transfer shares (transfer_shape_stamp.go).
+		blockLog = append(blockLog, "fastTx", fastTx, "directTx", directTx, "planTx", planTx)
+		sampleTransferShape(concreteHeader.Number.Uint64(), txs)
 		log.Info("parallel block", append(blockLog, wkStats.CPUFields()...)...)
 	}
 
