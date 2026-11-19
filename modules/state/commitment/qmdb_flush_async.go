@@ -28,6 +28,24 @@ type FlushCapture struct {
 	n    int
 	err  error
 	took time.Duration
+	st   FlushCaptureStats
+}
+
+// FlushCaptureStats is the split of one capture (stamps): the eviction of
+// the previous window (whole, and its twig walk), the history settle, and
+// the flush's own split.
+type FlushCaptureStats struct {
+	Evict     time.Duration // evictLaggedLocked as a whole (entries + twigs)
+	EvictTwig qmdb.EvictStats
+	Hist      time.Duration // FlushHistory
+	Flush     qmdb.FlushStats
+	Evicted   bool // the capture evicted first
+}
+
+// Stats returns the capture's split; valid after Wait.
+func (c *FlushCapture) Stats() FlushCaptureStats {
+	<-c.done
+	return c.st
 }
 
 // Wait returns the flush's result once it finished.
@@ -64,8 +82,13 @@ func (r *QMDBRootComputer) StartFlushTo(p qmdb.Putter, evictFirst bool) *FlushCa
 		t0 := time.Now()
 		if evictFirst {
 			r.evictLaggedLocked(r.flushedThrough)
+			c.st.Evicted = true
+			c.st.EvictTwig = r.t.LastEvictStats()
 		}
+		c.st.Evict = time.Since(t0)
 		c.n, c.err = r.flushToLocked(p)
+		c.st.Flush = r.t.LastFlushStats()
+		c.st.Hist = r.lastFlushHist
 		if c.err != nil {
 			r.abortFlushedLocked()
 		}

@@ -81,6 +81,10 @@ type QMDBRootComputer struct {
 	// K = 0 evicts everything flushed, as before.
 	evictLag qmdb.EvictLag
 
+	// lastFlushHist: the last flushToLocked's FlushHistory time (stamps;
+	// under readers held exclusively).
+	lastFlushHist time.Duration
+
 	// applied is what the tree's values are (P15, AppliedState): the count
 	// of value mutations so far and, when the last one was a ComputeRoot
 	// labelled for its block (LabelNextRoot), that block. Stored under the
@@ -657,7 +661,10 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 func (r *QMDBRootComputer) flushToLocked(p qmdb.Putter) (int, error) {
 	// Settle the batch's accumulated death-stamp deltas first (one
 	// read-modify-write per touched twig per batch), same tx as the flush.
-	if err := r.t.FlushHistory(); err != nil {
+	tHist := time.Now()
+	err := r.t.FlushHistory()
+	r.lastFlushHist = time.Since(tHist)
+	if err != nil {
 		return 0, err
 	}
 	next, n, err := r.t.FlushTo(p, r.flushedThrough)
