@@ -3039,6 +3039,7 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			insSkipJoin, insJoined := InsertJoinStats()
 			fields = append(fields, "insSkipJoin", insSkipJoin, "insJoinedWrite", insJoined)
 			fields = append(fields, bc.setColdLogFields()...)
+			fields = append(fields, headerVerifyLogFields()...)
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
 			} else {

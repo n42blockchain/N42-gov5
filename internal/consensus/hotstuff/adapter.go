@@ -440,6 +440,15 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return nil
 	}
 
+	// r97a stamps: the split of this verification (consensus.LastHeaderVerify,
+	// logged on the import's "blockimport phases" line).
+	tAll := time.Now()
+	sp := consensus.HeaderVerifySplit{Number: header.Number.Uint64()}
+	defer func() {
+		sp.All = time.Since(tAll)
+		consensus.NoteHeaderVerify(sp)
+	}()
+
 	headerView, qc, _, err := decodeHeaderExtra(header.Extra)
 	if err != nil {
 		return err
@@ -453,6 +462,7 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// mis-rejects any block built on the non-canonical sibling. Headers are
 	// stored keyed by (number, hash) for non-canonical blocks too, so the true
 	// parent is retrievable regardless of local canonical choice.
+	tParent := time.Now()
 	var parentHeader *block.Header
 	if batch != nil {
 		parentHeader = batch[header.ParentHash] // in-batch parent (range import)
@@ -479,6 +489,7 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return fmt.Errorf("parent %x has height %v, want %v", header.ParentHash[:8], parentHeader.Number, &wantParentNum)
 	}
 
+	sp.Parent = time.Since(tParent)
 	if header.Time <= parentHeader.Time {
 		return errors.New("timestamp must be after parent")
 	}
@@ -486,6 +497,7 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// Execution consumes the header's own GasLimit (block gas pool), so an
 	// unchecked header lets a bad leader mint arbitrarily large blocks.
 	// This invariant holds for every honestly-produced AND replayed block.
+	tGas := time.Now()
 	usedLimit := header.GasLimit
 	checkUsed := true
 	if h.chainConfig != nil && chain != nil && h.chainConfig.IsDeferredExecution(header.Time) {
@@ -510,6 +522,7 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 			hash = ph.ParentHash
 		}
 	}
+	sp.Gas = time.Since(tGas)
 	if checkUsed && header.GasUsed > usedLimit {
 		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, usedLimit)
 	}
@@ -551,9 +564,12 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		}
 
 		if ce := h.Engine(); ce != nil {
+			tQC := time.Now()
 			vs := ce.ResolveQCValidatorSet(qc.View, len(qc.Signers))
 			if vs != nil && !vs.IsEmpty() {
-				if vErr := ce.verifyQCAnyDomainWithSet(qc, vs); vErr != nil {
+				vErr := ce.verifyQCAnyDomainWithSet(qc, vs)
+				sp.QC = time.Since(tQC)
+				if vErr != nil {
 					return fmt.Errorf("QC verification failed: %w", vErr)
 				}
 			}
@@ -564,6 +580,8 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// evidence, every header must commit to the parent's evidence through
 	// ParentBeaconRoot = Blake3(parent CE). This transitively validates that the
 	// producer used the same deterministic committee evidence we hold locally.
+	tCE := time.Now()
+	defer func() { sp.CE = time.Since(tCE) }() // runs before the publish above
 	h.lock.RLock()
 	pool := h.committeePool
 	h.lock.RUnlock()
