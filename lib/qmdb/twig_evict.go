@@ -23,6 +23,7 @@ package qmdb
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -139,16 +140,56 @@ func (t *Tree) EvictTwigsThrough(through uint64) {
 	if maxID > len(t.twigs) {
 		maxID = len(t.twigs)
 	}
-	evicted := 0
-	for id := 0; id < maxID; id++ {
-		tw := t.twigs[id]
-		if !evictDropsTwig(tw) {
-			continue
+	mode := FlushTwigSetMode()
+	use, _ := t.useTwigSet(mode)
+	if !use {
+		evicted := 0
+		for id := 0; id < maxID; id++ {
+			tw := t.twigs[id]
+			if !evictDropsTwig(tw) {
+				continue
+			}
+			tw.nodes = nil // free 128 KiB; root retained for the upper tree
+			evicted++
 		}
-		tw.nodes = nil // free 128 KiB; root retained for the upper tree
-		evicted++
+		t.lastEvict = EvictStats{Fold: t1.Sub(t0), Walk: time.Since(t1), Visited: maxID, Evicted: evicted, SetMode: mode}
+		return
 	}
-	t.lastEvict = EvictStats{Fold: t1.Sub(t0), Walk: time.Since(t1), Visited: maxID, Evicted: evicted, SetMode: TwigWalkFull}
+	// Set-driven: every twig the rule can drop is resident, hence in the
+	// compacted set, which is ascending. Same rule, same twigs; the order
+	// of the drops is irrelevant (each only clears its own nodes).
+	visited := t.compactTwigSet()
+	sel := t.evictSel[:0]
+	for _, id := range t.tset.ids {
+		if id >= maxID {
+			break
+		}
+		if evictDropsTwig(t.twigs[id]) {
+			sel = append(sel, id)
+		}
+	}
+	t.evictSel = sel
+	mismatch := false
+	if mode == TwigWalkCheck {
+		var full []int
+		for id := 0; id < maxID; id++ {
+			if evictDropsTwig(t.twigs[id]) {
+				full = append(full, id)
+			}
+		}
+		visited += maxID
+		if !slices.Equal(full, sel) {
+			twigSetMismatch("EvictTwigsThrough", full, sel)
+			sel, mismatch = full, true
+		}
+	}
+	for _, id := range sel {
+		t.twigs[id].nodes = nil // free 128 KiB; root retained for the upper tree
+	}
+	if mismatch {
+		t.rebuildTwigSet()
+	}
+	t.lastEvict = EvictStats{Fold: t1.Sub(t0), Walk: time.Since(t1), Visited: visited, Evicted: len(sel), SetMode: mode}
 }
 
 // evictDropsTwig is EvictTwigsThrough's per-twig rule (for a twig below the
