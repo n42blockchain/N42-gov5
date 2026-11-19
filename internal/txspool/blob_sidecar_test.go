@@ -11,6 +11,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -181,5 +182,35 @@ func TestConvertLegacySidecarsAtOsaka(t *testing.T) {
 	pool.wg.Wait()
 	if pool.all.Get(late.Hash()) != late {
 		t.Fatal("conversion ran twice")
+	}
+}
+
+// An N42 native chain (HotStuff or APoS) admits no blob transaction at any
+// fork; an Ethereum chain keeps admitting them.
+func TestValidateTx_BlobTxRefusedOnNativeChain(t *testing.T) {
+	_, osaka := osakaTestConfigs()
+	native := *osaka
+	native.Consensus = params.HotStuffConsensus
+	for _, tc := range []struct {
+		name    string
+		config  *params.ChainConfig
+		refused bool
+	}{
+		{"ethereum", osaka, false},
+		{"native", &native, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := g49NewValidationPool()
+			pool.chainconfig = tc.config
+			_, from := generateTestKey()
+			pool.currentState.(*mockReadState).balances[from] = new(uint256.Int).Lsh(uint256.NewInt(1), 100)
+			err := pool.validateTx(newPoolBlobTx(from, 0, transaction.BlobSidecarVersion1), true, nil)
+			if got := errors.Is(err, internal.ErrBlobTxOnNativeChain); got != tc.refused {
+				t.Fatalf("err = %v, refused %v, want %v", err, got, tc.refused)
+			}
+			if tc.refused && !errors.Is(err, internal.ErrTxTypeNotSupported) {
+				t.Fatalf("err = %v, want it to wrap ErrTxTypeNotSupported", err)
+			}
+		})
 	}
 }

@@ -188,7 +188,7 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 			return nil, fmt.Errorf("deferred execution: block %d exceeds its gas limit at tx %d", number, i)
 		}
 		blockGas += t.Gas()
-		if len(t.BlobHashes()) > 0 {
+		if t.Type() == transaction.BlobTxType || len(t.BlobHashes()) > 0 {
 			// Blob fees and their balance charge are not modelled here.
 			return nil, fmt.Errorf("deferred execution: block %d tx %d: blob transactions are not includable under deferred execution", number, i)
 		}

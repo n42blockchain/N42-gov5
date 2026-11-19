@@ -537,6 +537,9 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 			isBlobTx = m.IsBlobTx()
 		}
 	}
+	if isBlobTx && st.evm.ChainConfig().IsN42Native() {
+		return fmt.Errorf("%w: %w (sender %v)", ErrTxTypeNotSupported, ErrBlobTxOnNativeChain, st.msg.From().Hex())
+	}
 	if isBlobTx {
 		rules := st.evm.ChainRules()
 		if !rules.IsCancun {

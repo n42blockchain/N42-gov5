@@ -25,6 +25,7 @@ package txspool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"os"
@@ -628,6 +629,11 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	// Reject dynamic fee transactions until EIP-1559 activates.
 	if !pool.eip1559 && tx.Type() == transaction.DynamicFeeTxType {
 		return internal.ErrTxTypeNotSupported
+	}
+	// An N42 native chain admits no blob transaction at any fork: execution
+	// refuses it, so the pool (and the ingest, which feeds the pool) does too.
+	if tx.Type() == transaction.BlobTxType && pool.chainconfig != nil && pool.chainconfig.IsN42Native() {
+		return fmt.Errorf("%w: %w", internal.ErrTxTypeNotSupported, internal.ErrBlobTxOnNativeChain)
 	}
 	gasPrice := tx.GasPrice()
 
