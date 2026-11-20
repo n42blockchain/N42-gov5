@@ -17,6 +17,7 @@
 package commitment
 
 import (
+	"sync"
 	"time"
 
 	"github.com/n42blockchain/N42/lib/qmdb"
@@ -29,6 +30,17 @@ type FlushCapture struct {
 	err  error
 	took time.Duration
 	st   FlushCaptureStats
+
+	// The early capture (StartFlushToEarly, qmdb_flush_early.go): early,
+	// check (E1/E2 assertions armed), second (a second window was staged:
+	// from its start, emul the twigs it treated as evicted); mu guards
+	// finished and tail (the join's commit + eviction to run at the end).
+	early, check, second bool
+	from                 uint64
+	emul                 []int
+	mu                   sync.Mutex
+	finished             bool
+	tail                 *earlyTail
 }
 
 // FlushCaptureStats is the split of one capture (stamps): the eviction of
@@ -40,6 +52,16 @@ type FlushCaptureStats struct {
 	Hist      time.Duration // FlushHistory
 	Flush     qmdb.FlushStats
 	Evicted   bool // the capture evicted first
+	// Tail: an early capture ran the join's commit + eviction (Evict is
+	// then that tail's time).
+	Tail bool
+}
+
+// Early reports whether this was an early capture (StartFlushToEarly) and
+// whether it staged a second window; valid after Wait.
+func (c *FlushCapture) Early() (early, second bool) {
+	<-c.done
+	return c.early, c.second
 }
 
 // Stats returns the capture's split; valid after Wait.

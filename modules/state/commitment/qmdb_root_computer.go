@@ -48,6 +48,11 @@ type QMDBRootComputer struct {
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
 
+	// stagedNext: a second staged window behind stagedFlushed (the lag
+	// writer's early capture, StartFlushToEarly); CommitFlushed promotes it.
+	stagedNext      uint64
+	stagedNextValid bool
+
 	// pending holds the proposer's earlier builds that the live tree has not
 	// written yet, oldest first, beneath the build lastUndo describes: the
 	// tree's state is base + pending[0] + ... + pending[n-1] + lastUndo. A
@@ -463,6 +468,7 @@ func (r *QMDBRootComputer) loadFromLocked(g qmdb.Getter) error {
 	}
 	r.flushedThrough = r.t.NextSlot()
 	r.stagedValid = false // any staged flush described the abandoned layout
+	r.stagedNextValid = false
 	r.indexTrusted = r.t.NextSlot()
 	// Baseline for trusted-reload reconciliation: fossil live bits (rows lost
 	// to the fixed deadFlushed carryover bug) make this nonzero fleet-wide;
@@ -551,6 +557,7 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 func (r *QMDBRootComputer) afterReload(g qmdb.Getter, path string, since time.Time) {
 	r.flushedThrough = r.t.NextSlot()
 	r.stagedValid = false
+	r.stagedNextValid = false
 	r.indexTrusted = r.t.NextSlot()
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
 	if reloadVerify {
@@ -702,9 +709,19 @@ func (r *QMDBRootComputer) FlushPersistsAll() bool {
 // rows dropped from RAM.
 func (r *QMDBRootComputer) CommitFlushed() {
 	defer r.lockWriter(holderCommitFlushed)()
+	r.commitFlushedLocked()
+}
+
+// commitFlushedLocked is CommitFlushed with readers held exclusively: the
+// oldest staged window is adopted and a second one becomes the oldest.
+func (r *QMDBRootComputer) commitFlushedLocked() {
 	if r.stagedValid {
 		r.flushedThrough = r.stagedFlushed
 		r.stagedValid = false
+	}
+	if r.stagedNextValid {
+		r.stagedFlushed, r.stagedValid = r.stagedNext, true
+		r.stagedNextValid = false
 	}
 	r.t.CommitFlush()
 }
@@ -722,6 +739,7 @@ func (r *QMDBRootComputer) AbortFlushed() {
 
 func (r *QMDBRootComputer) abortFlushedLocked() {
 	r.stagedValid = false
+	r.stagedNextValid = false
 	r.t.AbortFlush()
 }
 

@@ -37,11 +37,12 @@ const (
 	holderAdoptAppends
 	holderEvict
 	holderRoot
+	holderFlushEarly
 )
 
 var holderNames = [...]string{"none", "evictLag", "chainPending", "peel", "revert", "rewind", "takeUndo",
 	"applyUndo", "rootFold", "load", "reload", "flush", "flushAsync", "commitFlushed", "abortFlushed",
-	"setCold", "mdbxIndex", "indexTx", "adoptAppends", "evict", "root"}
+	"setCold", "mdbxIndex", "indexTx", "adoptAppends", "evict", "root", "flushEarly"}
 
 // QMDBHolderName names a holder code of LookupTiming.Holder.
 func QMDBHolderName(code uint32) string {
