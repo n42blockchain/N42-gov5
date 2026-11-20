@@ -366,6 +366,13 @@ type Tree struct {
 	// rows on disk).
 	stagedDead []uint64
 
+	// stagedNext is a second staged window (FlushToSecond, the lag writer's
+	// early capture N42_LAG_QCAP_EARLY): block N's rows captured while block
+	// N-1's window (stagedFlushThrough / stagedDead) is still uncommitted.
+	// CommitFlush commits the first window and promotes this one; AbortFlush
+	// drops both; AbortFlushNewest drops only this one (persist_second.go).
+	stagedNext stagedWindow
+
 	// Incremental upper tree (binary Merkle over twig roots). upper is a heap of
 	// size 2*upCap (upCap = pow2 >= len(twigs)): upper[1] is the world root and
 	// the twig roots occupy [upCap, upCap+len(twigs)), padded with nullHash. Twig

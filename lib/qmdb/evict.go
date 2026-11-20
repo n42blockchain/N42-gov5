@@ -160,6 +160,7 @@ func (t *Tree) AdoptFlushed(through uint64) {
 func (t *Tree) AdoptFlushedKeep() {
 	t.deadFlushed = t.deadFlushed[:0]
 	t.stagedDead = t.stagedDead[:0]
+	t.stagedNext.reset()
 }
 
 // EntriesBase exposes the absolute slot of the window start (slots below it are

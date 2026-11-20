@@ -213,6 +213,7 @@ func (t *Tree) loadIncremental(g Getter, prev uint64) error {
 	t.flushedResident = 0
 	t.deadFlushed = nil
 	t.stagedDead = nil
+	t.stagedNext.reset()
 	t.arena = nil
 	t.foldScratch = t.foldScratch[:0]
 	t.rootDirty = true

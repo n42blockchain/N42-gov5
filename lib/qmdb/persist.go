@@ -207,6 +207,15 @@ func be8(v uint64) []byte {
 // twig metadata (sequential by id), and the recovery meta. Returns bytes written.
 // flushedThrough is the slot cursor already persisted (0 on first flush).
 func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
+	if t.stagedNext.valid {
+		return flushedThrough, 0, errSecondWindowStaged
+	}
+	return t.flushTo(p, flushedThrough, nil)
+}
+
+// flushTo is FlushTo; sec non-nil stages the flush as the second window
+// (FlushToSecond, persist_second.go).
+func (t *Tree) flushTo(p Putter, flushedThrough uint64, sec *secondFlush) (uint64, int, error) {
 	bytesW := 0
 	// Per-table accounting. The MDBX commit that follows costs in proportion to
 	// the PAGES this flush dirties, and the three tables dirty pages very
@@ -234,6 +243,12 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	// Recompute dirty twig roots FIRST so the per-twig meta below persists the
 	// CURRENT root (resume's fast path trusts these stored roots). Without this a
 	// dirty twig would flush a stale root.
+	if sec != nil {
+		// The twigs the previous window's eviction will drop, chosen as
+		// that eviction (which runs before this flush without an early
+		// capture) chooses them.
+		sec.selectEvicted(t)
+	}
 	root := t.Root()
 	tPhase := time.Now()
 	st.Root = tPhase.Sub(flushStart)
@@ -281,7 +296,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		// Stage instead of dropping: the deletes live in the caller's tx, which
 		// may still roll back. CommitFlush finalizes, AbortFlush re-queues.
 		st.DeadRows = len(t.deadFlushed)
-		t.stagedDead = append(t.stagedDead, t.deadFlushed...)
+		if sec != nil {
+			t.stagedNext.dead = append(t.stagedNext.dead, t.deadFlushed...)
+		} else {
+			t.stagedDead = append(t.stagedDead, t.deadFlushed...)
+		}
 		t.deadFlushed = t.deadFlushed[:0]
 	}
 	now = time.Now()
@@ -303,6 +322,12 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	var leafTime time.Duration
 	for _, id := range sel {
 		tw := t.twigs[id]
+		// A twig the previous window's eviction drops: as if its leaves
+		// were already gone (a meta row only when metaDirty, no leaf blob).
+		evicted := sec != nil && sec.drops(id)
+		if evicted && !tw.metaDirty {
+			continue
+		}
 		meta := make([]byte, 32+32+TwigSize/8)
 		copy(meta[:32], tw.root[:])
 		copy(meta[32:64], tw.leafRoot[:])
@@ -319,7 +344,7 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		// entry hash — dead slots included, since the frozen leaf tree commits
 		// them forever (sparse encoding still elides never-appended tail slots).
 		// Skipped for evicted twigs (nodes==nil): their frozen blob is current.
-		if t.leafStore != nil && tw.nodes != nil {
+		if t.leafStore != nil && tw.nodes != nil && !evicted {
 			tLeaf := time.Now()
 			blob := encodeSparseLeaves(tw.nodes)
 			err := p.Put(LeavesTable, be8(uint64(id)), blob)
@@ -353,6 +378,10 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		return flushedThrough, bytesW, err
 	}
 	bytesW += 8
+	if sec != nil {
+		t.stagedNext.through, t.stagedNext.valid = t.nextSlot, true
+		return t.nextSlot, bytesW, nil
+	}
 	t.stagedFlushThrough, t.stagedFlushValid = t.nextSlot, true
 	return t.nextSlot, bytesW, nil
 }
@@ -413,6 +442,7 @@ func (t *Tree) CommitFlush() {
 		t.flushedThrough = t.stagedFlushThrough
 		t.stagedFlushValid = false
 	}
+	t.promoteSecondWindow()
 }
 
 // AbortFlush undoes the last FlushTo's in-memory bookkeeping after its
@@ -423,6 +453,8 @@ func (t *Tree) AbortFlush() {
 	t.stagedFlushValid = false
 	t.deadFlushed = append(t.deadFlushed, t.stagedDead...)
 	t.stagedDead = t.stagedDead[:0]
+	t.deadFlushed = append(t.deadFlushed, t.stagedNext.dead...)
+	t.stagedNext.reset()
 }
 
 // LoadFrom rebuilds the in-memory forest from a previously-flushed positional
@@ -516,6 +548,7 @@ func (t *Tree) resetForLoad() {
 	t.nDirtyTwigs = 0
 	t.deadFlushed = nil
 	t.stagedDead = nil
+	t.stagedNext.reset()
 	t.flushedResident = 0
 	// A reload replaces the in-memory tree wholesale, so any death stamps still
 	// pending in the recorder describe the ABANDONED tree (e.g. a failed

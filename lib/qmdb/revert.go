@@ -166,6 +166,11 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		t.flushedThrough = prev
 	}
 	t.stagedFlushValid = false
+	if t.stagedNext.valid {
+		// Its deletes are uncommitted like the first window's.
+		t.stagedDead = append(t.stagedDead, t.stagedNext.dead...)
+		t.stagedNext.reset()
+	}
 	if t.entriesBase <= prev {
 		if keep := prev - t.entriesBase; keep < uint64(len(t.entries)) {
 			t.entries = t.entries[:keep]
