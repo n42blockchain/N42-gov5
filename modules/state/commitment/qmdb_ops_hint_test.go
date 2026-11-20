@@ -220,62 +220,65 @@ func TestRootOpsHintedRootsEqual(t *testing.T) {
 	for _, workers := range []int{0, 16} {
 		for _, fr := range []string{"off", "on", "check"} {
 			for _, ul := range []string{"off", "on", "check"} {
-				t.Run(fmt.Sprintf("shard%d/fromrun-%s/unlocked-%s", workers, fr, ul), func(t *testing.T) {
-					prevW := qmdb.ShardApplyWorkers
-					qmdb.ShardApplyWorkers = workers
-					defer func() { qmdb.ShardApplyWorkers = prevW }()
-					restore := SetRootOpsFromRunForTest(fr)
-					defer restore()
-					defer SetRootOpsUnlockedForTest(ul)()
-					ref, hinted := NewQMDBRootComputer(), NewQMDBRootComputer()
-					ref.EnableUndoRecording()
-					hinted.EnableUndoRecording()
-					for blk := int64(0); blk < 4; blk++ {
-						c := laneShapedCase(100+blk, 700, 2100)
-						// Later blocks rewrite earlier keys (updates, not
-						// only inserts).
-						if blk > 0 {
-							prev := laneShapedCase(100+blk-1, 700, 2100)
-							for i, f := range prev.finals {
-								if i%3 != 0 {
-									continue
+				for _, hr := range []string{"off", "on", "check"} {
+					t.Run(fmt.Sprintf("shard%d/fromrun-%s/unlocked-%s/headroom-%s", workers, fr, ul, hr), func(t *testing.T) {
+						defer SetQMDBApplyHeadroomForTest(hr)()
+						prevW := qmdb.ShardApplyWorkers
+						qmdb.ShardApplyWorkers = workers
+						defer func() { qmdb.ShardApplyWorkers = prevW }()
+						restore := SetRootOpsFromRunForTest(fr)
+						defer restore()
+						defer SetRootOpsUnlockedForTest(ul)()
+						ref, hinted := NewQMDBRootComputer(), NewQMDBRootComputer()
+						ref.EnableUndoRecording()
+						hinted.EnableUndoRecording()
+						for blk := int64(0); blk < 4; blk++ {
+							c := laneShapedCase(100+blk, 700, 2100)
+							// Later blocks rewrite earlier keys (updates, not
+							// only inserts).
+							if blk > 0 {
+								prev := laneShapedCase(100+blk-1, 700, 2100)
+								for i, f := range prev.finals {
+									if i%3 != 0 {
+										continue
+									}
+									acc := f.Acct
+									acc.Nonce += 100
+									c.finals = append(c.finals, HintAccount{Addr: f.Addr, Acct: acc})
+									cp := acc
+									c.accounts[f.Addr] = &cp
 								}
-								acc := f.Acct
-								acc.Nonce += 100
-								c.finals = append(c.finals, HintAccount{Addr: f.Addr, Acct: acc})
-								cp := acc
-								c.accounts[f.Addr] = &cp
+							}
+							want, err := ref.ComputeRoot(c.accounts, c.storage)
+							if err != nil {
+								t.Fatal(err)
+							}
+							var h *AccountOpsHint
+							if RootOpsHintWanted() {
+								h = c.hint()
+							}
+							var got types.Hash
+							if h != nil {
+								got, err = hinted.ComputeRootHinted(c.accounts, c.storage, h)
+							} else {
+								got, err = hinted.ComputeRoot(c.accounts, c.storage)
+							}
+							if err != nil {
+								t.Fatal(err)
+							}
+							if got != want {
+								t.Fatalf("block %d: root %x, today %x", blk, got, want)
+							}
+							if !reflect.DeepEqual(ref.LastUndo(), hinted.LastUndo()) {
+								t.Fatalf("block %d: undo records differ", blk)
+							}
+							p := LastComputeRootPhases()
+							if p.Hinted != (h != nil) || (fr != "off" && !p.HintUsed) {
+								t.Fatalf("block %d: phases %+v", blk, *p)
 							}
 						}
-						want, err := ref.ComputeRoot(c.accounts, c.storage)
-						if err != nil {
-							t.Fatal(err)
-						}
-						var h *AccountOpsHint
-						if RootOpsHintWanted() {
-							h = c.hint()
-						}
-						var got types.Hash
-						if h != nil {
-							got, err = hinted.ComputeRootHinted(c.accounts, c.storage, h)
-						} else {
-							got, err = hinted.ComputeRoot(c.accounts, c.storage)
-						}
-						if err != nil {
-							t.Fatal(err)
-						}
-						if got != want {
-							t.Fatalf("block %d: root %x, today %x", blk, got, want)
-						}
-						if !reflect.DeepEqual(ref.LastUndo(), hinted.LastUndo()) {
-							t.Fatalf("block %d: undo records differ", blk)
-						}
-						p := LastComputeRootPhases()
-						if p.Hinted != (h != nil) || (fr != "off" && !p.HintUsed) {
-							t.Fatalf("block %d: phases %+v", blk, *p)
-						}
-					}
-				})
+					})
+				}
 			}
 		}
 	}
