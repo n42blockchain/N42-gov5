@@ -219,13 +219,14 @@ func TestRootOpsHintCheckCatches(t *testing.T) {
 func TestRootOpsHintedRootsEqual(t *testing.T) {
 	for _, workers := range []int{0, 16} {
 		for _, fr := range []string{"off", "on", "check"} {
-			for _, ul := range []string{"off"} {
+			for _, ul := range []string{"off", "on", "check"} {
 				t.Run(fmt.Sprintf("shard%d/fromrun-%s/unlocked-%s", workers, fr, ul), func(t *testing.T) {
 					prevW := qmdb.ShardApplyWorkers
 					qmdb.ShardApplyWorkers = workers
 					defer func() { qmdb.ShardApplyWorkers = prevW }()
 					restore := SetRootOpsFromRunForTest(fr)
 					defer restore()
+					defer SetRootOpsUnlockedForTest(ul)()
 					ref, hinted := NewQMDBRootComputer(), NewQMDBRootComputer()
 					ref.EnableUndoRecording()
 					hinted.EnableUndoRecording()
