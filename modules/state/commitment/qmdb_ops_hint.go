@@ -34,6 +34,7 @@ package commitment
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"runtime"
@@ -190,11 +191,7 @@ func (h *AccountOpsHint) Build(finals []HintAccount) {
 	t0 := time.Now()
 	defer func() { h.took = time.Since(t0) }()
 	n := len(finals)
-	type keyed struct {
-		op qmdb.Op
-		i  int32
-	}
-	items := make([]keyed, n)
+	items := make([]keyedOp, n)
 	fill := func(lo, hi int) {
 		for i := lo; i < hi; i++ {
 			f := &finals[i]
@@ -217,7 +214,7 @@ func (h *AccountOpsHint) Build(finals []HintAccount) {
 		}
 		wg.Wait()
 	}
-	slices.SortFunc(items, func(a, b keyed) int { return compareOps(a.op, b.op) })
+	items = sortKeyedOps(items)
 	h.ops = make([]qmdb.Op, n)
 	h.accts = make([]account.StateAccount, n)
 	h.pos = make(map[types.Address]int32, n)
@@ -230,6 +227,54 @@ func (h *AccountOpsHint) Build(finals []HintAccount) {
 		}
 		h.pos[f.Addr] = int32(k)
 	}
+}
+
+// keyedOp is an op with the index of the final it encodes.
+type keyedOp struct {
+	op qmdb.Op
+	i  int32
+}
+
+// sortKeyedOps sorts items by key hash (sortOpsByKey's order: 65,536
+// buckets by the top 16 bits, each finished by insertion sort, a large one
+// by the comparison sort) and returns the sorted copy.
+func sortKeyedOps(items []keyedOp) []keyedOp {
+	cmp := func(a, b keyedOp) int { return compareOps(a.op, b.op) }
+	if len(items) < opsRadixMin {
+		slices.SortFunc(items, cmp)
+		return items
+	}
+	cnt := make([]int32, 1<<16+1)
+	for i := range items {
+		cnt[int(binary.BigEndian.Uint16(items[i].op.KeyHash[:2]))+1]++
+	}
+	for i := 1; i < len(cnt); i++ {
+		cnt[i] += cnt[i-1]
+	}
+	pos := make([]int32, 1<<16)
+	copy(pos, cnt[:1<<16])
+	out := make([]keyedOp, len(items))
+	for i := range items {
+		b := binary.BigEndian.Uint16(items[i].op.KeyHash[:2])
+		out[pos[b]] = items[i]
+		pos[b]++
+	}
+	for b := 0; b < 1<<16; b++ {
+		lo, hi := int(cnt[b]), int(cnt[b+1])
+		switch {
+		case hi-lo < 2:
+		case hi-lo > opsBucketMax:
+			slices.SortFunc(out[lo:hi], cmp)
+		default:
+			bucket := out[lo:hi]
+			for i := 1; i < len(bucket); i++ {
+				for j := i; j > 0 && cmp(bucket[j-1], bucket[j]) > 0; j-- {
+					bucket[j-1], bucket[j] = bucket[j], bucket[j-1]
+				}
+			}
+		}
+	}
+	return out
 }
 
 // accountOp is buildAccountOps' op for one account.
