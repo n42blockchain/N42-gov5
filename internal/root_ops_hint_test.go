@@ -36,7 +36,7 @@ type rootHintOutcome struct {
 	used     bool
 	// hits and misses of the hinted op build.
 	hits, misses int
-	post     []string
+	post         []string
 }
 
 // runRootHintBlock runs a block like runLaneBlock with the lanes on and the
