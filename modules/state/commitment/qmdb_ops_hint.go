@@ -120,6 +120,37 @@ func RootOpsHintWanted() bool {
 	return rootOpsFromRunMode != rootOpsOff || rootOpsUnlockedMode != rootOpsOff
 }
 
+// N42_QMDB_APPLY_HEADROOM (r100a, design r97 I3 "pre-size"): on a hinted
+// (lane) block, a sharded apply that must reallocate the tree's entry
+// window adds rootApplyHeadroomBlocks blocks' worth of spare capacity, so
+// the following blocks append into it instead of copying the resident
+// window again (the window is reallocated right-sized by the lagged
+// eviction, and grows by ~1.25x per append growth otherwise). Capacity
+// only. "check" does the same and verifies that the window grew by exactly
+// the slots the block appended.
+const EnvQMDBApplyHeadroom = "N42_QMDB_APPLY_HEADROOM"
+
+// rootApplyHeadroomBlocks is the headroom in blocks of the block's own ops.
+const rootApplyHeadroomBlocks = 4
+
+var rootApplyHeadroomMode = parseRootOpsMode(os.Getenv(EnvQMDBApplyHeadroom))
+
+// SetQMDBApplyHeadroomForTest sets N42_QMDB_APPLY_HEADROOM ("off", "on" or
+// "check") and returns the restore.
+func SetQMDBApplyHeadroomForTest(mode string) func() {
+	return setRootOpsMode(&rootApplyHeadroomMode, mode)
+}
+
+// rootApplyHeadroomChecks / rootApplyHeadroomMismatches: the headroom
+// switch's check mode verifications and failures (must stay 0).
+var rootApplyHeadroomChecks, rootApplyHeadroomMismatches atomic.Uint64
+
+// QMDBApplyHeadroomChecks returns the check mode's verifications and
+// failures.
+func QMDBApplyHeadroomChecks() (checks, mismatches uint64) {
+	return rootApplyHeadroomChecks.Load(), rootApplyHeadroomMismatches.Load()
+}
+
 // rootOpsStats: hinted roots, their check comparisons and differences
 // (must stay 0), and hints not ready or unusable when the root started.
 var rootOpsStats struct {

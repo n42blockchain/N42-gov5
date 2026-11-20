@@ -981,8 +981,27 @@ func (r *QMDBRootComputer) computeRoot(
 	// 163k-transaction block is ~31k ops; eager, they were 183 ms of a
 	// follower's 220 ms finalize (round 35zzf's profile). It ends with the
 	// tree folded, so Root below is a cached read.
+	// N42_QMDB_APPLY_HEADROOM: a lane block's apply grows the entry window
+	// with spare capacity when it must reallocate it anyway.
+	headroom := hint != nil && rootApplyHeadroomMode != rootOpsOff
+	var resident0 int
+	var next0 uint64
+	if headroom {
+		r.t.SetApplyHeadroom(rootApplyHeadroomBlocks * len(ops))
+		resident0, next0 = r.t.ResidentEntries(), r.t.NextSlot()
+	}
 	tApply := time.Now()
 	r.t.ApplyOps(ops)
+	if headroom {
+		r.t.SetApplyHeadroom(0)
+		if rootApplyHeadroomMode == rootOpsCheck {
+			rootApplyHeadroomChecks.Add(1)
+			if grew, appended := r.t.ResidentEntries()-resident0, r.t.NextSlot()-next0; uint64(grew) != appended {
+				rootApplyHeadroomMismatches.Add(1)
+				noteRootOpsDiff("apply headroom", fmt.Sprintf("window grew %d, appended %d", grew, appended))
+			}
+		}
+	}
 	if r.undoRecording {
 		r.lastUndo = r.t.StopUndoRecording()
 	}
@@ -1041,7 +1060,7 @@ func (r *QMDBRootComputer) computeRoot(
 			// and the check verdict.
 			"opsHinted", hint != nil, "opsPreNs", dPre.Nanoseconds(), "opsHintUsed", hst.used,
 			"opsHits", hst.hits, "opsMisses", hst.misses, "opsUnused", hst.unused, "opsHintWhy", hst.why,
-			"opsHintCheck", hst.check)
+			"opsHintCheck", hst.check, "applyHeadroom", headroom)
 	}
 	return root, nil
 }
