@@ -50,6 +50,7 @@ import (
 	"github.com/n42blockchain/N42/internal/parallel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -142,6 +143,9 @@ type laneOutcome struct {
 	classify, merge, run, publish time.Duration
 	// check: the check mode's verdict ("same", "diff"; "" when not compared).
 	check string
+	// applied is the applied run (used only), whose final accounts hand the
+	// root its ops hint (rootFinals).
+	applied *laneRun
 }
 
 // laneAcc is one lane: a sender, its private account and the last
@@ -167,6 +171,9 @@ type laneRecipient struct {
 	addr types.Address
 	sum  uint256.Int
 	last int
+	// final is the recipient's account after the block: the base with the
+	// credits added (the root ops hint's input, r100a).
+	final account.StateAccount
 }
 
 // laneWorker is one worker's state across the phases.
@@ -267,6 +274,30 @@ func runTransferLanes(in *laneInputs, mvs *parallel.MVS, res []parallelTxResult)
 		return out
 	}
 	out.used = true
+	out.applied = r
+	return out
+}
+
+// rootFinals are an applied run's final accounts, one per account it
+// changed: each lane's sender as published, each pure recipient's base plus
+// its credits. Senders and pure recipients are disjoint (merge declines a
+// recipient that sends), so each address appears once.
+func (r *laneRun) rootFinals() []commitment.HintAccount {
+	n := 0
+	for w := range r.wk {
+		n += len(r.wk[w].lanes) + len(r.recips[w])
+	}
+	out := make([]commitment.HintAccount, 0, n)
+	for w := range r.wk {
+		for li := range r.wk[w].lanes {
+			ln := &r.wk[w].lanes[li]
+			out = append(out, commitment.HintAccount{Addr: ln.addr, Acct: ln.acc})
+		}
+		for j := range r.recips[w] {
+			rc := &r.recips[w][j]
+			out = append(out, commitment.HintAccount{Addr: rc.addr, Acct: rc.final})
+		}
+	}
 	return out
 }
 
@@ -496,6 +527,8 @@ func (r *laneRun) merge(p int, evm *vm2.EVM, rd *parallel.ParallelStateReader, b
 			r.decline("recipient %x balance overflow", rc.addr)
 			return
 		}
+		rc.final = to
+		rc.final.Balance = total
 		if evm.IsPrecompile(rc.addr) {
 			r.decline("recipient %x is a precompile", rc.addr)
 			return

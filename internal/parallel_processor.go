@@ -1185,6 +1185,23 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 			span = nil
 		}
 	}
+	// N42_ROOT_OPS_FROM_RUN / N42_ROOT_OPS_UNLOCKED (r100a): a block the
+	// lanes applied hands its root the run's final accounts with their ops,
+	// built off the import chain while the block is folded
+	// (commitment/qmdb_ops_hint.go). Every other block hands nothing.
+	rootHinted := false
+	if laneOut.used && deferFees && useQMDB && commitment.RootOpsHintWanted() {
+		h := commitment.NewAccountOpsHint()
+		if h.Caches() {
+			run := laneOut.applied
+			go h.Build(run.rootFinals())
+		} else {
+			h.MarkBuilt()
+		}
+		ibs.SetRootOpsHint(h)
+		rootHinted = true
+	}
+	laneOut.applied = nil
 	if waveCPUMeter != nil {
 		waveCPUNs.Add(int64(waveCPUMeter() - waveCPU0))
 	}
@@ -1578,6 +1595,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		if laneMode != lanesOff {
 			// r98a: the transfer lanes (transfer_lanes.go).
 			blockLog = append(blockLog, laneOut.fields()...)
+			blockLog = append(blockLog, "rootHint", rootHinted)
 		}
 		log.Info("parallel block", blockLog...)
 	}
