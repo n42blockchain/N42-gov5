@@ -2947,7 +2947,9 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			// apply, the snapshot publish, and the credits the root took
 			// detached (P4b) against those it materialised as objects.
 			if cr := commitment.LastComputeRootPhases(); cr != nil {
-				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply)
+				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply,
+					// r100a: the root's exclusive hold of the tree lock.
+					"rootHold", cr.Hold)
 			}
 			// Finalize's span on an ahead run up to the post-state hook (the
 			// child's launch), step by step, then the hook, the root

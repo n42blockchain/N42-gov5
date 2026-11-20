@@ -190,6 +190,9 @@ func (r *QMDBRootComputer) LookupLocked(keyHash qmdb.Hash, cold qmdb.Getter) (va
 type ComputeRootPhases struct {
 	Ops                            int
 	LockWait, Collect, Apply, Fold time.Duration
+	// Hold is how long the computation held the tree lock exclusively
+	// (from acquiring it to the phases' record; r100a stamp, appended).
+	Hold time.Duration
 }
 
 var lastComputeRoot atomic.Pointer[ComputeRootPhases]
@@ -897,7 +900,8 @@ func (r *QMDBRootComputer) ComputeRoot(
 ) (types.Hash, error) {
 	tLock := time.Now()
 	defer r.lockWriter(holderRoot)()
-	dLock := time.Since(tLock)
+	tHeld := time.Now()
+	dLock := tHeld.Sub(tLock)
 	var label *rootLabel
 	if l := r.nextLabel.Swap(nil); l != nil && l.post.HoldsAccounts(accounts) {
 		label = l
@@ -941,7 +945,9 @@ func (r *QMDBRootComputer) ComputeRoot(
 	dApply := time.Since(tApply)
 	tFold := time.Now()
 	root := types.Hash(r.t.Root())
-	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: time.Since(tFold)})
+	dFold := time.Since(tFold)
+	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: dFold,
+		Hold: time.Since(tHeld)})
 	// Split the two halves of a root computation.
 	//
 	// QMDB is a BINARY tree, not a Patricia trie: an entry is appended to the
@@ -978,7 +984,9 @@ func (r *QMDBRootComputer) ComputeRoot(
 			"serPrepNs", ap.SerialPrep.Nanoseconds(), "serDeactNs", ap.SerialDeact.Nanoseconds(),
 			"commitWaitNs", ap.CommitWait.Nanoseconds(), "serLiveNs", ap.SerialLive.Nanoseconds(),
 			"serIndexNs", ap.SerialIndex.Nanoseconds(), "deacts", ap.Deacts, "coldDeacts", ap.ColdDeacts,
-			"opsNs", dOps.Nanoseconds(), "lockWaitNs", dLock.Nanoseconds())
+			"opsNs", dOps.Nanoseconds(), "lockWaitNs", dLock.Nanoseconds(),
+			// r100a: the exclusive hold up to this line.
+			"lockHoldNs", time.Since(tHeld).Nanoseconds())
 	}
 	return root, nil
 }
