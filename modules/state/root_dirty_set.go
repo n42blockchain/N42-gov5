@@ -66,6 +66,20 @@ func (s *IntraBlockState) SetRootComputeHook(fn func()) {
 	s.rootComputeHook = fn
 }
 
+// AddRootComputeHook is SetRootComputeHook keeping a hook already
+// installed: the earlier one runs first, then fn, at the same point.
+func (s *IntraBlockState) AddRootComputeHook(fn func()) {
+	prev := s.rootComputeHook
+	if prev == nil {
+		s.rootComputeHook = fn
+		return
+	}
+	s.rootComputeHook = func() {
+		prev()
+		fn()
+	}
+}
+
 // SetDetachedPendingCredits lets the root computation take a pending
 // balance credit of an account this state never loaded straight from the
 // prefetch layer (base + credit, computed in parallel) instead of
