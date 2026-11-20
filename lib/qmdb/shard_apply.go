@@ -89,6 +89,12 @@ type ApplyPhases struct {
 // LastApplyPhases reports the split of the tree's most recent ApplyOps.
 func (t *Tree) LastApplyPhases() ApplyPhases { return t.lastApply }
 
+// SetApplyHeadroom sets the spare entry capacity (in entries) the sharded
+// apply adds to the entry window when its growth must reallocate it anyway
+// (0: exactly what the batch needs, as before). Capacity only: the window's
+// contents, length and every output byte are the same.
+func (t *Tree) SetApplyHeadroom(n int) { t.applyHeadroom = max(n, 0) }
+
 // shardOp is one op's precomputed inputs.
 type shardOp struct {
 	old     uint64 // live slot before the batch (valid iff hasOld)
@@ -288,7 +294,13 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 		// Every element of the new range is written by the commit, so the
 		// window grows by reslicing into its spare capacity.
 		if need := int(end - t.entriesBase); len(t.entries) < need {
-			t.entries = slices.Grow(t.entries, need-len(t.entries))[:need]
+			grow := need - len(t.entries)
+			if cap(t.entries) < need {
+				// A reallocation copies the whole resident window; with
+				// headroom the next blocks append into spare capacity.
+				grow += t.applyHeadroom
+			}
+			t.entries = slices.Grow(t.entries, grow)[:need]
 		}
 	}
 	t1v := time.Now()

@@ -425,6 +425,10 @@ type Tree struct {
 	// (shard_apply.go); zero after a batch on another path.
 	lastApply ApplyPhases
 
+	// applyHeadroom is the spare entry capacity the sharded apply adds when
+	// it must reallocate the entry window anyway (SetApplyHeadroom).
+	applyHeadroom int
+
 	// lastFlush / lastEvict: the split of the last FlushTo and
 	// EvictTwigsThrough (flush_stats.go).
 	lastFlush FlushStats
