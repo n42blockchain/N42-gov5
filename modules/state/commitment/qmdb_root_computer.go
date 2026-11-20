@@ -193,6 +193,13 @@ type ComputeRootPhases struct {
 	// Hold is how long the computation held the tree lock exclusively
 	// (from acquiring it to the phases' record; r100a stamp, appended).
 	Hold time.Duration
+	// The run's hint (qmdb_ops_hint.go): whether the block carried one and
+	// the hinted build's hits, misses, unused entries, why it was not used
+	// and the check verdict.
+	Hinted                           bool
+	HintUsed                         bool
+	HintHits, HintMisses, HintUnused int
+	HintWhy, HintCheck               string
 }
 
 var lastComputeRoot atomic.Pointer[ComputeRootPhases]
@@ -898,6 +905,26 @@ func (r *QMDBRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
+	return r.computeRoot(accounts, storage, nil)
+}
+
+// ComputeRootHinted is ComputeRoot for a block whose run handed a hint
+// (*AccountOpsHint; qmdb_ops_hint.go). Any other hint is ComputeRoot.
+func (r *QMDBRootComputer) ComputeRootHinted(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+	hint any,
+) (types.Hash, error) {
+	h, _ := hint.(*AccountOpsHint)
+	return r.computeRoot(accounts, storage, h)
+}
+
+// computeRoot is ComputeRoot with an optional hint (nil: today's path).
+func (r *QMDBRootComputer) computeRoot(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+	hint *AccountOpsHint,
+) (types.Hash, error) {
 	tLock := time.Now()
 	defer r.lockWriter(holderRoot)()
 	tHeld := time.Now()
@@ -908,24 +935,8 @@ func (r *QMDBRootComputer) ComputeRoot(
 	}
 	r.noteMutationLocked(label)
 	tOps := time.Now()
-	// An op with a nil Value is a delete (ApplyOps' convention); every
-	// live value here is non-empty (an encoded account or a 32-byte word).
-	ops := buildAccountOps(accounts, len(storage))
-	for addr, slots := range storage {
-		for slot, val := range slots {
-			kh := qmdb.Hash(StorageKeyHash(addr, slot))
-			if val == nil || val.IsZero() {
-				ops = append(ops, qmdb.Op{KeyHash: kh})
-			} else {
-				var buf [32]byte
-				val.WriteToSlice(buf[:])
-				v := make([]byte, 32)
-				copy(v, buf[:])
-				ops = append(ops, qmdb.Op{KeyHash: kh, Value: v})
-			}
-		}
-	}
-	sortOpsByKey(ops)
+	// hint == nil: buildRootOpsToday, today's build.
+	ops, hst := buildRootOps(accounts, storage, hint)
 	dOps := time.Since(tOps)
 	if r.undoRecording {
 		r.t.StartUndoRecording()
@@ -947,7 +958,8 @@ func (r *QMDBRootComputer) ComputeRoot(
 	root := types.Hash(r.t.Root())
 	dFold := time.Since(tFold)
 	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: dFold,
-		Hold: time.Since(tHeld)})
+		Hold: time.Since(tHeld), Hinted: hint != nil, HintUsed: hst.used, HintHits: hst.hits,
+		HintMisses: hst.misses, HintUnused: hst.unused, HintWhy: hst.why, HintCheck: hst.check})
 	// Split the two halves of a root computation.
 	//
 	// QMDB is a BINARY tree, not a Patricia trie: an entry is appended to the
@@ -986,7 +998,12 @@ func (r *QMDBRootComputer) ComputeRoot(
 			"serIndexNs", ap.SerialIndex.Nanoseconds(), "deacts", ap.Deacts, "coldDeacts", ap.ColdDeacts,
 			"opsNs", dOps.Nanoseconds(), "lockWaitNs", dLock.Nanoseconds(),
 			// r100a: the exclusive hold up to this line.
-			"lockHoldNs", time.Since(tHeld).Nanoseconds())
+			"lockHoldNs", time.Since(tHeld).Nanoseconds(),
+			// r100a: the run's hint (lane blocks): its hits, misses,
+			// unused entries, why it was not used and the check verdict.
+			"opsHinted", hint != nil, "opsHintUsed", hst.used,
+			"opsHits", hst.hits, "opsMisses", hst.misses, "opsUnused", hst.unused, "opsHintWhy", hst.why,
+			"opsHintCheck", hst.check)
 	}
 	return root, nil
 }
