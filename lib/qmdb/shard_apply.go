@@ -78,6 +78,12 @@ type ApplyPhases struct {
 	SerialIndex time.Duration // index counters, in-order index writes, key versions, cursor
 	Deacts      int           // ops with a live old slot (deactivations)
 	ColdDeacts  int           // of them, recorded through the cold path (no resident undo copy)
+
+	// SerialPrep's split (r100a stamps, appended): the new range's twig and
+	// the entry window's growth, then the undo record's growth, the value
+	// block and BeginLeafBatch.
+	SerialGrow time.Duration
+	SerialVals time.Duration
 }
 
 // LastApplyPhases reports the split of the tree's most recent ApplyOps.
@@ -276,6 +282,7 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 		total += c.bytes
 	}
 	end := base + uint64(sets)
+	t1g := time.Now()
 	if sets > 0 {
 		t.twigFor(end - 1)
 		// Every element of the new range is written by the commit, so the
@@ -284,6 +291,7 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 			t.entries = slices.Grow(t.entries, need-len(t.entries))[:need]
 		}
 	}
+	t1v := time.Now()
 	keyOff := 0
 	if undo {
 		keyOff = len(t.rec.AppendedKeys)
@@ -398,6 +406,8 @@ func (t *Tree) applyOpsSharded(ops []Op, workers int) {
 		SerialIndex: t5.Sub(t4l),
 		Deacts:      olds,
 		ColdDeacts:  coldDeacts,
+		SerialGrow:  t1v.Sub(t1g),
+		SerialVals:  t2.Sub(t1v),
 	}
 }
 

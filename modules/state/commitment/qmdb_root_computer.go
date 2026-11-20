@@ -1030,6 +1030,9 @@ func (r *QMDBRootComputer) computeRoot(
 			"serPrepNs", ap.SerialPrep.Nanoseconds(), "serDeactNs", ap.SerialDeact.Nanoseconds(),
 			"commitWaitNs", ap.CommitWait.Nanoseconds(), "serLiveNs", ap.SerialLive.Nanoseconds(),
 			"serIndexNs", ap.SerialIndex.Nanoseconds(), "deacts", ap.Deacts, "coldDeacts", ap.ColdDeacts,
+			// r100a: serPrepNs's split (twig + entry window growth; undo
+			// growth + value block + leaf batch).
+			"serGrowNs", ap.SerialGrow.Nanoseconds(), "serValsNs", ap.SerialVals.Nanoseconds(),
 			"opsNs", dOps.Nanoseconds(), "lockWaitNs", dLock.Nanoseconds(),
 			// r100a: the exclusive hold up to this line.
 			"lockHoldNs", time.Since(tHeld).Nanoseconds(),
