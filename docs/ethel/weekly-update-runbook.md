@@ -366,6 +366,66 @@ mainnet cadence) with no state-root mismatch in the log.
 
 ## 8. Run log
 
+### 2026-11-20 (full cycle + three-mode test; reth2k aligned forward with a patched reth)
+
+Target **26,448,348** (`0x019391dc`, hash
+`0x9f82bc45c1878823dc74f1dbfa8dbfedcd434b196cd7a6ecef0c5bf228741eaa`; prior week
+26,245,274; d 203,074). Tools rebuilt from `26ab4c33` into `C:\N42\wk-20261120\`
+(`wk-eth-el` with `-tags n42el`); logs and drivers in `D:\weekly-20261120\`. The
+qs fleet was stopped for the cycle (old-mainnet weekly ran in parallel, see
+`docs/QS_WEEKLY_REPLAY_SYNC.md`).
+
+- **reth2k alignment.** reth2k's frozen head was above geth's, and every attempt
+  to truncate reth static files on Windows failed with **os error 1224** (a file
+  with a live memory mapping cannot be `set_len`): both `reth stage unwind` and
+  the startup `check_consistency` heal. A failed unwind left a half-unwound
+  database (Execution onward rewound, Headers/Bodies/Senders and the static files
+  not), after which the stock `reth.exe` died on every start. Resolution: let geth
+  sync past reth, then drive reth FORWARD to geth's block with `--debug.tip`,
+  using a patched build `D:\reth2k\reth-win1224.exe` (reth `0f89525`, worktree
+  `C:\N42\reth-0f89525`, not committed): (1) `static_file/writer.rs` `open()`
+  drops the cached reader and calls `remove_cached_provider` before the writer
+  may prune; (2) `truncate()` evicts it again (the writer itself is cached, so
+  (1) alone is not reached a second time); (3) `fs-util::atomic_write_file`'s
+  directory fsync is `#[cfg(unix)]` (opening a directory as a file is os error 5
+  on Windows). Run with `--ipcdisable` (the default `/tmp/reth.ipc` is not a
+  valid named-pipe path); it does not exit at the tip, stop it with CTRL_BREAK.
+  Result: all 13 stages, `BlockBodyIndices` and the static-file headers at
+  26,448,348, MerkleExecute passed. **Do not use the stock reth.exe to unwind on
+  Windows.**
+- Step 1: senders 1m59s / 1m53s, headerc 4 s, bodyc 13m40s, receipts 9m27s;
+  headerc and bodyc rewound the partial tail. All exit 0.
+- Step 2 replay: 2h39m40s (shared the machine with the qs replay),
+  `ethel-last-block` = 26448348. Witness spot-check 26,300,000 / 26,400,000 /
+  26,448,348: **gas diff +0**.
+- Step 2b txindex: archive 19m13s (27 segments, 3,858,763,229 tx = reth's tx
+  range, 17.19 GB, 35.65 bits/key); window 21m55s (base 23,000,000, 4 segments,
+  950,820,598 tx, 5.21 GB, 43.88 bits/key). `txlookup-query` on both: 10 checked,
+  0 failed.
+- Step 3 codes 19m04s: **3,044,871** codes, `codes.coverage=26448348`.
+- Snapshot 2h01m34s: accounts 433,019,140, storage 1,696,679,618, 57 GB;
+  `snapshot-verify` 3M + 3M rows OK (2m35s).
+- N42-hashed migration 2h21m53s: acc 433,019,140 / sto 1,696,679,618 / tacc
+  32,335,430 / tsto 148,388,739 / code 3,044,871, all failure counters 0, **vtrie
+  OK: root `0xc080bb22f7201b484e33667364ca0cbbf44c08d19f031334436f19aa23140b24` ==
+  expect**, `ethel-last-block=26448348`, 164 GB.
+- **Three-mode test (E:, :30403 / 20115, serialized) — all three PASS** (6
+  consecutive 1-minute samples each advancing 1..15 blocks above the seed head):
+  archive 1h04m to 26,456,371 (no import for the first ~10 min while it found a
+  peer ahead), minimal 29m to 26,456,517, full 36m to 26,456,697; ~8k blocks of
+  catch-up then ~5 blocks/min; 0 error / panic / state-root mismatch. Dirs:
+  archive 168.9 GB, minimal 44.6 GB, full 144.1 GB. The first driver's 75-minute
+  cap was too short for archive; a second driver attached to the running node.
+- **Manifests** (hard-link roots, each table's cidx/base and newest `.cdat`
+  copied; `-height 26448348` passed this time): minimal `d:/n42-publish-26448348`
+  106 files / 37.37 GB `c5bbdcc705ce8451…`; archive same root 498 files / 845.03 GB `d4ef691ef3c88234…`; full
+  `d:/n42-publish-26448348-full` 168 files / 136.95 GB `4a3d569bd87f0512…`. All three
+  re-checked file-by-file after hashing: 0 missing, 0 size mismatch.
+- Removed after the cycle (operator OK): `E:\ethel-*-26245274`, the
+  `D:\*-26245274` artefacts (codes, snapshot, window txindex, N42-hashed, both
+  publish roots).
+- NOT run: DATC, anchors/bpp, the Linux cross-check on n42dev.
+
 ### 2026-10-22/23 (full cycle + three-mode test)
 
 Source: geth ancient frozen **26,245,275** -> target **26,245,274** (hash

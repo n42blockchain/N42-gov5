@@ -717,3 +717,33 @@ fix below).
 - **Not covered yet**: a receipt from a failed fill candidate (a tx that read state
   and was then dropped from the block) would shift the log the same way; none
   occurred in the run (txgen pending lists are contiguous).
+
+### 2026-11-20 (weekly: old-mainnet resync, incremental history replay, era seed, 7-node restart)
+
+Tools and fleet binary from `26ab4c33`, built with `go build` into
+`C:\N42\replay-20261120\`. Logs and drivers in `D:\weekly-20261120\qs\`. Ran in
+parallel with the eth-el weekly (different disks for the hot paths).
+
+- **Sync**: 14,220,015 -> 14,456,749, stopped with `sendbreak.exe`.
+- **Incremental replay** into `E:\qs-replay-hist-20261014` (`--qmdb-history`):
+  236,734 blocks in 3m59s, **txFailed 0**, receiptMismatch 48, 0 missing.
+  checkpoint: `sourceHead` 14,456,749, `number` **14,496,154**, `hash`
+  `0xbd589c96e625369a9759835c34a0d0ebfbe5cb5fefc6a4165435c3e6f6da77ac`, qmdbRoot
+  `0x4b2282bd45a3ee..`.
+- **Audit**: `qmdb-histcheck` 96/96 pass; `qmdb-proof-fuzz` 100,014 proofs, all
+  correct, headerMissing 0.
+- **Seed** `E:\qs-era-out-20261120`: 13 eras / 39 files, sealed_end 13,631,488;
+  `--emit-hot` hot MDBX 64 GB; `verify --deep` `deep verify OK: 832 blocks
+  compared`; checkpoint.json copied in; txindex 1 segment (7.3 MB), watermark
+  13631488.
+- **Fleet**: the current generation moved to `-pre20261120`; `-pre20261029`
+  deleted after the cycle (7 x 72 GB). Startup fingerprint
+  `appliedNum=headNum=14496154`, `treeRoot 4b2282..` (= the replay's qmdbRoot).
+- **10-minute window** (10 samples, 60 s apart): 14,496,161 -> 14,496,440, all 7
+  nodes within one block, **one hash per height at every sample**, 0 errors.
+- **Scripts**: `E:\deploy-7node.ps1`, `E:\build-seed-txindex.ps1` and
+  `E:\roll-one-node.ps1` had been deleted by mistake. The first two were
+  rebuilt (`D:\weekly-20261120\deploy-7node.ps1`, whose generated command lines
+  match the pre-stop fleet's exactly, and `seed-txindex.ps1`, a port of
+  `scripts/qs/build-seed-txindex.sh`) and copied back to `E:\`;
+  `roll-one-node.ps1` was not rebuilt.
