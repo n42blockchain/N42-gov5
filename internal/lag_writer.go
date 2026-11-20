@@ -759,7 +759,33 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 		handBusy = 1
 	}
 	_, _, handQueued := bc.LagStats()
-	doneWait, joined, err := bc.joinLagWriteMode(lean)
+	rc := bc.qmdbRootComputer
+	hdr, _ := blk.Header().(*block.Header)
+	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
+		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
+		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{}),
+		handBusy: handBusy, handQueued: handQueued, announce: announce}
+	// N42_LAG_QCAP_EARLY (lag_qcap_early.go): the undo record, the root,
+	// the journal inputs and the row capture before the join of the
+	// previous write, into the tree's second staged window.
+	earlyMode := lagQCapEarlyMode.Load()
+	var earlyCap *commitment.FlushCapture
+	if earlyMode != lagQCapEarlyOff && prevJob != nil && rc.EarlyCaptureSupported() {
+		bc.lagTakeHandoffTree(j)
+		earlyCap = rc.StartFlushToEarly(&j.flush, earlyMode == lagQCapEarlyCheck)
+		j.capture = earlyCap
+		lagEarlyCaptures.Add(1)
+	}
+	var (
+		doneWait time.Duration
+		joined   bool
+		err      error
+	)
+	if earlyCap != nil {
+		doneWait, joined, err = bc.joinLagWriteAfterCapture(earlyCap)
+	} else {
+		doneWait, joined, err = bc.joinLagWriteMode(lean)
+	}
 	if err != nil {
 		return failed(err)
 	}
@@ -770,25 +796,14 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	} else {
 		bc.lagWrite.lastWaitSplit.Store(nil)
 	}
-	hdr, _ := blk.Header().(*block.Header)
-	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
-		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
-		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{}),
-		handBusy: handBusy, handQueued: handQueued, announce: announce}
-	rc := bc.qmdbRootComputer
-	if lean {
+	if earlyCap != nil {
+		// Captured above.
+	} else if lean || earlyMode != lagQCapEarlyOff {
 		// The undo record and the root first (neither depends on the
 		// flush or the eviction), then the previous block's eviction and
 		// this block's flush on their own goroutine, ordered here: they
 		// hold the tree's lock until done (StartFlushTo).
-		j.undo = rc.TakeUndo()
-		if j.undo == nil {
-			j.undo = &qmdb.BlockUndo{PrevNextSlot: rc.Tree().NextSlot()}
-		}
-		j.root = rc.Root()
-		// Before StartFlushTo takes the tree's lock.
-		j.hist = bc.captureQMDBHistoryInputs()
-		j.gen = rc.AppliedState().Gen
+		bc.lagTakeHandoffTree(j)
 		j.capture = rc.StartFlushTo(&j.flush, joined)
 		lagLeanCaptures.Add(1)
 	} else {

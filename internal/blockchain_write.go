@@ -1163,6 +1163,18 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 					"qcMetaUs", fs.Meta.Microseconds(), "qcTwigs", fs.TwigsForest,
 					"qcVisit", fs.TwigsVisited, "qcTwigRows", fs.TwigRowsN, "qcLeafRows", fs.LeafRowsN,
 					"qcWalkMode", fs.SetMode)
+				// N42_LAG_QCAP_EARLY: 1 an early capture, 2 one into the
+				// second window; qcTail: it ran the join's commit +
+				// eviction (qcEvUs is then that tail).
+				early, second := job.capture.Early()
+				qcEarly := 0
+				if early {
+					qcEarly = 1
+					if second {
+						qcEarly = 2
+					}
+				}
+				fields = append(fields, "qcEarly", qcEarly, "qcTail", cs.Tail)
 			}
 			// The writer's queue at the hand-off: whether the previous write
 			// was still running when the hand-off began, and how many blocks

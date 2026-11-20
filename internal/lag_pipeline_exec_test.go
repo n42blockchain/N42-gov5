@@ -115,6 +115,10 @@ func TestLagPipelineAheadOrderedWriter(t *testing.T) {
 	t.Run("beforeSnapshot", func(t *testing.T) { testLagPipelineAheadEngine(t, false, arrivalBeforeSnapshot, true) })
 }
 
+// lagPipeWriteFailsForTest is how many writes the ordered harness expects
+// to fail (a test injecting write failures sets it).
+var lagPipeWriteFailsForTest uint64
+
 func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, ordered bool) {
 	const failAt = 5
 	blocks := 12
@@ -434,7 +438,7 @@ func testLagPipelineAheadEngine(t *testing.T, await bool, arrival lagArrival, or
 		handed, failed, _ := piped.bc.LagWriteStats()
 		t.Logf("ordered writer: %d writes handed off, %d failed", handed, failed)
 		require.GreaterOrEqual(t, handed, uint64(blocks-1), "the ordered writer barely ran")
-		require.Zero(t, failed)
+		require.Equal(t, lagPipeWriteFailsForTest, failed, "failed writes")
 		overlaps := piped.bc.LagWriteOverlaps()
 		t.Logf("imports overlapping their parent's write: %d", overlaps)
 		require.GreaterOrEqual(t, overlaps, uint64(blocks/2), "children did not import while their parent's write was in flight")
