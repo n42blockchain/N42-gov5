@@ -43,11 +43,12 @@ type rootHintOutcome struct {
 // root switches given, on a state whose root computer is a fresh QMDB
 // computer recording undo; unchanged applies UnchangedAccountNoOpTime.
 func runRootHintBlock(t *testing.T, db kv.RwDB, cfg *params.ChainConfig, header *block.Header, txs []*transaction.Transaction,
-	addrs []types.Address, fromRun, unlocked string, unchanged bool) rootHintOutcome {
+	addrs []types.Address, fromRun, unlocked, headroom string, unchanged bool) rootHintOutcome {
 	t.Helper()
 	defer SetTransferLanesForTest("on")()
 	defer commitment.SetRootOpsFromRunForTest(fromRun)()
 	defer commitment.SetRootOpsUnlockedForTest(unlocked)()
+	defer commitment.SetQMDBApplyHeadroomForTest(headroom)()
 	rootHintAnyStateForTest, rootHintBuildInlineForTest = true, true
 	defer func() { rootHintAnyStateForTest, rootHintBuildInlineForTest = false, false }()
 	bc := &BlockChain{ctx: context.Background(), ChainDB: db}
@@ -116,11 +117,12 @@ func runRootHintBlock(t *testing.T, db kv.RwDB, cfg *params.ChainConfig, header 
 func rootHintModes(t *testing.T, db kv.RwDB, cfg *params.ChainConfig, header *block.Header, txs []*transaction.Transaction,
 	addrs []types.Address, unchanged bool) (off, on rootHintOutcome) {
 	t.Helper()
-	off = runRootHintBlock(t, db, cfg, header, txs, addrs, "off", "off", unchanged)
+	off = runRootHintBlock(t, db, cfg, header, txs, addrs, "off", "off", "off", unchanged)
 	require.False(t, off.handed, "a hint was handed with the switches off")
-	for _, m := range [][2]string{{"on", "off"}, {"off", "on"}, {"on", "on"}, {"check", "check"}, {"check", "on"}, {"on", "check"}} {
-		got := runRootHintBlock(t, db, cfg, header, txs, addrs, m[0], m[1], unchanged)
-		what := fmt.Sprintf("fromRun=%s unlocked=%s", m[0], m[1])
+	for _, m := range [][3]string{{"on", "off", "off"}, {"off", "on", "off"}, {"off", "off", "on"}, {"on", "on", "on"},
+		{"check", "check", "check"}, {"check", "on", "on"}, {"on", "check", "off"}} {
+		got := runRootHintBlock(t, db, cfg, header, txs, addrs, m[0], m[1], m[2], unchanged)
+		what := fmt.Sprintf("fromRun=%s unlocked=%s headroom=%s", m[0], m[1], m[2])
 		requireSameLaneOutcome(t, off.laneBlockOutcome, got.laneBlockOutcome, what)
 		require.Equal(t, off.qmdbRoot, got.qmdbRoot, "%s: root", what)
 		require.True(t, reflect.DeepEqual(off.undo, got.undo), "%s: undo record", what)
@@ -129,7 +131,7 @@ func rootHintModes(t *testing.T, db kv.RwDB, cfg *params.ChainConfig, header *bl
 		if got.lanesUsed && m[0] != "off" {
 			require.True(t, got.used, "%s: the root did not take the hint", what)
 		}
-		if m == [2]string{"on", "on"} {
+		if m == [3]string{"on", "on", "on"} {
 			on = got
 		}
 	}

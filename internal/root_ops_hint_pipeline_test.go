@@ -17,7 +17,8 @@ import (
 // plain import) end with the same executed results and the same rows in
 // every table whether the lane blocks' roots take their ops from the run's
 // hint (N42_ROOT_OPS_FROM_RUN) and build them before the tree lock
-// (N42_ROOT_OPS_UNLOCKED) or not, with the root rules on and off and on
+// (N42_ROOT_OPS_UNLOCKED) and grow the entry window with headroom
+// (N42_QMDB_APPLY_HEADROOM) or not, with the root rules on and off and on
 // early snapshots; the hint is used on lane blocks and check mode finds no
 // difference.
 func TestRootOpsHintLagPipeline(t *testing.T) {
@@ -28,18 +29,25 @@ func TestRootOpsHintLagPipeline(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ref := runLanesPipeline(t, "on", c.rules, c.early)
 			require.GreaterOrEqual(t, ref.used, uint64(8), "the lanes took few blocks")
-			for _, m := range []struct{ fromRun, unlocked string }{
-				{"on", "off"}, {"off", "on"}, {"on", "on"}, {"check", "check"},
+			for _, m := range []struct{ fromRun, unlocked, headroom string }{
+				{"on", "off", "off"}, {"off", "on", "off"}, {"on", "on", "on"}, {"check", "check", "check"},
 			} {
 				func() {
 					defer commitment.SetRootOpsFromRunForTest(m.fromRun)()
 					defer commitment.SetRootOpsUnlockedForTest(m.unlocked)()
+					defer commitment.SetQMDBApplyHeadroomForTest(m.headroom)()
+					hc0, hm0 := commitment.QMDBApplyHeadroomChecks()
 					h0, c0, mm0, late0, bad0 := commitment.RootOpsStats()
 					u0, hd0 := commitment.RootOpsUnlockedChecks(), rootHintsHanded.Load()
 					got := runLanesPipeline(t, "on", c.rules, c.early)
 					h1, c1, mm1, late1, bad1 := commitment.RootOpsStats()
 					u1, hd1 := commitment.RootOpsUnlockedChecks(), rootHintsHanded.Load()
-					what := "fromRun=" + m.fromRun + " unlocked=" + m.unlocked
+					what := "fromRun=" + m.fromRun + " unlocked=" + m.unlocked + " headroom=" + m.headroom
+					hc1, hm1 := commitment.QMDBApplyHeadroomChecks()
+					require.Equal(t, hm0, hm1, "%s: headroom check failures", what)
+					if m.headroom == "check" {
+						require.NotZero(t, hc1-hc0, "%s: no headroom check ran", what)
+					}
 					t.Logf("%s: handed %d, lanes %d, hinted %d, checked %d, late %d, unusable %d, unlocked checks %d",
 						what, hd1-hd0, got.used, h1-h0, c1-c0, late1-late0, bad1-bad0, u1-u0)
 					require.Equal(t, mm0, mm1, "%s: check mode found a difference", what)
