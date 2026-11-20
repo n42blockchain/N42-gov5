@@ -108,6 +108,10 @@ var transferLanesStats struct {
 	used, declined, checked, mismatches atomic.Uint64
 }
 
+// rootHintsHanded counts the root ops hints lane blocks handed their state
+// (N42_ROOT_OPS_FROM_RUN / N42_ROOT_OPS_UNLOCKED; parallel_processor.go).
+var rootHintsHanded atomic.Uint64
+
 // TransferLanesStats returns the lanes' counters since start.
 func TransferLanesStats() (used, declined, checked, mismatches uint64) {
 	return transferLanesStats.used.Load(), transferLanesStats.declined.Load(),

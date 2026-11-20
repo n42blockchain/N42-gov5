@@ -1200,6 +1200,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		}
 		ibs.SetRootOpsHint(h)
 		rootHinted = true
+		rootHintsHanded.Add(1)
 	}
 	laneOut.applied = nil
 	if waveCPUMeter != nil {
