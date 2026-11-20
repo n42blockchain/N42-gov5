@@ -115,9 +115,10 @@ func RootOpsFromRunModeName() string  { return rootOpsModeName(rootOpsFromRunMod
 func RootOpsUnlockedModeName() string { return rootOpsModeName(rootOpsUnlockedMode) }
 
 // RootOpsHintWanted reports whether a lane block should hand its root a
-// hint (either switch on).
+// hint (any of the root's lane-block switches on; the hint also marks the
+// block for N42_ROOT_OPS_UNLOCKED and N42_QMDB_APPLY_HEADROOM).
 func RootOpsHintWanted() bool {
-	return rootOpsFromRunMode != rootOpsOff || rootOpsUnlockedMode != rootOpsOff
+	return rootOpsFromRunMode != rootOpsOff || rootOpsUnlockedMode != rootOpsOff || rootApplyHeadroomMode != rootOpsOff
 }
 
 // N42_QMDB_APPLY_HEADROOM (r100a, design r97 I3 "pre-size"): on a hinted
