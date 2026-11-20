@@ -880,6 +880,9 @@ func (bc *BlockChain) runLagWrite(j *lagWriteJob) {
 	if j.err == nil {
 		_, j.err = bc.writeBlockWithStateJob(j)
 	}
+	// N42_LAG_WRITE_ANNOUNCE: a write that failed before its transaction
+	// began never took its announcement down (idempotent otherwise).
+	j.announce.release()
 	if j.canonOpened {
 		// Before the job reports done: a folded commit's effects follow
 		// its durable write, and a commit handed to a failed write retries.

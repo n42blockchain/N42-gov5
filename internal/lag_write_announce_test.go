@@ -4,6 +4,7 @@
 package internal
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 func TestLagWriteAnnounceLifecycle(t *testing.T) {
 	defer SetLagWriteAnnounceForTest("check")()
 	defer func() { lagBGGate = lagWriteBGGate{} }()
+	lagBGGate = lagWriteBGGate{} // the gate is process-wide
 
 	a := &lagWriteAnnouncement{}
 	require.False(t, lagBGGate.wanted())
@@ -52,16 +54,19 @@ func TestLagWriteAnnounceLifecycle(t *testing.T) {
 	c.release()
 }
 
-// TestLagWriteAnnounceCheckNesting: in check mode two announcements up at
-// once are a violation (one lag import at a time).
+// TestLagWriteAnnounceCheckNesting: in check mode three announcements of
+// one chain up at once are a violation (one import, one write in flight).
 func TestLagWriteAnnounceCheckNesting(t *testing.T) {
 	defer SetLagWriteAnnounceForTest("check")()
 	defer func() { lagBGGate = lagWriteBGGate{} }()
-	a, b := &lagWriteAnnouncement{}, &lagWriteAnnouncement{}
+	var up atomic.Int32
+	a, b, c := &lagWriteAnnouncement{up: &up}, &lagWriteAnnouncement{up: &up}, &lagWriteAnnouncement{up: &up}
 	a.raise()
-	require.Panics(t, b.raise)
+	b.raise() // the import's and the write in flight's
+	require.Panics(t, c.raise)
 	a.release()
 	b.release()
+	c.release()
 }
 
 // TestLagBGGateWaitClearBounded: an announcement defers a fold's begin while
@@ -150,7 +155,7 @@ func TestHistoryFoldUnderPermanentAnnouncement(t *testing.T) {
 // pipeline harness (ahead runs, slow writes, an injected failure) ends with
 // exactly the same rows in every table with the switch off, on and check;
 // with it on every handed-off write was announced and every announcement
-// came down (check mode panics on a nested one).
+// came down (check mode panics when they pile up).
 func TestLagWriteAnnounceSameRows(t *testing.T) {
 	defer SetLagWriteAsyncForTest(true)()
 	defer SetLagWritePrepareForTest(true)()

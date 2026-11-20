@@ -83,6 +83,8 @@ func TestLagHandoffLeanSameRows(t *testing.T) {
 			defer state.SetHistoryIndexDeferredForTest(c.deferred)()
 			defer SetLagWriteAsyncForTest(true)()
 			defer SetLagWritePrepareForTest(true)()
+			// It counts lean captures: the early capture replaces them.
+			defer SetLagQCapEarlyForTest("")()
 			lagWriteBeforeCommitForTest = func(uint64) error {
 				time.Sleep(30 * time.Millisecond)
 				return nil

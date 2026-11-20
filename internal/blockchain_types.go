@@ -199,6 +199,7 @@ type BlockChain struct {
 	// lagAnnounceCur: the current lag import's announcement of its block
 	// write (N42_LAG_WRITE_ANNOUNCE, lag_write_announce.go; bc.lock).
 	lagAnnounceCur *lagWriteAnnouncement
+	lagAnnounceUp  atomic.Int32 // this chain's raised announcements (check mode)
 	// senderJobs: per-block sender recovery started when a block is queued
 	// for the lag executor (sender_prewarm.go).
 	senderJobs senderJobs

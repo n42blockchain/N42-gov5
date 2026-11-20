@@ -74,6 +74,9 @@ func TestLagQCapEarlyFailedPrevWrite(t *testing.T) {
 	defer func() { lagPipeWriteFailsForTest = 0 }()
 	run := func(mode string) map[string]string {
 		defer SetLagQCapEarlyForTest(mode)()
+		// The announcement of the failed write (it failed before its
+		// transaction began) must come down too.
+		defer SetLagWriteAnnounceForTest(mode)()
 		var fired, overlapped atomic.Bool
 		joined := make(chan struct{}, 16)
 		lagWriteJoinForTest = func(n uint64) {
@@ -115,6 +118,8 @@ func TestLagQCapEarlyFailedPrevWrite(t *testing.T) {
 			require.GreaterOrEqual(t, c1-c0, uint64(8))
 		}
 		require.NotEmpty(t, tables)
+		require.Eventually(t, func() bool { return lagBGGate.announced.Load() == 0 }, 5*time.Second, time.Millisecond,
+			"an announcement stayed up after the failed write")
 		return tables
 	}
 	want := run("")

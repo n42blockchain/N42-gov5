@@ -64,10 +64,13 @@ import (
 // worse than max(that bound, today's lag). The "history fold" line stamps
 // annDeferUs (time deferred by announcements), annIgnored and lagBlocks.
 //
-// "check" is "1" plus an assertion that announcements never leak or nest:
-// at most one is up at any time (one lag import at a time, under bc.lock),
-// and every raised one is released (counted in lagAnnounceLeaks, a panic in
-// a test binary).
+// "check" is "1" plus an assertion that announcements never leak or pile
+// up: per chain at most two are up at any time (the importing block's,
+// raised at its root, and the handed-off write's not yet in its
+// transaction: one write in flight, one lag import at a time under
+// bc.lock), and every raised one is released -- also by a write that fails
+// before its transaction begins (counted in lagAnnounceLeaks, a panic in a
+// test binary).
 const (
 	lagAnnounceOff uint32 = iota
 	lagAnnounceOn
@@ -121,6 +124,10 @@ type lagWriteAnnouncement struct {
 	// state: 0 armed, 1 raised, 2 released.
 	state atomic.Uint32
 	at    atomic.Int64 // unix ns of the raise
+	// up counts the owning chain's raised announcements (the check is per
+	// chain: a test process may run several lag chains at once; the gate
+	// counts them all).
+	up *atomic.Int32
 }
 
 // raise puts the announcement up (once; not after a release).
@@ -130,8 +137,11 @@ func (a *lagWriteAnnouncement) raise() {
 	}
 	a.at.Store(time.Now().UnixNano())
 	lagAnnounceRaised.Add(1)
-	if n := lagBGGate.announced.Add(1); n != 1 && lagWriteAnnounceMode.Load() == lagAnnounceCheck {
-		lagAnnounceViolation("two announcements up at once")
+	lagBGGate.announced.Add(1)
+	if a.up != nil {
+		if n := a.up.Add(1); n > 2 && lagWriteAnnounceMode.Load() == lagAnnounceCheck {
+			lagAnnounceViolation("more than two announcements up at once")
+		}
 	}
 }
 
@@ -146,6 +156,9 @@ func (a *lagWriteAnnouncement) release() time.Duration {
 	}
 	if !a.state.CompareAndSwap(1, 2) {
 		return 0
+	}
+	if a.up != nil {
+		a.up.Add(-1)
 	}
 	if n := lagBGGate.announced.Add(-1); n < 0 && lagWriteAnnounceMode.Load() == lagAnnounceCheck {
 		lagAnnounceViolation("released more announcements than raised")
@@ -166,7 +179,7 @@ func (bc *BlockChain) lagWriteAnnounceArm(ibs *state.IntraBlockState, lag *lagIn
 			lagAnnounceViolation("an import's announcement outlived it")
 		}
 	}
-	a := &lagWriteAnnouncement{}
+	a := &lagWriteAnnouncement{up: &bc.lagAnnounceUp}
 	ibs.AddRootComputeHook(a.raise)
 	bc.lagAnnounceCur = a
 	return a
