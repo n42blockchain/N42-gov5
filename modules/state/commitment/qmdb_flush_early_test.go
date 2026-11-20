@@ -76,8 +76,14 @@ func (p *clPipe) startWrite(capture *FlushCapture, rows *clRows) {
 	fail := p.failNext
 	p.failNext = false
 	p.inflight = w
+	skip := p.skipNext
+	p.skipNext = false
 	go func() {
 		defer close(w.done)
+		if skip {
+			w.err = errCLWriteFailed // the process died before the write began
+			return
+		}
 		if d := clWriteDelay; d > 0 {
 			time.Sleep(d) // the write in flight while the next capture runs
 		}
@@ -292,5 +298,143 @@ func TestEarlyCaptureStagesSecondWindow(t *testing.T) {
 	p.rc.readers.RUnlock()
 	if len(r2.rows) == 0 {
 		t.Fatal("no rows captured")
+	}
+}
+
+// Crash points of TestEarlyCaptureCrashPoints.
+const (
+	// crashPrevUncommitted: write N-1 never commits; block N's capture
+	// (early: into the second window) exists.
+	crashPrevUncommitted = iota
+	// crashBeforeBegin: write N-1 committed (joined, N's window promoted);
+	// write N never begins.
+	crashBeforeBegin
+	// crashMidWrite: write N dies inside its transaction, rows put.
+	crashMidWrite
+)
+
+// crashRun runs blocks 1..n-1 through the pipeline, crashes at point while
+// block n is in the hand-off, restarts on a fresh computer loaded from the
+// store and imports n..total. It returns every capture's rows after the
+// restart, the tables, the root and the reloaded root.
+func crashRun(t *testing.T, early, check bool, lagK, n, total, point int) (rows []string, tables string, root, reloaded [32]byte) {
+	t.Helper()
+	p := newCLPipe(t, true)
+	p.rc.SetEvictLag(lagK)
+	handoff := func() bool {
+		r := &clRows{}
+		var ok bool
+		if early {
+			_, ok = p.handoffEarly(check, r)
+		} else {
+			_, ok = p.handoffSerial(r)
+		}
+		if ok {
+			rows = append(rows, clRowsDigest(r))
+		}
+		return ok
+	}
+	for b := 1; b < n; b++ {
+		p.importRoot(b, clBlock(b, false))
+		p.failNext = point == crashPrevUncommitted && b == n-1
+		if !handoff() {
+			t.Fatalf("block %d", b)
+		}
+	}
+	p.importRoot(n, clBlock(n, false))
+	switch point {
+	case crashPrevUncommitted:
+		// Block n's capture starts (early: before the join); the join
+		// finds write n-1 failed and the process dies there: nothing
+		// recovers in memory.
+		r := &clRows{}
+		if early {
+			p.rc.TakeUndo()
+			c := p.rc.StartFlushToEarly(r, check)
+			<-p.inflight.done
+			_, _ = c.Wait()
+		} else {
+			<-p.inflight.done
+		}
+		if p.inflight.err == nil {
+			t.Fatal("write n-1 committed")
+		}
+	case crashBeforeBegin, crashMidWrite:
+		p.skipNext = point == crashBeforeBegin
+		p.failNext = point == crashMidWrite
+		if !handoff() {
+			t.Fatal("write n-1 failed")
+		}
+		<-p.inflight.done
+	}
+	p.inflight = nil
+	rows = rows[:0]
+	for _, tx := range p.openTxs {
+		tx.Rollback()
+	}
+	p.openTxs = nil
+
+	// Restart: a fresh computer loaded from the store.
+	rc := NewQMDBRootComputer()
+	rc.EnableUndoRecording()
+	rc.SetEvictLag(lagK)
+	if err := p.db.Update(context.Background(), func(tx kv.RwTx) error {
+		rc.SetCold(tx)
+		err := rc.LoadFrom(tx)
+		rc.SetCold(nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p.rc = rc
+	reloaded = rc.Root()
+	from := n
+	if point == crashPrevUncommitted {
+		from = n - 1
+	}
+	for b := from; b <= total; b++ {
+		p.importRoot(b, clBlock(b, false))
+		if !handoff() {
+			t.Fatalf("after the restart: block %d", b)
+		}
+	}
+	if !p.join() {
+		t.Fatal("last write failed")
+	}
+	return rows, clQMDBTables(t, p.db), p.rc.Root(), reloaded
+}
+
+// TestEarlyCaptureCrashPoints: the process dies where the early capture
+// moves work -- block N captured (second window) with write N-1 not
+// committed; N-1 committed and N's window promoted with write N not begun;
+// write N dead mid-transaction. Nothing of the capture is durable, so after
+// a restart the store, the reloaded root and every later capture's rows
+// equal the serial pipeline's crashed at the same point.
+func TestEarlyCaptureCrashPoints(t *testing.T) {
+	defer func() { clWriteDelay = 0 }()
+	clWriteDelay = time.Millisecond
+	const n, total = 6, 10
+	for _, point := range []int{crashPrevUncommitted, crashBeforeBegin, crashMidWrite} {
+		for _, lagK := range []int{0, 4} {
+			t.Run(fmt.Sprintf("point=%d/lag=%d", point, lagK), func(t *testing.T) {
+				v0 := EarlyCaptureViolations()
+				wantRows, wantTables, wantRoot, wantReload := crashRun(t, false, false, lagK, n, total, point)
+				for _, check := range []bool{false, true} {
+					rows, tables, root, reload := crashRun(t, true, check, lagK, n, total, point)
+					if reload != wantReload {
+						t.Fatalf("check=%v: reloaded root differs", check)
+					}
+					if fmt.Sprint(rows) != fmt.Sprint(wantRows) {
+						t.Fatalf("check=%v: captures after the restart differ:\n%v\n%v", check, rows, wantRows)
+					}
+					if tables != wantTables || root != wantRoot {
+						t.Fatalf("check=%v: final store or root differs", check)
+					}
+				}
+				if v := EarlyCaptureViolations() - v0; v != 0 {
+					t.Fatalf("%d early-capture violations", v)
+				}
+			})
+		}
 	}
 }

@@ -111,8 +111,16 @@ func (r *QMDBRootComputer) StartFlushToEarly(p qmdb.Putter, check bool) *FlushCa
 	return c
 }
 
+// EarlyCaptureSupported reports whether StartFlushToEarly can capture this
+// computer (every row it persists goes through the flush: no MDBX-backed
+// index, no history store). The lag writer falls back to the lean capture
+// otherwise.
+func (r *QMDBRootComputer) EarlyCaptureSupported() bool {
+	return r.mdbxIdx == nil && r.histStore == nil
+}
+
 func (r *QMDBRootComputer) flushToEarlyLocked(p qmdb.Putter, c *FlushCapture) (int, error) {
-	if r.mdbxIdx != nil || r.histStore != nil {
+	if !r.EarlyCaptureSupported() {
 		return 0, errors.New("qmdb: early capture of a computer that persists outside the flush")
 	}
 	if r.stagedNextValid {

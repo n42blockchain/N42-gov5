@@ -101,6 +101,7 @@ type clPipe struct {
 	lean     bool
 	inflight *clWrite
 	failNext bool // the next write fails (rolled back)
+	skipNext bool // the next write never begins (fails)
 	openTxs  []kv.Tx
 	applied  atomic.Int64 // the last block whose root was computed
 }
