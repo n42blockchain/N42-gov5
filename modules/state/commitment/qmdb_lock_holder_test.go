@@ -43,7 +43,7 @@ func TestLookupTimedReportsHolder(t *testing.T) {
 		t.Fatalf("contended: waits %d wait %d holder %s age %d", tm.Waits.Load(), tm.Wait.Load(),
 			QMDBHolderName(tm.Holder.Load()), tm.HolderAge.Load())
 	}
-	if rc.holder.Load() != holderNone || QMDBHolderName(99) != "unknown" || len(holderNames) != int(holderRoot)+1 {
+	if rc.holder.Load() != holderNone || QMDBHolderName(99) != "unknown" || len(holderNames) != int(holderFlushEarly)+1 {
 		t.Fatal("holder state")
 	}
 }
