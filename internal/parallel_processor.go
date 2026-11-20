@@ -1194,7 +1194,11 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 		h := commitment.NewAccountOpsHint()
 		if h.Caches() {
 			run := laneOut.applied
-			go h.Build(run.rootFinals())
+			if rootHintBuildInlineForTest {
+				h.Build(run.rootFinals())
+			} else {
+				go h.Build(run.rootFinals())
+			}
 		} else {
 			h.MarkBuilt()
 		}

@@ -116,6 +116,10 @@ var rootHintsHanded atomic.Uint64
 // path (tests that attach a QMDB root computer to a plain state).
 var rootHintAnyStateForTest bool
 
+// rootHintBuildInlineForTest builds the hint before the run returns (tests
+// whose root follows the run at once, before a goroutine would be done).
+var rootHintBuildInlineForTest bool
+
 // TransferLanesStats returns the lanes' counters since start.
 func TransferLanesStats() (used, declined, checked, mismatches uint64) {
 	return transferLanesStats.used.Load(), transferLanesStats.declined.Load(),
