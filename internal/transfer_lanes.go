@@ -112,6 +112,10 @@ var transferLanesStats struct {
 // (N42_ROOT_OPS_FROM_RUN / N42_ROOT_OPS_UNLOCKED; parallel_processor.go).
 var rootHintsHanded atomic.Uint64
 
+// rootHintAnyStateForTest hands the hint on a state without the QMDB read
+// path (tests that attach a QMDB root computer to a plain state).
+var rootHintAnyStateForTest bool
+
 // TransferLanesStats returns the lanes' counters since start.
 func TransferLanesStats() (used, declined, checked, mismatches uint64) {
 	return transferLanesStats.used.Load(), transferLanesStats.declined.Load(),

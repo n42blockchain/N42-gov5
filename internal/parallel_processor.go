@@ -1190,7 +1190,7 @@ func (p *StateProcessor) runParallelMode(concreteHeader *block.Header, blockHash
 	// built off the import chain while the block is folded
 	// (commitment/qmdb_ops_hint.go). Every other block hands nothing.
 	rootHinted := false
-	if laneOut.used && deferFees && useQMDB && commitment.RootOpsHintWanted() {
+	if laneOut.used && deferFees && (useQMDB || rootHintAnyStateForTest) && commitment.RootOpsHintWanted() {
 		h := commitment.NewAccountOpsHint()
 		if h.Caches() {
 			run := laneOut.applied
