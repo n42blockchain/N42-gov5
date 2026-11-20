@@ -202,6 +202,7 @@ type ComputeRootPhases struct {
 	HintUsed                         bool
 	HintHits, HintMisses, HintUnused int
 	HintWhy, HintCheck               string
+	HintBuild                        time.Duration // the hint's build (0 if not ready)
 }
 
 // rootOpsUnlockedChecks counts N42_ROOT_OPS_UNLOCKED=check comparisons.
@@ -991,7 +992,8 @@ func (r *QMDBRootComputer) computeRoot(
 	dFold := time.Since(tFold)
 	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: dFold,
 		Hold: time.Since(tHeld), Hinted: hint != nil, PreOps: dPre, HintUsed: hst.used, HintHits: hst.hits,
-		HintMisses: hst.misses, HintUnused: hst.unused, HintWhy: hst.why, HintCheck: hst.check})
+		HintMisses: hst.misses, HintUnused: hst.unused, HintWhy: hst.why, HintCheck: hst.check,
+		HintBuild: hint.Took()})
 	// Split the two halves of a root computation.
 	//
 	// QMDB is a BINARY tree, not a Patricia trie: an entry is appended to the

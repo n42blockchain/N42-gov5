@@ -2950,6 +2950,15 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 				fields = append(fields, "rootLock", cr.LockWait, "rootOps", cr.Collect, "rootApply", cr.Apply,
 					// r100a: the root's exclusive hold of the tree lock.
 					"rootHold", cr.Hold)
+				if cr.Hinted {
+					// r100a: the lanes' root ops hint (N42_ROOT_OPS_FROM_RUN,
+					// N42_ROOT_OPS_UNLOCKED): the build before the lock, the
+					// hint's use, hits, misses, unused entries, why it was not
+					// used, the check verdict and its build off the chain.
+					fields = append(fields, "rootPreOps", cr.PreOps, "rootHintUsed", cr.HintUsed,
+						"rootHintHits", cr.HintHits, "rootHintMisses", cr.HintMisses, "rootHintUnused", cr.HintUnused,
+						"rootHintWhy", cr.HintWhy, "rootHintCheck", cr.HintCheck, "rootHintBuild", cr.HintBuild)
+				}
 			}
 			// Finalize's span on an ahead run up to the post-state hook (the
 			// child's launch), step by step, then the hook, the root
