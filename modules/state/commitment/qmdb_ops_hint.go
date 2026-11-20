@@ -241,13 +241,6 @@ func accountOp(addr types.Address, acct *account.StateAccount) qmdb.Op {
 	return op
 }
 
-// RootOpsHintedComputer is a root computer that takes a run's hint (the
-// QMDB computer).
-type RootOpsHintedComputer interface {
-	ComputeRootHinted(accounts map[types.Address]*account.StateAccount,
-		storage map[types.Address]map[types.Hash]*uint256.Int, hint any) (types.Hash, error)
-}
-
 // opsHintStats is one hinted op build's stamps.
 type opsHintStats struct {
 	used                 bool // the hint's ops were taken (or compared, in check mode)

@@ -66,6 +66,15 @@ func (s *IntraBlockState) SetRootComputeHook(fn func()) {
 	s.rootComputeHook = fn
 }
 
+// SetRootOpsHint hands the next root computation through a
+// RootOpsHintedComputer the block's run hint (r100a: a lane block's final
+// accounts with their ops, commitment.AccountOpsHint). The computation
+// takes it once; a computer without the interface ignores it. The hint is
+// only a cache: the root and the dirty set are what they are without it.
+func (s *IntraBlockState) SetRootOpsHint(hint any) {
+	s.rootOpsHint = hint
+}
+
 // SetDetachedPendingCredits lets the root computation take a pending
 // balance credit of an account this state never loaded straight from the
 // prefetch layer (base + credit, computed in parallel) instead of

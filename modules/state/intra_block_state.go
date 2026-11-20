@@ -279,6 +279,9 @@ type IntraBlockState struct {
 	// rootComputeHook runs after beforeRoot and rootPostHook, right before
 	// the root computer is called (SetRootComputeHook).
 	rootComputeHook func()
+	// rootOpsHint is the run's hint for the next root computation through a
+	// RootOpsHintedComputer (SetRootOpsHint); taken by that computation.
+	rootOpsHint any
 
 	// detachPending lets the root computation read a pending balance credit
 	// of an account it never loaded from the prefetch layer, in parallel,
@@ -652,6 +655,7 @@ func (sdb *IntraBlockState) Reset() {
 	}
 	sdb.stateObjects = reuseMap(sdb.stateObjects)
 	sdb.lastObj = nil
+	sdb.rootOpsHint = nil
 	sdb.stateObjectsDirty = reuseMap(sdb.stateObjectsDirty)
 	sdb.nilAccounts = reuseMap(sdb.nilAccounts)
 	clear(sdb.storageWipes)
@@ -2180,7 +2184,15 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		return jmtRoot
 	}
 
-	root, err := s.rootComputer.ComputeRoot(accounts, storage)
+	var root types.Hash
+	var err error
+	hint := s.rootOpsHint
+	s.rootOpsHint = nil
+	if hc, ok := s.rootComputer.(RootOpsHintedComputer); ok && hint != nil {
+		root, err = hc.ComputeRootHinted(accounts, storage, hint)
+	} else {
+		root, err = s.rootComputer.ComputeRoot(accounts, storage)
+	}
 	if err != nil {
 		// rootComputer is whichever engine this chain commits with (MPT for
 		// eth-el, QMDB for the native chain, …) — not necessarily JMT, which is

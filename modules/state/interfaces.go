@@ -184,6 +184,14 @@ type RootComputer interface {
 	ComputeRoot(accounts map[types.Address]*account.StateAccount, storage map[types.Address]map[types.Hash]*uint256.Int) (types.Hash, error)
 }
 
+// RootOpsHintedComputer is a RootComputer that takes a hint the block's run
+// handed with SetRootOpsHint (the QMDB computer's *AccountOpsHint, r100a):
+// the root and every output are ComputeRoot's.
+type RootOpsHintedComputer interface {
+	ComputeRootHinted(accounts map[types.Address]*account.StateAccount,
+		storage map[types.Address]map[types.Hash]*uint256.Int, hint any) (types.Hash, error)
+}
+
 // LtHashRootComputer extends RootComputer with original-data awareness
 // for LtHash incremental digest computation.
 type LtHashRootComputer interface {
