@@ -196,6 +196,9 @@ type BlockChain struct {
 	// lagEarlyDelay: N42_LAG_WRITE_EARLY_PREP_DELAY's pairing of a block's
 	// armed preparation with its child's launch (lag_writer.go).
 	lagEarlyDelay lagEarlyDelay
+	// lagAnnounceCur: the current lag import's announcement of its block
+	// write (N42_LAG_WRITE_ANNOUNCE, lag_write_announce.go; bc.lock).
+	lagAnnounceCur *lagWriteAnnouncement
 	// senderJobs: per-block sender recovery started when a block is queued
 	// for the lag executor (sender_prewarm.go).
 	senderJobs senderJobs

@@ -387,6 +387,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 	if lagTx {
 		lagBGGate.enter()
 	}
+	if job != nil {
+		// N42_LAG_WRITE_ANNOUNCE: the write now holds or waits for the
+		// writer in the gate's own count.
+		job.annLead = job.announce.release()
+	}
 	var commitStats mdbx.CommitStats
 	writeTag := "blockWrite"
 	if job == nil {
@@ -1168,6 +1173,11 @@ func (bc *BlockChain) writeBlockWithStateOpt(blk block.IBlock, receipts []*block
 			}
 			if job.canonOpened {
 				fields = append(fields, "canonFolded", nCanonFolded, "canonFoldUs", dCanonFold.Microseconds())
+			}
+			if job.announce != nil {
+				// N42_LAG_WRITE_ANNOUNCE: how long the write was announced
+				// before it entered the gate.
+				fields = append(fields, "annLeadUs", job.annLead.Microseconds())
 			}
 		}
 		if dBeginWait >= time.Millisecond && (beginBehind != "" || beginHolder != "") {

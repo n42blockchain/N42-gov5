@@ -102,9 +102,10 @@ func SetHistoryFoldYieldForTest(on bool) func() {
 }
 
 // historyFoldWriterWanted reports whether an ordered block write is waiting
-// for (or holds) the MDBX writer.
+// for (or holds) the MDBX writer, or has announced it
+// (N42_LAG_WRITE_ANNOUNCE).
 // A variable for the tests.
-var historyFoldWriterWanted = func() bool { return lagBGGate.open.Load() > 0 }
+var historyFoldWriterWanted = func() bool { return lagBGGate.wanted() }
 
 // historyFoldYieldStats is one fold's write-side record (logged per fold).
 type historyFoldYieldStats struct {
@@ -112,6 +113,11 @@ type historyFoldYieldStats struct {
 	heldMax, heldSum   time.Duration
 	gateWait           time.Duration
 	nosync             bool
+	// N42_LAG_WRITE_ANNOUNCE: begins deferred by announcements, whether
+	// they were ignored (fold too far behind), the fold's lag at its start.
+	annDefer   time.Duration
+	annIgnored bool
+	lagBlocks  uint64
 }
 
 // foldUpdateYield runs one yielding fold write transaction: without a data

@@ -301,12 +301,26 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	next := 0
 	yieldOn, nosync := historyFoldYields()
 	var ys historyFoldYieldStats
+	// N42_LAG_WRITE_ANNOUNCE (lag_write_announce.go): announced block writes
+	// defer each transaction's begin by at most annMax, and not at all while
+	// the fold is too far behind.
+	var annMax time.Duration
+	if lagWriteAnnounceMode.Load() != lagAnnounceOff {
+		ys.lagBlocks = head - from
+		ys.annIgnored = head-from > lagWriteAnnounceMaxLag
+		lagBGGate.announceIgnore.Store(ys.annIgnored)
+		if !ys.annIgnored {
+			annMax = lagWriteAnnounceMaxDefer
+		}
+	}
 	tFold := time.Now()
 	for {
 		last := false
 		if lagWriteDeferBG || yieldOn {
 			// Begin right after a lag write commits, not in its way.
-			ys.gateWait += lagBGGate.waitClosed(lagWriteDeferBGWait, b.ctx.Done())
+			w, annW := lagBGGate.waitClear(lagWriteDeferBGWait+annMax, annMax, b.ctx.Done())
+			ys.gateWait += w
+			ys.annDefer += annW
 		}
 		body := func(tx kv.RwTx) error {
 			cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
@@ -362,7 +376,8 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	if yieldOn {
 		log.Info("history fold", "from", from, "to", to, "rows", ys.rows, "txns", ys.txns, "yields", ys.yields,
 			"heldMaxUs", ys.heldMax.Microseconds(), "heldSumUs", ys.heldSum.Microseconds(),
-			"gateWaitUs", ys.gateWait.Microseconds(), "nosync", ys.nosync, "totalMs", time.Since(tFold).Milliseconds(), "stale", stale)
+			"gateWaitUs", ys.gateWait.Microseconds(), "nosync", ys.nosync, "totalMs", time.Since(tFold).Milliseconds(), "stale", stale,
+			"annDeferUs", ys.annDefer.Microseconds(), "annIgnored", ys.annIgnored, "lagBlocks", ys.lagBlocks)
 	}
 	if stale {
 		log.Warn("history backfill: marker moved while the fold was prepared; dropped", "from", from, "to", to)

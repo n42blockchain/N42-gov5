@@ -195,6 +195,11 @@ type lagWriteJob struct {
 	// queue at that moment (stamps).
 	handBusy   int
 	handQueued int
+	// announce: the block write's announcement (N42_LAG_WRITE_ANNOUNCE),
+	// released once the write entered lagBGGate; annLead: how long it was
+	// up by then (stamps).
+	announce *lagWriteAnnouncement
+	annLead  time.Duration
 
 	// marks: when the writer entered each phase (zero: never), end: when
 	// the job finished; written by the writer goroutine before done closes.
@@ -730,7 +735,9 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	if lagWritePrepare && len(receipts) > 0 {
 		logs = startLogsPrep(receipts)
 	}
+	announce := bc.lagWriteAnnounceTake()
 	failed := func(err error) error {
+		announce.release()
 		if prep != nil {
 			// Nothing writes this block now; let the preparation finish
 			// with the block state it owns.
@@ -767,7 +774,7 @@ func (bc *BlockChain) lagWriteHandOff(blk *block.Block, receipts []*block.Receip
 	j := &lagWriteJob{blk: blk, hdr: hdr, hash: blk.Hash(), number: blk.Number64().Uint64(),
 		receipts: receipts, ibs: ibs, nopay: nopay, future: bc.receiptsFuture, ahead: ahead,
 		prep: prep, frames: frames, logs: logs, handAt: handAt, done: make(chan struct{}),
-		handBusy: handBusy, handQueued: handQueued}
+		handBusy: handBusy, handQueued: handQueued, announce: announce}
 	rc := bc.qmdbRootComputer
 	if lean {
 		// The undo record and the root first (neither depends on the

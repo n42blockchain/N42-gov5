@@ -2685,6 +2685,9 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 		}
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blk, ahead, func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			earlySlot = bc.lagWriteEarlyPrepArm(concreteBlock, ibs, lag, ahead)
+			if lag != nil && lagWriteAnnounceMode.Load() != lagAnnounceOff {
+				bc.lagWriteAnnounceArm(ibs, lag, bc.lagWriteUsable(concreteBlock, ibs))
+			}
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return bc.readHeaderOrPending(tx, hash, number)
 			}
@@ -2766,6 +2769,8 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			return nopay, nil
 		})
 		if err != nil {
+			// N42_LAG_WRITE_ANNOUNCE: nothing writes this block.
+			bc.lagWriteAnnounceDrop()
 			if ep := earlyPrep(); ep != nil {
 				// Nothing writes this block; the preparation reads through
 				// the ahead run's transaction, released when this call ends.
@@ -2854,6 +2859,9 @@ func (bc *BlockChain) insertChainMode(chain []block.IBlock, authorizedSwitch boo
 			_, _ = ep.wait()
 		}
 		bc.lagWithdrawEarlyResult(earlyRes)
+		// N42_LAG_WRITE_ANNOUNCE: a write not handed off (or a failed
+		// hand-off) takes its announcement down; a handed one took it.
+		bc.lagWriteAnnounceDrop()
 		bc.receiptsFuture = nil
 		if err != nil {
 			// writeBlockWithState rolled its tx back, but execution above already

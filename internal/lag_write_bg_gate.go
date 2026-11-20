@@ -80,6 +80,22 @@ func envUint(name string, def uint64) uint64 {
 type lagWriteBGGate struct {
 	open       atomic.Int32
 	lastActive atomic.Int64 // unix nanos of the last enter or exit
+	// announced: block writes announced and not yet entered
+	// (N42_LAG_WRITE_ANNOUNCE, lag_write_announce.go); announceIgnore: the
+	// fold is too far behind to honour them.
+	announced      atomic.Int32
+	announceIgnore atomic.Bool
+}
+
+// announcedNow reports whether an announcement is up and honoured.
+func (g *lagWriteBGGate) announcedNow() bool {
+	return g.announced.Load() > 0 && !g.announceIgnore.Load()
+}
+
+// wanted reports whether a block write holds, waits for or has announced
+// the writer (announcements count only with N42_LAG_WRITE_ANNOUNCE on).
+func (g *lagWriteBGGate) wanted() bool {
+	return g.open.Load() > 0 || g.announcedNow()
 }
 
 var lagBGGate lagWriteBGGate
@@ -110,16 +126,35 @@ func (g *lagWriteBGGate) activeWithin(d time.Duration) bool {
 // waitClosed waits until no lag write transaction is open, at most max or
 // until done is closed. It reports how long it waited.
 func (g *lagWriteBGGate) waitClosed(max time.Duration, done <-chan struct{}) time.Duration {
+	d, _ := g.waitClear(max, 0, done)
+	return d
+}
+
+// waitClear is waitClosed that also waits, at most annMax in all, while a
+// block write is announced (annMax 0: announcements are not waited for).
+// It reports how long it waited and how much of it was spent only on
+// announcements (no write open).
+func (g *lagWriteBGGate) waitClear(max, annMax time.Duration, done <-chan struct{}) (time.Duration, time.Duration) {
 	t0 := time.Now()
-	for g.open.Load() > 0 {
+	var annWait time.Duration
+	for {
+		open := g.open.Load() > 0
+		ann := !open && annMax > 0 && annWait < annMax && g.announcedNow()
+		if !open && !ann {
+			break
+		}
 		if time.Since(t0) >= max {
 			break
 		}
+		tStep := time.Now()
 		select {
 		case <-done:
-			return time.Since(t0)
+			return time.Since(t0), annWait
 		case <-time.After(500 * time.Microsecond):
 		}
+		if ann {
+			annWait += time.Since(tStep)
+		}
 	}
-	return time.Since(t0)
+	return time.Since(t0), annWait
 }
