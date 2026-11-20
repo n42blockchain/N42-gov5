@@ -22,6 +22,13 @@
 // (or "true", "on") uses the hint; "check" (or "2") builds the ops both
 // ways, compares them element by element (key hash, value, order), logs an
 // Error on any difference (a panic in test binaries) and uses today's.
+//
+// N42_ROOT_OPS_UNLOCKED: same values. On a block carrying a hint (lane
+// blocks only), "1" builds and sorts the ops before the root takes the tree
+// lock instead of under it (the op build reads only the dirty set); "check"
+// builds them both before and under the lock, compares, and uses the ones
+// built under the lock. Either switch on makes the lanes hand a hint (the
+// unlocked switch alone uses it only as the lane-block marker).
 
 package commitment
 
@@ -44,8 +51,11 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
-// EnvRootOpsFromRun names the switch.
-const EnvRootOpsFromRun = "N42_ROOT_OPS_FROM_RUN"
+// EnvRootOpsFromRun and EnvRootOpsUnlocked name the two switches.
+const (
+	EnvRootOpsFromRun  = "N42_ROOT_OPS_FROM_RUN"
+	EnvRootOpsUnlocked = "N42_ROOT_OPS_UNLOCKED"
+)
 
 const (
 	rootOpsOff = iota
@@ -54,7 +64,10 @@ const (
 )
 
 // Read once at init (Set...ForTest in tests).
-var rootOpsFromRunMode = parseRootOpsMode(os.Getenv(EnvRootOpsFromRun))
+var (
+	rootOpsFromRunMode  = parseRootOpsMode(os.Getenv(EnvRootOpsFromRun))
+	rootOpsUnlockedMode = parseRootOpsMode(os.Getenv(EnvRootOpsUnlocked))
+)
 
 func parseRootOpsMode(v string) int {
 	switch v {
@@ -89,12 +102,22 @@ func setRootOpsMode(p *int, mode string) func() {
 // "check") and returns the restore.
 func SetRootOpsFromRunForTest(mode string) func() { return setRootOpsMode(&rootOpsFromRunMode, mode) }
 
-// RootOpsFromRunModeName is the switch for the stamps.
-func RootOpsFromRunModeName() string { return rootOpsModeName(rootOpsFromRunMode) }
+// SetRootOpsUnlockedForTest sets N42_ROOT_OPS_UNLOCKED ("off", "on" or
+// "check") and returns the restore.
+func SetRootOpsUnlockedForTest(mode string) func() {
+	return setRootOpsMode(&rootOpsUnlockedMode, mode)
+}
+
+// RootOpsFromRunModeName and RootOpsUnlockedModeName are the switches for
+// the stamps.
+func RootOpsFromRunModeName() string  { return rootOpsModeName(rootOpsFromRunMode) }
+func RootOpsUnlockedModeName() string { return rootOpsModeName(rootOpsUnlockedMode) }
 
 // RootOpsHintWanted reports whether a lane block should hand its root a
-// hint.
-func RootOpsHintWanted() bool { return rootOpsFromRunMode != rootOpsOff }
+// hint (either switch on).
+func RootOpsHintWanted() bool {
+	return rootOpsFromRunMode != rootOpsOff || rootOpsUnlockedMode != rootOpsOff
+}
 
 // rootOpsStats: hinted roots, their check comparisons and differences
 // (must stay 0), and hints not ready or unusable when the root started.

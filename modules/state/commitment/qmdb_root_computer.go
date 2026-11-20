@@ -193,14 +193,22 @@ type ComputeRootPhases struct {
 	// Hold is how long the computation held the tree lock exclusively
 	// (from acquiring it to the phases' record; r100a stamp, appended).
 	Hold time.Duration
-	// The run's hint (qmdb_ops_hint.go): whether the block carried one and
-	// the hinted build's hits, misses, unused entries, why it was not used
-	// and the check verdict.
+	// The run's hint (qmdb_ops_hint.go): whether the block carried one, the
+	// op build before the lock (N42_ROOT_OPS_UNLOCKED), and the hinted
+	// build's hits, misses, unused entries, why it was not used and the
+	// check verdict.
 	Hinted                           bool
+	PreOps                           time.Duration
 	HintUsed                         bool
 	HintHits, HintMisses, HintUnused int
 	HintWhy, HintCheck               string
 }
+
+// rootOpsUnlockedChecks counts N42_ROOT_OPS_UNLOCKED=check comparisons.
+var rootOpsUnlockedChecks atomic.Uint64
+
+// RootOpsUnlockedChecks returns the unlocked switch's check comparisons.
+func RootOpsUnlockedChecks() uint64 { return rootOpsUnlockedChecks.Load() }
 
 var lastComputeRoot atomic.Pointer[ComputeRootPhases]
 
@@ -925,6 +933,17 @@ func (r *QMDBRootComputer) computeRoot(
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 	hint *AccountOpsHint,
 ) (types.Hash, error) {
+	// N42_ROOT_OPS_UNLOCKED: a hinted (lane) block builds its ops before
+	// the tree lock; they read only the dirty set.
+	var pre []qmdb.Op
+	var preSt opsHintStats
+	var dPre time.Duration
+	unlocked := hint != nil && rootOpsUnlockedMode != rootOpsOff
+	if unlocked {
+		t := time.Now()
+		pre, preSt = buildRootOps(accounts, storage, hint)
+		dPre = time.Since(t)
+	}
 	tLock := time.Now()
 	defer r.lockWriter(holderRoot)()
 	tHeld := time.Now()
@@ -935,8 +954,21 @@ func (r *QMDBRootComputer) computeRoot(
 	}
 	r.noteMutationLocked(label)
 	tOps := time.Now()
-	// hint == nil: buildRootOpsToday, today's build.
-	ops, hst := buildRootOps(accounts, storage, hint)
+	var ops []qmdb.Op
+	var hst opsHintStats
+	if unlocked && rootOpsUnlockedMode == rootOpsOn {
+		ops, hst = pre, preSt
+	} else {
+		// hint == nil: buildRootOpsToday, today's build.
+		ops, hst = buildRootOps(accounts, storage, hint)
+		if unlocked {
+			// Check mode: the ops built before the lock must be these.
+			if d := diffOps(ops, pre); d != "" {
+				noteRootOpsDiff("unlocked", d)
+			}
+			rootOpsUnlockedChecks.Add(1)
+		}
+	}
 	dOps := time.Since(tOps)
 	if r.undoRecording {
 		r.t.StartUndoRecording()
@@ -958,7 +990,7 @@ func (r *QMDBRootComputer) computeRoot(
 	root := types.Hash(r.t.Root())
 	dFold := time.Since(tFold)
 	lastComputeRoot.Store(&ComputeRootPhases{Ops: len(ops), LockWait: dLock, Collect: dOps, Apply: dApply, Fold: dFold,
-		Hold: time.Since(tHeld), Hinted: hint != nil, HintUsed: hst.used, HintHits: hst.hits,
+		Hold: time.Since(tHeld), Hinted: hint != nil, PreOps: dPre, HintUsed: hst.used, HintHits: hst.hits,
 		HintMisses: hst.misses, HintUnused: hst.unused, HintWhy: hst.why, HintCheck: hst.check})
 	// Split the two halves of a root computation.
 	//
@@ -999,9 +1031,10 @@ func (r *QMDBRootComputer) computeRoot(
 			"opsNs", dOps.Nanoseconds(), "lockWaitNs", dLock.Nanoseconds(),
 			// r100a: the exclusive hold up to this line.
 			"lockHoldNs", time.Since(tHeld).Nanoseconds(),
-			// r100a: the run's hint (lane blocks): its hits, misses,
-			// unused entries, why it was not used and the check verdict.
-			"opsHinted", hint != nil, "opsHintUsed", hst.used,
+			// r100a: the run's hint (lane blocks): the ops built before the
+			// lock, its hits, misses, unused entries, why it was not used
+			// and the check verdict.
+			"opsHinted", hint != nil, "opsPreNs", dPre.Nanoseconds(), "opsHintUsed", hst.used,
 			"opsHits", hst.hits, "opsMisses", hst.misses, "opsUnused", hst.unused, "opsHintWhy", hst.why,
 			"opsHintCheck", hst.check)
 	}
