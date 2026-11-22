@@ -1,10 +1,15 @@
-# eth-el Data Assets Inventory (as of 2026-08-30)
+# eth-el Data Assets Inventory (as of 2026-11-21)
 
 > What exists, where it lives, how far it covers, and who keeps it current.
 > Written because the weekly runbook describes PROCESS and the mode spec
 > describes PRODUCT, and neither answered "is this directory still alive?" —
 > a question that came up five times in one session and had a different answer
 > each time.
+>
+> Sections 1-4 and 6 were refreshed on 2026-11-21 after the 2026-11-20 weekly
+> (target 26,448,348); sizes are re-measured, heights come from that cycle's
+> logs. Sections 5, 7 and 8 keep the 2026-08-30 audit and its follow-ups; §9 is
+> the 2026-11-20/21 reclamation.
 >
 > Every height here was READ off the artefact (marker file, freezer items,
 > segment footer, MDBX meta key), not copied from an earlier document. When a
@@ -19,40 +24,40 @@
 
 | Path | Size | Head | State |
 |---|---|---|---|
-| `D:\geth` | ~1,630 GB | ancient frozen **25,943,311** | stopped 2026-09-09 20:23; the week's target is frozen−1 |
-| `D:\reth2k` | ~3,870 GB | synced 2026-09-10, head **25,943,310** | stopped; source for codes / snapshot / hashed-state. `r.bat`'s `--debug.tip` is two weeks stale — read `BlockBodyIndices` |
+| `D:\geth` | 1,706 GB | week target **26,448,348** (frozen−1) | stopped after the 2026-11-20 re-sync |
+| `D:\reth2k` | 4,061 GB | **26,448,348** (all 13 stages + `BlockBodyIndices`) | stopped; source for codes / snapshot / hashed-state. Aligned FORWARD to geth with the Windows-patched `D:\reth2k\reth-win1224.exe` (`--ipcdisable`); the stock `reth.exe` cannot truncate static files on Windows (os error 1224), never use it to unwind. `r.bat` still points at the stock binary |
 
 ## 2. Derived freezers — geth-sourced, weekly
 
-**`D:\n42-eth1`** (875 GB) — the header/body/receipt/index tier.
+**`D:\n42-eth1`** (927 GB) — the header/body/receipt/index tier.
 
 | Table | Covers to | Updated | Notes |
 |---|---|---|---|
-| `headerc` | 25,943,310 | ✅ weekly (Step 1) | partial tail auto-rewinds; **framed (F=256) from 2026-09-10** |
-| `bodyc` | 25,943,310 | ✅ weekly (Step 1) | 358 cdat; `full` ships only the newest 56; **framed (F=256) from 2026-09-10** |
-| `receipts` | items 25,943,311 | ✅ weekly (Step 1) | |
-| `senders` | items 25,943,311 | ✅ weekly (Step 1) | **byte-identical duplicate of the N42-eth1177 copy** — 40.7 GB, see §7 |
-| `txindex` | 25,943,310 (26 segments, 16.47 GB) | ✅ weekly (Step 2b) | archive tier, base 0, 3,727,424,025 tx |
-| `codes` | **25,252,184** | ❌ orphan since 2026-06-05 | see §7 — the live copy is in the publish root |
-| `storhist` | 26 segments, built 2026-06-06 | ❌ not in any weekly step | its `accthist` half lives in `D:\n42-release`; see §5 |
+| `headerc` | 26,448,348 | ✅ weekly (Step 1) | 4.9 GB; partial tail auto-rewinds; framed (F=256) since 2026-09-10 |
+| `bodyc` | 26,448,348 | ✅ weekly (Step 1) | 372 cdat, 629 GB; `full` ships only the newest 56 |
+| `receipts` | items 26,448,349 | ✅ weekly (Step 1) | 194.5 GB |
+| `senders` | items 26,448,349 | ✅ weekly (Step 1) | 42.3 GB, byte-identical duplicate of the N42-eth1177 copy (§8 D3) |
+| `txindex` | 26,448,348 (27 index segments in 12 cdat, 17.19 GB) | ✅ weekly (Step 2b) | archive tier, base 0, 3,858,763,229 tx |
+| `codes` | — | removed 2026-08-30 (§8 D4) | the weekly codes generation is its own directory, §3 |
+| `accthist` / `storhist` | 25,864,981 (rebuilt 2026-08-30) | ❌ not in any weekly step | 12.0 + 28.6 GB, both now in this dir; RPC still blocked on the reader (§8 E2) |
 
-**`D:\N42-eth1177`** (931 GB) — the replay tier (changesets + witness + state).
+**`D:\N42-eth1177`** (963 GB) — the replay tier (changesets + witness + state).
 
 | Table / marker | Covers to | Updated |
 |---|---|---|
-| `senders` / `acctcs` / `storcs` / `witness` | items 25,943,311 | ✅ weekly (Step 2) |
-| `ethel-last-block` | 25,943,310 | ✅ weekly (Step 2) |
+| `senders` / `acctcs` / `storcs` / `witness` | items 26,448,349 | ✅ weekly (Step 2) |
+| `ethel-last-block` | 26,448,348 | ✅ weekly (Step 2) |
 | `PlainState` + `Code` (MDBX) | tip | ✅ side effect of Step 2 |
 
 ## 3. Weekly artefacts — reth-sourced
 
 | Path | Size | Covers | Note |
 |---|---|---|---|
-| `D:\n42-snapshot-25943310` | 55 GB | 25,943,310 | 16 shards; regenerated weekly (~2 h). Holds both `.val` and `.val.zst`; manifests publish the `.zst`, the E: test dirs use the raw `.val` |
-| `D:\N42-hashed-25943310` | 160 GB | 25,943,310 | vtrie root verified against expect |
-| `D:\n42-codes-25943310` | 6.8 GB | 25,943,310 | 2,750,326 codes, content-addressed |
-| `D:\n42-txindex-window-25943310` | 4.5 GB | 25,943,310 | window tier, base 23,000,000, 3 segments; extended from the prior week's copy |
-| prior generation (`*-25864981`) | ~225 GB | 25,864,981 | reclaimable once this week's publish is seeded |
+| `D:\n42-snapshot-26448348` | 56 GB | 26,448,348 | 16 shards, accounts 433,019,140 / storage 1,696,679,618; regenerated weekly (~2 h). Holds both `.val` and `.val.zst`; manifests publish the `.zst`, the E: test dirs use the raw `.val` |
+| `D:\N42-hashed-26448348` | 164 GB | 26,448,348 | vtrie root `0xc080bb22…0b24` == expect |
+| `D:\n42-codes-26448348` | 7 GB | 26,448,348 | 3,044,871 codes, content-addressed |
+| `D:\n42-txindex-window-26448348` | 5 GB | 26,448,348 | window tier, base 23,000,000, 4 segments, 950,820,598 tx |
+| prior generation (`*-26245274`) | — | — | deleted 2026-11-20 (§9) |
 
 These are versioned per tip. The previous generation stays until the publish
 swap; nothing prunes them automatically.
@@ -61,23 +66,25 @@ swap; nothing prunes them automatically.
 
 | Path | Size | Note |
 |---|---|---|
-| `D:\n42-publish-25943310` | 599 files / 848 GB **logical** | root A — minimal + archive (archive-tier txindex). Active tails COPIED (6.06 GB), everything else hard-linked, so it no longer mutates under its manifests |
-| `D:\n42-publish-25943310-full` | 526 files / 172 GB **logical** | root B — full (window-tier txindex). Active tails copied: 4.58 GB |
-| `D:\n42-publish-25765565` | 756 files / 1,134 GB **logical** | the 2026-08-16 assembly, `snapshot/` since reclaimed; its manifests no longer verify (pre-tail-isolation) |
+| `D:\n42-publish-26448348` | root A — minimal + archive (archive-tier txindex) | each table's cidx/base and newest `.cdat` COPIED, everything else hard-linked, so it does not mutate under its manifests |
+| `D:\n42-publish-26448348-full` | root B — full (window-tier txindex) | same tail isolation |
+| older roots (`25765565`, `25943310[-full]`, `26130711[-full]`, `26245274[-full]`) | — | deleted 2026-11-20/21 (§9) |
 | `D:\n42-release` | 16 GB | the 2026-06-06 release: holds `accthist` + `anchorc` + four manifests + `minimal.torrent` |
 
 **Two roots, not one**: full and archive write different `txindex.*` content to
 the same in-root path, and the selector matches on that path (runbook §3b
 trap 3).
 
-Published manifest contents as actually cut on 2026-09-10 (read from the JSON,
-not from the spec):
+Current manifests, cut 2026-11-20 with `-height 26448348` and re-checked
+file-by-file against the roots (0 missing, 0 size mismatch):
 
-| mode | files | size | manifestID | sections present |
+| mode | root | files | size | manifestID |
 |---|---|---|---|---|
-| archive | 478 | 812.0 GB | `a53754dac37c7efa…` | bodyc 359, witness 98, txindex 12, codes 5, headerc 4 — **anchors 0** |
-| full | 167 | 135.2 GB | `3ced79fabb9e8aa3…` | bodyc 57, snapshot 97, txindex 4 (**window tier**), codes 5, headerc 4 |
-| minimal | 106 | 36.0 GB | `054fa49fb2c78c58…` | snapshot 97 + **headerc 4 + codes 5** |
+| minimal | A | 106 | 37.37 GB | `c5bbdcc705ce8451…` |
+| archive | A | 498 | 845.03 GB | `d4ef691ef3c88234…` |
+| full | B | 168 | 136.95 GB | `4a3d569bd87f0512…` |
+
+The archive manifest still ships **zero anchor files** (§5).
 
 The minimal selector fix (`89ec772f`) was written 2026-09-01 but only reached a
 manifest on 2026-09-10 — `build/bin/n42-eth-manifest.exe` was still the June 6
@@ -87,7 +94,7 @@ build, so every minimal manifest before this one shipped snapshot files alone.
 
 | Path | Size | Covers | Owner tool |
 |---|---|---|---|
-| `D:\n42-datc-bprime2-25m` | 1,160 GB | node records **15,220,000**; leaf layers **25,439,3xx** | `n42-datc` — **the cherry-datc build only** (this repo has 13 of its 35 files, and lacks `cs_to_spill` / `stroot_seg` / `drop_table`) |
+| ~~`D:\n42-datc-bprime2-25m`~~ | — | absent from D: (checked 2026-11-21) | superseded by the v2 archive on n42dev, `/data/blockchain/datc-out/datc-25m-v2-hi`, extended weekly per `datc-weekly-update.md`: head **26,130,712** (2026-10-08); inputs shipped to **26,448,348** on 2026-11-21, build not yet run |
 | `D:\n42-idc-anchors-25m` | 4.8 GB | **25,098,768** (2026-06-16) | `blockproof-produce` |
 | `storhist` (in n42-eth1) + `accthist` (in n42-release) | ~43 GB | built 2026-06-06 | `n42-hist-from-freezer` |
 
@@ -120,9 +127,8 @@ Three notes that cost real time to rediscover:
 
 | Path | Size | Keep? |
 |---|---|---|
-| `E:\ethel-{archive,full,min}-25765565` | 1,008 GB | current generation — the 2026-08-17 three-mode PASS |
-| `E:\ethel-{archive,full,min}-25715848` | 888 GB | **superseded** (2026-08-09 generation) |
-| `E:\qs-*` | ~460 GB | the self-developed chain's fleet — a DIFFERENT product, shares no data with this pipeline |
+| `E:\ethel-{archive,full,min}-26448348` | 458 GB | current generation — the 2026-11-20 three-mode PASS |
+| `E:\qs-*` | — | the self-developed chain's fleet and its replay/seed dirs — a DIFFERENT product, shares no data with this pipeline (`docs/QS_WEEKLY_REPLAY_SYNC.md`) |
 
 Test trees deliberately drop `snapshot/*.val.zst` (the node mmaps the raw
 `.val`), which is why they are NOT a valid manifest source.
@@ -273,3 +279,18 @@ CPU-bound long jobs must not overlap; code work can proceed alongside them.
 
 Steps 5 and 6 together are ~2.5 days of continuous CPU. Run them detached, one
 at a time, never beside the fleet or a weekly replay.
+
+## 9. Reclamation — 2026-11-20/21 (operator-approved)
+
+| Item | Where | Evidence it was safe |
+|---|---|---|
+| `E:\ethel-{archive,full,min}-26245274` | E: | superseded by the 26448348 three-mode PASS |
+| `D:\{n42-codes,N42-hashed,n42-snapshot,n42-txindex-window}-26245274`, `D:\n42-publish-26245274[-full]` | D: | superseded by the 26448348 generation and its publish roots |
+| `D:\n42-publish-25765565` | D: | no process or script referenced it; its 148.7 GB of unique data was the May build of `bodyc.0289-0358` (regenerated 2026-08, every segment present in `D:\n42-eth1`) plus an old codes generation; its manifests had not verified since 2026-08-30 |
+| `D:\n42-publish-{25943310,26130711}[-full]` | D: | unique data was only the copied tails (3-6 GB per root); everything else hard links |
+| `E:\qs-node*-pre20261029` | E: | qs fleet generation from two weeks back (not this pipeline) |
+| n42dev `datc-input-backup-26130711`, `datc-input-staging-26130711`, `codes-25864981`, `codes-25943310`, `witness.prev-25864982`, `witness-geth.prev-25864982` (about 18 GB) | n42dev `/data/blockchain` | no symlink, process, cron job or script referenced them |
+
+Free after: D: **1,624 GB**, E: about 1.24 TB. n42dev `/data` reached 906 GB
+free, then fell back to about 740 GB while another project's benchmark ran,
+which is below the 800 GB the DATC finalize needs (`datc-weekly-update.md` §5).
