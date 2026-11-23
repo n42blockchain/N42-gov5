@@ -1448,6 +1448,14 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
 		committedNumber = blk.Number64().Uint64()
+		// Fail closed on a commit that does not extend the committed chain
+		// (commit_conflict.go): refuse before any row is touched, and before
+		// the applied-lineage guard turns it into an endless retry.
+		if skip, cerr := commitConflictsWithFloor(tx, hash, blk.ParentHash(), committedNumber); cerr != nil {
+			return cerr
+		} else if skip {
+			return nil
+		}
 		// The fleet committed it: an own build is a convergence candidate again.
 		if err := rawdb.ClearOwnUnverifiedMark(tx, hash); err != nil {
 			return err
