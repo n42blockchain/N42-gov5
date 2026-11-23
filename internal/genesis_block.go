@@ -140,7 +140,9 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 	if g == nil || g.GenesisConfig == nil || g.GenesisConfig.Config == nil {
 		return nil, nil, ErrGenesisNoConfig
 	}
-	_ = g.GenesisConfig.Alloc //nil-check
+	if err := validateGenesisAlloc(g.GenesisConfig.Alloc); err != nil {
+		return nil, nil, err
+	}
 
 	var root types.Hash
 	var statedb *state.IntraBlockState
@@ -350,6 +352,26 @@ func decodeGenesisBalance(input string) (*uint256.Int, error) {
 		return uint256.FromHex(normalizeGenesisHexQuantity(input))
 	}
 	return uint256.FromDecimal(input)
+}
+
+// validateGenesisAlloc rejects alloc entries with nonce 0, zero balance, empty
+// code and non-empty storage. Under EIP-161 genesis finalization such an
+// account is empty and gets dropped, while other clients (n42-rs) would still
+// write its storage leaves, so the genesis state roots would diverge.
+func validateGenesisAlloc(alloc conf.GenesisAlloc) error {
+	for address, account := range alloc {
+		if account.Nonce != 0 || len(account.Code) != 0 || len(account.Storage) == 0 {
+			continue
+		}
+		balance, err := decodeGenesisBalance(account.Balance)
+		if err != nil {
+			return fmt.Errorf("invalid balance for address %s: %w", address.Hex(), err)
+		}
+		if balance.IsZero() {
+			return fmt.Errorf("genesis alloc %s has storage but nonce 0, zero balance and empty code: the account is empty under EIP-161 and its storage would be dropped; set a nonce, balance or code", address.Hex())
+		}
+	}
+	return nil
 }
 
 func normalizeGenesisHexQuantity(input string) string {
