@@ -51,3 +51,15 @@ func TestRustCrossClientDirectBlockWireFixture(t *testing.T) {
 		t.Fatalf("direct block wire mismatch\n got %s\nwant %s", got, want)
 	}
 }
+
+func TestBlockChunkCapNeverBelowStandard(t *testing.T) {
+	if MaxBlockChunkSize < StandardBlockBytes {
+		t.Fatalf("block chunk cap %d below the 64 MiB standard", MaxBlockChunkSize)
+	}
+	// Must be safe to call whether or not the cap was raised.
+	WarnIfBlockCapNonStandard()
+	old := MaxBlockChunkSize
+	MaxBlockChunkSize = StandardBlockBytes * 2
+	WarnIfBlockCapNonStandard()
+	MaxBlockChunkSize = old
+}

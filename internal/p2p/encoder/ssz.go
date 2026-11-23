@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/golang/snappy"
+	"github.com/n42blockchain/N42/log"
 	fastssz "github.com/prysmaticlabs/fastssz"
 )
 
@@ -40,6 +41,24 @@ var MaxChunkSize = uint64(1 << 20)
 // Producers are unaffected, because MaxWireMessageSize takes the smaller of the
 // two bounds and so still follows the gossip cap down.
 var MaxBlockChunkSize = maxUint64(sizeFromEnvMB("N42_MAX_GOSSIP_MB", 64<<20), 64<<20)
+
+// StandardBlockBytes is the common N42 sync standard's chain-level block cap
+// (MAX_BLOCK_BYTES, the decoded RLP block). The Rust clients refuse any block
+// chunk above it.
+const StandardBlockBytes = uint64(64 << 20)
+
+// WarnIfBlockCapNonStandard logs when N42_MAX_GOSSIP_MB lifts the block chunk
+// cap above the standard 64 MiB. It does not change the cap: lowering it would
+// strand blocks already in the chain (see MaxBlockChunkSize). A block larger
+// than the standard cap is refused by n42-26 and n42-rs peers, so a mixed
+// network must keep the variable at or below 64.
+func WarnIfBlockCapNonStandard() {
+	if MaxBlockChunkSize > StandardBlockBytes {
+		log.Warn("N42_MAX_GOSSIP_MB raises the block chunk cap above the 64 MiB network standard; "+
+			"n42-26 and n42-rs peers refuse blocks above 64 MiB, keep it <= 64 on a mixed network",
+			"capMiB", MaxBlockChunkSize>>20)
+	}
+}
 
 func maxUint64(a, b uint64) uint64 {
 	if a > b {

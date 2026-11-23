@@ -107,6 +107,7 @@ import (
 	"github.com/n42blockchain/N42/internal/miner"
 	"github.com/n42blockchain/N42/internal/mobileverify"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/peerdas"
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/stateless"
@@ -1313,6 +1314,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// changes the block hash, so it is only allowed on chains that never carry
 	// one. See sync.AllowLegacyProtoBlocks.
 	n42sync.AllowLegacyProtoBlocks(chainConfig)
+	// Flag a block cap raised above the 64 MiB network standard (Rust peers refuse it).
+	encoder.WarnIfBlockCapNonStandard()
 
 	syncOpts := []n42sync.Option{
 		n42sync.WithP2P(p2p),
