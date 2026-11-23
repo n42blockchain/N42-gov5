@@ -459,6 +459,10 @@ func (bc *BlockChain) e1LightStep(list []*lagQueued, committedNum uint64) bool {
 			bc.lagForget(b.Hash())
 			return true
 		}
+		if bc.lagSyncOwned(n) {
+			// S5 Range: the sync importer owns this height.
+			continue
+		}
 		var tm e1ImportTiming
 		tImport := time.Now()
 		done, err := bc.e1LightImport(b, &tm)

@@ -125,6 +125,14 @@ func (bc *BlockChain) lagAnchorHeld(hash types.Hash) bool {
 	return p != nil && (*p)(hash)
 }
 
+// lagSyncOwned reports whether the sync layer owns height n (N42_SYNC_PIPELINE
+// Range mode, via SetFutureInsertGate). The lag executor imports without
+// InsertChain, so it must leave such a height queued: the sync importer
+// executes it, and the next pass finds it stored and applied (lagDone).
+func (bc *BlockChain) lagSyncOwned(n uint64) bool {
+	return bc.futureGate.holds(n)
+}
+
 // RememberAvailable records a frame block this node holds every frame of
 // and has not executed (an availability-checked proposal, or a block sealed
 // here without execution). Its header becomes findable by GetHeaderByHash.
@@ -688,6 +696,13 @@ func (bc *BlockChain) lagStep() bool {
 			bc.lagForget(b.Hash())
 			le.idle.passEmpty("other")
 			return true
+		}
+		if bc.lagSyncOwned(n) {
+			// S5 Range: the sync importer owns this height.
+			if skipWhy == "queued" {
+				skipWhy = "sync-range"
+			}
+			continue
 		}
 		if bc.lagAnchorHeld(b.Hash()) {
 			// S1 enforce: catch-up holds it unanchored; it executes once a
