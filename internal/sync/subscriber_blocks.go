@@ -68,7 +68,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 			// same-height sibling from an already-passed view that will never
 			// be gossiped again — waiting passively leaves the queued child
 			// (and the whole chain) stuck forever. No-op if it arrives first.
-			s.FetchBlockByHash(blk.ParentHash())
+			s.fetchMissingParent(blk.ParentHash())
 			return s.cfg.chain.AddFutureBlock(blk)
 		}
 		if errors.Is(err, consensus.ErrExecutionInvalid) {

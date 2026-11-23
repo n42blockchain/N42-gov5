@@ -1262,14 +1262,22 @@ func (bc *BlockChain) processFutureBlocks() {
 	// stays for the next pass.
 	inserted := 0
 	for _, b := range blocks {
-		// The queue holds proposals that arrived by push with consensus
-		// authority; retry them with the same authority the push path used.
-		if _, err := bc.InsertChainAuthorized([]block.IBlock{b}); err != nil {
+		// Retry with branch-switch authority only a block queued by a
+		// consensus-driven import; a pushed, gossiped or range-fetched block
+		// retries as it arrived, without it (future_authority.go).
+		var err error
+		if bc.futureRetryAuthorized(b.Hash()) {
+			_, err = bc.InsertChainAuthorized([]block.IBlock{b})
+		} else {
+			_, err = bc.InsertChain([]block.IBlock{b})
+		}
+		if err != nil {
 			log.Debug("insert future block failed", "number", b.Number64().Uint64(),
 				"hash", b.Hash().Hex()[:12], "err", err)
 			continue
 		}
 		bc.futureBlocks.Remove(b.Hash())
+		bc.futureAuth.drop(b.Hash())
 		inserted++
 	}
 	if inserted > 0 {
@@ -2186,7 +2194,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// parent arrives, instead of rejecting them as bad blocks.
 		for blk != nil && (it.index == 0 || isUnknownAncestorErr(err)) {
 			log.Debug("Future block, postponing import", "number", blk.Number64(), "hash", blk.Hash())
-			if err := bc.AddFutureBlock(blk); err != nil {
+			if err := bc.addFutureBlock(blk, authorizedSwitch); err != nil {
 				return it.index, err
 			}
 			blk, err = it.next()
@@ -2309,7 +2317,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// the norm for HotStuff blocks pushed directly from the leader, which can
 		// arrive before their parent.
 		if n := blk.Number64().Uint64(); n > 0 && !bc.HasBlock(blk.ParentHash(), n-1) {
-			if aerr := bc.AddFutureBlock(blk); aerr != nil {
+			if aerr := bc.addFutureBlock(blk, authorizedSwitch); aerr != nil {
 				return it.index, aerr
 			}
 			stats.queued++
@@ -2399,7 +2407,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 					log.Warn("branch-switch revert unavailable; future-queuing block",
 						"number", blockNumber.Uint64(), "hash", fmt.Sprintf("%x", blk.Hash().Bytes()[:8]), "err", uerr)
 				}
-				if aerr := bc.AddFutureBlock(blk); aerr != nil {
+				if aerr := bc.addFutureBlock(blk, authorizedSwitch); aerr != nil {
 					return it.index, aerr
 				}
 				stats.queued++
@@ -2430,7 +2438,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				log.Warn("QMDB tree/marker discontinuity before execution; realigned and queueing",
 					"number", blockNumber.Uint64(), "err", qerr)
 			}
-			if aerr := bc.AddFutureBlock(blk); aerr != nil {
+			if aerr := bc.addFutureBlock(blk, authorizedSwitch); aerr != nil {
 				return it.index, aerr
 			}
 			stats.queued++
@@ -2533,7 +2541,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				// "BAD BLOCK" that was never actually bad.
 				log.Debug("nonce gap during execution; future-queuing block",
 					"number", blk.Number64().Uint64(), "err", err)
-				if aerr := bc.AddFutureBlock(blk); aerr != nil {
+				if aerr := bc.addFutureBlock(blk, authorizedSwitch); aerr != nil {
 					return it.index, aerr
 				}
 				stats.queued++
@@ -2675,12 +2683,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 
 	// Queue remaining future blocks
 	if blk != nil && errors.Is(err, ErrFutureBlock) {
-		if err := bc.AddFutureBlock(blk); err != nil {
+		if err := bc.addFutureBlock(blk, authorizedSwitch); err != nil {
 			return it.index, err
 		}
 		blk, err = it.next()
 		for ; blk != nil && errors.Is(err, ErrUnknownAncestor); blk, err = it.next() {
-			if err := bc.AddFutureBlock(blk); err != nil {
+			if err := bc.addFutureBlock(blk, authorizedSwitch); err != nil {
 				return it.index, err
 			}
 			stats.queued++

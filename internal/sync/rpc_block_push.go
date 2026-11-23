@@ -132,7 +132,7 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 			log.Debug("block push: parent missing, queuing + fetching parent",
 				"number", blk.Number64().Uint64(), "parent", blk.ParentHash().Hex()[:12])
 			_ = s.cfg.chain.AddFutureBlock(blk)
-			s.FetchBlockByHash(blk.ParentHash())
+			s.fetchMissingParent(blk.ParentHash())
 			return
 		}
 		if errors.Is(err, consensus.ErrExecutionInvalid) {

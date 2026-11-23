@@ -173,6 +173,11 @@ type Service struct {
 	claimQuorum atomic.Int32
 	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
 	catchUpBook catchUpPeerBook
+	// passiveFetch / passiveImporting: rate limit and in-flight set of the
+	// authority-free parent fetch of pushed and gossiped blocks
+	// (passive_parent_fetch.go).
+	passiveFetch     passiveFetchLimiter
+	passiveImporting sync.Map
 }
 
 // NewService initializes new regular sync service.
