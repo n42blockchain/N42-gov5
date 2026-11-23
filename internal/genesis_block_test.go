@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -204,5 +205,37 @@ func TestGenesisBlockToBlockUsesLegacyZeroRootsForAPOS(t *testing.T) {
 	}
 	if header.ReceiptHash != (types.Hash{}) {
 		t.Fatalf("ReceiptHash = %s, want zero hash", header.ReceiptHash)
+	}
+}
+
+func TestValidateGenesisAllocStorageOnly(t *testing.T) {
+	t.Parallel()
+
+	addr := types.Address{0xaa}
+	storage := map[types.Hash]types.Hash{{1}: {2}}
+	tests := []struct {
+		name    string
+		account conf.GenesisAccount
+		wantErr bool
+	}{
+		{name: "storage only", account: conf.GenesisAccount{Storage: storage}, wantErr: true},
+		{name: "storage only zero hex balance", account: conf.GenesisAccount{Balance: "0x0", Storage: storage}, wantErr: true},
+		{name: "storage with nonce", account: conf.GenesisAccount{Nonce: 1, Storage: storage}},
+		{name: "storage with balance", account: conf.GenesisAccount{Balance: "1", Storage: storage}},
+		{name: "storage with code", account: conf.GenesisAccount{Code: []byte{0x60}, Storage: storage}},
+		{name: "empty account no storage", account: conf.GenesisAccount{}},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateGenesisAlloc(conf.GenesisAlloc{addr: tc.account})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), addr.Hex()) {
+				t.Fatalf("error %q does not name the address", err)
+			}
+		})
 	}
 }
