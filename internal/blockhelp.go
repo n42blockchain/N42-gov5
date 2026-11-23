@@ -404,6 +404,31 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 	return append(requests, pragueRequests...), nil
 }
 
+// StampRequestsHash sets a built header's RequestsHash from the requests the
+// block's execution produced, on blocks that commit to them
+// (ChainConfig.CommitsRequestsHash); other headers are left as they are.
+func StampRequestsHash(chainConfig *params.ChainConfig, header *block.Header, requests []hexutil.Bytes) {
+	if !chainConfig.CommitsRequestsHash(header.Number.Uint64(), header.Time) {
+		return
+	}
+	rh := ExecutionRequestsHash(requests)
+	header.RequestsHash = &rh
+}
+
+// VerifyRequestsHash checks a header's RequestsHash against the requests the
+// block's execution produced, on blocks that commit to them
+// (ChainConfig.CommitsRequestsHash); other blocks pass.
+func VerifyRequestsHash(chainConfig *params.ChainConfig, header *block.Header, requests []hexutil.Bytes) error {
+	if !chainConfig.CommitsRequestsHash(header.Number.Uint64(), header.Time) {
+		return nil
+	}
+	got := ExecutionRequestsHash(requests)
+	if header.RequestsHash == nil || *header.RequestsHash != got {
+		return fmt.Errorf("requests hash mismatch at block %s: header %v, computed %s", header.Number, header.RequestsHash, got.Hex())
+	}
+	return nil
+}
+
 // ExecutionRequestsHash computes the EIP-7685 requests hash committed in the
 // header from Prague: sha256 over the sha256 of each non-empty request, in
 // request-type order. Requests carrying only a type byte are skipped.

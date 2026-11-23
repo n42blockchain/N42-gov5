@@ -1827,9 +1827,11 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// End-of-block system calls (EIP-7002 withdrawal / EIP-7251 consolidation
 	// requests) — mirror of StateProcessor.Process before Finalize, for the
 	// same build/verify state-root equivalence as the block-start hooks above.
-	if _, err := internal.ProcessExecutionBlockEnd(nil, w.chainConfig, ibs, current.header, w.engine); err != nil {
+	requests, err := internal.ProcessExecutionBlockEnd(current.receipts, w.chainConfig, ibs, current.header, w.engine)
+	if err != nil {
 		return fmt.Errorf("miner block-end system calls: %w", err)
 	}
+	internal.StampRequestsHash(w.chainConfig, current.header, requests)
 
 	// Build-phase breakdown: the dropped-seal hunt found ~6s builds with a
 	// 6ms seal and no visible spender - this line is the missing evidence.

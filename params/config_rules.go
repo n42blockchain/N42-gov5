@@ -115,6 +115,7 @@ type Rules struct {
 	IsBerlin, IsLondon, IsParis, IsShanghai, IsCancun, IsPrague bool
 	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam                  bool // Pectra: EIP-7702; Osaka: Fusaka-EL set; Fusaka: N42 Native-AA extension (N42 chains only); Glamsterdam: Amsterdam set (implies Osaka, not Fusaka)
 	IsEOF                                                       bool // EVM Object Format — N42 experimental gate, not on any scheduled ETH fork
+	IsEthereumParity                                            bool // N42 departures from the activated Ethereum forks are over (EthereumParityTime)
 	IsNano, IsMoran                                             bool
 	IsEip1559FeeCollector                                       bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                     bool
@@ -173,6 +174,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsFusaka:              c.IsFusaka(timestamp),
 		IsGlamsterdam:         c.IsGlamsterdam(timestamp),
 		IsEOF:                 c.IsEOF(timestamp),
+		IsEthereumParity:      c.IsEthereumParity(timestamp),
 		IsNano:                c.IsNano(num),
 		IsMoran:               c.IsMoran(num),
 		IsEip1559FeeCollector: c.IsEip1559FeeCollector(num),
@@ -402,10 +404,23 @@ func (c *ChainConfig) IsPQPrecompiles(time uint64) bool {
 	return isForked(c.PQPrecompilesTime, time)
 }
 
-// IsEOF returns whether time is at or past the EOF activation timestamp.
+// IsEOF returns whether EOF is active at time: at or past the EOF activation
+// timestamp and before EthereumParityTime, which switches it off again.
 // EOF is not part of any scheduled Ethereum fork; see ChainConfig.EOFTime.
 func (c *ChainConfig) IsEOF(time uint64) bool {
-	return isForked(c.EOFTime, time)
+	return isForked(c.EOFTime, time) && !c.IsEthereumParity(time)
+}
+
+// IsEthereumParity returns whether time is at or past EthereumParityTime.
+func (c *ChainConfig) IsEthereumParity(time uint64) bool {
+	return isForked(c.EthereumParityTime, time)
+}
+
+// CommitsRequestsHash returns whether the header of block num at time must
+// carry the EIP-7685 hash of the block's execution requests: Prague rules
+// (reached through any fork that implies them) under EthereumParityTime.
+func (c *ChainConfig) CommitsRequestsHash(num uint64, time uint64) bool {
+	return c.IsEthereumParity(time) && c.RulesWithTimestamp(num, time).IsPrague
 }
 
 // IsContentStore returns whether time is at or past the content-addressed storage precompile activation.

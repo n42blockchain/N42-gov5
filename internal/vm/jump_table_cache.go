@@ -93,6 +93,7 @@ func jumpTableCacheKey(rules *params.Rules) string {
 		{rules.IsFusaka, "Fu"},
 		{rules.IsGlamsterdam, "Gl"},
 		{rules.IsEOF, "EOF"},
+		{rules.IsEthereumParity, "EP"},
 	}
 
 	var b strings.Builder
@@ -118,7 +119,7 @@ func newJumpTableForRules(rules *params.Rules) JumpTable {
 		return newGlamsterdamInstructionSet()
 	case rules.IsFusaka && rules.IsEOF:
 		return withEOF(newFusakaInstructionSet())
-	case rules.IsFusaka:
+	case rules.IsFusaka && !rules.IsEthereumParity:
 		return newFusakaInstructionSet()
 	case rules.IsOsaka && rules.IsEOF:
 		return withEOF(newOsakaInstructionSet())

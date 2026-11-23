@@ -374,6 +374,23 @@ type ChainConfig struct {
 	// from the original) write nothing. N42 extension. Nil = never.
 	StorageNetChangeTime *big.Int `json:"storageNetChangeTime,omitempty"`
 
+	// EthereumParityTime ends, from a block whose timestamp is at or past it,
+	// the places where an N42-native chain departed from the Ethereum forks
+	// it has activated, so that it executes and seals as an Ethereum client
+	// (and n42-rs, n42-26) does:
+	//   - EOF is off again, whatever EOFTime says (no scheduled Ethereum fork
+	//     has it);
+	//   - SLOTNUM (0x4b) is an invalid opcode until Glamsterdam, where it has
+	//     its EIP-7843 semantics; FusakaTime no longer installs it early;
+	//   - a header of a Prague-or-later block commits to the block's
+	//     execution requests in RequestsHash as EIP-7685 defines it, and an
+	//     imported block is held to that. Before it, a chain that reached
+	//     Prague through PectraTime alone sealed no RequestsHash at all;
+	//   - the pool admits set-code transactions on such a chain, which the
+	//     state transition has accepted since PectraTime.
+	// Blocks before it replay unchanged. N42 extension. Nil = never.
+	EthereumParityTime *big.Int `json:"ethereumParityTime,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.
@@ -1019,6 +1036,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	}
 	if isForkIncompatible(c.EOFTime, newcfg.EOFTime, head) {
 		return newCompatError("EOF activation time", c.EOFTime, newcfg.EOFTime)
+	}
+	if isForkIncompatible(c.EthereumParityTime, newcfg.EthereumParityTime, head) {
+		return newCompatError("Ethereum parity time", c.EthereumParityTime, newcfg.EthereumParityTime)
 	}
 	return nil
 }
