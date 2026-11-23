@@ -52,7 +52,13 @@ const (
 
 // pipeStallTimeout ends a run that made no progress with nothing in flight;
 // the next commit or the 8 s tick starts a new one.
-var pipeStallTimeout = 20 * time.Second
+var pipeStallTimeout = 10 * time.Second
+
+// pipeProbeMisses ends a run whose cursor is above the backed height (the
+// verified commit watermark or the quorum height) once that many replies
+// covering the cursor came back without it: the target was only a claim
+// (CatchUp follows the highest advertised height) and nobody stores more.
+const pipeProbeMisses = 2
 
 // pipeTick wakes the importer to re-plan (timeouts, head-of-line duplicates,
 // back-off expiry).
@@ -75,6 +81,10 @@ type pipeRun struct {
 	prevHash types.Hash // hash of the block below the cursor
 	target   uint64
 	nextSeg  uint64
+	// misses counts replies covering the cursor that did not deliver it,
+	// since the cursor last moved (missAt).
+	misses int
+	missAt uint64
 
 	// disagree records, per hash below the cursor, the peers whose
 	// responses did not link to it.
@@ -246,6 +256,12 @@ func (r *pipeRun) next() (run []pipeBlock, done bool) {
 		if r.cursor > r.target {
 			return nil, true
 		}
+		if r.missAt == r.cursor && r.misses >= pipeProbeMisses &&
+			r.cursor > r.s.catchUpBackedHeight(currentBlockNumber(r.s.cfg.chain), len(r.s.cfg.p2p.Peers().Connected())) {
+			log.Info("sync pipeline: nothing stored above the backed height, ending the run",
+				"cursor", r.cursor, "target", r.target)
+			return nil, true
+		}
 		if len(r.sched.inflight) == 0 && time.Since(r.lastProgress) > pipeStallTimeout {
 			log.Warn("sync pipeline: no progress, ending the run", "cursor", r.cursor, "target", r.target)
 			return nil, true
@@ -375,6 +391,13 @@ func (r *pipeRun) onResult(q *pipeReq, fetched []*block.Block, err error, firstL
 		return
 	}
 	now := time.Now()
+	if q.start <= r.cursor && r.cursor <= q.end &&
+		(err != nil || len(blocks) == 0 || blocks[len(blocks)-1].Number64().Uint64() < r.cursor) {
+		if r.missAt != r.cursor {
+			r.missAt, r.misses = r.cursor, 0
+		}
+		r.misses++
+	}
 	h := r.s.cfg.p2p.Peers().PeerHeight(q.pid)
 	withinClaim := h != nil && h.Uint64() >= q.end
 	switch {
