@@ -68,6 +68,16 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 			break
 		}
 		if err != nil {
+			// A server that fails after streaming a prefix (gov5 main and
+			// n42-26 append an error chunk; a stream may also be cut) has
+			// still delivered valid blocks. Keep them: the caller imports the
+			// prefix and the next request starts after it. Only a failure
+			// before the first block is a failed range.
+			if len(blocks) > 0 {
+				log.Debug("Range reply failed after a prefix, keeping the blocks received",
+					"blocks", len(blocks), "requested", req.Count, "start", blockStart.Uint64(), "peer", pid.String(), "err", err)
+				break
+			}
 			return nil, err
 		}
 
