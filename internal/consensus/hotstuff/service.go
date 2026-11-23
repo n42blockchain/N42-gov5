@@ -539,6 +539,10 @@ type Service struct {
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
 	epochSchedule *EpochSchedule
 
+	// syncQCs caches strict header-QC verdicts for the sync importer
+	// (sync_anchor.go).
+	syncQCs syncQCCache
+
 	// P2P peer refresh callback on epoch transition (injected by node.go).
 	peerRefreshFn func()
 

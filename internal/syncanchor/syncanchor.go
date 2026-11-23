@@ -118,6 +118,9 @@ const (
 	// NoVerifier: the consensus layer offers no verifier (not a HotStuff
 	// chain, or not wired yet). The gate stays inactive.
 	NoVerifier
+	// Unverified: DecodeHeaderQC found a QC with view > 0; its signature has
+	// not been checked.
+	Unverified
 )
 
 func (v Verdict) String() string {
@@ -138,6 +141,8 @@ func (v Verdict) String() string {
 		return "bad_extra"
 	case NoVerifier:
 		return "no_verifier"
+	case Unverified:
+		return "unverified"
 	default:
 		return "unknown"
 	}
