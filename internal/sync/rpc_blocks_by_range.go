@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -93,12 +94,22 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 		trace.Int64Attribute("remaining_capacity", remainingBucketCapacity),
 	)
 
-	// served records that an earlier sub-batch already streamed blocks, so a
-	// later sub-batch that finds nothing stored ends the response cleanly
-	// instead of appending an error to a valid prefix.
-	served := false
+	// reply records what earlier sub-batches already streamed, so a later
+	// sub-batch that finds nothing stored (or hits a cap or a failure) ends
+	// the response cleanly instead of appending an error to a valid prefix.
+	reply := &rangeReply{}
 	for startBlockNumber.Cmp(endReqBlockNumber) <= 0 {
-		if err := s.rateLimiter.validateRequest(stream, allowedBlocksPerSecond); err != nil {
+		if reply.blocks > 0 {
+			// A prefix is already on the wire. Running out of rate-limit
+			// budget now ends the reply cleanly: validateRequest would
+			// reset the stream and score the peer, discarding the prefix.
+			if !s.cfg.p2p.Peers().IsTrusted(stream.Conn().RemotePeer()) &&
+				blockLimiter.Remaining(stream.Conn().RemotePeer().String()) < int64(allowedBlocksPerSecond) {
+				log.Debug("bodies-by-range: rate budget spent after a prefix, ending the reply cleanly",
+					"peer", stream.Conn().RemotePeer().String(), "blocks", reply.blocks)
+				break
+			}
+		} else if err := s.rateLimiter.validateRequest(stream, allowedBlocksPerSecond); err != nil {
 			return err
 		}
 
@@ -107,11 +118,10 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 			return p2ptypes.ErrInvalidRequest
 		}
 
-		err := s.writeBodiesRangeToStream(ctx, startBlockNumber, endBlockNumber, m.Step, served, stream)
+		err := s.writeBodiesRange(ctx, startBlockNumber, endBlockNumber, m.Step, reply, stream)
 		if err != nil && !errors.Is(err, p2ptypes.ErrInvalidParent) && !errors.Is(err, errRangeTruncated) {
 			return err
 		}
-		served = true
 
 		// Decrease allowed blocks capacity by the number of streamed blocks.
 		if startBlockNumber.Cmp(endBlockNumber) <= 0 {
@@ -163,15 +173,46 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 // caller must not stream further sub-batches.
 var errRangeTruncated = errors.New("bodies-by-range: response truncated")
 
+// rangeReplyByteCap bounds the decoded block bytes of one bodies_by_range
+// reply. The common sync standard allows servers at most 128 MiB (and
+// recommends 64); every client reads 128 MiB, so this is the largest value
+// that is safe for all peers. At least one block is always served, however
+// large. Before this cap a reply was bounded only by the block count.
+var rangeReplyByteCap = uint64(128 << 20)
+
+var rangeReplyCapLogOnce sync.Once
+
+// rangeReply tracks what one bodies_by_range response has already streamed,
+// across sub-batches. It decides how a failure is reported: before the first
+// block a single error chunk is fine, after it the reply must end cleanly (an
+// error chunk after a prefix makes the n42-rs and n42-26 readers discard the
+// whole prefix).
+type rangeReply struct {
+	blocks int
+	bytes  uint64
+}
+
 // writeBodiesRangeToStream streams the canonical blocks in [startSlot, endSlot].
+// servedBefore says an earlier sub-batch already streamed blocks.
+func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSlot *uint256.Int, step uint64, servedBefore bool, stream libp2pcore.Stream) error {
+	reply := &rangeReply{}
+	if servedBefore {
+		reply.blocks = 1
+	}
+	return s.writeBodiesRange(ctx, startSlot, endSlot, step, reply, stream)
+}
+
+// writeBodiesRange streams the canonical blocks in [startSlot, endSlot].
 // A missing block ends the response at the stored prefix: under deferred
 // execution a peer writes canonical rows only after it imports a committed
 // block, so a CommitQC-derived catch-up target routinely runs a few blocks
 // past every peer's stored chain. Failing the whole range there (the old
 // behaviour) left a lagging node with nothing to import from any peer. Only a
-// response that would carry no block at all (the first block missing and
-// nothing streamed earlier, see servedBefore) is still an error.
-func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSlot *uint256.Int, step uint64, servedBefore bool, stream libp2pcore.Stream) error {
+// response that would carry no block at all (nothing streamed yet, see
+// reply) is still an error. The same holds for a read, encode or write
+// failure and for the per-reply byte cap: once a block has been sent the
+// reply ends cleanly with the blocks sent so far.
+func (s *Service) writeBodiesRange(ctx context.Context, startSlot, endSlot *uint256.Int, step uint64, reply *rangeReply, stream libp2pcore.Stream) error {
 	_, span := trace.StartSpan(ctx, "sync.WriteBodiesRangeToStream")
 	defer span.End()
 
@@ -181,10 +222,14 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 		b, err := s.cfg.chain.GetBlockByNumber(startSlot)
 		if err != nil {
 			log.Warn("Could not retrieve blocks", "err", err)
+			if len(blks) > 0 || reply.blocks > 0 {
+				truncated = true
+				break
+			}
 			s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
 			return err
 		}
-		if b == nil && (len(blks) > 0 || servedBefore) {
+		if b == nil && (len(blks) > 0 || reply.blocks > 0) {
 			log.Debug("bodies-by-range: stored chain ends inside the range, serving the prefix",
 				"at", startSlot.Uint64(), "end", endSlot.Uint64(), "served", len(blks))
 			truncated = true
@@ -214,11 +259,37 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 
 	start := time.Now()
 	for _, b := range blks {
-		if chunkErr := s.chunkBlockWriter(stream, b); chunkErr != nil {
-			log.Debug("Could not send a chunked response", "err", chunkErr)
+		data, encErr := encodeBlockChunkPayload(b)
+		if encErr != nil {
+			log.Debug("Could not encode a chunked response", "err", encErr)
+			if reply.blocks > 0 {
+				return errRangeTruncated
+			}
 			s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
+			return encErr
+		}
+		// Per-reply byte cap: end the reply cleanly rather than send more. The
+		// first block is always sent.
+		if reply.blocks > 0 && reply.bytes+uint64(len(data)) > rangeReplyByteCap {
+			rangeReplyCapLogOnce.Do(func() {
+				log.Info("bodies-by-range: reply byte cap reached, ending the reply cleanly (peers re-request from the next block)",
+					"capMiB", rangeReplyByteCap>>20, "blocks", reply.blocks, "bytes", reply.bytes, "next", b.Number64().Uint64())
+			})
+			log.Debug("bodies-by-range: reply byte cap reached",
+				"blocks", reply.blocks, "bytes", reply.bytes, "next", b.Number64().Uint64())
+			return errRangeTruncated
+		}
+		if chunkErr := s.chunkEncodedBlockWriter(stream, b, data); chunkErr != nil {
+			log.Debug("Could not send a chunked response", "err", chunkErr)
+			// After a prefix the stream is cut mid-chunk or dead: an error
+			// chunk would only follow partial bytes. Nothing sent yet: say so.
+			if reply.blocks == 0 {
+				s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
+			}
 			return chunkErr
 		}
+		reply.blocks++
+		reply.bytes += uint64(len(data))
 	}
 	rpcBlocksByRangeResponseLatency.Observe(float64(time.Since(start).Milliseconds()))
 

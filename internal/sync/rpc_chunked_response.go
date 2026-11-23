@@ -30,6 +30,14 @@ func (s *Service) chunkBlockWriter(stream libp2pcore.Stream, blk types.IBlock) e
 	return WriteBlockChunk(stream, s.cfg.chain, blk)
 }
 
+// chunkEncodedBlockWriter is chunkBlockWriter for a payload already encoded by
+// encodeBlockChunkPayload, so the range server can size a block before it
+// commits it to the stream.
+func (s *Service) chunkEncodedBlockWriter(stream libp2pcore.Stream, blk types.IBlock, data []byte) error {
+	SetStreamWriteDeadline(stream, defaultWriteDuration)
+	return writeEncodedBlockChunk(stream, s.cfg.chain.GenesisBlock().Hash(), blk, data)
+}
+
 // WriteBlockChunk writes a block chunk object to the stream.
 // response_chunk  ::= <result> | <context-bytes> | <encoding-dependent-header> | <encoded-payload>
 func WriteBlockChunk(stream libp2pcore.Stream, chain common.IBlockChain, blk types.IBlock) error {
@@ -39,29 +47,45 @@ func WriteBlockChunk(stream libp2pcore.Stream, chain common.IBlockChain, blk typ
 // writeBlockChunk is WriteBlockChunk over a plain io.Writer, so the wire format
 // can be exercised without a libp2p stream.
 func writeBlockChunk(w io.Writer, genesisHash comtypes.Hash, blk types.IBlock) error {
-	// Encode the block as ETH-standard RLP (stage 1 of the proto->RLP migration).
-	// The block hash is keccak(rlp(header)) and the header round-trips
-	// byte-identically (see Block.EncodeRLP / Header rlp:"optional" tags), so the
-	// receiver recomputes the identical hash. The bytes travel through the
-	// existing length/snappy framing via rawSSZBytes.
-	//
-	// Everything that can fail is done before the first byte reaches the stream.
-	// The chunk header (result code + context bytes) is only meaningful when a
-	// payload follows it: a responder that writes the header and then fails to
-	// encode leaves the requester holding five valid-looking bytes followed by
-	// nothing, which it can only report as corrupt input.
-	data, err := rlp.EncodeToBytes(blk)
+	data, err := encodeBlockChunkPayload(blk)
 	if err != nil {
 		return err
+	}
+	return writeEncodedBlockChunk(w, genesisHash, blk, data)
+}
+
+// encodeBlockChunkPayload RLP-encodes a block for the wire and enforces the
+// chunk cap.
+//
+// Encode the block as ETH-standard RLP (stage 1 of the proto->RLP migration).
+// The block hash is keccak(rlp(header)) and the header round-trips
+// byte-identically (see Block.EncodeRLP / Header rlp:"optional" tags), so the
+// receiver recomputes the identical hash. The bytes travel through the
+// existing length/snappy framing via rawSSZBytes.
+//
+// Everything that can fail is done before the first byte reaches the stream.
+// The chunk header (result code + context bytes) is only meaningful when a
+// payload follows it: a responder that writes the header and then fails to
+// encode leaves the requester holding five valid-looking bytes followed by
+// nothing, which it can only report as corrupt input.
+func encodeBlockChunkPayload(blk types.IBlock) ([]byte, error) {
+	data, err := rlp.EncodeToBytes(blk)
+	if err != nil {
+		return nil, err
 	}
 	// The cap has to be checked here rather than left to the encoder, which
 	// checks it only after the caller has already committed the chunk header
 	// to the stream. Blocks are the one payload that routinely runs into it.
 	if uint64(len(data)) > encoder.MaxBlockChunkSize {
-		return fmt.Errorf("block #%d encodes to %d bytes, over the %d byte chunk cap",
+		return nil, fmt.Errorf("block #%d encodes to %d bytes, over the %d byte chunk cap",
 			blk.Number64().Uint64(), len(data), encoder.MaxBlockChunkSize)
 	}
+	return data, nil
+}
 
+// writeEncodedBlockChunk writes the chunk for a payload produced by
+// encodeBlockChunkPayload.
+func writeEncodedBlockChunk(w io.Writer, genesisHash comtypes.Hash, blk types.IBlock, data []byte) error {
 	digest, err := utils.CreateForkDigest(blk.Number64(), genesisHash)
 	if err != nil {
 		return err
