@@ -123,7 +123,9 @@ func (c *harnessChain) insert(blocks []block.IBlock, authorized bool) (int, erro
 	return len(blocks), nil
 }
 
-func (c *harnessChain) InsertChain(blocks []block.IBlock) (int, error) { return c.insert(blocks, false) }
+func (c *harnessChain) InsertChain(blocks []block.IBlock) (int, error) {
+	return c.insert(blocks, false)
+}
 func (c *harnessChain) InsertChainAuthorized(blocks []block.IBlock) (int, error) {
 	return c.insert(blocks, true)
 }
@@ -148,11 +150,11 @@ type harnessPeer struct {
 }
 
 type harnessNet struct {
-	t     *testing.T
-	fp    *fakeP2P
-	svc   *Service
-	chain *harnessChain
-	peers map[peer.ID]*harnessPeer
+	t      *testing.T
+	fp     *fakeP2P
+	svc    *Service
+	chain  *harnessChain
+	peers  map[peer.ID]*harnessPeer
 	nextIP int
 }
 
