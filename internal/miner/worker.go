@@ -2735,7 +2735,10 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		return nil, errors.New("invalid current block header type")
 	}
 	if param.parentHash != (types.Hash{}) {
-		b := w.ownSealed(param.parentHash)
+		// Read the map directly: w.mu is already read-held here, and taking
+		// it again through ownSealed deadlocks behind a queued writer
+		// (sync.RWMutex is not reentrant).
+		b := w.sealedByHash[param.parentHash]
 		if b == nil {
 			b, _ = w.chain.GetBlockByHash(param.parentHash)
 		}
