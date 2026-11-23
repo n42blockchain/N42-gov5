@@ -176,6 +176,11 @@ type Service struct {
 	anchors anchorBook
 	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
 	catchUpBook catchUpPeerBook
+	// syncModes is the S5 Live/Range mode machine and rangeEnd the highest
+	// height the sync importer owns in Range (sync_mode.go). Used only with
+	// N42_SYNC_PIPELINE=1.
+	syncModes syncModeMachine
+	rangeEnd  atomic.Uint64
 	// passiveFetch / passiveImporting: rate limit and in-flight set of the
 	// authority-free parent fetch of pushed and gossiped blocks
 	// (passive_parent_fetch.go).

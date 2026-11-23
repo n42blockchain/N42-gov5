@@ -97,6 +97,7 @@ func (s *Service) CatchUp() {
 // far to ask connected peers for data.
 func (s *Service) CatchUpTo(target uint64) {
 	s.noteVerifiedCommitTarget(target)
+	s.observeSyncMode(false) // S5 time sample (no-op with the pipeline off)
 	self := currentBlockNumber(s.cfg.chain)
 	if self == nil || target <= self.Uint64() {
 		return
@@ -549,5 +550,6 @@ func (s *Service) catchUpTick() {
 	if s.cfg.blockImportNotifier == nil {
 		return
 	}
+	s.observeSyncMode(false) // S5 time sample (no-op with the pipeline off)
 	s.CatchUp()
 }
