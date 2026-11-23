@@ -84,10 +84,14 @@ func (s *Service) retryRecoveredCommit(hash types.Hash) {
 			"hash", rc)
 		return
 	}
-	if err := s.blockProducer.CommitToCanonical(rc); s.handleCommitConflict(err, 0, rc, "recovered-commit") {
+	err := s.blockProducer.CommitToCanonical(rc)
+	if s.handleCommitConflict(err, 0, rc, "recovered-commit") {
 		s.clearRecoveredCommit()
 		return
-	} else if err != nil {
+	}
+	// The recovered QC block is an S1 anchor for the sync importer too.
+	s.noteCommitAnchor(rc, 0)
+	if err != nil {
 		log.Debug("hotstuff: recovered committed QC block not canonical yet", "hash", rc, "err", err)
 		return
 	}
