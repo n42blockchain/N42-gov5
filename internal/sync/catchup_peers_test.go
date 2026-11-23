@@ -56,11 +56,13 @@ func TestCatchUpLyingPeerPenalisedAndHonestPeersServe(t *testing.T) {
 		t.Fatalf("catch-up target still follows a backed-off liar: %d", h)
 	}
 	// Only one honest peer was needed for the range; the others claim no more.
+	// The parallel pipeline (N42_SYNC_PIPELINE=1) spreads slots over every
+	// suitable peer by design, so the count is serial-path only.
 	asked := 0
 	for _, p := range honest {
 		asked += p.askedCount()
 	}
-	if asked != 1 {
+	if !PipelineOn() && asked != 1 {
 		t.Fatalf("honest peers asked %d times, want 1", asked)
 	}
 }
