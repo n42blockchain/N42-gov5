@@ -15,21 +15,23 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-func requestsParityConfig(parity *big.Int) *params.ChainConfig {
+// requestsHashConfig is a chain that has run Prague rules since genesis
+// through PectraTime, with the given Prague time.
+func requestsHashConfig(prague *big.Int) *params.ChainConfig {
 	return &params.ChainConfig{
-		ChainID:            big.NewInt(1),
-		Consensus:          params.Faker,
-		LondonBlock:        big.NewInt(0),
-		PectraTime:         big.NewInt(0),
-		EthereumParityTime: parity,
+		ChainID:     big.NewInt(1),
+		Consensus:   params.Faker,
+		LondonBlock: big.NewInt(0),
+		PectraTime:  big.NewInt(0),
+		PragueTime:  prague,
 	}
 }
 
-// Under the parity time a built header carries the EIP-7685 hash of the
+// From the Prague time a built header carries the EIP-7685 hash of the
 // block's requests -- sha256 of nothing when there are none, not the empty
 // trie root -- and an imported header is held to it.
-func TestRequestsHashUnderEthereumParity(t *testing.T) {
-	cfg := requestsParityConfig(big.NewInt(100))
+func TestRequestsHashFromPragueTime(t *testing.T) {
+	cfg := requestsHashConfig(big.NewInt(100))
 	emptyRequests := types.Hash(sha256.Sum256(nil))
 	requests := []hexutil.Bytes{{0x01, 0xaa, 0xbb}}
 
@@ -49,10 +51,10 @@ func TestRequestsHashUnderEthereumParity(t *testing.T) {
 	require.Error(t, VerifyRequestsHash(cfg, &block.Header{Number: uint256.NewInt(1), Time: 100}, nil), "a missing hash")
 }
 
-// Before the parity time, and on a chain without one, headers are neither
+// Before the Prague time, and on a chain without one, headers are neither
 // stamped nor checked.
-func TestRequestsHashWithoutEthereumParity(t *testing.T) {
-	for _, cfg := range []*params.ChainConfig{requestsParityConfig(big.NewInt(100)), requestsParityConfig(nil)} {
+func TestRequestsHashBeforePragueTime(t *testing.T) {
+	for _, cfg := range []*params.ChainConfig{requestsHashConfig(big.NewInt(100)), requestsHashConfig(nil)} {
 		header := &block.Header{Number: uint256.NewInt(1), Time: 99}
 		StampRequestsHash(cfg, header, []hexutil.Bytes{{0x01, 0xaa}})
 		require.Nil(t, header.RequestsHash)

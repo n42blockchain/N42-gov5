@@ -189,9 +189,7 @@ func NewEVMInterpreter(evm VMInterpreter, cfg Config) *EVMInterpreter {
 		} else {
 			jt = &glamsterdamInstructionSet
 		}
-	// Under EthereumParityTime the Fusaka table is not used: all it adds to
-	// Osaka's is the early SLOTNUM, which Ethereum has from Amsterdam only.
-	case evm.ChainRules().IsFusaka && !evm.ChainRules().IsEthereumParity:
+	case evm.ChainRules().IsFusaka:
 		if evm.ChainRules().IsEOF {
 			jt = &fusakaEOFInstructionSet
 		} else {

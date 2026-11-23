@@ -673,12 +673,6 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 
 	current := pool.bc.CurrentBlock()
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
-	// A chain that reached Prague through a later fork time (PectraTime) has
-	// run its rules in the state transition all along; under
-	// EthereumParityTime the pool goes by them too.
-	if !isPrague && pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsEthereumParity(current.Time()) {
-		isPrague = pool.chainconfig.RulesWithTimestamp(current.Number64().Uint64(), current.Time()).IsPrague
-	}
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
 	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
 	isOsaka := pool.chainconfig != nil && current != nil && pool.chainconfig.IsOsaka(current.Time())

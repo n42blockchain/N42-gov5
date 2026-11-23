@@ -405,10 +405,10 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 }
 
 // StampRequestsHash sets a built header's RequestsHash from the requests the
-// block's execution produced, on blocks that commit to them
-// (ChainConfig.CommitsRequestsHash); other headers are left as they are.
+// block's execution produced, from the chain's Prague time on (EIP-7685);
+// other headers are left as they are.
 func StampRequestsHash(chainConfig *params.ChainConfig, header *block.Header, requests []hexutil.Bytes) {
-	if !chainConfig.CommitsRequestsHash(header.Number.Uint64(), header.Time) {
+	if !chainConfig.IsPrague(header.Time) {
 		return
 	}
 	rh := ExecutionRequestsHash(requests)
@@ -416,10 +416,10 @@ func StampRequestsHash(chainConfig *params.ChainConfig, header *block.Header, re
 }
 
 // VerifyRequestsHash checks a header's RequestsHash against the requests the
-// block's execution produced, on blocks that commit to them
-// (ChainConfig.CommitsRequestsHash); other blocks pass.
+// block's execution produced, from the chain's Prague time on (EIP-7685);
+// other blocks pass.
 func VerifyRequestsHash(chainConfig *params.ChainConfig, header *block.Header, requests []hexutil.Bytes) error {
-	if !chainConfig.CommitsRequestsHash(header.Number.Uint64(), header.Time) {
+	if !chainConfig.IsPrague(header.Time) {
 		return nil
 	}
 	got := ExecutionRequestsHash(requests)

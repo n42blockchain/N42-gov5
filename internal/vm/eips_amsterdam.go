@@ -39,7 +39,7 @@ import (
 )
 
 // =============================================================================
-// EIP-7843: SLOTNUM opcode (Amsterdam/Fusaka)
+// EIP-7843: SLOTNUM opcode (Amsterdam)
 // https://eips.ethereum.org/EIPS/eip-7843
 //
 // SLOTNUM (0x4b) pushes the consensus layer slot number for the current block
@@ -54,29 +54,6 @@ import (
 func opSlotNum(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	scope.Stack.Push(new(uint256.Int).SetUint64(interpreter.evm.Context().Slot))
 	return nil, nil
-}
-
-// opSlotNumFusaka is SLOTNUM as the N42 Fusaka fork has executed it since
-// activation: it writes the slot into the current stack top instead of
-// pushing it. It is kept, frozen, so blocks of N42 chains past FusakaTime
-// replay unchanged; the Ethereum Amsterdam table uses opSlotNum.
-//
-// On an empty stack it used to dereference nil and panic the node, so no
-// committed block can have executed that case; it is a stack underflow now.
-func opSlotNumFusaka(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	if scope.Stack.Len() == 0 {
-		return nil, &ErrStackUnderflow{stackLen: 0, required: 1}
-	}
-	v := scope.Stack.Peek()
-	v.SetUint64(interpreter.evm.Context().Slot)
-	return nil, nil
-}
-
-// enable7843Fusaka installs SLOTNUM with its N42 Fusaka semantics
-// (opSlotNumFusaka).
-func enable7843Fusaka(jt *JumpTable) {
-	enable7843(jt)
-	jt[SLOTNUM].execute = opSlotNumFusaka
 }
 
 // enable7843 applies EIP-7843 "SLOTNUM opcode".

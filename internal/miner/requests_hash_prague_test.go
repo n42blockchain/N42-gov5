@@ -17,17 +17,17 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// A chain on Prague rules through PectraTime alone: the miner seals no
-// RequestsHash before EthereumParityTime and the EIP-7685 hash of the block's
-// requests from it, the mined blocks import, and import refuses a header
-// from the parity time on that carries another value or none.
-func TestMinerSealsRequestsHashFromEthereumParity(t *testing.T) {
-	const parity = 2_000
+// A chain on Prague rules through PectraTime that sets PragueTime later: the
+// miner seals no RequestsHash before PragueTime and the EIP-7685 hash of the
+// block's requests from it, the mined blocks import, and import refuses a
+// header from PragueTime on that carries another value or none.
+func TestMinerSealsRequestsHashFromPragueTime(t *testing.T) {
+	const prague = 2_000
 	f := mnTNewChainFixtureWithEngine(t, &mnTFakerEngine{}, func(cfg *params.ChainConfig, alloc conf.GenesisAlloc) {
 		cfg.ShanghaiBlock = big.NewInt(0)
 		cfg.CancunBlock = big.NewInt(0)
 		cfg.PectraTime = big.NewInt(0)
-		cfg.EthereumParityTime = big.NewInt(parity)
+		cfg.PragueTime = big.NewInt(prague)
 		for _, d := range internal.PragueSystemContractDeployments() {
 			alloc[d.Address] = d.Account
 		}
@@ -35,7 +35,7 @@ func TestMinerSealsRequestsHashFromEthereumParity(t *testing.T) {
 	noRequests := types.Hash(sha256.Sum256(nil))
 
 	var last *task
-	for i, at := range []uint64{1_000, parity, 3_000, 4_000} {
+	for i, at := range []uint64{1_000, prague, 3_000, 4_000} {
 		pool := &mnTStubTxsPool{pending: mnTByAddr(f.Senders[0], f.ruleZeroTipTransfer(t, 0, f.Senders[1]))}
 		w := mnTBareWorker(t, f, pool)
 		w.coinbase = f.Coinbase
@@ -48,10 +48,10 @@ func TestMinerSealsRequestsHashFromEthereumParity(t *testing.T) {
 			t.Fatal("commitWork did not send a task")
 		}
 		got := last.block.Header().(*block.Header).RequestsHash
-		if at < parity {
-			require.Nil(t, got, "block %d (time %d): no requests hash before the parity time", i+1, at)
+		if at < prague {
+			require.Nil(t, got, "block %d (time %d): no requests hash before the Prague time", i+1, at)
 		} else {
-			require.NotNil(t, got, "block %d (time %d): requests hash from the parity time", i+1, at)
+			require.NotNil(t, got, "block %d (time %d): requests hash from the Prague time", i+1, at)
 			require.Equal(t, noRequests, *got, "block %d: the EIP-7685 hash of no requests", i+1)
 		}
 		if at == 4_000 {

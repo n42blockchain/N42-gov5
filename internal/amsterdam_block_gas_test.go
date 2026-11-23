@@ -108,6 +108,7 @@ func amsterdamGasTestBlock(t *testing.T) (kv.RwDB, *StateProcessor, *block.Block
 	parent := genesisBlock.Header().(*block.Header)
 	beaconRoot := types.Hash{0x42}
 	excess, blobUsed := uint64(0), uint64(0)
+	noRequests := ExecutionRequestsHash(nil)
 	header := &block.Header{
 		ParentHash:       genesisBlock.Hash(),
 		Number:           uint256.NewInt(1),
@@ -118,6 +119,7 @@ func amsterdamGasTestBlock(t *testing.T) (kv.RwDB, *StateProcessor, *block.Block
 		ParentBeaconRoot: &beaconRoot,
 		ExcessBlobGas:    &excess,
 		BlobGasUsed:      &blobUsed,
+		RequestsHash:     &noRequests,
 	}
 	engine := coreTFakerEngine{}
 	blockHashFunc := func(uint64) types.Hash { return types.Hash{} }
