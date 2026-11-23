@@ -55,6 +55,11 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 		return nil
 	}
 
+	if s.syncOwnsHeight(blockNumber.Uint64()) {
+		// S5 Range: the sync importer owns this height.
+		s.noteLiveSkip("gossip", blockNumber.Uint64(), blockHash)
+		return nil
+	}
 	s.deferredCheck(blk)
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		// If parent is missing, queue as future block instead of marking bad.

@@ -243,6 +243,13 @@ func (s *Service) RegisterHandlers() {
 
 // Start begins periodic sync maintenance tasks. Call AFTER p2p.Start().
 func (s *Service) Start() {
+	if PipelineOn() {
+		// S5 handover: the chain's future queue leaves Range-owned heights
+		// to the sync importer.
+		if g, ok := s.cfg.chain.(interface{ SetFutureInsertGate(func(uint64) bool) }); ok {
+			g.SetFutureInsertGate(s.syncOwnsHeight)
+		}
+	}
 	s.maintainPeerStatuses()
 	s.resyncIfBehind()
 	s.broadcastTxs()
