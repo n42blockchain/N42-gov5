@@ -16,6 +16,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
+	"github.com/n42blockchain/N42/internal/synclegacy"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -381,6 +383,10 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 // which "miner: work queue wait" reports from the other side. Observability
 // only -- no gate is skipped or reordered.
 func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash) {
+	if s.safetyHalted.Load() {
+		log.Warn("hotstuff: not producing, node halted on a conflicting commit", "view", uint64(view))
+		return
+	}
 	s.pendingProduction = &productionRequest{view: view, parent: parentHash}
 	tGate := time.Now()
 	var dBehind, dCommitted, dApplied time.Duration
@@ -539,6 +545,10 @@ type Service struct {
 	// Rate-limit state persistence (persist every N views or on commit).
 	lastPersistedView ViewNumber
 	persistInterval   uint64
+
+	// safetyHalted is set by a conflicting commit (safety_halt.go): no block
+	// production and no outbound consensus message afterwards.
+	safetyHalted atomic.Bool
 }
 
 // NewService creates a new HotStuff service.
@@ -685,6 +695,10 @@ func (s *Service) processOutputs() {
 }
 
 func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
+	if s.haltDropsOutput(output) {
+		log.Debug("hotstuff: output dropped, node halted on a conflicting commit", "type", output.Type, "view", output.View)
+		return
+	}
 	switch output.Type {
 	case OutputBroadcast:
 		// Off the serial output loop: handleOutput also runs heavyweight work
@@ -771,7 +785,9 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 			} else {
 				cErr = s.blockProducer.CommitToCanonical(output.Hash)
 			}
-			if cErr != nil {
+			if s.handleCommitConflict(cErr, output.View, output.Hash, "decide") {
+				// Refused and halted; never retried as a pending commit.
+			} else if cErr != nil {
 				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", cErr)
 				// Remember it — NotifyBlockImported retries when the block lands.
 				s.pendingMu.Lock()
@@ -1883,7 +1899,9 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	// already holds a CommitQC — canonicalizing it needs its body, not its
 	// local execution.)
 	if retryCommit && s.blockProducer != nil {
-		if err := s.blockProducer.CommitToCanonical(hash); err != nil {
+		if err := s.blockProducer.CommitToCanonical(hash); s.handleCommitConflict(err, 0, hash, "deferred-commit") {
+			// Refused and halted.
+		} else if err != nil {
 			log.Debug("hotstuff: deferred commit-to-canonical retry failed", "hash", hash, "err", err)
 		} else {
 			log.Info("hotstuff: deferred commit-to-canonical completed", "hash", hash)
@@ -2067,15 +2085,28 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 	}
 	var qcNum *uint64
 	var committedHead uint64
+	var canonicalAtQC types.Hash
 	_ = s.db.View(s.ctx, func(tx kv.Tx) error {
 		qcNum = rawdb.ReadHeaderNumber(tx, qc.BlockHash)
 		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil {
 			committedHead = *hn
 		}
+		if qcNum != nil && *qcNum <= committedHead {
+			canonicalAtQC, _ = rawdb.ReadCanonicalHash(tx, *qcNum)
+		}
 		return nil
 	})
-	if qcNum == nil || *qcNum <= committedHead {
-		return // target not imported yet, or not ahead of the committed head
+	if qcNum == nil {
+		return // target not imported yet
+	}
+	if *qcNum <= committedHead {
+		// Not ahead of the committed head: nothing to advance. A QC naming a
+		// DIFFERENT block at a committed height is conflict evidence; it is
+		// verified below and the chain refuses it (halt), never skipped
+		// silently (safety_halt.go).
+		if synclegacy.CommitRewrite.On() || canonicalAtQC == (types.Hash{}) || canonicalAtQC == qc.BlockHash {
+			return
+		}
 	}
 	ce := s.engine.Engine()
 	if ce == nil {
@@ -2093,7 +2124,9 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
 		return
 	}
-	if cerr := s.blockProducer.CommitToCanonical(qc.BlockHash); cerr != nil {
+	if cerr := s.blockProducer.CommitToCanonical(qc.BlockHash); s.handleCommitConflict(cerr, qc.View, qc.BlockHash, "header-qc") {
+		// Refused and halted.
+	} else if cerr != nil {
 		log.Debug("hotstuff: header-QC commit-to-canonical deferred", "hash", qc.BlockHash, "err", cerr)
 	} else {
 		log.Info("hotstuff: canonical advanced from header-embedded CommitQC",
