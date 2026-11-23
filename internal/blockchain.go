@@ -1287,6 +1287,9 @@ func (bc *BlockChain) processFutureBlocks() {
 	// stays for the next pass.
 	inserted := 0
 	for _, b := range blocks {
+		if bc.futureGate.holds(b.Number64().Uint64()) {
+			continue // sync Range mode: the sync importer owns this height
+		}
 		// Retry with branch-switch authority only a block queued by a
 		// consensus-driven import; a pushed, gossiped or range-fetched block
 		// retries as it arrived, without it (future_authority.go).

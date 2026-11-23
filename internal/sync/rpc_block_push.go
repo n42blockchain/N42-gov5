@@ -79,6 +79,11 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 // S32's decodeChunkedBlockReusePool already established (lookup passed in,
 // not read from BlockDecodeReusePoolOn() internally).
 func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
+	if s.syncOwnsHeight(blk.Number64().Uint64()) {
+		// S5 Range: the sync importer owns this height (no check, no vote).
+		s.noteLiveSkip("push", blk.Number64().Uint64(), blk.Hash())
+		return
+	}
 	s.pushInflight.Store(blk.Hash(), struct{}{})
 	defer s.pushInflight.Delete(blk.Hash())
 	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
@@ -209,6 +214,12 @@ func (s *Service) lagImportQueued(blk block.IBlock) bool {
 func (s *Service) deferredCheck(blk block.IBlock) {
 	checker, ok := s.cfg.chain.(DeferredBlockChecker)
 	if !ok || s.cfg.blockImportNotifier == nil {
+		return
+	}
+	if s.syncOwnsHeight(blk.Number64().Uint64()) {
+		// S5 Range: a passing check could unlock a vote on a height this
+		// node has not imported; the sync importer owns it.
+		s.noteLiveSkip("deferred_check", blk.Number64().Uint64(), blk.Hash())
 		return
 	}
 	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): brackets CheckDeferredBlock's

@@ -88,6 +88,13 @@ func (s *Service) registerLagHoldProbe() {
 }
 
 func (s *Service) NoteCommitAnchor(hash types.Hash, number uint64) {
+	if PipelineOn() {
+		// S5: every Decide is a commit sample for the sync mode machine.
+		if number > 0 && hash != (types.Hash{}) {
+			s.noteVerifiedCommitTarget(number)
+		}
+		s.observeSyncMode(true)
+	}
 	mode := syncanchor.Current()
 	if mode == syncanchor.Off || hash == (types.Hash{}) {
 		return

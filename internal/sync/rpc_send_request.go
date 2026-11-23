@@ -25,6 +25,14 @@ type BlockProcessor func(block *types.Block) error
 
 // SendBodiesByRangeRequest sends BeaconBlocksByRange and returns fetched blocks, if any.
 func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor) ([]*types.Block, error) {
+	return sendBodiesByRange(ctx, chain, p2pProvider, pid, req, blockProcessor, false)
+}
+
+// sendBodiesByRange is SendBodiesByRangeRequest; with cutOnCancel the stream
+// is reset as soon as ctx ends, so a timeout also bounds a slow transfer and
+// the blocks received before it are kept (the catch-up pipeline). Without it
+// ctx bounds only opening the stream, as before.
+func sendBodiesByRange(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor, cutOnCancel bool) ([]*types.Block, error) {
 	if req == nil || req.Step == 0 || req.Step > rangeLimit || req.Count == 0 || req.Count > maxRequestBlocks {
 		return nil, errors.New("invalid range count or step")
 	}
@@ -48,6 +56,10 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 		return nil, err
 	}
 	defer closeStream(stream)
+	if cutOnCancel {
+		stop := context.AfterFunc(ctx, func() { _ = stream.Reset() })
+		defer stop()
+	}
 
 	blocks := make([]*types.Block, 0, req.Count)
 	process := func(blk *types.Block) error {

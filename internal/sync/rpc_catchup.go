@@ -97,6 +97,7 @@ func (s *Service) CatchUp() {
 // far to ask connected peers for data.
 func (s *Service) CatchUpTo(target uint64) {
 	s.noteVerifiedCommitTarget(target)
+	s.observeSyncMode(false) // S5 time sample (no-op with the pipeline off)
 	self := currentBlockNumber(s.cfg.chain)
 	if self == nil || target <= self.Uint64() {
 		return
@@ -268,7 +269,14 @@ func (s *Service) enqueueCatchUpNow(target uint64) {
 		if nextTarget > 0 {
 			peers := s.catchUpPeerSet()
 			if len(peers) > 0 {
-				s.catchUpTo(nextTarget, peers)
+				// S2: a gap beyond the live window (or Range mode) runs the
+				// parallel pipeline; it hands forks, unknown ancestors and
+				// evicted tails back to the serial path.
+				if !s.usePipeline(nextTarget) {
+					s.catchUpTo(nextTarget, peers)
+				} else if fallback, reached := s.pipelineCatchUp(nextTarget); fallback != "" {
+					s.catchUpTo(reached, s.catchUpPeerSet())
+				}
 			}
 		}
 
@@ -582,5 +590,6 @@ func (s *Service) catchUpTick() {
 	if s.cfg.blockImportNotifier == nil {
 		return
 	}
+	s.observeSyncMode(false) // S5 time sample (no-op with the pipeline off)
 	s.CatchUp()
 }

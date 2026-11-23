@@ -55,6 +55,11 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 		return nil
 	}
 
+	if s.syncOwnsHeight(blockNumber.Uint64()) {
+		// S5 Range: the sync importer owns this height.
+		s.noteLiveSkip("gossip", blockNumber.Uint64(), blockHash)
+		return nil
+	}
 	s.deferredCheck(blk)
 	// P7: queued for the lag executor by the check -- it imports the block
 	// through the ordered writer; a direct InsertChain would write it here.
