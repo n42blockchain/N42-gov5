@@ -83,6 +83,9 @@ func (s *Service) insertCatchUpAuthorized(blocks []block.IBlock) (int, error) {
 // authority (internal/lag_authority.go). The HotStuff service calls it for
 // every verified proposal; CatchUpToHash for every commit target.
 func (s *Service) NoteConsensusNamed(hash types.Hash) {
+	if s.cfg == nil {
+		return
+	}
 	if c, ok := s.cfg.chain.(interface{ MarkConsensusNamed(types.Hash) }); ok {
 		c.MarkConsensusNamed(hash)
 	}
