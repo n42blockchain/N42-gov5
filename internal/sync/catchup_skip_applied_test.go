@@ -146,3 +146,55 @@ func TestTrimCatchUpAppliedNeedsTheProbe(t *testing.T) {
 		t.Fatalf("rest %d applied %d held %d, want the whole range kept", len(rest), len(applied), held)
 	}
 }
+
+// S5 Range: the lag executor leaves sync-owned heights queued, so the
+// serial catch-up must insert a held block at such a height instead of
+// skipping it as the lag pipeline's; above the range end it still skips.
+func TestTrimCatchUpAppliedInsertsHeldSyncOwnedHeights(t *testing.T) {
+	defer setPipelineForTest(true)()
+	r := skipRange()
+	chain := &skipAppliedChain{
+		applied: map[types.Hash]bool{r[0].Hash(): true},
+		held:    map[types.Hash]bool{r[1].Hash(): true, r[2].Hash(): true},
+	}
+	svc := newBadBlockTestService(t, chain)
+	forceRange(svc, r[1].Number64().Uint64())
+	rest, applied, held := svc.trimCatchUpApplied(r)
+	if len(applied) != 1 || held != 0 || len(rest) != 3 || rest[0] != r[1] {
+		t.Fatalf("rest %d applied %d held %d, want 11..13 inserted", len(rest), len(applied), held)
+	}
+	svc.rangeEnd.Store(r[0].Number64().Uint64())
+	rest, _, held = svc.trimCatchUpApplied(r)
+	if held != 2 || len(rest) != 1 || rest[0] != r[3] {
+		t.Fatalf("above the range end: rest %d held %d, want held 2", len(rest), held)
+	}
+}
+
+// The pipeline importer follows the serial rule: an applied block is never
+// re-inserted, and under N42_CATCHUP_SKIP_APPLIED it is reported to the
+// engine; a held block is inserted (its child needs it applied).
+func TestPipelineInsertSkipsAppliedLikeSerial(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		defer SetCatchUpSkipAppliedForTest(on)()
+		r := skipRange()
+		chain := &skipAppliedChain{
+			applied: map[types.Hash]bool{r[0].Hash(): true},
+			held:    map[types.Hash]bool{r[1].Hash(): true},
+		}
+		n := &orderNotifier{}
+		svc := newBadBlockTestService(t, chain)
+		svc.cfg.blockImportNotifier = n
+		run := &pipeRun{s: svc, ctx: context.Background()}
+		imported, bad, err := run.insert(r)
+		if err != nil || bad || imported != 3 || len(chain.inserted) != 3 || chain.inserted[0] != r[1].Hash() {
+			t.Fatalf("skip=%v: insert = (%d, %v, %v), inserted %d", on, imported, bad, err, len(chain.inserted))
+		}
+		wantNotified := 3
+		if on {
+			wantNotified = 4
+		}
+		if len(n.hashes) != wantNotified {
+			t.Fatalf("skip=%v: notified %d, want %d", on, len(n.hashes), wantNotified)
+		}
+	}
+}
