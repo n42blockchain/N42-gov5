@@ -37,11 +37,15 @@ func ReadStatusCode(stream network.Stream, encoding encoder.NetworkEncoding) (ui
 		return 0, "", nil
 	}
 
-	// Non-success: read the error message.
+	// Non-success: read the error message. The message is optional on the
+	// wire: n42-26 answers a block_by_hash miss with the bare code 0x01 and
+	// closes, while gov5 and n42-rs send 0x02 plus a framed message. The code
+	// alone is the answer, so a missing or undecodable message is not an
+	// error; the caller sees the code with an empty message.
 	SetStreamReadDeadline(stream, respTimeout)
 	msg := &p2ptypes.ErrorMessage{}
 	if err := encoding.DecodeWithMaxLength(stream, msg); err != nil {
-		return 0, "", err
+		return b[0], "", nil
 	}
 	return b[0], string(*msg), nil
 }
