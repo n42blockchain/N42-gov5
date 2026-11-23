@@ -84,7 +84,10 @@ func (s *Service) retryRecoveredCommit(hash types.Hash) {
 			"hash", rc)
 		return
 	}
-	if err := s.blockProducer.CommitToCanonical(rc); err != nil {
+	if err := s.blockProducer.CommitToCanonical(rc); s.handleCommitConflict(err, 0, rc, "recovered-commit") {
+		s.clearRecoveredCommit()
+		return
+	} else if err != nil {
 		log.Debug("hotstuff: recovered committed QC block not canonical yet", "hash", rc, "err", err)
 		return
 	}
@@ -144,7 +147,12 @@ func (s *Service) FlushPendingCommits() {
 	}
 	s.pendingMu.Unlock()
 	for _, h := range hashes {
-		if err := s.blockProducer.CommitToCanonical(h); err != nil {
+		if err := s.blockProducer.CommitToCanonical(h); s.handleCommitConflict(err, 0, h, "shutdown-commit") {
+			s.pendingMu.Lock()
+			delete(s.pendingCommits, h)
+			s.pendingMu.Unlock()
+			continue
+		} else if err != nil {
 			log.Debug("hotstuff: shutdown commit-to-canonical retry failed", "hash", h, "err", err)
 			continue
 		}
