@@ -286,6 +286,10 @@ type BlockChain struct {
 	// a range catch-up import runs so the blocks it queues stay passive.
 	futureAuth         futureAuthority
 	futureQueuePassive bool
+	// consensusNamed: hashes a verified proposal or CommitQC named
+	// (MarkConsensusNamed); the lag executor's switch authority
+	// (lag_authority.go).
+	consensusNamed futureAuthority
 
 	procInterrupt int32
 	futureBlocks  *lru.Cache[types.Hash, *block.Block]

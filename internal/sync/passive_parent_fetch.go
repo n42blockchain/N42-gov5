@@ -78,6 +78,16 @@ func (s *Service) insertCatchUpAuthorized(blocks []block.IBlock) (int, error) {
 	return s.insertAuthorized(blocks)
 }
 
+// NoteConsensusNamed records that a verified proposal or CommitQC named
+// hash, so the chain's lag executor may import it with branch-switch
+// authority (internal/lag_authority.go). The HotStuff service calls it for
+// every verified proposal; CatchUpToHash for every commit target.
+func (s *Service) NoteConsensusNamed(hash types.Hash) {
+	if c, ok := s.cfg.chain.(interface{ MarkConsensusNamed(types.Hash) }); ok {
+		c.MarkConsensusNamed(hash)
+	}
+}
+
 // fetchMissingParent fetches the missing parent of a pushed or gossiped
 // block. The parent hash is named by a peer, so it is fetched without
 // branch-switch authority.

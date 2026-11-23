@@ -110,6 +110,7 @@ func (s *Service) CatchUpToHash(hash types.Hash) {
 	if hash == (types.Hash{}) {
 		return
 	}
+	s.NoteConsensusNamed(hash)
 	s.committedTargetLock.Lock()
 	if s.committedTargets == nil {
 		s.committedTargets = make(map[types.Hash]struct{})

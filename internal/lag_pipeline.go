@@ -679,15 +679,25 @@ func (bc *BlockChain) lagStep() bool {
 				}
 				continue
 			}
-			authorized = true
 			q.lastAuth = time.Now()
 			// The parent is stored but its state is not applied: when it
 			// descends from the applied head, execute it (and any stored
-			// block between) first (S132).
+			// block between) first (S132). No branch switch: the replay
+			// only extends the applied head.
 			if bc.lagReplayStoredAncestors(b) {
 				le.idle.passEmpty("other")
 				return true
 			}
+			// Switching the applied branch onto the parent's needs
+			// consensus authority (lag_authority.go): a block only a peer
+			// named waits for its parent to be applied.
+			if !bc.lagSwitchAuthorized(b.Hash()) {
+				if skipWhy == "queued" {
+					skipWhy = "parent"
+				}
+				continue
+			}
+			authorized = true
 		}
 		idle := le.idle.pick(q.since)
 		handed, err := bc.insertChainLagIdle(b, authorized, idle)

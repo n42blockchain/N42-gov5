@@ -842,6 +842,7 @@ func (s *Service) Stop() {
 // under the lag gate (commitAsync).
 func (s *Service) handleBlockCommitted(output EngineOutput) {
 	log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
+	s.noteConsensusNamed(output.Hash)
 	// Post-commit phase timings — OBSERVABILITY ONLY. Both steps run inline
 	// on the serial output loop and each opens its own MDBX write tx (a
 	// second and third fsync for the block), so they belong in the
@@ -940,6 +941,14 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 	// was unreproducible at replay.
 }
 
+// noteConsensusNamed tells the sync layer that a verified proposal or
+// CommitQC named hash (branch-switch authority, internal/lag_authority.go).
+func (s *Service) noteConsensusNamed(hash types.Hash) {
+	if n, ok := s.blockFetcher.(interface{ NoteConsensusNamed(types.Hash) }); ok {
+		n.NoteConsensusNamed(hash)
+	}
+}
+
 // processOutputs reads EngineOutput actions and dispatches them.
 func (s *Service) processOutputs() {
 	defer s.wg.Done()
@@ -995,6 +1004,9 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// or fetch), NotifyBlockImported fires EventBlockImported and the engine
 		// casts its import-gated vote.
 		log.Debug("hotstuff: execute block requested", "hash", output.Hash)
+		// A verified proposal names this block: it may switch the applied
+		// branch when the lag executor imports it (internal/lag_authority.go).
+		s.noteConsensusNamed(output.Hash)
 		s.pendingMu.Lock()
 		s.pendingExecutions[output.Hash] = struct{}{}
 		s.pendingMu.Unlock()
