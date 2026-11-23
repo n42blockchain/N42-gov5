@@ -65,7 +65,7 @@ func (s *Service) insertCatchUpBlocks(ctx context.Context, blocks []block.IBlock
 		)
 		one := blocks[i : i+1]
 		if authorized {
-			imported, err = s.insertAuthorized(one)
+			imported, err = s.insertCatchUpAuthorized(one)
 		} else {
 			imported, err = s.cfg.chain.InsertChain(one)
 		}

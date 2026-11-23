@@ -121,6 +121,7 @@ import (
 	initialsync "github.com/n42blockchain/N42/internal/sync/initialsync"
 	"github.com/n42blockchain/N42/internal/sync/snapsync"
 	"github.com/n42blockchain/N42/internal/sync/torrentsync"
+	"github.com/n42blockchain/N42/internal/synclegacy"
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
@@ -1322,9 +1323,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		realBC.SetSenderHintSource(pool)
 	}
 
+	// HotStuff catches up through CommitQC targets and fetch-on-miss; the
+	// round-robin downloader would chase unverified peer Status claims.
+	_, hotStuffChain := resolveHotStuffEngine(engine)
 	is := initialsync.NewService(ctx, &initialsync.Config{
-		Chain: bc,
-		P2P:   p2p,
+		Chain:             bc,
+		P2P:               p2p,
+		ConsensusOwnsSync: hotStuffChain && !synclegacy.InitialSync.On(),
 	})
 
 	snapSyncSvc := snapsync.NewService(ctx, &snapsync.Config{

@@ -23,6 +23,12 @@ import (
 type Config struct {
 	P2P   p2p.P2P
 	Chain common.IBlockChain
+	// ConsensusOwnsSync: the chain's consensus engine catches the node up
+	// itself (HotStuff: CommitQC-targeted catch-up and fetch-on-miss), so the
+	// round-robin downloader must not run. Its targets come from unverified
+	// peer Status claims (sync review Q7). Start then only reports the node
+	// synced and Resync is a no-op.
+	ConsensusOwnsSync bool
 }
 
 // Service service.
@@ -67,6 +73,11 @@ func (s *Service) Start() {
 		s.markSynced()
 		event.GlobalEvent.Send(common.DownloaderFinishEvent{})
 	}()
+
+	if s.cfg.ConsensusOwnsSync {
+		log.Info("Initial sync disabled: consensus owns block sync on this chain")
+		return
+	}
 
 	log.Info("Starting chain synchronization...")
 
@@ -172,6 +183,9 @@ func (s *Service) Synced() bool {
 func (s *Service) Resync() error {
 	if s.ctx.Err() != nil {
 		return s.ctx.Err()
+	}
+	if s.cfg.ConsensusOwnsSync {
+		return nil
 	}
 	s.markSyncing()
 	event.GlobalEvent.Send(common.DownloaderStartEvent{})

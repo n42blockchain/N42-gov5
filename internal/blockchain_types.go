@@ -281,6 +281,12 @@ type BlockChain struct {
 
 	wg sync.WaitGroup
 
+	// futureAuth: future-queued hashes retried WITH branch-switch authority
+	// (future_authority.go). futureQueuePassive is set, under bc.lock, while
+	// a range catch-up import runs so the blocks it queues stay passive.
+	futureAuth         futureAuthority
+	futureQueuePassive bool
+
 	procInterrupt int32
 	futureBlocks  *lru.Cache[types.Hash, *block.Block]
 	receiptCache  *lru.Cache[types.Hash, []*block.Receipt]

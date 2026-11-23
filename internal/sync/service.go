@@ -131,9 +131,9 @@ type Service struct {
 	// fetchAligning holds the hashes a fetch-on-miss response is importing
 	// (FetchBlockByHash): other peers' copies of the same block are dropped.
 	fetchAligning sync.Map
-	seenBlockLock  sync.RWMutex
-	badBlockLock   sync.RWMutex
-	badBlockCache  *lru.Cache[types.Hash, bool]
+	seenBlockLock sync.RWMutex
+	badBlockLock  sync.RWMutex
+	badBlockCache *lru.Cache[types.Hash, bool]
 
 	// fetch-on-miss per-hash rate limit (see fetchMissInterval).
 	fetchMissLock  sync.Mutex
@@ -163,6 +163,21 @@ type Service struct {
 	committedTargetLock sync.Mutex
 	committedTargets    map[types.Hash]struct{}
 	observedBlockNumber map[types.Hash]uint64
+
+	// verifiedCommitTarget is the highest block number named by a verified
+	// CommitQC that consensus handed to catch-up (CatchUpTo/CatchUpToHash).
+	// It is the proven half of the production gate (catchup_gate.go).
+	verifiedCommitTarget atomic.Uint64
+	// claimQuorum is the f+1 the consensus layer last passed to
+	// HeightBehindQuorum; catch-up peer ordering reuses it (catchup_peers.go).
+	claimQuorum atomic.Int32
+	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
+	catchUpBook catchUpPeerBook
+	// passiveFetch / passiveImporting: rate limit and in-flight set of the
+	// authority-free parent fetch of pushed and gossiped blocks
+	// (passive_parent_fetch.go).
+	passiveFetch     passiveFetchLimiter
+	passiveImporting sync.Map
 }
 
 // NewService initializes new regular sync service.
