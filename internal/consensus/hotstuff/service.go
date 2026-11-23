@@ -753,7 +753,13 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// second and third fsync for the block), so they belong in the
 		// block-write cost picture alongside "blockwrite phases".
 		tObserve := time.Now()
-		if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
+		applied, _, number := s.observeCommittedExecution(output.Hash, true)
+		// The committed hash is an anchor for the sync importer (S1): a
+		// held, unexecuted catch-up tail below it may now be executed.
+		if a, ok := s.blockFetcher.(interface{ NoteCommitAnchor(types.Hash, uint64) }); ok {
+			a.NoteCommitAnchor(output.Hash, number)
+		}
+		if !applied {
 			s.requestCommittedCatchUp(output.Hash, number)
 		}
 		dObserve := time.Since(tObserve)
