@@ -37,6 +37,9 @@ type fakeP2P struct {
 
 	sendStream network.Stream
 	sendErr    error
+	// sendFn, when set, answers Send per request and peer (multi-peer
+	// catch-up tests); sendStream/sendErr are used otherwise.
+	sendFn func(msg interface{}, pid peer.ID) (network.Stream, error)
 
 	disconnected []peer.ID
 
@@ -85,7 +88,10 @@ func (f *fakeP2P) Disconnect(id peer.ID) error {
 	return nil
 }
 
-func (f *fakeP2P) Send(_ context.Context, _ interface{}, _ string, _ peer.ID) (network.Stream, error) {
+func (f *fakeP2P) Send(_ context.Context, msg interface{}, _ string, pid peer.ID) (network.Stream, error) {
+	if f.sendFn != nil {
+		return f.sendFn(msg, pid)
+	}
 	return f.sendStream, f.sendErr
 }
 
