@@ -165,6 +165,7 @@ const (
 	harnessHonest    harnessMode = iota // serve the stored prefix of the range
 	harnessEmpty                        // answer with nothing
 	harnessMalformed                    // answer with a block outside the range
+	harnessRefuse                       // answer with an error code ("server busy")
 )
 
 // harnessPeer is one fake remote.

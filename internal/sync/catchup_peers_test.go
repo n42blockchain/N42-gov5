@@ -16,8 +16,10 @@ func harnessBase(to uint64) []block.IBlock {
 }
 
 // A peer advertising an absurd height does not wedge catch-up: honest peers
-// are asked first for what they claim, the liar is asked once, fails, is
-// scored and backed off, and its claim stops steering the target.
+// are asked first for what they claim, the liar is asked once, fails and is
+// backed off, and its claim stops steering the target. An empty answer is
+// not scored (an honest n42-rs server whose execution layer lags its
+// advertised committed height answers empty too).
 func TestCatchUpLyingPeerPenalisedAndHonestPeersServe(t *testing.T) {
 	all := harnessBase(160)
 	chain := newHarnessChain(all[:101]...) // head 100
@@ -35,8 +37,8 @@ func TestCatchUpLyingPeerPenalisedAndHonestPeersServe(t *testing.T) {
 	if got := chain.headNumber(); got != 160 {
 		t.Fatalf("head = %d, want 160", got)
 	}
-	if net.badResponses(liar) == 0 {
-		t.Fatal("liar whose claim produced no blocks was not penalised")
+	if net.badResponses(liar) != 0 {
+		t.Fatal("an empty answer must back the peer off, not score it")
 	}
 	if st := net.svc.catchUpBook.snapshot(liar.id); !time.Now().Before(st.until) {
 		t.Fatal("liar is not backed off")
@@ -218,5 +220,33 @@ func TestCatchUpPeerSelectLegacySwitch(t *testing.T) {
 		if net.badResponses(p) != 0 {
 			t.Fatal("legacy path scored a peer")
 		}
+	}
+}
+
+// Refusals that are legitimate for the other clients on this wire (n42-rs
+// answers "server busy" when its serve slots are full, or refuses a peer
+// without a status) back the peer off but never reach the peer scorer, whose
+// IsBad verdict the connection gater would enforce.
+func TestCatchUpRefusalIsNotScored(t *testing.T) {
+	all := harnessBase(160)
+	chain := newHarnessChain(all[:101]...)
+	net := newHarnessNet(t, chain)
+	busy := net.addPeer(160, harnessRefuse)
+	net.svc.claimQuorum.Store(1)
+	net.drain(3)
+	if busy.askedCount() == 0 {
+		t.Fatal("busy peer never asked; the test exercises nothing")
+	}
+	if net.badResponses(busy) != 0 {
+		t.Fatalf("a refusal was scored: %d", net.badResponses(busy))
+	}
+	if st := net.svc.catchUpBook.snapshot(busy.id); !time.Now().Before(st.until) {
+		t.Fatal("refusing peer not backed off")
+	}
+	// An honest peer arriving later still closes the gap.
+	net.addPeer(160, harnessHonest, all...)
+	net.drain(3)
+	if got := chain.headNumber(); got != 160 {
+		t.Fatalf("head = %d, want 160", got)
 	}
 }

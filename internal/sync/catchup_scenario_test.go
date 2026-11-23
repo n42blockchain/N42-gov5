@@ -38,8 +38,8 @@ func TestCatchUpScenarioRestartBehindWithLyingPeer(t *testing.T) {
 	if got := net.svc.HeightBehindQuorum(3); got != 0 {
 		t.Fatalf("gate gap after catch-up = %d, want 0: the liar must not stop production", got)
 	}
-	if net.badResponses(liar) == 0 {
-		t.Fatal("liar not penalised")
+	if net.badResponses(liar) != 0 {
+		t.Fatal("an empty answer is backed off, not scored")
 	}
 	if liar.askedCount() != 1 {
 		t.Fatalf("liar asked %d times, want 1", liar.askedCount())
