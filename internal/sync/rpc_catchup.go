@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/syncanchor"
 	"github.com/n42blockchain/N42/internal/synclegacy"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/proto/sync_pb"
@@ -111,6 +112,10 @@ func (s *Service) CatchUpToHash(hash types.Hash) {
 		return
 	}
 	s.NoteConsensusNamed(hash)
+	// The consensus layer passes only CommitQC-verified hashes: an S1 anchor.
+	if syncanchor.Current() != syncanchor.Off {
+		s.anchors.noteAnchor(hash)
+	}
 	s.committedTargetLock.Lock()
 	if s.committedTargets == nil {
 		s.committedTargets = make(map[types.Hash]struct{})
@@ -278,6 +283,12 @@ func (s *Service) enqueueCatchUpNow(target uint64) {
 }
 
 func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
+	// S1 enforce: a held tail that a later anchor (Decide, commit target)
+	// authenticated is executed first, before anything new is fetched.
+	if syncanchor.Current() == syncanchor.Enforce {
+		head := currentBlockNumber(s.cfg.chain)
+		s.releaseAnchoredTail(head != nil && head.Uint64() > 0 && headIsConsensusBlock(s.cfg.chain))
+	}
 	self := currentBlockNumber(s.cfg.chain)
 	if self == nil || target <= self.Uint64() {
 		return
@@ -320,6 +331,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	// log2(maxRequestBlocks) extra rounds, and not counted as a backtrack.
 	const maxForkBacktrack = 32
 	countCap := uint64(maxRequestBlocks)
+	lookahead := 0
 	peers = s.orderCatchUpPeers(peers, start)
 	for attempt := 0; attempt <= maxForkBacktrack; {
 		if start > target {
@@ -345,6 +357,19 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 			continue
 		}
 		if done {
+			// S1 enforce: a stretch without an embedded QC (n42-26 leaders do
+			// not embed one) leaves the range unanchored. Fetch above it for
+			// the next QC, or re-fetch bodies the tail bound evicted once
+			// their hashes were anchored, instead of stalling until the next
+			// tick.
+			if next, ok := s.anchorNextStart(target, authorized); ok && lookahead < maxAnchorLookahead {
+				lookahead++
+				log.Info("hotstuff catch-up: fetching further for an anchor",
+					"from", next, "target", target, "lookahead", lookahead)
+				start = next
+				countCap = uint64(maxRequestBlocks)
+				continue
+			}
 			return
 		}
 		if !authorized || start <= 1 {
@@ -364,6 +389,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest uint64) (done, allRejected bool) {
 	sawUnknownAncestor := false
 	progressed := false
+	heldOnly := false // S1 enforce: a range arrived but nothing in it was anchored yet
 	var reached uint64
 	rejected := 0
 	for i, pid := range peers {
@@ -402,7 +428,36 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 			log.Warn("hotstuff catch-up: range contained only nil blocks", "peer", pid.String()[:12])
 			continue
 		}
-		fetchedN, skippedApplied, skippedHeld := len(blocks), 0, 0
+		fetchedN := len(blocks)
+		// S1 anchor gate: observe counts what enforce would refuse; enforce
+		// executes only the prefix hash-linked to a verified CommitQC.
+		heldTail := false
+		if mode := syncanchor.Current(); mode != syncanchor.Off {
+			gate := s.anchorScreen(pid, blocks, mode)
+			if gate.active && mode == syncanchor.Enforce {
+				if gate.fault != "" {
+					s.noteCatchUpInvalid(pid)
+					log.Warn("hotstuff catch-up: range dropped, provable fault", "peer", pid.String()[:12],
+						"fault", gate.fault, "from", start, "to", highest)
+					continue
+				}
+				blocks = gate.exec
+				heldTail = s.anchors.tailLen() > 0
+				if len(blocks) == 0 {
+					// Not a fault (an honest stretch led by producers that do
+					// not embed QCs looks the same), so no score: try the next
+					// peer, whose range supersedes this held tail.
+					heldOnly = true
+					log.Info("hotstuff catch-up: nothing anchored yet, range held unexecuted",
+						"peer", pid.String()[:12], "held", s.anchors.tailLen(), "unanchored", gate.unanchored)
+					continue
+				}
+			}
+		}
+		// N42_CATCHUP_SKIP_APPLIED runs after the anchor gate: the gate needs
+		// the full fetched range, already-applied blocks included, for its
+		// link checks; only what it releases is trimmed.
+		skippedApplied, skippedHeld := 0, 0
 		if catchUpSkipAppliedOn {
 			rest, applied, held := s.trimCatchUpApplied(blocks)
 			s.notifyCatchUpApplied(applied)
@@ -415,6 +470,9 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 				log.Info("hotstuff catch-up: imported range",
 					"fetched", fetchedN, "newHead", newHeadNum, "authorized", authorized,
 					"skippedApplied", skippedApplied, "skippedHeld", skippedHeld, "inserted", 0)
+				if heldTail {
+					return true, false // the rest waits for an anchor
+				}
 				// Everything this peer served is already applied; a prefix
 				// still lets the next peer extend it (same rule as below).
 				if last := blocks[len(blocks)-1].Number64().Uint64(); s.catchUpCanExtend(peers[i+1:], last, highest) {
@@ -474,8 +532,13 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 			newHeadNum = newHead.Uint64()
 		}
 		log.Info("hotstuff catch-up: imported range",
-			"fetched", len(blocks)+skippedApplied+skippedHeld, "newHead", newHeadNum, "authorized", authorized,
+			"fetched", fetchedN, "newHead", newHeadNum, "authorized", authorized,
 			"skippedApplied", skippedApplied, "skippedHeld", skippedHeld, "inserted", len(blocks))
+		if heldTail {
+			// The rest waits for an anchor; asking the next peer for the
+			// same range would only refill the tail.
+			return true, false
+		}
 		// A response that ended below the round's end (one peer's stored
 		// chain, or the lagging side of an equal-height fork) keeps going
 		// while another peer claims more; the next peer gets the same range,
@@ -488,7 +551,7 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 		}
 		return true, false
 	}
-	if progressed {
+	if progressed || heldOnly {
 		return true, false
 	}
 	// Every peer failed. Only a consistent unknown-ancestor is fixable by

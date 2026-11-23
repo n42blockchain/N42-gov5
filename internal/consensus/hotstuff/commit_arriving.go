@@ -60,8 +60,9 @@ func CommitArrivalStats() (deferred, available, catchUp uint64) {
 }
 
 // observeCommitted checks that a committed block executes here and asks
-// for a catch-up when it does not.
-func (s *Service) observeCommitted(hash types.Hash) {
+// for a catch-up when it does not. It returns the block's number when it
+// was looked up here (0 otherwise).
+func (s *Service) observeCommitted(hash types.Hash) (number uint64) {
 	switch {
 	case s.availableHere(hash):
 		// P2a: committed on availability; its execution runs behind in
@@ -70,10 +71,13 @@ func (s *Service) observeCommitted(hash types.Hash) {
 		// Still in its availability check here.
 		s.deferCommittedObservation(hash)
 	default:
-		if applied, _, number := s.observeCommittedExecution(hash, true); !applied {
+		var applied bool
+		applied, _, number = s.observeCommittedExecution(hash, true)
+		if !applied {
 			s.requestCommittedCatchUp(hash, number)
 		}
 	}
+	return number
 }
 
 // blockArriving reports whether the block fetcher (the sync layer) holds

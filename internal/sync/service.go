@@ -171,6 +171,9 @@ type Service struct {
 	// claimQuorum is the f+1 the consensus layer last passed to
 	// HeightBehindQuorum; catch-up peer ordering reuses it (catchup_peers.go).
 	claimQuorum atomic.Int32
+	// anchors is the S1 anchor book: authenticated hashes, the parent-link
+	// skeleton and the held unanchored tail (anchor_book.go).
+	anchors anchorBook
 	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
 	catchUpBook catchUpPeerBook
 	// passiveFetch / passiveImporting: rate limit and in-flight set of the

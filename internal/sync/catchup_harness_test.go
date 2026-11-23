@@ -177,6 +177,8 @@ type harnessPeer struct {
 	mu     gosync.Mutex
 	asked  int
 	ranges [][2]uint64
+	// maxServe caps the blocks per reply (0 = no cap), like a byte budget.
+	maxServe int
 }
 
 type harnessNet struct {
@@ -243,8 +245,8 @@ func (n *harnessNet) send(msg interface{}, pid peer.ID) (network.Stream, error) 
 	serve := make([]block.IBlock, 0, req.Count)
 	for num := start; num <= end; num++ {
 		b, ok := p.chain[num]
-		if !ok {
-			break // stored chain ends: serve the prefix
+		if !ok || (p.maxServe > 0 && len(serve) >= p.maxServe) {
+			break // stored chain ends (or reply cap): serve the prefix
 		}
 		serve = append(serve, b)
 	}

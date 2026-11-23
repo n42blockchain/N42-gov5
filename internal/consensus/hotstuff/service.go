@@ -675,6 +675,10 @@ type Service struct {
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
 	epochSchedule *EpochSchedule
 
+	// syncQCs caches strict header-QC verdicts for the sync importer
+	// (sync_anchor.go).
+	syncQCs syncQCCache
+
 	// P2P peer refresh callback on epoch transition (injected by node.go).
 	peerRefreshFn func()
 
@@ -848,7 +852,7 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 	// second and third fsync for the block), so they belong in the
 	// block-write cost picture alongside "blockwrite phases".
 	tObserve := time.Now()
-	s.observeCommitted(output.Hash)
+	number := s.observeCommitted(output.Hash)
 	dObserve := time.Since(tObserve)
 	var dCanon, dPersist time.Duration
 	// Make the committed block the canonical head so every node's chain follows
@@ -908,6 +912,11 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 		}
 		dCanon = time.Since(tCanon)
 	}
+	// The committed hash is an anchor for the sync importer (S1): a held,
+	// unexecuted catch-up tail below it may now be executed. After the
+	// canonical commit, so a commit the chain refused as conflicting
+	// (safety halt) never becomes one.
+	s.noteCommitAnchor(output.Hash, number)
 	updateMetricsBlockCommitted(output.View)
 	tPersist := time.Now()
 	// The hook must have completed AND the enclosing transaction must have
@@ -939,6 +948,18 @@ func (s *Service) handleBlockCommitted(output EngineOutput) {
 	// identical for leader/followers/replay). A process-local feed keyed
 	// by whatever QC this node last observed diverged between roles and
 	// was unreproducible at replay.
+}
+
+// noteCommitAnchor hands a CommitQC-verified hash to the sync importer as
+// an S1 anchor (number 0 when unknown here). Never after a safety halt: a
+// halted node follows no chain, so it must not release a held tail.
+func (s *Service) noteCommitAnchor(hash types.Hash, number uint64) {
+	if s.safetyHalted.Load() {
+		return
+	}
+	if a, ok := s.blockFetcher.(interface{ NoteCommitAnchor(types.Hash, uint64) }); ok {
+		a.NoteCommitAnchor(hash, number)
+	}
 }
 
 // noteConsensusNamed tells the sync layer that a verified proposal or
