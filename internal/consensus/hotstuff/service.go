@@ -118,11 +118,37 @@ const committedUnexecutedRetryLimit = 3
 // heightBehind returns how far the local head trails the network, or 0 when no
 // block fetcher is wired (preserving unconditional production for chains without
 // the sync layer).
+//
+// A fetcher that offers HeightBehindQuorum gets f+1 of the current validator
+// set: it then reports only a gap proven by a verified CommitQC or advertised
+// by at least f+1 distinct peers, so a single peer lying in its Status
+// message cannot stop this leader from producing (sync review S0a / C2).
 func (s *Service) heightBehind() uint64 {
 	if s.blockFetcher == nil {
 		return 0
 	}
+	if q, ok := s.blockFetcher.(interface{ HeightBehindQuorum(int) uint64 }); ok {
+		return q.HeightBehindQuorum(s.claimQuorum())
+	}
 	return s.blockFetcher.HeightBehind()
+}
+
+// claimQuorum is the number of distinct peers whose advertised heights must
+// agree before a claimed gap stops production: f+1, so at least one of them
+// is honest. Without a known validator set it degrades to 1.
+func (s *Service) claimQuorum() int {
+	if s.engine == nil {
+		return 1
+	}
+	ce := s.engine.Engine()
+	if ce == nil {
+		return 1
+	}
+	vs := ce.CurrentValidatorSet()
+	if vs == nil || vs.IsEmpty() {
+		return 1
+	}
+	return int(vs.FaultTolerance()) + 1
 }
 
 // blockExecutionStatus checks the applied-lineage evidence exposed by the sync

@@ -623,6 +623,63 @@ func (p *Status) BestPeers(wantPeers int, ourCurrentHeight *uint256.Int) (*uint2
 	return targetBlockNumber, potentialPIDs
 }
 
+// QuorumHeight returns the k-th highest block height advertised by distinct
+// connected peers, and how many peers advertise a height above
+// ourCurrentHeight. It returns nil when fewer than k peers advertise a height
+// above ourCurrentHeight, so up to k-1 peers cannot move the result above our
+// head no matter what they claim.
+//
+// Validator identity is not known at this layer. When a static validator mesh
+// is configured (SetTrusted), only trusted peers are counted: they are the
+// operator-declared validator peers. Otherwise every distinct connected peer
+// ID counts as one voice; that assumes an attacker cannot cheaply hold k
+// connections with distinct peer IDs (the connection limit and the IP
+// colocation tracker bound this, they do not prevent it). Callers must
+// therefore treat the result as a liveness hint, never as proof.
+func (p *Status) QuorumHeight(k int, ourCurrentHeight *uint256.Int) (*uint256.Int, int) {
+	if k < 1 {
+		k = 1
+	}
+	onlyTrusted := len(p.trusted) > 0
+	connected := p.Connected()
+	heights := make([]*uint256.Int, 0, len(connected))
+	p.store.RLock()
+	for _, pid := range connected {
+		if onlyTrusted {
+			if _, ok := p.trusted[pid]; !ok {
+				continue
+			}
+		}
+		peerData, ok := p.store.PeerData(pid)
+		if !ok {
+			continue
+		}
+		h := peerData.CurrentHeight()
+		if h == nil || h.Cmp(ourCurrentHeight) <= 0 {
+			continue
+		}
+		heights = append(heights, h)
+	}
+	p.store.RUnlock()
+	if len(heights) < k {
+		return nil, len(heights)
+	}
+	sort.Slice(heights, func(i, j int) bool { return heights[i].Cmp(heights[j]) > 0 })
+	return heights[k-1], len(heights)
+}
+
+// PeerHeight returns the height pid last advertised in its Status, or nil
+// when it never sent one.
+func (p *Status) PeerHeight(pid peer.ID) *uint256.Int {
+	p.store.RLock()
+	defer p.store.RUnlock()
+	peerData, ok := p.store.PeerData(pid)
+	if !ok {
+		return nil
+	}
+	return peerData.CurrentHeight()
+}
+
 // PeersToPrune selects the most suitable inbound peers
 // to disconnect the host peer from. As of this moment
 // the pruning relies on simple heuristics such as

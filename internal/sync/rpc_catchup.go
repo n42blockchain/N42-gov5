@@ -85,6 +85,7 @@ func (s *Service) CatchUp() {
 // undergo the normal block validation/import path; the target only selects how
 // far to ask connected peers for data.
 func (s *Service) CatchUpTo(target uint64) {
+	s.noteVerifiedCommitTarget(target)
 	self := currentBlockNumber(s.cfg.chain)
 	if self == nil || target <= self.Uint64() {
 		return
@@ -116,6 +117,7 @@ func (s *Service) CatchUpToHash(hash types.Hash) {
 	}
 	s.committedTargetLock.Unlock()
 	if alreadyObserved {
+		s.noteVerifiedCommitTarget(observedNumber)
 		go s.enqueueCatchUp(observedNumber)
 		return
 	}
@@ -150,6 +152,8 @@ func (s *Service) observeCatchUpBlock(hash types.Hash, number uint64) {
 	}
 	s.committedTargetLock.Unlock()
 	if pending {
+		// The hash is CommitQC-authenticated and the body binds it to number.
+		s.noteVerifiedCommitTarget(number)
 		go s.enqueueCatchUp(number)
 	}
 }

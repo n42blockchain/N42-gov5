@@ -163,6 +163,11 @@ type Service struct {
 	committedTargetLock sync.Mutex
 	committedTargets    map[types.Hash]struct{}
 	observedBlockNumber map[types.Hash]uint64
+
+	// verifiedCommitTarget is the highest block number named by a verified
+	// CommitQC that consensus handed to catch-up (CatchUpTo/CatchUpToHash).
+	// It is the proven half of the production gate (catchup_gate.go).
+	verifiedCommitTarget atomic.Uint64
 }
 
 // NewService initializes new regular sync service.
