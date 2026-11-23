@@ -13,8 +13,9 @@ package hotstuff
 import (
 	gosync "sync"
 
+	"golang.org/x/crypto/sha3"
+
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/syncanchor"
 	"github.com/n42blockchain/N42/log"
 )
@@ -159,7 +160,7 @@ func (s *Service) VerifyHeaderQC(extra []byte) syncanchor.Result {
 		r.Verdict, r.Err = syncanchor.BadExtra, err
 		return r
 	}
-	key := utils.Keccak256Hash(wire)
+	key := qcCacheKey(wire)
 	if cached, ok := s.syncQCs.get(key); ok {
 		cached.Cached = true
 		return cached
@@ -212,3 +213,12 @@ func (s *Service) scheduleSetForEpoch(epoch uint64) (*ValidatorSet, bool) {
 }
 
 var _ syncanchor.Verifier = (*Service)(nil)
+
+// qcCacheKey is keccak256 of the QC wire bytes. (common/utils.Keccak256Hash
+// is not used: it passes a full-length slice to Sum and returns zero.)
+func qcCacheKey(wire []byte) (h types.Hash) {
+	d := sha3.NewLegacyKeccak256()
+	d.Write(wire)
+	copy(h[:], d.Sum(nil))
+	return h
+}
