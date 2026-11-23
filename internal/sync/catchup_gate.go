@@ -45,6 +45,10 @@ func (s *Service) noteVerifiedCommitTarget(number uint64) {
 // f+1 of the current validator set; values below 1 count as 1. Implements the
 // optional gate probe of hotstuff.Service.heightBehind.
 func (s *Service) HeightBehindQuorum(quorum int) uint64 {
+	if quorum < 1 {
+		quorum = 1
+	}
+	s.claimQuorum.Store(int32(quorum))
 	if synclegacy.HeightGate.On() {
 		return s.HeightBehind()
 	}

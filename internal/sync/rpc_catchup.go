@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/synclegacy"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/proto/sync_pb"
 )
@@ -68,6 +69,15 @@ const maxObservedBlockNumbers = 2048
 // hotstuff.BlockFetcher.CatchUp.
 func (s *Service) CatchUp() {
 	self := currentBlockNumber(s.cfg.chain)
+	if !synclegacy.PeerSelect.On() {
+		// Same highest-claim target, but a peer whose claim already failed to
+		// produce blocks (back-off) or that is classified bad no longer steers
+		// it (catchup_peers.go).
+		if highest, ok := s.catchUpHighestClaim(self); ok {
+			s.enqueueCatchUp(highest)
+		}
+		return
+	}
 	highest, peers := s.cfg.p2p.Peers().BestPeers(5, self)
 	if highest == nil || len(peers) == 0 || highest.Cmp(self) <= 0 {
 		return // nobody is ahead of us
@@ -250,10 +260,7 @@ func (s *Service) enqueueCatchUpNow(target uint64) {
 	for {
 		nextTarget := s.catchUpTarget.Swap(0)
 		if nextTarget > 0 {
-			peers := s.cfg.p2p.Peers().Connected()
-			if len(peers) > 5 {
-				peers = peers[:5]
-			}
+			peers := s.catchUpPeerSet()
 			if len(peers) > 0 {
 				s.catchUpTo(nextTarget, peers)
 			}
@@ -312,6 +319,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	// log2(maxRequestBlocks) extra rounds, and not counted as a backtrack.
 	const maxForkBacktrack = 32
 	countCap := uint64(maxRequestBlocks)
+	peers = s.orderCatchUpPeers(peers, start)
 	for attempt := 0; attempt <= maxForkBacktrack; {
 		if start > target {
 			return
@@ -354,22 +362,32 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 // back empty), which a smaller range may fix.
 func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest uint64) (done, allRejected bool) {
 	sawUnknownAncestor := false
+	progressed := false
+	var reached uint64
 	rejected := 0
-	for _, pid := range peers {
-		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	for i, pid := range peers {
+		if progressed && !s.catchUpCanExtend([]peer.ID{pid}, reached, highest) {
+			continue // this peer claims nothing above what is already imported
+		}
+		timeout, withinClaim := s.catchUpPeerRequest(pid, req, highest)
+		ctx, cancel := context.WithTimeout(s.ctx, timeout)
+		tReq := time.Now()
 		fetched, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
 		cancel()
 		if err != nil {
 			rejected++
+			s.noteCatchUpRequestFailed(pid, err, withinClaim)
 			log.Warn("hotstuff catch-up: range request failed",
 				"peer", pid.String()[:12], "from", start, "to", highest, "err", err)
 			continue
 		}
 		if len(fetched) == 0 {
 			rejected++
+			s.noteCatchUpEmpty(pid, withinClaim)
 			log.Warn("hotstuff catch-up: range returned 0 blocks", "peer", pid.String()[:12])
 			continue
 		}
+		s.noteCatchUpServed(pid, len(fetched), time.Since(tReq))
 		// Drop nil entries defensively — a partially decoded chunk stream can
 		// leave holes, and a nil block panics every downstream .Hash()/.Number64()
 		// (observed live: the catch-up tick panic-recover looping every 8s).
@@ -385,6 +403,7 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 		}
 		blocks, imported, ierr := s.insertCatchUpBlocks(s.ctx, blocks, authorized)
 		if len(blocks) == 0 {
+			s.noteCatchUpInvalid(pid)
 			log.Debug("hotstuff catch-up: dropped known bad range", "peer", pid.String()[:12])
 			continue
 		}
@@ -397,6 +416,9 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 				strings.Contains(ierr.Error(), "sibling parent not applied") ||
 				strings.Contains(ierr.Error(), "unknown ancestor") {
 				sawUnknownAncestor = true
+			}
+			if errors.Is(ierr, consensus.ErrExecutionInvalid) {
+				s.noteCatchUpInvalid(pid)
 			}
 			log.Warn("hotstuff catch-up: insert failed", "err", ierr, "authorized", authorized,
 				"from", blocks[0].Number64().Uint64(), "count", len(blocks), "imported", imported)
@@ -428,6 +450,19 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 		}
 		log.Info("hotstuff catch-up: imported range",
 			"fetched", len(blocks), "newHead", newHeadNum, "authorized", authorized)
+		// A response that ended below the round's end (one peer's stored
+		// chain, or the lagging side of an equal-height fork) keeps going
+		// while another peer claims more; the next peer gets the same range,
+		// so a winning sibling at the start height is still included.
+		if last := blocks[len(blocks)-1].Number64().Uint64(); s.catchUpCanExtend(peers[i+1:], last, highest) {
+			progressed, reached = true, last
+			log.Info("hotstuff catch-up: range served a prefix, asking the next peer",
+				"reached", reached, "to", highest)
+			continue
+		}
+		return true, false
+	}
+	if progressed {
 		return true, false
 	}
 	// Every peer failed. Only a consistent unknown-ancestor is fixable by

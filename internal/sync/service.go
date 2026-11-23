@@ -168,6 +168,11 @@ type Service struct {
 	// CommitQC that consensus handed to catch-up (CatchUpTo/CatchUpToHash).
 	// It is the proven half of the production gate (catchup_gate.go).
 	verifiedCommitTarget atomic.Uint64
+	// claimQuorum is the f+1 the consensus layer last passed to
+	// HeightBehindQuorum; catch-up peer ordering reuses it (catchup_peers.go).
+	claimQuorum atomic.Int32
+	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
+	catchUpBook catchUpPeerBook
 }
 
 // NewService initializes new regular sync service.
