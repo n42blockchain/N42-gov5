@@ -23,6 +23,7 @@ package internal
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -108,4 +109,30 @@ func (bc *BlockChain) InsertChainCatchUp(chain []block.IBlock) (int, error) {
 		defer func() { bc.futureQueuePassive = false }()
 	}
 	return bc.insertChain(chain, true)
+}
+
+// futureInsertGate holds future-queued blocks the sync importer owns. The
+// zero value holds nothing.
+type futureInsertGate struct {
+	hold atomic.Pointer[func(number uint64) bool]
+}
+
+func (g *futureInsertGate) holds(number uint64) bool {
+	if f := g.hold.Load(); f != nil {
+		return (*f)(number)
+	}
+	return false
+}
+
+// SetFutureInsertGate installs hold: while hold(number) is true, a queued
+// block at that height stays queued instead of being retried. The sync layer
+// installs it only with N42_SYNC_PIPELINE=1 so that in Range mode the future
+// queue (fed by push and gossip) does not import heights the sync importer
+// owns. nil removes it.
+func (bc *BlockChain) SetFutureInsertGate(hold func(number uint64) bool) {
+	if hold == nil {
+		bc.futureGate.hold.Store(nil)
+		return
+	}
+	bc.futureGate.hold.Store(&hold)
 }

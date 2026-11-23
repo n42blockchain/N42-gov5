@@ -258,7 +258,10 @@ type BlockChain struct {
 	// futureAuth: future-queued hashes retried WITH branch-switch authority
 	// (future_authority.go). futureQueuePassive is set, under bc.lock, while
 	// a range catch-up import runs so the blocks it queues stay passive.
-	futureAuth         futureAuthority
+	futureAuth futureAuthority
+	// futureGate: optional sync-mode hold on future-queue retries
+	// (SetFutureInsertGate, sync S5 Range handover).
+	futureGate         futureInsertGate
 	futureQueuePassive bool
 
 	procInterrupt int32
