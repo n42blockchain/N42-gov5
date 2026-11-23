@@ -69,6 +69,24 @@ func (s *Service) anchorVerifier() syncanchor.Verifier {
 // NoteCommitAnchor records a block hash named by a CommitQC the consensus
 // layer verified (a Decide / OutputBlockCommitted). In enforce mode a held
 // tail that it authenticates is released through the catch-up worker.
+// anchorHolds reports whether enforce mode holds hash unexecuted in the
+// anchor tail. The chain's lag executor asks it before importing a block
+// (SetLagHoldProbe), so a block a peer also pushed cannot be executed
+// there while catch-up holds it as unanchored.
+func (s *Service) anchorHolds(hash types.Hash) bool {
+	return syncanchor.Current() == syncanchor.Enforce && s.anchors.tailHolds(hash)
+}
+
+// registerLagHoldProbe hands anchorHolds to a chain with a lag executor.
+func (s *Service) registerLagHoldProbe() {
+	if s.cfg == nil {
+		return
+	}
+	if c, ok := s.cfg.chain.(interface{ SetLagHoldProbe(func(types.Hash) bool) }); ok {
+		c.SetLagHoldProbe(s.anchorHolds)
+	}
+}
+
 func (s *Service) NoteCommitAnchor(hash types.Hash, number uint64) {
 	mode := syncanchor.Current()
 	if mode == syncanchor.Off || hash == (types.Hash{}) {

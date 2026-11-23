@@ -103,6 +103,26 @@ type lagExecutor struct {
 	// idle: the import's idle split between two lag imports (r94a,
 	// lag_import_idle.go); the lag loop's goroutine only.
 	idle lagIdle
+
+	// holdProbe: the sync layer's S1 anchor hold (SetLagHoldProbe).
+	holdProbe atomic.Pointer[func(types.Hash) bool]
+}
+
+// SetLagHoldProbe attaches the sync layer's anchor hold: a queued block it
+// reports held (an unanchored catch-up tail block under
+// N42_SYNC_ANCHOR=enforce) is not imported until the probe releases it.
+func (bc *BlockChain) SetLagHoldProbe(fn func(types.Hash) bool) {
+	if fn == nil {
+		bc.lagExec.holdProbe.Store(nil)
+		return
+	}
+	bc.lagExec.holdProbe.Store(&fn)
+}
+
+// lagAnchorHeld reports whether the sync layer holds hash unanchored.
+func (bc *BlockChain) lagAnchorHeld(hash types.Hash) bool {
+	p := bc.lagExec.holdProbe.Load()
+	return p != nil && (*p)(hash)
 }
 
 // RememberAvailable records a frame block this node holds every frame of
@@ -668,6 +688,14 @@ func (bc *BlockChain) lagStep() bool {
 			bc.lagForget(b.Hash())
 			le.idle.passEmpty("other")
 			return true
+		}
+		if bc.lagAnchorHeld(b.Hash()) {
+			// S1 enforce: catch-up holds it unanchored; it executes once a
+			// verified commit anchors it (here or by the catch-up release).
+			if skipWhy == "queued" {
+				skipWhy = "anchor"
+			}
+			continue
 		}
 		ready := bc.lagParentReady(b.ParentHash(), n-1)
 		authorized := stored

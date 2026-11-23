@@ -215,6 +215,18 @@ func (b *anchorBook) setTailLocked(held []block.IBlock) int {
 	return len(held) - keep
 }
 
+// tailHolds reports whether h is a block of the held, unanchored tail.
+func (b *anchorBook) tailHolds(h types.Hash) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, blk := range b.tail {
+		if blk.Hash() == h {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *anchorBook) tailLen() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

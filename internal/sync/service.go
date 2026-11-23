@@ -238,6 +238,7 @@ func (s *Service) RegisterHandlers() {
 
 // Start begins periodic sync maintenance tasks. Call AFTER p2p.Start().
 func (s *Service) Start() {
+	s.registerLagHoldProbe()
 	s.maintainPeerStatuses()
 	s.resyncIfBehind()
 	s.broadcastTxs()
