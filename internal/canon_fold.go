@@ -138,8 +138,8 @@ func (bc *BlockChain) commitToCanonicalFold(hash types.Hash, inTx func(kv.RwTx) 
 			blk = j.blk
 		}
 	}
-	var dup bool
-	var lineageErr error
+	var dup, conflictSkip bool
+	var lineageErr, conflictErr error
 	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
 		if blk == nil {
 			b, err := rawdb.ReadBlockByHash(tx, hash)
@@ -154,11 +154,24 @@ func (bc *BlockChain) commitToCanonicalFold(hash types.Hash, inTx func(kv.RwTx) 
 		number := blk.Number64().Uint64()
 		dup = bc.canonPureDuplicate(tx, hash, number)
 		if !dup {
-			lineageErr = requireAppliedCommitLineage(bc.ctx, tx, hash, number)
+			// Fail closed on a commit that does not extend the committed
+			// chain (commit_conflict.go), before the lineage guard would
+			// turn it into a retry; canonFoldApply checks again under the
+			// writer.
+			conflictSkip, conflictErr = commitConflictsWithFloor(tx, hash, blk.ParentHash(), number)
+			if conflictErr == nil && !conflictSkip {
+				lineageErr = requireAppliedCommitLineage(bc.ctx, tx, hash, number)
+			}
 		}
 		return nil
 	}); err != nil {
 		return true, err
+	}
+	if conflictErr != nil {
+		return true, conflictErr
+	}
+	if conflictSkip {
+		return true, nil
 	}
 	if blk == nil {
 		// Not stored. A block held for its lagged execution (available,
@@ -321,6 +334,17 @@ func (bc *BlockChain) canonFoldApply(tx kv.RwTx, r *canonFoldReq, j *lagWriteJob
 	}
 	r.blk = blk
 	number := blk.Number64().Uint64()
+	// The conflicting-commit check (commit_conflict.go) under the writer,
+	// before anything is written: a commit that does not extend the
+	// committed chain is refused (its waiter's own transaction reports
+	// the conflict to the consensus layer) and forgotten.
+	if skip, cerr := commitConflictsWithFloor(tx, r.hash, blk.ParentHash(), number); cerr != nil {
+		r.err = cerr
+		r.dropped = true
+		return nil
+	} else if skip {
+		return nil
+	}
 	if err := requireAppliedCommitLineage(bc.ctx, tx, r.hash, number); err != nil {
 		r.err = err
 		// At or below the write's height and not on its lineage: a sibling,
