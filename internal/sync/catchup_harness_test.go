@@ -89,18 +89,47 @@ func (c *harnessChain) headNumber() uint64 { return c.CurrentBlock().Number64().
 
 func (c *harnessChain) GenesisBlock() block.IBlock { return (&syncTBlockByHashChain{}).GenesisBlock() }
 
+func (c *harnessChain) GetBlockByHash(h comtypes.Hash) (block.IBlock, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.known[h], nil
+}
+
+// HasAppliedBlock reports whether h is on the applied head's lineage.
+func (c *harnessChain) HasAppliedBlock(h comtypes.Hash, _ uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.appliedLocked(h)
+}
+
+func (c *harnessChain) appliedLocked(h comtypes.Hash) bool {
+	for cur := c.head; cur != nil; cur = c.known[cur.ParentHash()] {
+		if cur.Hash() == h {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *harnessChain) switchCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.switches
+}
+
+// store records b as a stored (not applied) block.
+func (c *harnessChain) store(b block.IBlock) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.known[b.Hash()] = b
+}
+
 func (c *harnessChain) insert(blocks []block.IBlock, authorized bool) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, b := range blocks {
-		if _, ok := c.known[b.Hash()]; ok && b.Hash() != c.head.Hash() {
-			if b.ParentHash() == c.head.Hash() {
-				c.head = b
-			}
-			continue
-		}
-		if b.Hash() == c.head.Hash() {
-			continue
+		if c.appliedLocked(b.Hash()) {
+			continue // already applied: a known-block skip
 		}
 		if b.ParentHash() == c.head.Hash() {
 			c.known[b.Hash()] = b
