@@ -46,6 +46,8 @@ const (
 	pipeFirstChunkMax   = 20 * time.Second
 	pipeFirstChunkUnset = 10 * time.Second
 	pipeShortMemory     = 10 * time.Second
+	pipeBackoffBase     = 500 * time.Millisecond
+	pipeBackoffMax      = 30 * time.Second
 )
 
 // pipePeerStats is the per-peer estimate of one pipeline run.
@@ -59,6 +61,10 @@ type pipePeerStats struct {
 	// was asked (at shortAt): the peer's observed availability.
 	shortTop uint64
 	shortAt  time.Time
+	// failures / until: run-local back-off after a failed, refused, empty
+	// or unusable reply. Never a score: stage A decides what is scored.
+	failures int
+	until    time.Time
 }
 
 // pipeReq is one bodies_by_range request in flight.
@@ -214,6 +220,10 @@ func (sc *pipeScheduler) rank(cands []pipeCandidate, start, backed uint64, now t
 		if anyActive && c.backedOff {
 			continue
 		}
+		st := sc.stats(c.pid)
+		if now.Before(st.until) {
+			continue // run-local back-off
+		}
 		r := ranked{c: c, tier: 2}
 		if c.known && c.claim >= start {
 			r.tier = 1
@@ -221,7 +231,6 @@ func (sc *pipeScheduler) rank(cands []pipeCandidate, start, backed uint64, now t
 				r.tier = 0
 			}
 		}
-		st := sc.stats(c.pid)
 		if !st.shortAt.IsZero() && now.Sub(st.shortAt) < pipeShortMemory && st.shortTop < start {
 			r.tier += 3
 		}
@@ -362,9 +371,10 @@ func (sc *pipeScheduler) complete(r *pipeReq, ok bool, served int, bytes uint64,
 		st.inflight--
 	}
 	if !ok || served == 0 {
-		st.limit = 1
+		sc.backoff(r.pid, now)
 		return
 	}
+	st.failures, st.until = 0, time.Time{}
 	if took <= 0 {
 		took = time.Millisecond
 	}
@@ -397,6 +407,22 @@ func (sc *pipeScheduler) complete(r *pipeReq, ok bool, served int, bytes uint64,
 	if last := r.start + uint64(served) - 1; last < r.end {
 		st.shortTop, st.shortAt = last, now
 	}
+}
+
+// backoff puts pid in run-local back-off and drops its in-flight limit to 1.
+func (sc *pipeScheduler) backoff(pid peer.ID, now time.Time) {
+	st := sc.stats(pid)
+	st.limit = 1
+	st.failures++
+	shift := st.failures - 1
+	if shift > 16 {
+		shift = 16
+	}
+	d := pipeBackoffBase << uint(shift)
+	if d > pipeBackoffMax || d <= 0 {
+		d = pipeBackoffMax
+	}
+	st.until = now.Add(d)
 }
 
 // cancelAll forgets every request in flight (the run is ending).
