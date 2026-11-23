@@ -35,7 +35,12 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 	}
 	if err := s.validateRangeRequest(m); err != nil {
 		s.writeErrorResponseToStream(responseCodeInvalidRequest, err.Error(), stream)
-		s.cfg.p2p.Peers().Scorers().BadResponsesScorer().Increment(stream.Conn().RemotePeer())
+		// A requester that is merely ahead of our head (a far-behind peer
+		// probing a lagging server) is behaving legitimately: refuse with code
+		// 1 but do not score it. Malformed counts and steps still are.
+		if !errors.Is(err, errRangeAheadOfHead) {
+			s.cfg.p2p.Peers().Scorers().BadResponsesScorer().Increment(stream.Conn().RemotePeer())
+		}
 		return err
 	}
 
@@ -223,6 +228,11 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 	return nil
 }
 
+// errRangeAheadOfHead reports a request whose start lies beyond our head plus
+// the look-ahead buffer. It still maps to p2ptypes.ErrInvalidRequest on the
+// wire (code 1) but is never a scoring offence.
+var errRangeAheadOfHead = fmt.Errorf("%w: start is ahead of the local head", p2ptypes.ErrInvalidRequest)
+
 func (s *Service) validateRangeRequest(r *sync_pb.BodiesByRangeRequest) error {
 	if r == nil {
 		return p2ptypes.ErrInvalidRequest
@@ -242,7 +252,7 @@ func (s *Service) validateRangeRequest(r *sync_pb.BodiesByRangeRequest) error {
 		return p2ptypes.ErrInvalidRequest
 	}
 	if startSlot.Cmp(highestExpectedBlockNumber) > 0 {
-		return p2ptypes.ErrInvalidRequest
+		return errRangeAheadOfHead
 	}
 
 	span := step * (count - 1)

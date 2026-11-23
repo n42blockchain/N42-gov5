@@ -205,3 +205,43 @@ func TestBodiesByRangePreservesStepWithDefaultLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A requester that is only ahead of our head is refused with code 1 but must
+// not be scored; a malformed request from the same kind of peer still is.
+func TestBodiesByRangeAheadRequestIsRefusedWithoutScoring(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		req        func() *sync_pb.BodiesByRangeRequest
+		wantScored bool
+	}{
+		{"ahead of head", func() *sync_pb.BodiesByRangeRequest { return rangeReq(100+rangeLimit*2+10, 1, 1) }, false},
+		{"zero count", func() *sync_pb.BodiesByRangeRequest { return rangeReq(1, 0, 1) }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fp := newRangeTestService(t, 100)
+			svc.cfg.chain = newRangeChainStub(100)
+			client, server := connectedStreamServer(t, fp)
+			defer client.Close()
+			defer server.Close()
+			if err := server.SetProtocol(protocol.ID(p2p.RPCBodiesDataTopicV1 + fp.Encoding().ProtocolSuffix())); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- svc.bodiesByRangeRPCHandler(context.Background(), tc.req(), server) }()
+			code, _, err := ReadStatusCode(client, fp.Encoding())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != responseCodeInvalidRequest {
+				t.Fatalf("code = %d, want %d", code, responseCodeInvalidRequest)
+			}
+			if err := <-done; err == nil {
+				t.Fatal("expected the handler to report the refusal")
+			}
+			n, _ := fp.Peers().Scorers().BadResponsesScorer().Count(server.Conn().RemotePeer())
+			if scored := n > 0; scored != tc.wantScored {
+				t.Fatalf("bad responses = %d, scored=%v want %v", n, scored, tc.wantScored)
+			}
+		})
+	}
+}
