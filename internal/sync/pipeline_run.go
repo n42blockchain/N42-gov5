@@ -530,13 +530,26 @@ func (r *pipeRun) importRun(run []pipeBlock) string {
 // insert executes blocks one per transaction, skipping blocks the live path
 // already applied (no double import). knownBad reports a run that starts with
 // a block of a branch already known bad.
+//
+// One skip rule with the serial catch-up (catchUpRange): an applied block is
+// never re-inserted, and under N42_CATCHUP_SKIP_APPLIED it is reported to the
+// engine as an import would (notifyCatchUpApplied). Unlike the serial path
+// the pipeline does not skip blocks the lag pipeline holds: its next block
+// needs that parent applied, and in Range mode the lag executor leaves the
+// height to this importer anyway.
 func (r *pipeRun) insert(blocks []block.IBlock) (imported int, knownBad bool, err error) {
 	todo := make([]block.IBlock, 0, len(blocks))
+	var applied []block.IBlock
 	for _, b := range blocks {
 		if r.s.blockApplied(b.Hash(), b.Number64().Uint64()) {
+			applied = append(applied, b)
 			continue
 		}
 		todo = append(todo, b)
+	}
+	if catchUpSkipAppliedOn && len(applied) > 0 {
+		catchUpSkippedApplied.Add(uint64(len(applied)))
+		r.s.notifyCatchUpApplied(applied)
 	}
 	if len(todo) == 0 {
 		return 0, false, nil

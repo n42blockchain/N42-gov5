@@ -79,7 +79,13 @@ func (s *Service) hasAppliedLineage(blk block.IBlock) bool {
 
 // lagPipelineHolds reports whether the chain's lag pipeline will import
 // blk itself: it is the write in flight, or queued for the lag executor.
+// Never at a height the sync importer owns (N42_SYNC_PIPELINE Range mode):
+// the lag executor leaves those queued (BlockChain.lagSyncOwned), so a
+// catch-up that skipped one would leave it to nobody.
 func (s *Service) lagPipelineHolds(blk block.IBlock) bool {
+	if s.syncOwnsHeight(blk.Number64().Uint64()) {
+		return false
+	}
 	h, ok := s.cfg.chain.(interface {
 		LagPipelineHolds(types.Hash, uint64) bool
 	})
