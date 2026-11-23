@@ -275,7 +275,12 @@ func (s *Service) catchUpPenalise(pid peer.ID) {
 	s.cfg.p2p.Peers().Scorers().BadResponsesScorer().Increment(pid)
 }
 
-// noteCatchUpRequestFailed records a failed range request.
+// noteCatchUpRequestFailed records a failed range request. Only provably
+// malformed data reaches the peer scorer: a refusal ("server busy", no
+// status yet), a timeout or an unsupported protocol is legitimate behaviour
+// for the n42-26 and n42-rs clients on this wire, and a scorer strike there
+// feeds IsBad, which the connection gater uses to drop the peer. Those
+// failures only back the peer off for catch-up.
 func (s *Service) noteCatchUpRequestFailed(pid peer.ID, err error, withinClaim bool) {
 	if synclegacy.PeerSelect.On() {
 		return
@@ -286,18 +291,20 @@ func (s *Service) noteCatchUpRequestFailed(pid peer.ID, err error, withinClaim b
 		return // asked beyond what the peer claims: no evidence against it
 	}
 	s.catchUpBook.fail(pid, time.Now())
-	if malformed || withinClaim {
+	if malformed {
 		s.catchUpPenalise(pid)
 	}
 }
 
-// noteCatchUpEmpty records a response without a single block.
+// noteCatchUpEmpty records a response without a single block within what
+// the peer claims. It backs the peer off but is not scored: an honest server
+// whose execution layer lags its advertised (committed) height, or one
+// cutting replies to a byte budget, answers short or empty.
 func (s *Service) noteCatchUpEmpty(pid peer.ID, withinClaim bool) {
 	if synclegacy.PeerSelect.On() || !withinClaim {
 		return
 	}
 	s.catchUpBook.fail(pid, time.Now())
-	s.catchUpPenalise(pid)
 }
 
 // noteCatchUpInvalid records a response carrying a block that is known bad
