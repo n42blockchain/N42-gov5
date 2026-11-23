@@ -268,7 +268,14 @@ func (s *Service) enqueueCatchUpNow(target uint64) {
 		if nextTarget > 0 {
 			peers := s.catchUpPeerSet()
 			if len(peers) > 0 {
-				s.catchUpTo(nextTarget, peers)
+				// S2: a gap beyond the live window (or Range mode) runs the
+				// parallel pipeline; it hands forks, unknown ancestors and
+				// evicted tails back to the serial path.
+				if !s.usePipeline(nextTarget) {
+					s.catchUpTo(nextTarget, peers)
+				} else if fallback, reached := s.pipelineCatchUp(nextTarget); fallback != "" {
+					s.catchUpTo(reached, s.catchUpPeerSet())
+				}
 			}
 		}
 

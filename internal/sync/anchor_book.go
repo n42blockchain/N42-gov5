@@ -215,6 +215,14 @@ func (b *anchorBook) setTailLocked(held []block.IBlock) int {
 	return len(held) - keep
 }
 
+// dropTail discards the held tail (its links stay in the skeleton).
+func (b *anchorBook) dropTail() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tail, b.tailBytes = nil, 0
+	syncAnchorTailBlocks.Set(0)
+}
+
 func (b *anchorBook) tailLen() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
