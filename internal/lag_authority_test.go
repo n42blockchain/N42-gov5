@@ -81,3 +81,23 @@ func TestLagExecutorSkipsAnchorHeldBlock(t *testing.T) {
 	require.False(t, bc.lagStep())
 	require.True(t, q.stuckLog, "a released block was not imported")
 }
+
+// S5 Range (N42_SYNC_PIPELINE): the lag executor imports without
+// InsertChain, so a queued block at a height the sync importer owns (the
+// future insert gate) stays queued even with its parent applied; once the
+// gate hands the height back it is imported.
+func TestLagExecutorLeavesSyncOwnedHeight(t *testing.T) {
+	bc, f, _ := newLagAuthorityFixture(t)
+	q := &lagQueued{blk: f.a[3], since: time.Now().Add(-10 * time.Second)}
+	bc.lagExec.queued = map[types.Hash]*lagQueued{f.a[3].Hash(): q}
+	owned := true
+	n3 := f.a[3].Number64().Uint64()
+	bc.SetFutureInsertGate(func(n uint64) bool { return owned && n <= n3 })
+	require.False(t, bc.lagStep())
+	require.False(t, q.stuckLog, "a sync-owned height was imported by the lag executor")
+	require.Equal(t, "sync-range", bc.lagExec.idle.skipWhy)
+	require.True(t, bc.LagImportQueued(f.a[3].Hash()), "a sync-owned block left the lag queue")
+	owned = false
+	require.False(t, bc.lagStep())
+	require.True(t, q.stuckLog, "a height handed back to the live path was not imported")
+}
