@@ -64,3 +64,20 @@ func TestLagExecutorSwitchNeedsConsensusName(t *testing.T) {
 		require.True(t, q.stuckLog)
 	})
 }
+
+// S1 enforce: a queued block the sync layer holds as an unanchored
+// catch-up tail block is not imported by the lag executor, even with its
+// parent applied; once released it is.
+func TestLagExecutorSkipsAnchorHeldBlock(t *testing.T) {
+	bc, f, _ := newLagAuthorityFixture(t)
+	// A3 extends the applied head A2: ready, no switch needed.
+	q := &lagQueued{blk: f.a[3], since: time.Now().Add(-10 * time.Second)}
+	bc.lagExec.queued = map[types.Hash]*lagQueued{f.a[3].Hash(): q}
+	held := true
+	bc.SetLagHoldProbe(func(h types.Hash) bool { return held && h == f.a[3].Hash() })
+	require.False(t, bc.lagStep())
+	require.False(t, q.stuckLog, "an anchor-held block was imported")
+	held = false
+	require.False(t, bc.lagStep())
+	require.True(t, q.stuckLog, "a released block was not imported")
+}
