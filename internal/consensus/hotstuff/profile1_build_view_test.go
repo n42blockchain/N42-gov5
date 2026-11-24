@@ -9,6 +9,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // TestProfile1BuildViewNamesTheProposalView: BuildView is the current view
@@ -62,5 +63,46 @@ func TestProfile1PrepareStampsTheProposalView(t *testing.T) {
 	}
 	if got != v+1 {
 		t.Fatalf("speculative build stamped view %d, want the proposal view %d", got, v+1)
+	}
+}
+
+// TestProfile1PrepareLinksParentCommitteeEvidence: with the committee pool
+// wired (mandatory on profile 1, A19) Prepare stamps parentBeaconRoot =
+// Blake3 of the parent's committee evidence (B5), and VerifyHeader accepts
+// the sealed result. The profile-1 branch of Prepare skipped the link, so
+// every follower refused block 2 ("committee-evidence link broken").
+func TestProfile1PrepareLinksParentCommitteeEvidence(t *testing.T) {
+	f := newP1Fixture(t)
+	pool := newTestPool(t)
+	f.hs.SetCommitteeEvidence(pool, nil)
+	// Block 1 extends genesis: no parent evidence, zero root.
+	h1 := f.child(f.genesis, 1, nil)
+	h1.ParentBeaconRoot = nil
+	if err := f.hs.Prepare(f.chain, h1); err != nil {
+		t.Fatal(err)
+	}
+	if h1.ParentBeaconRoot == nil || *h1.ParentBeaconRoot != (types.Hash{}) {
+		t.Fatalf("block 1 parentBeaconRoot = %v, want zero", h1.ParentBeaconRoot)
+	}
+	b1 := f.seal(f.child(f.genesis, 1, nil))
+	f.chain.headers[1] = b1
+
+	h2 := &block.Header{ParentHash: b1.Hash(), Number: uint256.NewInt(2)}
+	if err := f.hs.Prepare(f.chain, h2); err != nil {
+		t.Fatal(err)
+	}
+	ce, err := pool.BuildSimulatedCE(1, b1.Hash(), b1.ReceiptHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ce.BeaconRoot()
+	if h2.ParentBeaconRoot == nil || *h2.ParentBeaconRoot != want {
+		t.Fatalf("block 2 parentBeaconRoot = %v, want Blake3(CE(block 1)) %s", h2.ParentBeaconRoot, want.Hex())
+	}
+	// A child carrying the stamped root passes the follower's check.
+	c2 := f.child(b1, 2, nil)
+	c2.ParentBeaconRoot = h2.ParentBeaconRoot
+	if err := f.hs.VerifyHeader(f.chain, f.seal(c2), true); err != nil {
+		t.Fatalf("VerifyHeader of the linked block 2: %v", err)
 	}
 }
