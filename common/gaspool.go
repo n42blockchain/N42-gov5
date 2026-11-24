@@ -121,3 +121,9 @@ func (gp *GasPool) ChargeGasAmsterdam(txExec, txState uint64) error {
 func (gp *GasPool) UsedAmsterdam() uint64 {
 	return max(gp.cumExec, gp.cumState)
 }
+
+// AmsterdamCounters returns the block's cumulative EIP-8037 execution gas
+// (regular gas, before refunds) and state gas.
+func (gp *GasPool) AmsterdamCounters() (exec, state uint64) {
+	return gp.cumExec, gp.cumState
+}
