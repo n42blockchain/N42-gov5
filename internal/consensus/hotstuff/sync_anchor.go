@@ -23,41 +23,65 @@ import (
 // StrictSetForEpoch returns the validator set of epoch, or false when this
 // manager does not know it exactly. Unlike ValidatorSetForView it never falls
 // back to the current set, and unlike FindValidatorSetByLen it never matches
-// by size.
+// by size. Known epochs: those the current set has been carried through
+// ([setSinceEpoch, currentEpoch]), the staged next epoch, the ranges of the
+// most recently replaced sets, and the epoch-keyed history. An epoch past
+// currentEpoch+1, or currentEpoch+1 with nothing staged, fails closed.
 func (em *EpochManager) StrictSetForEpoch(epoch uint64) (*ValidatorSet, bool) {
+	vs, _, ok := em.strictSetForEpoch(epoch)
+	return vs, ok
+}
+
+// strictSetForEpoch is StrictSetForEpoch that also reports whether the set
+// was carried forward into epoch (no reconfiguration was seen for it) rather
+// than established there by activation, restore or history. A carried set is
+// this node's exact view of the chain, but a node that has not yet executed a
+// committed reconfiguration would carry the old set; callers must not cache
+// a negative verdict obtained with a carried set.
+func (em *EpochManager) strictSetForEpoch(epoch uint64) (*ValidatorSet, bool, bool) {
 	if em == nil {
-		return nil, false
+		return nil, false, false
 	}
 	if em.epochLength == 0 {
 		// A single epoch: the active set is the set.
 		if epoch == 0 && em.currentSet != nil {
-			return em.currentSet, true
+			return em.currentSet, false, true
 		}
-		return nil, false
+		return nil, false, false
 	}
-	if epoch == em.currentEpoch && em.currentSet != nil {
-		return em.currentSet, true
+	if em.currentSet != nil && epoch >= em.setSinceEpoch && epoch <= em.currentEpoch {
+		return em.currentSet, epoch > em.setSinceEpoch, true
 	}
 	if epoch == em.currentEpoch+1 && em.nextSet != nil {
-		return em.nextSet, true
+		return em.nextSet, false, true
 	}
 	if set, ok := em.historicalSets[epoch]; ok && set != nil {
-		return set, true
+		return set, false, true
 	}
-	return nil, false
+	for i := len(em.spans) - 1; i >= 0; i-- {
+		if sp := em.spans[i]; sp.set != nil && epoch >= sp.from && epoch <= sp.to {
+			return sp.set, epoch > sp.from, true
+		}
+	}
+	return nil, false, false
 }
 
 // SyncCommitSetForView resolves, under the engine lock, the epoch of view and
 // that epoch's exact validator set (see StrictSetForEpoch).
 func (e *ConsensusEngine) SyncCommitSetForView(view ViewNumber) (*ValidatorSet, uint64, bool) {
+	vs, epoch, _, ok := e.syncCommitSetForView(view)
+	return vs, epoch, ok
+}
+
+func (e *ConsensusEngine) syncCommitSetForView(view ViewNumber) (*ValidatorSet, uint64, bool, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.epochManager == nil {
-		return nil, 0, false
+		return nil, 0, false, false
 	}
 	epoch := e.epochManager.EpochForView(uint64(view))
-	vs, ok := e.epochManager.StrictSetForEpoch(epoch)
-	return vs, epoch, ok
+	vs, carried, ok := e.epochManager.strictSetForEpoch(epoch)
+	return vs, epoch, carried, ok
 }
 
 // VerifySyncCommitQC checks qc against vs in this chain's commit domain
@@ -165,17 +189,22 @@ func (s *Service) VerifyHeaderQC(extra []byte) syncanchor.Result {
 		cached.Cached = true
 		return cached
 	}
-	vs, epoch, ok := ce.SyncCommitSetForView(qc.View)
+	vs, epoch, carried, ok := ce.syncCommitSetForView(qc.View)
 	r.Epoch = epoch
 	if !ok {
 		vs, ok = s.scheduleSetForEpoch(epoch)
+		carried = false
 	}
 	if !ok {
 		r.Verdict = syncanchor.UnknownEpoch
 		return r
 	}
 	r.Verdict, r.Err = ce.VerifySyncCommitQC(qc, vs)
-	if r.Verdict == syncanchor.Verified || r.Verdict == syncanchor.PrepareDomain || r.Verdict == syncanchor.BadQC {
+	// A negative verdict against a carried-forward set is not final: the set
+	// may yet turn out to have changed (a reconfiguration this node has not
+	// executed), so only cache it when the set is established for the epoch.
+	if r.Verdict == syncanchor.Verified ||
+		(!carried && (r.Verdict == syncanchor.PrepareDomain || r.Verdict == syncanchor.BadQC)) {
 		s.syncQCs.put(key, r)
 	}
 	return r
