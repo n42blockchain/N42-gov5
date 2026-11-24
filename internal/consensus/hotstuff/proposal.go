@@ -724,8 +724,13 @@ func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
 // re-proposed at a committed height seeded conflicting commits at 13014242).
 // Fail-open when either side is unknown (genesis justify, parent not tracked) —
 // the rule tightens as information is available, never blocks the honest path.
+// Profile 1 has no fail-open for the genesis justify: the block's parent must
+// be the genesis block (profile1ExtendsGenesis).
 func (e *ConsensusEngine) extendsJustify(view ViewNumber, blockHash types.Hash) bool {
 	justify, ok := e.pendingJustifyBlocks[view]
+	if ok && justify == (types.Hash{}) && e.profile1() {
+		return e.profile1ExtendsGenesis(view, blockHash)
+	}
 	if !ok || justify == (types.Hash{}) {
 		return true
 	}

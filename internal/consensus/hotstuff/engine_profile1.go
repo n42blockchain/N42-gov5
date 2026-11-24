@@ -10,6 +10,9 @@ package hotstuff
 import (
 	"errors"
 	"fmt"
+
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/log"
 )
 
 var (
@@ -34,6 +37,27 @@ func (e *ConsensusEngine) SetProfile1(set *ValidatorSet) {
 
 // profile1 reports whether the engine runs profile-1 rules.
 func (e *ConsensusEngine) profile1() bool { return e.p1Set != nil }
+
+// profile1ExtendsGenesis is the extends rule for a proposal justified by the
+// genesis QC (zero block hash) on profile 1: the block's parent must be the
+// chain's genesis block. There is no fail-open: an unknown parent, or an
+// engine without the chain-bound identity that names the genesis hash,
+// refuses.
+func (e *ConsensusEngine) profile1ExtendsGenesis(view ViewNumber, blockHash types.Hash) bool {
+	if e.h2V4Identity == nil {
+		log.Warn("profile 1: vote REFUSED, genesis hash unknown (H2-v4 identity not configured)",
+			"view", view, "blockHash", blockHash)
+		return false
+	}
+	genesis := e.h2V4Identity.GenesisHash
+	parent, known := e.importedParents[blockHash]
+	if !known || parent != genesis {
+		log.Warn("profile 1: vote REFUSED, block justified by the genesis QC does not extend genesis",
+			"view", view, "blockHash", blockHash, "blockParent", parent, "parentKnown", known, "genesis", genesis)
+		return false
+	}
+	return true
+}
 
 // profile1CertError is the fail-closed pre-check of every certificate
 // verification on profile 1: the H2-v4 identity is set and the bitmap is

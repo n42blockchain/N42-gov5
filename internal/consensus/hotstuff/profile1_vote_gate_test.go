@@ -81,7 +81,8 @@ func p1Votes(ch chan EngineOutput, mt ConsensusMsgType) int {
 // AM19, AM23). The same events vote at once on a two-phase legacy engine.
 func TestProfile1PrepareVoteNeedsTheDeferredCheck(t *testing.T) {
 	setup := newTestSetup(t, 4)
-	block, parent := types.Hash{0xB1}, types.Hash{0xA1}
+	// Justified by the genesis QC, so the parent is the genesis block.
+	block, parent := types.Hash{0xB1}, p1TestIdentity.GenesisHash
 
 	legacy, legacyCh := newTestEngine(t, setup, 0)
 	legacy.SetTwoPhaseVote(true)
@@ -109,6 +110,40 @@ func TestProfile1PrepareVoteNeedsTheDeferredCheck(t *testing.T) {
 	p1Event(t, e, EventBlockChecked, block, parent)
 	if n := p1Votes(ch, MsgVote); n != 1 {
 		t.Fatalf("profile 1 after the check: %d votes, want 1", n)
+	}
+}
+
+// A checked block justified by the genesis QC must have the genesis block as
+// its parent; there is no fail-open for the zero-hash justify on profile 1.
+func TestProfile1GenesisJustifyRequiresTheGenesisParent(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	block, other := types.Hash{0xB5}, types.Hash{0xA5}
+	e, ch := newP1Engine(t, setup, 0)
+	if err := p1Deliver(e, MsgProposal, p1Proposal(setup, p1TestIdentity, 1, block, GenesisQC(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	p1Event(t, e, EventBlockImported, other, types.Hash{})
+	p1Event(t, e, EventBlockChecked, block, other)
+	if n := p1Votes(ch, MsgVote); n != 0 {
+		t.Fatalf("voted for a genesis-justified block whose parent is not genesis: %d", n)
+	}
+	if e.extendsJustify(1, block) {
+		t.Fatal("extendsJustify passed a genesis-justified block on a non-genesis parent")
+	}
+	// Unknown parent: refused, not failed open.
+	if e.extendsJustify(1, types.Hash{0xB6}) {
+		t.Fatal("extendsJustify failed open on an unknown parent of a genesis-justified block")
+	}
+
+	// The same block on the genesis parent is voted.
+	block2 := types.Hash{0xB7}
+	e2, ch2 := newP1Engine(t, setup, 0)
+	if err := p1Deliver(e2, MsgProposal, p1Proposal(setup, p1TestIdentity, 1, block2, GenesisQC(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	p1Event(t, e2, EventBlockChecked, block2, p1TestIdentity.GenesisHash)
+	if n := p1Votes(ch2, MsgVote); n != 1 {
+		t.Fatalf("genesis-parent block: %d votes, want 1", n)
 	}
 }
 
