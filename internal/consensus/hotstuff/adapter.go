@@ -125,6 +125,11 @@ type HotStuff struct {
 	// checks that link, continuing the resealed chain's BLS multi-sig.
 	committeePool CommitteePool
 	ceReader      CEReader
+
+	// Profile 1 (header_profile.go): the fixed genesis validator set and the
+	// chain-bound H2-v4 identity the header QCs are checked against.
+	p1Validators profile1Validators
+	p1Identity   *H2V4ChainIdentity
 }
 
 // SetCommitteeEvidence injects the live BLS committee pool and the consensus-
@@ -422,9 +427,15 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return nil
 	}
 
-	headerView, qc, _, err := decodeHeaderExtra(header.Extra)
-	if err != nil {
-		return err
+	profile1 := h.chainConfig.IsProfile1()
+	var headerView ViewNumber
+	var qc *QuorumCertificate
+	if !profile1 {
+		var err error
+		headerView, qc, _, err = decodeHeaderExtra(header.Extra)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Resolve the parent by the header's OWN ParentHash — not by number. A
@@ -461,7 +472,11 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return fmt.Errorf("parent %x has height %v, want %v", header.ParentHash[:8], parentHeader.Number, &wantParentNum)
 	}
 
-	if header.Time <= parentHeader.Time {
+	if profile1 {
+		if err := h.checkProfile1Header(chain, header, parentHeader, batch); err != nil {
+			return err
+		}
+	} else if header.Time <= parentHeader.Time {
 		return errors.New("timestamp must be after parent")
 	}
 
