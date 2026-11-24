@@ -18,6 +18,10 @@ var (
 	responseCodeSuccess        = byte(0x00)
 	responseCodeInvalidRequest = byte(0x01)
 	responseCodeServerError    = byte(0x02)
+	// responseCodeResourceUnavailable (sync standard §5.0 RESOURCE_UNAVAILABLE)
+	// answers a request for data this node does not hold. Profile 1 uses it
+	// for a block_by_hash miss; legacy chains keep 0x02.
+	responseCodeResourceUnavailable = byte(0x03)
 )
 
 func (s *Service) generateErrorResponse(code byte, reason string) ([]byte, error) {

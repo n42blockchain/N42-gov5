@@ -40,7 +40,7 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 		// chunk"), indistinguishable from a real transport fault — and since
 		// the fetch fans out to every peer while typically only the leader has
 		// the block, the log drowned in phantom EOF errors.
-		writeErrorResponseToStream(responseCodeServerError, "block not found", stream, s.cfg.p2p)
+		writeErrorResponseToStream(blockByHashMissCode(), "block not found", stream, s.cfg.p2p)
 		return
 	}
 	// Debug, not Info: this fires once PER PEER PER FAN-OUT of a single
