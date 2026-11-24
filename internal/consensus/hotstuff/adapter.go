@@ -261,6 +261,10 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 	// Record own address so the engine can find itself in a new set at an epoch
 	// boundary even while an observer (myIndex==NonMemberIndex can't index the set).
 	h.engine.SetSelfAddress(h.signer)
+	if h.chainConfig.IsProfile1() {
+		// Profile-1 vote gates and certificate strictness (A13, A14, E13).
+		h.engine.SetProfile1(vs)
+	}
 	if observer {
 		h.engine.removed = true // inactive until reconfig adds it; still processes events
 	}

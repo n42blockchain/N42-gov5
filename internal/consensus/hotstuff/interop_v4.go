@@ -118,10 +118,16 @@ func (e *ConsensusEngine) verifyCommitQC(qc *QuorumCertificate) error {
 }
 
 func (e *ConsensusEngine) verifyQCWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
+	if err := e.profile1CertError(qc.View, len(qc.Signers)); err != nil {
+		return err
+	}
 	return verifyAggregateSignature(qc, vs, e.voteSigningMessage(qc.View, qc.BlockHash), "QC")
 }
 
 func (e *ConsensusEngine) verifyCommitQCWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
+	if err := e.profile1CertError(qc.View, len(qc.Signers)); err != nil {
+		return err
+	}
 	return verifyAggregateSignature(qc, vs, e.commitSigningMessage(qc.View, qc.BlockHash), "CommitQC")
 }
 
@@ -137,6 +143,9 @@ func (e *ConsensusEngine) verifyQCAnyDomainWithSet(qc *QuorumCertificate, vs *Va
 }
 
 func (e *ConsensusEngine) verifyTC(tc *TimeoutCertificate) error {
+	if err := e.profile1CertError(tc.View, len(tc.Signers)); err != nil {
+		return err
+	}
 	return verifyTCAgainstMessage(tc, e.validatorSet(), e.timeoutSigningMessage(tc.View))
 }
 
@@ -146,6 +155,9 @@ func (e *ConsensusEngine) verifyTC(tc *TimeoutCertificate) error {
 // verify against the set that actually signed them, under whichever signing
 // domain this chain runs.
 func (e *ConsensusEngine) verifyTCWithSet(tc *TimeoutCertificate, vs *ValidatorSet) error {
+	if err := e.profile1CertError(tc.View, len(tc.Signers)); err != nil {
+		return err
+	}
 	return verifyTCAgainstMessage(tc, vs, e.timeoutSigningMessage(tc.View))
 }
 

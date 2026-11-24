@@ -56,6 +56,10 @@ func (e *ConsensusEngine) SyncCommitSetForView(view ViewNumber) (*ValidatorSet, 
 		return nil, 0, false
 	}
 	epoch := e.epochManager.EpochForView(uint64(view))
+	if e.p1Set != nil {
+		// Profile 1 (AM5): every epoch runs the genesis set.
+		return e.p1Set, epoch, true
+	}
 	vs, ok := e.epochManager.StrictSetForEpoch(epoch)
 	return vs, epoch, ok
 }
