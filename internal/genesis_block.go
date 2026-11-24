@@ -304,7 +304,24 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 		}
 	}
 
+	if g.GenesisConfig.Config.IsProfile1() {
+		applyProfile1GenesisHeader(head)
+	}
+
 	return block.NewBlock(head, nil).(*block.Block), statedb, nil
+}
+
+// applyProfile1GenesisHeader stamps the Profile-1 header profile onto the
+// genesis header (mixed production standard v0.2.1): ommersHash exactly zero
+// (B3), requestsHash the empty-trie root in every header including genesis
+// (AM3), element 22 left as the empty-string gap (B12, O6) and element 24,
+// mobileRegistryRoot, present and zero (A6, B11).
+func applyProfile1GenesisHeader(head *block.Header) {
+	head.UncleHash = types.Hash{}
+	requests := hash.EmptyRootHash
+	head.RequestsHash = &requests
+	head.BlockAccessListHash = nil
+	head.MobileRegistryRoot = new(types.Hash)
 }
 
 func emptyExecutionRequestsHash() types.Hash {
