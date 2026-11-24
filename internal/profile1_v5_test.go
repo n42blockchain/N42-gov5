@@ -4,6 +4,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +35,9 @@ import (
 // whose blocks carry real transactions, so that every header's deferred
 // fields (A10, k = 1) are the parent's execution: in particular gasUsed is
 // the EIP-8037 block figure max(block regular gas, block state gas), regular
-// gas before refunds (B13). Blocks 1 and 2 have equal timestamps (B4). Each
+// gas before refunds (B13), and requestsHash the parent's EIP-7685 requests
+// hash (AM25): block 7 calls the EIP-7002 and EIP-7251 contracts, block 8
+// carries the hash of the two requests. Blocks 1 and 2 have equal timestamps (B4). Each
 // header passes gov5's import verification and its deferred-field check;
 // each refusal breaks one rule and is refused by gov5.
 //
@@ -42,14 +45,16 @@ import (
 // N42_PROFILE1_VECTORS_MIRROR=<dir> also writes the files to <dir>/V5.
 
 type v5Executed struct {
-	StateRoot     types.Hash    `json:"stateRoot"`
-	ReceiptsRoot  types.Hash    `json:"receiptsRoot"`
-	LogsBloom     hexutil.Bytes `json:"logsBloom"`
-	RegularGas    uint64        `json:"blockRegularGas"`
-	StateGas      uint64        `json:"blockStateGas"`
-	ReceiptsGas   uint64        `json:"receiptsCumulativeGasUsed"`
-	GasUsed       uint64        `json:"gasUsed"`
-	GasUsedSource string        `json:"gasUsedIs"`
+	StateRoot     types.Hash      `json:"stateRoot"`
+	ReceiptsRoot  types.Hash      `json:"receiptsRoot"`
+	LogsBloom     hexutil.Bytes   `json:"logsBloom"`
+	RegularGas    uint64          `json:"blockRegularGas"`
+	StateGas      uint64          `json:"blockStateGas"`
+	ReceiptsGas   uint64          `json:"receiptsCumulativeGasUsed"`
+	GasUsed       uint64          `json:"gasUsed"`
+	GasUsedSource string          `json:"gasUsedIs"`
+	Requests      []hexutil.Bytes `json:"requests"`
+	RequestsHash  types.Hash      `json:"requestsHash"`
 }
 
 type v5Block struct {
@@ -77,17 +82,18 @@ type v5Refusal struct {
 }
 
 type v5File struct {
-	Vector      string                                `json:"vector"`
-	Standard    string                                `json:"standard"`
-	ChainID     uint64                                `json:"chainId"`
-	GenesisFile string                                `json:"genesisFile"`
-	AllocAdded  map[types.Address]conf.GenesisAccount `json:"allocAdditions"`
-	GenesisHash string                                `json:"genesisHash"`
-	Genesis     v1HeaderVector                        `json:"genesis"`
-	GasUsedRule string                                `json:"gasUsedRule"`
-	Blocks      []v5Block                             `json:"blocks"`
-	Refusals    []v5Refusal                           `json:"refusals"`
-	Notes       []string                              `json:"notes"`
+	Vector       string                                `json:"vector"`
+	Standard     string                                `json:"standard"`
+	ChainID      uint64                                `json:"chainId"`
+	GenesisFile  string                                `json:"genesisFile"`
+	AllocAdded   map[types.Address]conf.GenesisAccount `json:"allocAdditions"`
+	GenesisHash  string                                `json:"genesisHash"`
+	Genesis      v1HeaderVector                        `json:"genesis"`
+	GasUsedRule  string                                `json:"gasUsedRule"`
+	RequestsRule string                                `json:"requestsHashRule"`
+	Blocks       []v5Block                             `json:"blocks"`
+	Refusals     []v5Refusal                           `json:"refusals"`
+	Notes        []string                              `json:"notes"`
 }
 
 // TestProfile1VectorV5 builds, verifies and pins vector V5.
@@ -209,23 +215,28 @@ func TestProfile1VectorV5(t *testing.T) {
 		if err := checkDeferredHeader(cfg, r.tx, h, parent); err != nil {
 			t.Fatalf("%s: deferred fields refused: %v", name, err)
 		}
+		if err := hs.StaticHeaderCheck(chain, h, time.Unix(int64(h.Time), 0)); err != nil {
+			t.Fatalf("%s refused at vote time: %v", name, err)
+		}
 	}
 
 	out := v5File{
-		Vector:      "V5",
-		Standard:    "N42 mixed production standard profile 1; vector V5 (header validity: B4, B9, B13, B14, A23)",
-		ChainID:     cfg.ChainID.Uint64(),
-		GenesisFile: "../V1/" + v1Genesis,
-		AllocAdded:  alloc,
-		GenesisHash: genesis.Hash().Hex(),
-		Genesis:     v1Encode(t, "genesis", genesis),
-		GasUsedRule: "Header N carries gasUsed of block N-1 (A10, k = 1). A block's gasUsed (EIP-8037, B13) = max(sum of tx regular gas, sum of tx state gas); tx regular gas = max(gas used before refunds - tx state gas, calldata floor); refunds do not reduce it. Receipts keep cumulativeGasUsed = sum of tx gas used after refunds (state gas included).",
+		Vector:       "V5",
+		Standard:     "N42 mixed production standard profile 1; vector V5 (header validity: B4, B8, B9, B13, B14, A23, AM25)",
+		ChainID:      cfg.ChainID.Uint64(),
+		GenesisFile:  "../V1/" + v1Genesis,
+		AllocAdded:   alloc,
+		GenesisHash:  genesis.Hash().Hex(),
+		Genesis:      v1Encode(t, "genesis", genesis),
+		GasUsedRule:  "Header N carries gasUsed of block N-1 (A10, k = 1). A block's gasUsed (EIP-8037, B13) = max(sum of tx regular gas, sum of tx state gas); tx regular gas = max(gas used before refunds - tx state gas, calldata floor); refunds do not reduce it. Receipts keep cumulativeGasUsed = sum of tx gas used after refunds (state gas included).",
+		RequestsRule: "Header N carries requestsHash of block N-1 (AM25, A10, k = 1); genesis and block 1 carry sha256(\"\") = 0xe3b0c442...b855. A block's requests are produced as on Ethereum Prague (EIP-6110 deposit log scan, then the EIP-7002 and EIP-7251 end-of-block system calls); requests_hash (EIP-7685) = sha256(sha256(r_1) || ... || sha256(r_n)) over the non-empty requests r_i = type || data in type order, sha256(\"\") when there are none. The native chain ignores the requests' content.",
 		Notes: []string{
 			"The genesis is V1's genesis_8s.json plus allocAdditions (the V3 test sender, key = keccak256(\"" + v3SenderSeed + "\")).",
 			"Blocks are built like V1's (extraData N42H || view || CommitQC of the parent by validators 0, 1, 2 || seal, leader(v) = v mod 4, withdrawalsRoot of the A8 rewards, parentBeaconRoot = Blake3 of the parent's committee evidence from block 2); V1 has the per-field rules.",
 			"executed = the block's own result, stored by gov5 and carried by the next header: stateRoot (QMDB), receiptsRoot, logsBloom, gasUsed. blockRegularGas, blockStateGas and receiptsCumulativeGasUsed show where gasUsed comes from.",
 			"Blocks 1 and 2 have equal timestamps (B4: parent.time <= time); both run the EIP-4788 system call with the same timestamp, so block 2's root slot overwrites block 1's in the same ring-buffer index; the effect is in block 2's executed stateRoot, carried by block 3.",
 			"check: import = header verification on import (gov5 VerifyHeader); vote = only before the Round-1 vote at nowUnix; deferred = the deferred fields against the parent's stored result (gov5 checkDeferredHeader, on import and in the vote gate).",
+			"AM25: block 7 calls the EIP-7002 contract 0x00000961...7002 (validator pubkey 0xa1 x 48 || amount 1000000000 gwei, 8 bytes big-endian; 1 wei fee) and the EIP-7251 contract 0x0000BBdD...7251 (source pubkey 0xa1 x 48 || target pubkey 0xb2 x 48; 1 wei fee). Its end-of-block calls dequeue both: executed.requests (type 0x01: source address || pubkey || amount, 8 bytes little-endian as the contract emits it; type 0x02: source address || source pubkey || target pubkey) and executed.requestsHash. Block 8 carries that hash; its own queues are empty, so it produces sha256(\"\").",
 		},
 	}
 
@@ -257,6 +268,9 @@ func TestProfile1VectorV5(t *testing.T) {
 			}, "blockRegularGas"},
 		{"idle", "No transactions: gasUsed 0.", v1SlotSecs, func() []*transaction.Transaction { return nil }, "zero"},
 		{"carries-idle", "No transactions; carries block 5's gasUsed 0.", v1SlotSecs, func() []*transaction.Transaction { return nil }, "zero"},
+		{"withdrawal-and-consolidation-requests", "A fee-paying EIP-7002 withdrawal request and a fee-paying EIP-7251 consolidation request (AM25): the end-of-block system calls dequeue both; the block is valid and its requestsHash is not sha256(\"\").", v1SlotSecs,
+			func() []*transaction.Transaction { return p1RequestTxs(r) }, "auto"},
+		{"carries-requests", "No transactions; carries block 7's requestsHash. Its own queues are empty: executed requestsHash sha256(\"\").", v1SlotSecs, func() []*transaction.Transaction { return nil }, "zero"},
 	}
 
 	carried := rawdb.ExecutedResult{Root: genesis.Root, ReceiptHash: genesis.ReceiptHash, Bloom: genesis.Bloom, GasUsed: genesis.GasUsed, RequestsHash: *genesis.RequestsHash}
@@ -276,6 +290,12 @@ func TestProfile1VectorV5(t *testing.T) {
 		res := ExecutedResultFor(cfg, h.Number.Uint64(), root, r.lastReceipts, HeaderGasUsed(cfg, h, r.lastGP, r.lastUsedGas), ExecutionRequestsHash(r.lastRequests))
 		if res.GasUsed != max(exec, st) {
 			t.Fatalf("%s: gasUsed %d, want max(%d, %d)", s.name, res.GasUsed, exec, st)
+		}
+		if s.source == "auto" {
+			s.source = "blockRegularGas"
+			if st > exec {
+				s.source = "blockStateGas"
+			}
 		}
 		switch s.source {
 		case "blockStateGas":
@@ -299,7 +319,8 @@ func TestProfile1VectorV5(t *testing.T) {
 			Name: s.name, Description: s.desc, View: view, Signer: leader(view),
 			Header: hv.Header, RLP: hv.RLP, Hash: hv.Hash, Txs: raw,
 			Executed: v5Executed{StateRoot: res.Root, ReceiptsRoot: res.ReceiptHash, LogsBloom: res.Bloom[:],
-				RegularGas: exec, StateGas: st, ReceiptsGas: r.lastUsedGas, GasUsed: res.GasUsed, GasUsedSource: s.source},
+				RegularGas: exec, StateGas: st, ReceiptsGas: r.lastUsedGas, GasUsed: res.GasUsed, GasUsedSource: s.source,
+				Requests: append([]hexutil.Bytes{}, r.lastRequests...), RequestsHash: res.RequestsHash},
 		})
 		headers = append(headers, h)
 		bodies = append(bodies, txs)
@@ -312,6 +333,20 @@ func TestProfile1VectorV5(t *testing.T) {
 	}
 	if receiptsGas[1] >= results[1].GasUsed || receiptsGas[0] == results[0].GasUsed {
 		t.Fatalf("refund/state-gas blocks do not separate gasUsed from the receipts: %v vs %+v", receiptsGas, results)
+	}
+	// AM25: only block 7 produces requests -- the two of p1RequestTxs --
+	// and block 8 carries their hash.
+	for i, res := range results {
+		if want := i == 6; (res.RequestsHash != rawdb.EmptyRequestsHash) != want {
+			t.Fatalf("block %d: requestsHash %s", i+1, res.RequestsHash.Hex())
+		}
+	}
+	if wantReq := p1WantRequests(sender); len(out.Blocks[6].Executed.Requests) != 2 ||
+		!bytes.Equal(out.Blocks[6].Executed.Requests[0], wantReq[0]) || !bytes.Equal(out.Blocks[6].Executed.Requests[1], wantReq[1]) {
+		t.Fatalf("block 7 requests %x", out.Blocks[6].Executed.Requests)
+	}
+	if *headers[7].RequestsHash != results[6].RequestsHash {
+		t.Fatal("block 8 does not carry block 7's requestsHash")
 	}
 
 	// Refusals: a header of the chain rebuilt with one rule broken and
@@ -334,6 +369,8 @@ func TestProfile1VectorV5(t *testing.T) {
 		hotstuff.ErrProfile1BlobGas:          "ErrProfile1BlobGas",
 		hotstuff.ErrProfile1BaseFee:          "ErrProfile1BaseFee",
 		hotstuff.ErrProfile1GasLimit:         "ErrProfile1GasLimit",
+		hotstuff.ErrProfile1RequestsHash:     "ErrProfile1RequestsHash",
+		ErrDeferredRequestsHash:              "ErrDeferredRequestsHash",
 	}
 	add := func(name, rule, check, mutation string, now uint64, h *block.Header, err, want error, contains string) {
 		t.Helper()
@@ -356,7 +393,7 @@ func TestProfile1VectorV5(t *testing.T) {
 		h := rebuild(k, mut)
 		add(name, rule, "import", mutation, 0, h, hs.VerifyHeader(chain, h, true), want, contains)
 	}
-	def := func(name, rule, mutation string, k int, mut func(*block.Header)) {
+	defWith := func(name, rule, mutation string, k int, mut func(*block.Header), want error, contains string) {
 		h := rebuild(k, mut)
 		if err := hs.VerifyHeader(chain, h, true); err != nil {
 			t.Fatalf("%s: refused on import, want the deferred check: %v", name, err)
@@ -365,7 +402,10 @@ func TestProfile1VectorV5(t *testing.T) {
 		if k > 0 {
 			par = headers[k-1]
 		}
-		add(name, rule, "deferred", mutation, 0, h, checkDeferredHeader(cfg, r.tx, h, par), nil, "carries parent gas used")
+		add(name, rule, "deferred", mutation, 0, h, checkDeferredHeader(cfg, r.tx, h, par), want, contains)
+	}
+	def := func(name, rule, mutation string, k int, mut func(*block.Header)) {
+		defWith(name, rule, mutation, k, mut, nil, "carries parent gas used")
 	}
 	one := uint64(1)
 	def("gasUsed = receipts' cumulative gas of a state-gas block", "B13", "block 2 carrying block 1's receiptsCumulativeGasUsed instead of max(regular, state)", 1,
@@ -403,6 +443,16 @@ func TestProfile1VectorV5(t *testing.T) {
 	if err := hs.StaticHeaderCheck(chain, headers[1], time.Unix(int64(headers[1].Time), 0)); err != nil {
 		t.Fatalf("block 2 (equal timestamp) refused at vote time: %v", err)
 	}
+
+	// AM25 (appended after the earlier refusals, whose order is published).
+	defWith("requestsHash sha256(\"\") after a block that produced requests", "AM25", "block 8 carrying sha256(\"\") instead of block 7's requestsHash", 7,
+		func(h *block.Header) { e := rawdb.EmptyRequestsHash; h.RequestsHash = &e }, ErrDeferredRequestsHash, "")
+	defWith("requestsHash of the block's own execution", "AM25", "block 7 carrying its own requestsHash instead of block 6's sha256(\"\")", 6,
+		func(h *block.Header) { e := results[6].RequestsHash; h.RequestsHash = &e }, ErrDeferredRequestsHash, "")
+	defWith("requestsHash empty-trie root", "B8", "block 3 carrying requestsHash = 0x56e81f17...b421 (AM3's value) instead of block 2's sha256(\"\")", 2,
+		func(h *block.Header) { e := hash.EmptyRootHash; h.RequestsHash = &e }, ErrDeferredRequestsHash, "")
+	imp("requestsHash absent", "B8", "block 8 with requestsHash = nil (RLP stops before element 21)", 7,
+		func(h *block.Header) { h.RequestsHash = nil }, hotstuff.ErrProfile1RequestsHash, "")
 
 	writeProfile1Vector(t, "V5", "header_validity.json", out)
 	mirrorProfile1File(t, "V5", "README.md")
