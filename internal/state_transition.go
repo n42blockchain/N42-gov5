@@ -163,6 +163,12 @@ type blobTxMessage interface {
 	IsBlobTx() bool
 }
 
+// txTypeMessage is implemented by transaction.Message: the EIP-2718 type of
+// the transaction the message came from (legacy for a NewMessage one).
+type txTypeMessage interface {
+	TxType() uint8
+}
+
 // setCodeTxMessage is implemented by *transaction.Message. It tells a set-code
 // transaction with an empty authorization list apart from other messages.
 type setCodeTxMessage interface {
@@ -537,6 +543,19 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 			isBlobTx = m.IsBlobTx()
 		}
 	}
+	if cfg := st.evm.ChainConfig(); cfg.IsProfile1() {
+		// Standard Profile 1 admits types 0, 1, 2 and 4 only (C1-C4).
+		typ := uint8(transaction.LegacyTxType)
+		if m, ok := st.msg.(txTypeMessage); ok {
+			typ = m.TxType()
+		}
+		if isBlobTx {
+			typ = transaction.BlobTxType
+		}
+		if err := CheckProfile1TxType(cfg, typ); err != nil {
+			return fmt.Errorf("%w (sender %v)", err, st.msg.From().Hex())
+		}
+	}
 	if isBlobTx {
 		rules := st.evm.ChainRules()
 		if !rules.IsCancun {
@@ -573,10 +592,12 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 
 // checkSetCodeTxShape applies geth's EIP-7702 transaction checks: no set-code
 // transaction before Prague, none without a recipient, none with an empty
-// authorization list. N42 native chains are left to their own rules.
+// authorization list. N42 native chains are left to their own rules, except a
+// Profile-1 chain, which holds the shape as part of the type (standard C3).
 func (st *StateTransition) checkSetCodeTxShape() error {
 	m, ok := st.msg.(setCodeTxMessage)
-	if !ok || !m.IsSetCodeTx() || st.evm.ChainConfig().IsN42Native() {
+	cfg := st.evm.ChainConfig()
+	if !ok || !m.IsSetCodeTx() || (cfg.IsN42Native() && !cfg.IsProfile1()) {
 		return nil
 	}
 	if !st.evm.ChainRules().IsPrague {
@@ -641,8 +662,9 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}
 
 	// EIP-3860: cap the initcode of a creation transaction (raised by
-	// EIP-7954 in Glamsterdam). N42 native chains are left to their own rules.
-	if contractCreation && rules.IsShanghai && !st.evm.ChainConfig().IsN42Native() {
+	// EIP-7954 in Glamsterdam). N42 native chains are left to their own rules,
+	// except a Profile-1 chain, which takes Amsterdam's cap from block 0 (C6).
+	if cfg := st.evm.ChainConfig(); contractCreation && rules.IsShanghai && (!cfg.IsN42Native() || cfg.IsProfile1()) {
 		maxInitCode := uint64(params.MaxInitCodeSize)
 		if rules.IsGlamsterdam {
 			maxInitCode = params.MaxInitCodeSizeEIP7954

@@ -629,6 +629,11 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	if !pool.eip1559 && tx.Type() == transaction.DynamicFeeTxType {
 		return internal.ErrTxTypeNotSupported
 	}
+	// Standard Profile 1 admits types 0, 1, 2 and 4 only; block validity
+	// refuses the rest, so the pool (and the ingest, which feeds it) does too.
+	if err := internal.CheckProfile1TxType(pool.chainconfig, tx.Type()); err != nil {
+		return err
+	}
 	gasPrice := tx.GasPrice()
 
 	fromPtr := tx.From()
@@ -688,6 +693,11 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	}
 	if sc := tx.BlobTxSidecar(); isOsaka && sc != nil && sc.Version == transaction.BlobSidecarVersion0 {
 		return ErrLegacyBlobSidecar
+	}
+	// Profile 1 caps the initcode of a creation from block 0, as execution
+	// does (C6).
+	if err := internal.CheckProfile1InitCode(pool.chainconfig, isGlamsterdam, tx.To() == nil, len(tx.Data())); err != nil {
+		return err
 	}
 	hasValue := tx.Value() != nil && !tx.Value().IsZero()
 	isSelfTransfer := tx.To() != nil && fromPtr != nil && *tx.To() == *fromPtr

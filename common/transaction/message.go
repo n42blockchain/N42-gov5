@@ -47,7 +47,10 @@ type Message struct {
 	isBlobTx bool
 	// isSetCodeTx marks a message derived from a set-code (type-4)
 	// transaction, so an empty authorization list stays detectable.
+	// txType is the EIP-2718 type of the transaction the message was derived
+	// from (AsMessage); a message built by NewMessage reads as legacy (0).
 	isSetCodeTx bool
+	txType      uint8
 	data        []byte
 	accessList  AccessList
 	authList    AuthorizationList
@@ -95,6 +98,7 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 		blobHashes:  append([]types.Hash(nil), tx.BlobHashes()...),
 		isBlobTx:    tx.Type() == BlobTxType,
 		isSetCodeTx: tx.Type() == SetCodeTxType,
+		txType:      tx.Type(),
 		to:          tx.To(),
 		amount:      copyUint256OrZero(tx.Value()),
 		data:        tx.Data(),
@@ -145,6 +149,7 @@ func (m Message) BlobFeeCap() *uint256.Int    { return m.blobFeeCap }
 func (m Message) BlobHashes() []types.Hash    { return m.blobHashes }
 func (m Message) IsBlobTx() bool              { return m.isBlobTx }
 func (m Message) IsSetCodeTx() bool           { return m.isSetCodeTx }
+func (m Message) TxType() uint8               { return m.txType }
 func (m Message) Value() *uint256.Int         { return &m.amount }
 func (m Message) Gas() uint64                 { return m.gasLimit }
 func (m Message) Nonce() uint64               { return m.nonce }
