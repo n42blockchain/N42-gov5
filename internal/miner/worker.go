@@ -390,6 +390,9 @@ type worker struct {
 	pacingAnchorNum  uint64
 	pacingAnchorSet  bool
 
+	// parentHeld feeds the Profile-1 pacing rule (pacing_profile1.go).
+	parentHeld parentHeld
+
 	// Pending-block snapshot for RPC readers, built LAZILY: updateSnapshot
 	// stores the raw material and pendingBlockAndReceipts assembles on first
 	// read. Building eagerly cost every block ~30-45ms of the leader's
@@ -1113,6 +1116,9 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 			bc.RememberSealedHeader(h)
 		}
 	}
+	if w.chainConfig.IsProfile1() {
+		w.parentHeld.note(blk.Hash(), time.Now())
+	}
 	sealhash := w.engine.SealHash(blk.Header())
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1407,6 +1413,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	wd := newBuildStallWatchdog(buildStallDiagEnabled, log.LogDir())
 	defer wd.Cancel()
 
+	// Profile-1 pacing counts from when the parent was first held; a build
+	// is triggered only once it is (see parentHeld).
+	if w.chainConfig.IsProfile1() {
+		w.parentHeld.note(parentHash, triggerAt)
+	}
+
 	w.mu.RLock()
 	coinbase := w.coinbase
 	w.mu.RUnlock()
@@ -1452,7 +1464,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if contentionDiagEnabled {
 					st.paceEnterAt = time.Now()
 				}
-				if err := w.paceBlock(num); err != nil {
+				if err := w.pace(num, parentHash); err != nil {
 					return err
 				}
 				if contentionDiagEnabled {
@@ -1658,7 +1670,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		if contentionDiagEnabled {
 			tPaceEnter = time.Now()
 		}
-		if err := w.paceBlock(current.header.Number.Uint64()); err != nil {
+		if err := w.pace(current.header.Number.Uint64(), current.header.ParentHash); err != nil {
 			return err
 		}
 		if contentionDiagEnabled {
