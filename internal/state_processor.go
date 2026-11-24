@@ -352,8 +352,16 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	if !cfg.ReadOnly {
 		txs := b.Transactions()
 		var err error
-		_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
+		var rewards []*block.Reward
+		rewards, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
 		if err != nil {
+			return nil, nil, nil, 0, err
+		}
+		var bodyRewards []*block.Reward
+		if bd, ok := b.Body().(*block.Body); ok && bd != nil {
+			bodyRewards = bd.Rewards
+		}
+		if err := checkProfile1Rewards(chainConfig, concreteHeader, rewards, bodyRewards); err != nil {
 			return nil, nil, nil, 0, err
 		}
 	}
