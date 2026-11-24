@@ -92,6 +92,13 @@ type pipeRun struct {
 
 	lastProgress time.Time
 	imported     int
+	// progressHead is the highest applied head seen; progress is its
+	// advance, never an insert's return (a light chain's InsertChain only
+	// queues blocks for its lag executor and reports them all as taken).
+	progressHead uint64
+	// runsSinceProgress counts runs whose insert reported blocks taken
+	// since the head last advanced.
+	runsSinceProgress int
 }
 
 // usePipeline decides whether a catch-up to target runs the pipeline: the
@@ -131,6 +138,7 @@ func (s *Service) pipelineCatchUp(target uint64) (string, uint64) {
 		lastProgress: time.Now(),
 	}
 	r.cond = gosync.NewCond(&r.mu)
+	r.progressHead = head.Number64().Uint64()
 	r.resetCursor()
 	start, from := time.Now(), r.cursor
 	log.Info("sync pipeline: run started", "from", from, "target", target, "anchor", mode.String(),
@@ -217,10 +225,9 @@ func (r *pipeRun) loop() string {
 			// part of the held tail.
 			if r.mode == syncanchor.Enforce {
 				if _, ok := r.s.anchors.tailReleasable(); ok {
-					if n := r.s.releaseAnchoredTail(false); n > 0 {
-						r.progress(n)
-					}
+					r.s.releaseAnchoredTail(false)
 					r.mu.Lock()
+					r.noteHeadLocked()
 					r.resetCursor()
 					r.mu.Unlock()
 				}
@@ -247,6 +254,15 @@ func (r *pipeRun) next() (run []pipeBlock, done bool) {
 		}
 		if r.s.syncModes.current() == syncModeRange {
 			r.s.raiseRangeEnd(r.target)
+		}
+		r.noteHeadLocked()
+		if r.runsSinceProgress > 0 && time.Since(r.lastProgress) > pipeStallTimeout {
+			// Runs keep arriving and being inserted but the applied head
+			// does not move: the importer itself is stuck, however busy the
+			// fetchers are.
+			log.Warn("sync pipeline: runs inserted without progress, ending the run", "cursor", r.cursor,
+				"target", r.target, "runs", r.runsSinceProgress)
+			return nil, true
 		}
 		r.dispatchLocked()
 		if run := r.buf.take(r.cursor, int(pipelineCfg.slotBlocks)); len(run) > 0 {
@@ -281,11 +297,21 @@ func (r *pipeRun) gaugesLocked() {
 	syncPipelineInflight.Set(float64(len(r.sched.inflight)))
 }
 
-func (r *pipeRun) progress(n int) {
-	r.mu.Lock()
-	r.imported += n
+// noteHeadLocked records the applied head's advance as progress. Only
+// applied blocks count: blocks an insert merely queued (a light chain's lag
+// executor applies them later) count once the head reaches them, so a run
+// that keeps re-queuing the same range stalls out instead of being fed by
+// phantom imports.
+func (r *pipeRun) noteHeadLocked() {
+	head := currentBlockNumberOrZero(r.s.cfg.chain)
+	if head <= r.progressHead {
+		return
+	}
+	n := head - r.progressHead
+	r.progressHead = head
+	r.runsSinceProgress = 0
+	r.imported += int(n)
 	r.lastProgress = time.Now()
-	r.mu.Unlock()
 	syncPipelineImported.Add(float64(n))
 }
 
@@ -496,11 +522,12 @@ func (r *pipeRun) importRun(run []pipeBlock) string {
 	}
 
 	imported, knownBad, err := r.insert(exec)
-	if imported > 0 {
-		r.progress(imported)
-	}
 	r.s.observeSyncMode(false)
 	r.mu.Lock()
+	if imported > 0 {
+		r.runsSinceProgress++ // reset below if the head moved
+	}
+	r.noteHeadLocked()
 	// The cursor follows the executed head, or the top of the held S1 tail.
 	r.resetCursor()
 	r.buf.dropBelow(r.cursor)
