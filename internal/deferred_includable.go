@@ -122,6 +122,19 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 		return nil, nil
 	}
 	number := hdr.Number.Uint64()
+	if config.IsProfile1() {
+		// Standard Profile 1 admits types 0, 1, 2 and 4 only (C1-C4); a
+		// refused type is not includable, checked before any sender is
+		// recovered.
+		for i, t := range txs {
+			if t == nil {
+				continue // reported below
+			}
+			if err := CheckProfile1TxType(config, t.Type()); err != nil {
+				return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
+			}
+		}
+	}
 	signer := transaction.MakeSignerWithTimestamp(config, hdr.Number.ToBig(), hdr.Time)
 	senders := make([]types.Address, len(txs))
 	var (
