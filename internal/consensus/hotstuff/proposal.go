@@ -175,10 +175,11 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	// on its post-state while the followers import it (round 35l: without
 	// this, tenure views proposed in 363-528 ms like rotation views, all
 	// twenty builds "triggered (leader view)", none a speculative hit).
-	// The process-wide tenure (N42_HOTSTUFF_LEADER_TENURE), as before the
-	// chainspec tenure existed: a chainspec-only tenure takes the
-	// persisted-seal hint below (hintNextBuild) instead.
-	if LeaderForView(view+1, vs) == e.myIndex {
+	// The chain's tenure (chainspec, else N42_HOTSTUFF_LEADER_TENURE), the
+	// same rule the view-change leader check uses, so a chainspec-only
+	// tenure gets the hint too. A TC moves the view elsewhere; the parked
+	// guess is then simply unused.
+	if e.LeaderForView(view+1, vs) == e.myIndex {
 		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
 	}
 
