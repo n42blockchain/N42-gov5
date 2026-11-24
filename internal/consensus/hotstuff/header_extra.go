@@ -41,6 +41,14 @@ func buildHeaderExtra(view ViewNumber, committedQC *QuorumCertificate) ([]byte, 
 	return append(extra, make([]byte, extraSealLen)...), nil
 }
 
+// BuildHeaderExtra returns the header Extra a HotStuff-2 block at view carries
+// with committedQC embedded (seal area reserved, unsealed). It lets other
+// packages build consensus headers, e.g. sync tests that exercise the strict
+// header-QC anchor against a real engine.
+func BuildHeaderExtra(view ViewNumber, committedQC *QuorumCertificate) ([]byte, error) {
+	return buildHeaderExtra(view, committedQC)
+}
+
 func decodeHeaderExtra(extra []byte) (ViewNumber, *QuorumCertificate, bool, error) {
 	view, err := ExtractViewFromExtra(extra)
 	if err != nil {

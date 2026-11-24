@@ -21,7 +21,6 @@
 package vm
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -185,29 +184,6 @@ func TestAmsterdamConstants(t *testing.T) {
 }
 
 // --- EIP-7843: SLOTNUM ---
-
-// The N42 Fusaka table keeps the SLOTNUM it has executed since FusakaTime:
-// the slot overwrites the stack top and the stack does not grow. Only the
-// Amsterdam table pushes.
-func TestFusakaSlotNumKeepsN42Semantics(t *testing.T) {
-	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
-	evm.context.Slot = 0x1234
-	interp := &EVMInterpreter{VM: &VM{evm: evm}}
-	scope := createTestScope([]byte{byte(SLOTNUM)})
-	scope.Stack.Push(uint256.NewInt(7))
-	pc := uint64(0)
-	jt := newFusakaInstructionSet()
-	if _, err := jt[SLOTNUM].execute(&pc, interp, scope); err != nil {
-		t.Fatalf("SLOTNUM: %v", err)
-	}
-	if scope.Stack.Len() != 1 || scope.Stack.Peek().Uint64() != 0x1234 {
-		t.Fatalf("Fusaka SLOTNUM: stack len %d top %d, want 1 and %d", scope.Stack.Len(), scope.Stack.Peek().Uint64(), 0x1234)
-	}
-	if got := newGlamsterdamInstructionSet()[SLOTNUM].execute; got == nil {
-		t.Fatal("Amsterdam table has no SLOTNUM")
-	}
-}
-
 // SLOTNUM pops nothing and pushes the slot: on an empty stack it must leave
 // exactly one item holding BlockContext.Slot.
 func TestEIP7843SlotNumPushes(t *testing.T) {
@@ -267,24 +243,5 @@ func TestEIP8024MissingImmediateReadsZero(t *testing.T) {
 	}
 	if a, b := scope.Stack.Back(9).Uint64(), scope.Stack.Back(16).Uint64(); a != 0 || b != 7 {
 		t.Fatalf("EXCHANGE without immediate: items 9,16 = %d,%d, want 0,7", a, b)
-	}
-}
-
-// N42 Fusaka SLOTNUM on an empty stack is a stack underflow, not a nil
-// dereference: a lone 0x4b used to panic every node executing it.
-func TestFusakaSlotNumEmptyStackUnderflows(t *testing.T) {
-	evm, _ := newExecHarnessEVM(t, execHarnessChainConfig())
-	evm.context.Slot = 0x1234
-	interp := &EVMInterpreter{VM: &VM{evm: evm}}
-	scope := createTestScope([]byte{byte(SLOTNUM)})
-	pc := uint64(0)
-	jt := newFusakaInstructionSet()
-	_, err := jt[SLOTNUM].execute(&pc, interp, scope)
-	var underflow *ErrStackUnderflow
-	if !errors.As(err, &underflow) {
-		t.Fatalf("SLOTNUM on empty stack: err = %v, want ErrStackUnderflow", err)
-	}
-	if scope.Stack.Len() != 0 {
-		t.Fatalf("stack len = %d, want 0", scope.Stack.Len())
 	}
 }

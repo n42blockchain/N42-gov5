@@ -416,13 +416,13 @@ func enable7951(jt *JumpTable) {
 }
 
 // newFusakaInstructionSet returns the Fusaka instruction set
-// Fusaka = Osaka + Fusaka EIPs + Amsterdam EIPs
+// Fusaka = Osaka + Fusaka EIPs. SLOTNUM (EIP-7843) is Amsterdam's, as on
+// Ethereum: 0x4b is an invalid opcode on this table.
 func newFusakaInstructionSet() JumpTable {
 	instructionSet := newOsakaInstructionSet()
-	enable7907(&instructionSet)       // EIP-7907: Code size limit increase
-	enable7951(&instructionSet)       // EIP-7951: P-256 precompile
-	enable7939(&instructionSet)       // EIP-7939: CLZ instruction
-	enable7843Fusaka(&instructionSet) // EIP-7843: SLOTNUM opcode, N42 Fusaka semantics
+	enable7907(&instructionSet) // EIP-7907: Code size limit increase
+	enable7951(&instructionSet) // EIP-7951: P-256 precompile
+	enable7939(&instructionSet) // EIP-7939: CLZ instruction
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

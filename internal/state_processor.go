@@ -334,8 +334,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 			return nil, nil, nil, 0, fmt.Errorf("block access list hash mismatch at block %d: header %v, computed %s", b.Number64(), want, got.Hex())
 		}
 	}
-	if _, err := ProcessExecutionBlockEnd(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
+	requests, err := ProcessExecutionBlockEnd(receipts, chainConfig, ibs, concreteHeader, p.engine)
+	if err != nil {
 		return nil, nil, nil, 0, err
+	}
+	if !cfg.StatelessExec {
+		if err := VerifyRequestsHash(chainConfig, concreteHeader, requests); err != nil {
+			return nil, nil, nil, 0, err
+		}
 	}
 	// Everything the recovery workers had left when execution finished. It was
 	// the whole 63 ms before the overlap; what it reads now is the part that

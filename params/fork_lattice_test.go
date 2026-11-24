@@ -135,16 +135,17 @@ func TestN42ChainsUnaffectedByGlamsterdamLattice(t *testing.T) {
 }
 
 // TestMainnetQMDBStaggeredRulesPinned pins the full rule set of
-// mainnet_qmdb_staggered around its timestamp forks. osakaTime, eofTime and
-// fusakaTime coincide there, so Osaka/EOF/Fusaka switch on together.
+// mainnet_qmdb_staggered around its timestamp forks. osakaTime and
+// fusakaTime coincide there, so Osaka and Fusaka switch on together; it has
+// no eofTime (no scheduled Ethereum fork has EOF).
 func TestMainnetQMDBStaggeredRulesPinned(t *testing.T) {
 	cfg := ChainConfigByChainName("mainnet_qmdb_staggered")
 	const (
 		preShanghai = "IsBeijing,IsBerlin,IsByzantium,IsConstantinople,IsHomestead,IsIstanbul,IsLondon,IsPetersburg,IsSpuriousDragon,IsTangerineWhistle"
 		cancun      = "IsBeijing,IsBerlin,IsByzantium,IsCancun,IsConstantinople,IsHomestead,IsIstanbul,IsLondon,IsParis,IsPetersburg,IsShanghai,IsSpuriousDragon,IsTangerineWhistle"
 		pectra      = "IsBeijing,IsBerlin,IsByzantium,IsCancun,IsConstantinople,IsHomestead,IsIstanbul,IsLondon,IsParis,IsPectra,IsPetersburg,IsPrague,IsShanghai,IsSpuriousDragon,IsTangerineWhistle"
-		fusaka      = "IsBeijing,IsBerlin,IsByzantium,IsCancun,IsConstantinople,IsEOF,IsFusaka,IsHomestead,IsIstanbul,IsLondon,IsOsaka,IsParis,IsPectra,IsPetersburg,IsPrague,IsShanghai,IsSpuriousDragon,IsTangerineWhistle"
-		anchor      = "IsBeijing,IsBerlin,IsByzantium,IsCancun,IsConstantinople,IsEOF,IsFusaka,IsHomestead,IsIstanbul,IsLondon,IsMobileAnchor,IsOsaka,IsParis,IsPectra,IsPetersburg,IsPrague,IsShanghai,IsSpuriousDragon,IsTangerineWhistle"
+		fusaka      = "IsBeijing,IsBerlin,IsByzantium,IsCancun,IsConstantinople,IsFusaka,IsHomestead,IsIstanbul,IsLondon,IsOsaka,IsParis,IsPectra,IsPetersburg,IsPrague,IsShanghai,IsSpuriousDragon,IsTangerineWhistle"
+		anchor      = "IsBeijing,IsBerlin,IsByzantium,IsCancun,IsConstantinople,IsFusaka,IsHomestead,IsIstanbul,IsLondon,IsMobileAnchor,IsOsaka,IsParis,IsPectra,IsPetersburg,IsPrague,IsShanghai,IsSpuriousDragon,IsTangerineWhistle"
 	)
 	cases := []struct {
 		num, ts uint64

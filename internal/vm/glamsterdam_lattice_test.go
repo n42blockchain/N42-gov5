@@ -53,20 +53,15 @@ func jumpTableFingerprint(jt JumpTable) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// TestFusakaTableAddsOnlySlotnum pins what the N42-private Fusaka table adds
-// on top of Osaka: SLOTNUM (EIP-7843) and nothing else.
-func TestFusakaTableAddsOnlySlotnum(t *testing.T) {
+// TestFusakaTableEqualsOsaka pins that the N42-private Fusaka table adds no
+// opcode to Osaka's. It used to add an early SLOTNUM (EIP-7843); that opcode
+// is Amsterdam's, as on Ethereum.
+func TestFusakaTableEqualsOsaka(t *testing.T) {
 	osaka, fusaka := newOsakaInstructionSet(), newFusakaInstructionSet()
 	for i := range osaka {
-		if OpCode(i) == SLOTNUM {
-			continue
-		}
 		if a, b := opString(osaka[i]), opString(fusaka[i]); a != b {
 			t.Errorf("opcode %v differs: osaka %s, fusaka %s", OpCode(i), a, b)
 		}
-	}
-	if opString(osaka[SLOTNUM]) == opString(fusaka[SLOTNUM]) {
-		t.Error("Fusaka table should define SLOTNUM")
 	}
 }
 

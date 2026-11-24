@@ -14,6 +14,7 @@ package hotstuff
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -902,11 +903,16 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 			}
 		}
 		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
-			// No EIP-7685 requests on a native chain. The value is the
-			// empty-trie root keccak256(rlp("")) = 0x56e81f17...b421, NOT
-			// keccak256(rlp([])) (that is the empty-ommers hash 0x1dcc4de8...)
-			// and not EIP-7685's sha256("") (standard B8 as corrected by AM3).
-			rq := hash.EmptyRootHash
+			// The EIP-7685 hash of no requests; the miner stamps the hash
+			// of the block's own requests before it gets here.
+			rq := types.Hash(sha256.Sum256(nil))
+			if cfg.IsProfile1() {
+				// Profile 1: the empty-trie root keccak256(rlp("")) =
+				// 0x56e81f17...b421 in every header, NOT keccak256(rlp([]))
+				// (the empty-ommers hash 0x1dcc4de8...) and not EIP-7685's
+				// sha256("") (standard B8 as corrected by AM3).
+				rq = Profile1RequestsHash
+			}
 			header.RequestsHash = &rq
 		}
 		if cfg.IsGlamsterdam(header.Time) && header.SlotNumber == nil {

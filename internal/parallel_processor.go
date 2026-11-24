@@ -692,10 +692,13 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
 			return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 		}
-		if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
+		requests, err := ProcessExecutionBlockEnd(receipts, p.config, ibs, concreteHeader, p.engine)
+		if err != nil {
 			return nil, err
 		}
-		var err error
+		if err := VerifyRequestsHash(p.config, concreteHeader, requests); err != nil {
+			return nil, err
+		}
 		_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
 		if err != nil {
 			return nil, err
