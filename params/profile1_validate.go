@@ -511,3 +511,28 @@ func decodeFixedHex(s string, n int) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Profile1KeySet is one object's closed key list on a Profile-1 genesis.
+type Profile1KeySet struct {
+	Mandatory []string `json:"mandatory"`
+	Optional  []string `json:"optional"`
+}
+
+// Profile1AllowedKeys returns the closed key lists (standard AM12, P4) of
+// every object of a Profile-1 genesis config, sorted, as the validation
+// applies them. Any other key refuses the genesis.
+func Profile1AllowedKeys() map[string]Profile1KeySet {
+	set := func(mandatory, optional []string) Profile1KeySet {
+		m := append([]string(nil), mandatory...)
+		o := append([]string{}, optional...)
+		sort.Strings(m)
+		sort.Strings(o)
+		return Profile1KeySet{Mandatory: m, Optional: o}
+	}
+	return map[string]Profile1KeySet{
+		"config":                        set(profile1ConfigKeys, profile1ConfigOptionalKeys),
+		"config.hotstuff":               set(profile1HotStuffKeys, nil),
+		"config.hotstuff.committeePool": set(profile1CommitteePoolKeys, nil),
+		"config.hotstuff.validators[]":  set(profile1ValidatorKeys, nil),
+	}
+}
