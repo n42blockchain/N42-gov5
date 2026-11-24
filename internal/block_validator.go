@@ -99,6 +99,15 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	if txHash != b.TxHash() {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
 	}
+	if v.config.IsProfile1() {
+		// Standard Profile 1: a block carrying a type outside 0, 1, 2, 4
+		// is invalid (C1-C4).
+		for i, tx := range b.Transactions() {
+			if err := CheckProfile1TxType(v.config, tx.Type()); err != nil {
+				return fmt.Errorf("block %d tx %d: %w", blockNum, i, err)
+			}
+		}
+	}
 
 	if blockNum == 0 {
 		return nil
