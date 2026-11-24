@@ -61,3 +61,20 @@ func TestRequestsHashBeforePragueTime(t *testing.T) {
 		require.NoError(t, VerifyRequestsHash(cfg, header, []hexutil.Bytes{{0x01, 0xaa}}))
 	}
 }
+
+// On a profile-1 chain (AM3) every header carries the empty-trie root, with
+// or without requests, and an imported header is held to it.
+func TestRequestsHashProfile1EmptyTrieRoot(t *testing.T) {
+	cfg := requestsHashConfig(big.NewInt(0))
+	cfg.N42Profile = params.N42Profile1
+	emptyRoot := hash.EmptyRootHash
+
+	header := &block.Header{Number: uint256.NewInt(1), Time: 100}
+	StampRequestsHash(cfg, header, nil)
+	require.NotNil(t, header.RequestsHash)
+	require.Equal(t, emptyRoot, *header.RequestsHash)
+	require.NoError(t, VerifyRequestsHash(cfg, header, nil))
+
+	sha := types.Hash(sha256.Sum256(nil))
+	require.Error(t, VerifyRequestsHash(cfg, &block.Header{Number: uint256.NewInt(1), Time: 100, RequestsHash: &sha}, nil), "the EIP-7685 value is not the profile-1 value")
+}
