@@ -171,8 +171,16 @@ type Service struct {
 	// claimQuorum is the f+1 the consensus layer last passed to
 	// HeightBehindQuorum; catch-up peer ordering reuses it (catchup_peers.go).
 	claimQuorum atomic.Int32
+	// anchors is the S1 anchor book: authenticated hashes, the parent-link
+	// skeleton and the held unanchored tail (anchor_book.go).
+	anchors anchorBook
 	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
 	catchUpBook catchUpPeerBook
+	// syncModes is the S5 Live/Range mode machine and rangeEnd the highest
+	// height the sync importer owns in Range (sync_mode.go). Used only with
+	// N42_SYNC_PIPELINE=1.
+	syncModes syncModeMachine
+	rangeEnd  atomic.Uint64
 	// passiveFetch / passiveImporting: rate limit and in-flight set of the
 	// authority-free parent fetch of pushed and gossiped blocks
 	// (passive_parent_fetch.go).
@@ -235,6 +243,13 @@ func (s *Service) RegisterHandlers() {
 
 // Start begins periodic sync maintenance tasks. Call AFTER p2p.Start().
 func (s *Service) Start() {
+	if PipelineOn() {
+		// S5 handover: the chain's future queue leaves Range-owned heights
+		// to the sync importer.
+		if g, ok := s.cfg.chain.(interface{ SetFutureInsertGate(func(uint64) bool) }); ok {
+			g.SetFutureInsertGate(s.syncOwnsHeight)
+		}
+	}
 	s.maintainPeerStatuses()
 	s.resyncIfBehind()
 	s.broadcastTxs()

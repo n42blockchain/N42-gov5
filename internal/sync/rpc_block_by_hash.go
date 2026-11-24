@@ -205,6 +205,12 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 		if s.rejectBadBlock(s.ctx, cur) {
 			return
 		}
+		if s.syncOwnsHeight(cur.Number64().Uint64()) {
+			// S5 Range: the sync importer owns this height and everything
+			// below it; the walk-back would import it a second time.
+			s.noteLiveSkip("fetch_on_miss", cur.Number64().Uint64(), cur.Hash())
+			return
+		}
 		if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil &&
 			s.blockApplied(cur.Hash(), cur.Number64().Uint64()) {
 			break

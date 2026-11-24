@@ -5,6 +5,7 @@ import (
 	"fmt"
 	gosync "sync"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -68,6 +69,10 @@ type harnessChain struct {
 	known    map[comtypes.Hash]block.IBlock
 	switches int
 	inserts  int
+	// insertDelay simulates execution time per inserted block; perHash
+	// counts executions per block hash (double-import detection).
+	insertDelay time.Duration
+	perHash     map[comtypes.Hash]int
 }
 
 func newHarnessChain(history ...block.IBlock) *harnessChain {
@@ -125,6 +130,9 @@ func (c *harnessChain) store(b block.IBlock) {
 }
 
 func (c *harnessChain) insert(blocks []block.IBlock, authorized bool) (int, error) {
+	if c.insertDelay > 0 {
+		time.Sleep(c.insertDelay * time.Duration(len(blocks)))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, b := range blocks {
@@ -135,6 +143,10 @@ func (c *harnessChain) insert(blocks []block.IBlock, authorized bool) (int, erro
 			c.known[b.Hash()] = b
 			c.head = b
 			c.inserts++
+			if c.perHash == nil {
+				c.perHash = map[comtypes.Hash]int{}
+			}
+			c.perHash[b.Hash()]++
 			continue
 		}
 		if _, ok := c.known[b.ParentHash()]; ok {
@@ -166,6 +178,7 @@ const (
 	harnessEmpty                        // answer with nothing
 	harnessMalformed                    // answer with a block outside the range
 	harnessRefuse                       // answer with an error code ("server busy")
+	harnessHang                         // open the stream and send nothing until hangFor
 )
 
 // harnessPeer is one fake remote.
@@ -177,6 +190,12 @@ type harnessPeer struct {
 	mu     gosync.Mutex
 	asked  int
 	ranges [][2]uint64
+	// maxServe caps the blocks per reply (0 = no cap), like a byte budget.
+	maxServe int
+	// rtt delays the first chunk, perBlock every chunk (peer speed).
+	rtt      time.Duration
+	perBlock time.Duration
+	hangFor  time.Duration
 }
 
 type harnessNet struct {
@@ -243,8 +262,8 @@ func (n *harnessNet) send(msg interface{}, pid peer.ID) (network.Stream, error) 
 	serve := make([]block.IBlock, 0, req.Count)
 	for num := start; num <= end; num++ {
 		b, ok := p.chain[num]
-		if !ok {
-			break // stored chain ends: serve the prefix
+		if !ok || (p.maxServe > 0 && len(serve) >= p.maxServe) {
+			break // stored chain ends (or reply cap): serve the prefix
 		}
 		serve = append(serve, b)
 	}
@@ -259,8 +278,16 @@ func (n *harnessNet) send(msg interface{}, pid peer.ID) (network.Stream, error) 
 		case harnessMalformed:
 			_ = writeBlockChunk(server, genesis, harnessBlock(comtypes.Hash{}, end+5, 0xee))
 			return
+		case harnessRefuse:
+			writeErrorResponseToStream(responseCodeServerError, "server busy", server, n.fp)
+			return
+		case harnessHang:
+			time.Sleep(p.hangFor)
+			return
 		}
+		time.Sleep(p.rtt)
 		for _, b := range serve {
+			time.Sleep(p.perBlock)
 			if err := writeBlockChunk(server, genesis, b); err != nil {
 				return
 			}

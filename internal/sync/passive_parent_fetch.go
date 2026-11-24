@@ -139,6 +139,11 @@ func (s *Service) importPassive(blk block.IBlock, depth int) {
 	if s.rejectBadBlock(s.ctx, blk) {
 		return
 	}
+	if s.syncOwnsHeight(blk.Number64().Uint64()) {
+		// S5 Range: the sync importer owns this height.
+		s.noteLiveSkip("passive_parent", blk.Number64().Uint64(), blk.Hash())
+		return
+	}
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		if isAncestorError(err) {
 			s.fetchPassive(blk.ParentHash(), depth+1)

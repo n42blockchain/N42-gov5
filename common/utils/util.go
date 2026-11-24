@@ -64,7 +64,7 @@ func Keccak256Hash(data ...[]byte) (h types.Hash) {
 	for _, b := range data {
 		d.Write(b)
 	}
-	d.Sum(h[:])
+	d.Sum(h[:0])
 	return h
 }
 

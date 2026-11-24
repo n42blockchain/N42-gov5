@@ -135,6 +135,18 @@ func (s *Service) heightBehind() uint64 {
 	return s.blockFetcher.HeightBehind()
 }
 
+// syncProductionPaused reports whether the sync layer is in Range mode (S5,
+// N42_SYNC_PIPELINE=1): the node is catching up and its sync importer owns
+// the heights below the range end, so a leader must not produce. A fetcher
+// without the probe (or with the pipeline off) never pauses production.
+func (s *Service) syncProductionPaused() bool {
+	if s.blockFetcher == nil {
+		return false
+	}
+	p, ok := s.blockFetcher.(interface{ SyncProductionPaused() bool })
+	return ok && p.SyncProductionPaused()
+}
+
 // claimQuorum is the number of distinct peers whose advertised heights must
 // agree before a claimed gap stops production: f+1, so at least one of them
 // is honest. Without a known validator set it degrades to 1.
@@ -395,6 +407,12 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 			"behindNs", dBehind.Nanoseconds(), "committedNs", dCommitted.Nanoseconds(),
 			"appliedNs", dApplied.Nanoseconds(), "totalNs", time.Since(tGate).Nanoseconds())
 	}
+	if s.syncProductionPaused() {
+		dBehind = time.Since(tGate)
+		logGates("sync-range")
+		log.Warn("hotstuff: sync is in Range mode, skipping block production", "view", view)
+		return
+	}
 	if behind := s.heightBehind(); behind > blockProductionSyncGate {
 		dBehind = time.Since(tGate)
 		logGates("behind")
@@ -538,6 +556,10 @@ type Service struct {
 
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
 	epochSchedule *EpochSchedule
+
+	// syncQCs caches strict header-QC verdicts for the sync importer
+	// (sync_anchor.go).
+	syncQCs syncQCCache
 
 	// P2P peer refresh callback on epoch transition (injected by node.go).
 	peerRefreshFn func()
@@ -749,7 +771,13 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// second and third fsync for the block), so they belong in the
 		// block-write cost picture alongside "blockwrite phases".
 		tObserve := time.Now()
-		if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
+		applied, _, number := s.observeCommittedExecution(output.Hash, true)
+		// The committed hash is an anchor for the sync importer (S1): a
+		// held, unexecuted catch-up tail below it may now be executed.
+		if a, ok := s.blockFetcher.(interface{ NoteCommitAnchor(types.Hash, uint64) }); ok {
+			a.NoteCommitAnchor(output.Hash, number)
+		}
+		if !applied {
 			s.requestCommittedCatchUp(output.Hash, number)
 		}
 		dObserve := time.Since(tObserve)
