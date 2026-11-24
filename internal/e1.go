@@ -459,8 +459,14 @@ func (bc *BlockChain) e1LightStep(list []*lagQueued, committedNum uint64) bool {
 			bc.lagForget(b.Hash())
 			return true
 		}
-		if bc.lagSyncOwned(n) {
-			// S5 Range: the sync importer owns this height.
+		// No S5 Range ownership check (lagSyncOwned) here: on a light chain
+		// this executor is the only importer. The sync importer's InsertChain
+		// is e1LightQueue, which only enqueues here, so skipping an owned
+		// height leaves it unstored forever (run 98: a restarted light node
+		// re-queued the same range and never caught up).
+		if bc.lagAnchorHeld(b.Hash()) {
+			// S1 enforce: catch-up holds it unanchored; it is stored once a
+			// verified commit anchors it.
 			continue
 		}
 		var tm e1ImportTiming
