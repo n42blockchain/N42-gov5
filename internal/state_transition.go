@@ -163,6 +163,12 @@ type blobTxMessage interface {
 	IsBlobTx() bool
 }
 
+// txTypeMessage is implemented by transaction.Message: the EIP-2718 type of
+// the transaction the message came from (legacy for a NewMessage one).
+type txTypeMessage interface {
+	TxType() uint8
+}
+
 // setCodeTxMessage is implemented by *transaction.Message. It tells a set-code
 // transaction with an empty authorization list apart from other messages.
 type setCodeTxMessage interface {
@@ -535,6 +541,19 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 	if !isBlobTx {
 		if m, ok := st.msg.(blobTxMessage); ok {
 			isBlobTx = m.IsBlobTx()
+		}
+	}
+	if cfg := st.evm.ChainConfig(); cfg.IsProfile1() {
+		// Standard Profile 1 admits types 0, 1, 2 and 4 only (C1-C4).
+		typ := uint8(transaction.LegacyTxType)
+		if m, ok := st.msg.(txTypeMessage); ok {
+			typ = m.TxType()
+		}
+		if isBlobTx {
+			typ = transaction.BlobTxType
+		}
+		if err := CheckProfile1TxType(cfg, typ); err != nil {
+			return fmt.Errorf("%w (sender %v)", err, st.msg.From().Hex())
 		}
 	}
 	if isBlobTx {
