@@ -652,6 +652,12 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	var committedQC *QuorumCertificate
 	if ce := h.Engine(); ce != nil {
 		view = ce.CurrentView()
+		if profile1 {
+			// The header's view must be the view the block is proposed in
+			// (B2 binds the coinbase to that view's leader), including for a
+			// speculative build that runs during the previous view.
+			view = ce.BuildView()
+		}
 		lastCommittedQC := ce.LastCommittedQC()
 		if !isEmptyHeaderQC(&lastCommittedQC) {
 			committedQC = &lastCommittedQC

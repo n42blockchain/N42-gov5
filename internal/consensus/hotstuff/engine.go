@@ -673,6 +673,28 @@ func (e *ConsensusEngine) IsCurrentLeader() bool {
 	return e.isLeader(e.myIndex, e.roundState.CurrentView(), e.validatorSet())
 }
 
+// BuildView is the view a block built now will be proposed in: the current
+// view when this node leads it, otherwise the next view when this node leads
+// that one, otherwise the current view. A cross-view speculative build
+// (OutputSpeculativeBuild) runs during the view before the one its block is
+// proposed in, so stamping the current view there would name a view this node
+// does not lead. Profile 1 checks the header's view against its coinbase (B2),
+// and every follower refused such a block. With a leader tenure above one a
+// node can lead both views and this cannot tell a speculative build from a
+// current-view one; profile 1 runs tenure 1.
+func (e *ConsensusEngine) BuildView() ViewNumber {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	v := e.roundState.CurrentView()
+	if e.isLeader(e.myIndex, v, e.validatorSet()) {
+		return v
+	}
+	if e.isLeader(e.myIndex, v+1, e.validatorSetForView(v+1)) {
+		return v + 1
+	}
+	return v
+}
+
 // LeaderForView resolves a leader under this engine's immutable chain rule.
 // The supplied validator set may be current or historical.
 func (e *ConsensusEngine) LeaderForView(view ViewNumber, vs *ValidatorSet) ValidatorIndex {
