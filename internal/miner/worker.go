@@ -1413,6 +1413,25 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	wd := newBuildStallWatchdog(buildStallDiagEnabled, log.LogDir())
 	defer wd.Cancel()
 
+	// A real build with no named parent extends the local canonical head.
+	// HotStuff passes the zero hash for the genesis QC, which names no block.
+	// On a QMDB chain the applied head can be ahead of the canonical head: an
+	// imported proposal that was never certified (mixed round 2: block 1,
+	// refused at every vote gate for a future timestamp, applied on import).
+	// The build used to run on the canonical head's header while the
+	// speculative tree reloaded at the applied head, so it failed with
+	// "parent is not the applied head" in every view and the chain never
+	// left height 0. Name the canonical head as the parent so the align
+	// below unwinds the uncertified child first, exactly as it does for a
+	// consensus-named parent.
+	if !speculative && parentHash == (types.Hash{}) {
+		if bc, ok := w.chain.(*internal.BlockChain); ok && bc.QMDBEnabled() {
+			if head := bc.CurrentBlock(); head != nil {
+				parentHash = head.Hash()
+			}
+		}
+	}
+
 	// Profile-1 pacing counts from when the parent was first held; a build
 	// is triggered only once it is (see parentHeld).
 	if w.chainConfig.IsProfile1() {

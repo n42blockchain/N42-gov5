@@ -437,6 +437,10 @@ func (bc *BlockChain) SetQMDBRootComputer(rc *commitment.QMDBRootComputer) {
 	bc.qmdbEnabled = true
 }
 
+// QMDBEnabled reports whether the chain commits with QMDB, i.e. whether it
+// keeps an applied head that can run ahead of the canonical head.
+func (bc *BlockChain) QMDBEnabled() bool { return bc.qmdbEnabled }
+
 // NewMinerRootComputer returns an ISOLATED root computer for speculative block
 // building. The miner/worker assembles candidate blocks that may never be
 // committed (another validator's proposal may win the HotStuff round), so it
