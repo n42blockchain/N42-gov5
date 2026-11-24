@@ -9,6 +9,7 @@
 package hotstuff
 
 import (
+	"crypto/sha256"
 	"bytes"
 	"errors"
 	"fmt"
@@ -18,7 +19,6 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -67,9 +67,9 @@ var (
 	// ErrProfile1WithdrawalsRoot: withdrawalsRoot (the rewards commitment) is
 	// absent. Its value is checked against the body after execution (B6).
 	ErrProfile1WithdrawalsRoot = errors.New("profile 1: withdrawalsRoot is absent")
-	// ErrProfile1RequestsHash: requestsHash is not the empty-trie root
-	// 0x56e81f17...b421 (B8 as corrected by AM3).
-	ErrProfile1RequestsHash = errors.New("profile 1: requestsHash is not the empty-trie root")
+	// ErrProfile1RequestsHash: requestsHash is not EIP-7685's hash of no
+	// requests, sha256("") = 0xe3b0c442...b855 (B8 as amended by AM24).
+	ErrProfile1RequestsHash = errors.New("profile 1: requestsHash is not the EIP-7685 hash of no requests")
 	// ErrProfile1BlobGas: blobGasUsed or excessBlobGas absent or non-zero (B9).
 	ErrProfile1BlobGas = errors.New("profile 1: blob gas fields are not zero")
 	// ErrProfile1Element22: header element 22 (block access list hash) is
@@ -87,8 +87,10 @@ var (
 )
 
 // Profile1RequestsHash is requestsHash on every profile-1 header including
-// genesis (AM3): the empty-trie root, keccak256(rlp("")).
-var Profile1RequestsHash = hash.EmptyRootHash
+// genesis (AM24, which replaces AM3): EIP-7685's hash of no requests,
+// sha256(""), the value Ethereum writes. The empty-trie root that AM3 named
+// is the requests root of an EIP draft that Ethereum did not ship.
+var Profile1RequestsHash = types.Hash(sha256.Sum256(nil))
 
 // profile1ClockSkew is B4's vote-time bound in seconds above floor(now).
 const profile1ClockSkew = 2

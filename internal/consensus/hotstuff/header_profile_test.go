@@ -82,13 +82,13 @@ func newP1Fixture(t *testing.T) *p1Fixture {
 		},
 	}
 	zero := uint64(0)
-	rq := hash.EmptyRootHash
+	rq, requests := hash.EmptyRootHash, Profile1RequestsHash
 	genesis := &block.Header{
 		Difficulty: uint256.NewInt(0), Number: uint256.NewInt(0), GasLimit: p1TestGasLimit,
 		Time: p1TestGenesisT0, BaseFee: uint256.NewInt(params.InitialBaseFee),
 		TxHash: hash.EmptyRootHash, ReceiptHash: hash.EmptyRootHash,
 		WithdrawalsHash: &rq, BlobGasUsed: &zero, ExcessBlobGas: &zero,
-		ParentBeaconRoot: new(types.Hash), RequestsHash: &rq, SlotNumber: &zero,
+		ParentBeaconRoot: new(types.Hash), RequestsHash: &requests, SlotNumber: &zero,
 		MobileRegistryRoot: new(types.Hash),
 	}
 	chain := newMockChainReader()
@@ -112,7 +112,7 @@ func (f *p1Fixture) child(parent *block.Header, view ViewNumber, qc *QuorumCerti
 	n := parent.Number.Uint64() + 1
 	zero := uint64(0)
 	slot := n
-	rq := hash.EmptyRootHash
+	rq := Profile1RequestsHash
 	baseFee, _ := uint256.FromBig(misc.CalcBaseFee(f.cfg, parent))
 	reward := uint256.NewInt(1e18)
 	rewards := block.Rewards{{Address: f.addrs[f.leader(view)], Amount: reward}}
@@ -288,8 +288,8 @@ func TestProfile1HeaderRefusals(t *testing.T) {
 			h.WithdrawalsHash = nil
 			return f.seal(h)
 		}, ErrProfile1WithdrawalsRoot},
-		{"B8 requestsHash sha256 of nothing", func(h *block.Header) *block.Header {
-			h.RequestsHash = h256("0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+		{"B8 requestsHash empty-trie root", func(h *block.Header) *block.Header {
+			h.RequestsHash = h256(hash.EmptyRootHash.Hex())
 			return f.seal(h)
 		}, ErrProfile1RequestsHash},
 		{"B8 requestsHash empty-ommers hash", func(h *block.Header) *block.Header {

@@ -28,7 +28,6 @@ import (
 	"testing"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
@@ -57,7 +56,7 @@ const (
 
 // profile1StandardGenesisHash pins the gov5 genesis hash of the standard
 // genesis fixture.
-var profile1StandardGenesisHash = types.HexToHash("0x6f733745517957b421dcea37f6c879db89501aac0715f769fbc76ec54efe7e4f")
+var profile1StandardGenesisHash = types.HexToHash("0x188e9d930cfd43317416b0f65e8f98240ae686407ba806b854e98428c3b490dc")
 
 type p1Validator struct {
 	Address string `json:"address"`
@@ -305,8 +304,8 @@ func TestProfile1StandardGenesisLoads(t *testing.T) {
 	if head.UncleHash != (types.Hash{}) {
 		t.Errorf("ommersHash = %s, want zero (B3)", head.UncleHash.Hex())
 	}
-	if head.RequestsHash == nil || *head.RequestsHash != hash.EmptyRootHash {
-		t.Errorf("requestsHash = %v, want the empty-trie root (AM3)", head.RequestsHash)
+	if head.RequestsHash == nil || *head.RequestsHash != emptyExecutionRequestsHash() {
+		t.Errorf("requestsHash = %v, want the EIP-7685 hash of no requests (AM24)", head.RequestsHash)
 	}
 	if head.BlockAccessListHash != nil {
 		t.Errorf("element 22 = %s, want the empty gap (B12)", head.BlockAccessListHash.Hex())

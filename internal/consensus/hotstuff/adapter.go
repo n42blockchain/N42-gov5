@@ -894,11 +894,10 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 			}
 		}
 		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
-			// No EIP-7685 requests on a native chain. The value is the
-			// empty-trie root keccak256(rlp("")) = 0x56e81f17...b421, NOT
-			// keccak256(rlp([])) (that is the empty-ommers hash 0x1dcc4de8...)
-			// and not EIP-7685's sha256("") (standard B8 as corrected by AM3).
-			rq := hash.EmptyRootHash
+			// No EIP-7685 requests on a native chain: the value is the EIP's
+			// hash of no requests, sha256("") = 0xe3b0c442...b855, as on
+			// Ethereum (standard B8 as amended by AM24).
+			rq := Profile1RequestsHash
 			header.RequestsHash = &rq
 		}
 		if cfg.IsGlamsterdam(header.Time) && header.SlotNumber == nil {
