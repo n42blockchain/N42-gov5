@@ -281,6 +281,22 @@ type EpochManager struct {
 	// engine (PublishedValidatorSet). It is stored at every point that
 	// assigns currentSet, in the same critical section.
 	published atomic.Pointer[ValidatorSet]
+
+	// setSinceEpoch is the first epoch in which currentSet is known to have
+	// been active. Every epoch in [setSinceEpoch, currentEpoch] uses
+	// currentSet: AdvanceEpoch carries the set forward across a boundary with
+	// nothing staged, because no reconfiguration was committed for it.
+	setSinceEpoch uint64
+	// spans keeps the epoch ranges of the most recent replaced sets, so strict
+	// (sync) verification still resolves carried-forward epochs just before a
+	// set change. Bounded by maxHistoricalEpochs.
+	spans []epochSpan
+}
+
+// epochSpan is a closed epoch range in which one validator set was active.
+type epochSpan struct {
+	from, to uint64
+	set      *ValidatorSet
 }
 
 const maxHistoricalEpochs = 3
@@ -341,6 +357,7 @@ func NewEpochManagerFromEpoch(validatorSet *ValidatorSet, epochLength, startEpoc
 		currentEpoch:   startEpoch,
 		currentSet:     validatorSet,
 		historicalSets: make(map[uint64]*ValidatorSet),
+		setSinceEpoch:  startEpoch,
 	})
 }
 
@@ -370,6 +387,7 @@ func NewEpochManagerFromSchedule(schedule *EpochSchedule, currentEpoch, epochLen
 		currentEpoch:   currentEpoch,
 		currentSet:     currentSet,
 		historicalSets: make(map[uint64]*ValidatorSet),
+		setSinceEpoch:  currentEpoch,
 	}
 	em.published.Store(currentSet)
 
@@ -475,13 +493,26 @@ func (em *EpochManager) FindValidatorSetByLen(n uint32) *ValidatorSet {
 // ValidatorSetForView, and every historical resolution would silently fall back
 // to currentSet. Fast-forwarding is safe when no validator-set change happened
 // at or before this view — the case for a chain enabling epochs for the first
-// time, whose set has been static — so no historical set is lost. No-op when
-// epochs are disabled. Must be called under the engine lock.
-func (em *EpochManager) SeedCurrentEpoch(view uint64) {
+// time, whose set has been static — so no historical set is lost. Moving
+// forward carries the current set over the skipped epochs exactly as
+// AdvanceEpoch does with nothing staged; a set restored as staged for the
+// next epoch is activated at its boundary first, since the recovered view is
+// already past it. Returns true when that activation changed the set. No-op
+// when epochs are disabled. Must be called under the engine lock.
+func (em *EpochManager) SeedCurrentEpoch(view uint64) bool {
 	if em.epochLength == 0 {
-		return
+		return false
 	}
-	em.currentEpoch = em.EpochForView(view)
+	target := em.EpochForView(view)
+	changed := false
+	if target > em.currentEpoch && em.nextSet != nil {
+		changed = em.AdvanceEpoch(em.BoundaryViewForEpoch(em.currentEpoch + 1))
+	}
+	em.currentEpoch = target
+	if em.setSinceEpoch > em.currentEpoch {
+		em.setSinceEpoch = em.currentEpoch
+	}
+	return changed
 }
 
 // IsEpochBoundary checks if a given view is the first view of a new epoch.
@@ -556,6 +587,7 @@ func (em *EpochManager) RestoreActiveSet(epoch uint64, validators []ValidatorInf
 	em.currentSet = newSet
 	em.published.Store(newSet)
 	em.currentEpoch = epoch
+	em.setSinceEpoch = epoch
 }
 
 // PeekNextSet returns the staged next-epoch validator set without activating it
@@ -566,23 +598,41 @@ func (em *EpochManager) PeekNextSet() *ValidatorSet {
 	return em.nextSet
 }
 
-// AdvanceEpoch activates the staged validator set.
-// Returns true if a transition occurred.
+// AdvanceEpoch moves the manager into the next epoch at boundaryView. With a
+// staged set it activates that set and returns true (the set changed). With
+// nothing staged no reconfiguration was committed for this boundary, so the
+// current set stays active: the epoch counter still advances (keeping
+// currentEpoch == EpochForView of the current view) and false is returned.
 func (em *EpochManager) AdvanceEpoch(boundaryView uint64) bool {
 	if em.nextSet == nil {
+		em.currentEpoch++
 		return false
 	}
 	em.historicalSets[em.currentEpoch] = em.currentSet.Clone()
 	em.trimHistorical()
+	em.spans = append(em.spans, epochSpan{from: em.setSinceEpoch, to: em.currentEpoch, set: em.currentSet})
+	if len(em.spans) > maxHistoricalEpochs {
+		em.spans = em.spans[len(em.spans)-maxHistoricalEpochs:]
+	}
 	// Retain the outgoing set for cross-boundary certificate verification: QCs/TCs
 	// formed at views < boundaryView carry a signer bitmap sized to this set.
 	em.prevSet = em.currentSet
 	em.setSinceView = boundaryView
 	em.currentEpoch++
+	em.setSinceEpoch = em.currentEpoch
 	em.currentSet = em.nextSet
 	em.published.Store(em.currentSet)
 	em.nextSet = nil
 	return true
+}
+
+// BoundaryViewForEpoch returns the first view of epoch (0 when epochs are
+// disabled or for epoch 0).
+func (em *EpochManager) BoundaryViewForEpoch(epoch uint64) uint64 {
+	if em.epochLength == 0 || epoch == 0 {
+		return 0
+	}
+	return epoch*em.epochLength + 1
 }
 
 func (em *EpochManager) trimHistorical() {
