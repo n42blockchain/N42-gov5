@@ -18,6 +18,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
 )
 
@@ -37,6 +38,12 @@ var (
 	// ErrProfile1QC: the embedded QC is not a commit-domain QC of the genesis
 	// set, does not precede the header's view, or names a non-ancestor (B1, E13).
 	ErrProfile1QC = errors.New("profile 1: invalid header QC")
+	// ErrProfile1Seal: the trailing 96 bytes of extraData are not the
+	// proposer's BLS signature (H2-v4 POP DST) over sealHash (B2, AM4).
+	ErrProfile1Seal = errors.New("profile 1: invalid seal")
+	// ErrProfile1Proposer: coinbase is not the leader of the header's view
+	// (B2, B3).
+	ErrProfile1Proposer = errors.New("profile 1: coinbase is not the leader of the view")
 )
 
 // profile1Validators is the profile-1 validator set: the genesis set, fixed
@@ -199,9 +206,58 @@ func (h *HotStuff) profile1Identity(chain consensus.ChainHeaderReader, batch map
 // the genesis identity). The rules shared with legacy chains (B5, B10, B11,
 // B13) stay in verifyHeaderWithBatch.
 func (h *HotStuff) checkProfile1Header(chain consensus.ChainHeaderReader, header, parent *block.Header, batch map[types.Hash]*block.Header) error {
-	view, qc, _, err := decodeProfile1Extra(header.Extra)
+	view, qc, seal, err := decodeProfile1Extra(header.Extra)
 	if err != nil {
 		return err
 	}
-	return h.checkProfile1QC(chain, header, parent, view, qc, batch)
+	if err := h.checkProfile1QC(chain, header, parent, view, qc, batch); err != nil {
+		return err
+	}
+	return h.verifyProfile1Seal(header, view, seal)
+}
+
+// verifyProfile1Seal checks B2 (AM4): the proposer is the leader of the
+// header's view under the chain's tenure, the coinbase is its address, and
+// seal is its BLS signature over sealHash (keccak256 of the header RLP with
+// the last 96 extraData bytes removed). A verified header hash is cached:
+// the hash commits to the coinbase and the seal.
+func (h *HotStuff) verifyProfile1Seal(header *block.Header, view ViewNumber, seal []byte) error {
+	vs, err := h.profile1Set()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrProfile1Seal, err)
+	}
+	var tenure uint64 = 1
+	if h.config != nil {
+		tenure = max(h.config.LeaderTenure, 1)
+	}
+	leader := LeaderForViewWithTenure(view, vs, tenure)
+	addr, err := vs.GetAddress(leader)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrProfile1Proposer, err)
+	}
+	if header.Coinbase != addr {
+		return fmt.Errorf("%w: coinbase %s, leader of view %d is %s", ErrProfile1Proposer, header.Coinbase.Hex(), view, addr.Hex())
+	}
+	key := header.Hash()
+	if h.signatures != nil {
+		if v, ok := h.signatures.Get(key); ok && v == addr {
+			return nil
+		}
+	}
+	pk, err := vs.GetPublicKey(leader)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrProfile1Seal, err)
+	}
+	sig, err := bls.SignatureFromBytes(seal)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrProfile1Seal, err)
+	}
+	digest := sealHash(header)
+	if !sig.Verify(pk, digest[:]) {
+		return fmt.Errorf("%w: not the leader's signature over sealHash %s", ErrProfile1Seal, digest.Hex())
+	}
+	if h.signatures != nil {
+		h.signatures.Add(key, addr)
+	}
+	return nil
 }
