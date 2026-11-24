@@ -229,6 +229,12 @@ type IntraBlockState struct {
 	lastIntermediateRoot    types.Hash
 	lastIntermediateRootSet bool
 
+	// blockRequestsHash is the EIP-7685 requests hash the block's end-of-block
+	// processing produced (SetBlockRequestsHash); the deferred-execution
+	// write stores it with the block's result.
+	blockRequestsHash    types.Hash
+	blockRequestsHashSet bool
+
 	// accountPrefetch: the layer under stateReader that serves accounts
 	// read ahead across the parallel processor's workers (SetAccountPrefetch).
 	accountPrefetch *AccountPrefetch
@@ -1649,6 +1655,17 @@ func (s *IntraBlockState) IntermediateRoot() types.Hash {
 // block's writes to the tree; a second call would apply them twice).
 func (s *IntraBlockState) LastIntermediateRoot() (types.Hash, bool) {
 	return s.lastIntermediateRoot, s.lastIntermediateRootSet
+}
+
+// SetBlockRequestsHash records the EIP-7685 requests hash of the block this
+// state executes, computed at the block's end.
+func (s *IntraBlockState) SetBlockRequestsHash(h types.Hash) {
+	s.blockRequestsHash, s.blockRequestsHashSet = h, true
+}
+
+// BlockRequestsHash returns what SetBlockRequestsHash recorded, if anything.
+func (s *IntraBlockState) BlockRequestsHash() (types.Hash, bool) {
+	return s.blockRequestsHash, s.blockRequestsHashSet
 }
 
 // computeRootViaComputer collects dirty accounts/storage and delegates
