@@ -2576,6 +2576,21 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	return nil
 }
 
+// buildTimestamp is the timestamp prepareWork stamps on a child of a parent
+// at parentTime when the build was triggered at now (unix seconds, floored).
+// Profile 1 has exactly one rule (B4): max(parentTime, now), an equal
+// timestamp allowed; the engine's Prepare applies the same rule. Other
+// chains keep the strictly increasing parentTime+1 bump.
+func buildTimestamp(config *params.ChainConfig, parentTime, now uint64) uint64 {
+	if config != nil && config.IsProfile1() {
+		return max(parentTime, now)
+	}
+	if parentTime >= now {
+		return parentTime + 1
+	}
+	return now
+}
+
 func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -2611,15 +2626,7 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		}
 	}
 
-	if w.chainConfig.IsProfile1() {
-		// Profile 1 allows equal timestamps (B4); the engine's Prepare
-		// stamps max(parent.time, floor(now)).
-		if parent.Time > param.timestamp {
-			timestamp = parent.Time
-		}
-	} else if parent.Time >= param.timestamp {
-		timestamp = parent.Time + 1
-	}
+	timestamp = buildTimestamp(w.chainConfig, parent.Time, timestamp)
 
 	parentNumber, err := requireHeaderNumber(parent, "parent block number unavailable")
 	if err != nil {
