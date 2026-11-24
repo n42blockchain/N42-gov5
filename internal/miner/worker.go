@@ -2128,7 +2128,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// raised gas limit yet encode to >1 MiB, above the p2p bound, and a block no
 	// follower can receive livelocks import-gated HotStuff voting forever. See
 	// block_size.go.
-	sizeLimiter := newBlockSizeLimiter(header)
+	sizeLimiter := newBlockSizeLimiterFor(header, blockByteLimit(w.chainConfig))
 
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
@@ -2416,7 +2416,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			}
 			// Not applicable: rebuild the set and take the serial path.
 			txSet = builder.NewTxByPriceAndNonce(pending, header.BaseFee)
-			sizeLimiter = newBlockSizeLimiter(header)
+			sizeLimiter = newBlockSizeLimiterFor(header, blockByteLimit(w.chainConfig))
 		}
 	}
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
