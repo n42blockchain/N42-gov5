@@ -662,8 +662,9 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}
 
 	// EIP-3860: cap the initcode of a creation transaction (raised by
-	// EIP-7954 in Glamsterdam). N42 native chains are left to their own rules.
-	if contractCreation && rules.IsShanghai && !st.evm.ChainConfig().IsN42Native() {
+	// EIP-7954 in Glamsterdam). N42 native chains are left to their own rules,
+	// except a Profile-1 chain, which takes Amsterdam's cap from block 0 (C6).
+	if cfg := st.evm.ChainConfig(); contractCreation && rules.IsShanghai && (!cfg.IsN42Native() || cfg.IsProfile1()) {
 		maxInitCode := uint64(params.MaxInitCodeSize)
 		if rules.IsGlamsterdam {
 			maxInitCode = params.MaxInitCodeSizeEIP7954
