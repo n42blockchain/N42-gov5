@@ -9,8 +9,8 @@
 package hotstuff
 
 import (
-	"crypto/sha256"
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sync"
