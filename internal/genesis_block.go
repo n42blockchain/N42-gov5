@@ -313,8 +313,9 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 
 // applyProfile1GenesisHeader stamps the Profile-1 header profile onto the
 // genesis header (mixed production standard v0.2.1): ommersHash exactly zero
-// (B3), requestsHash EIP-7685's hash of no requests in every header including
-// genesis (AM24), element 22 left as the empty-string gap (B12, O6) and element 24,
+// (B3), requestsHash EIP-7685's hash of no requests, sha256("") (AM24; block 1
+// carries it too, later headers their parent's, AM25), element 22 left as the
+// empty-string gap (B12, O6) and element 24,
 // mobileRegistryRoot, present and zero (A6, B11).
 func applyProfile1GenesisHeader(head *block.Header) {
 	head.UncleHash = types.Hash{}

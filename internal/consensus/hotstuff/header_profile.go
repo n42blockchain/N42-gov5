@@ -67,9 +67,10 @@ var (
 	// ErrProfile1WithdrawalsRoot: withdrawalsRoot (the rewards commitment) is
 	// absent. Its value is checked against the body after execution (B6).
 	ErrProfile1WithdrawalsRoot = errors.New("profile 1: withdrawalsRoot is absent")
-	// ErrProfile1RequestsHash: requestsHash is not EIP-7685's hash of no
-	// requests, sha256("") = 0xe3b0c442...b855 (B8 as amended by AM24).
-	ErrProfile1RequestsHash = errors.New("profile 1: requestsHash is not the EIP-7685 hash of no requests")
+	// ErrProfile1RequestsHash: requestsHash is absent (B8). Its value is a
+	// deferred field (AM25, A10): the parent's executed EIP-7685 requests
+	// hash, checked against this node's execution of the parent.
+	ErrProfile1RequestsHash = errors.New("profile 1: requestsHash is absent")
 	// ErrProfile1BlobGas: blobGasUsed or excessBlobGas absent or non-zero (B9).
 	ErrProfile1BlobGas = errors.New("profile 1: blob gas fields are not zero")
 	// ErrProfile1Element22: header element 22 (block access list hash) is
@@ -86,10 +87,10 @@ var (
 	ErrProfile1BaseFee = errors.New("profile 1: baseFee is not the EIP-1559 value of the parent")
 )
 
-// Profile1RequestsHash is requestsHash on every profile-1 header including
-// genesis (AM24, which replaces AM3): EIP-7685's hash of no requests,
-// sha256(""), the value Ethereum writes. The empty-trie root that AM3 named
-// is the requests root of an EIP draft that Ethereum did not ship.
+// Profile1RequestsHash is EIP-7685's hash of no requests, sha256(""): the
+// requestsHash of the profile-1 genesis and of block 1 (AM24, AM25), and of
+// every header whose parent produced no requests. A header carries its
+// parent's executed requests hash (AM25), so other values are valid too.
 var Profile1RequestsHash = types.Hash(sha256.Sum256(nil))
 
 // profile1ClockSkew is B4's vote-time bound in seconds above floor(now).
@@ -367,16 +368,14 @@ func checkProfile1Clock(header *block.Header, now time.Time) error {
 	return nil
 }
 
-// checkProfile1Fields applies the fork-field rules B6 (presence), B8, B9 and
-// B12.
+// checkProfile1Fields applies the fork-field rules B6 (presence), B8
+// (presence; the value is deferred, AM25), B9 and B12.
 func checkProfile1Fields(header *block.Header) error {
 	switch {
 	case header.WithdrawalsHash == nil:
 		return ErrProfile1WithdrawalsRoot
 	case header.RequestsHash == nil:
-		return fmt.Errorf("%w: absent", ErrProfile1RequestsHash)
-	case *header.RequestsHash != Profile1RequestsHash:
-		return fmt.Errorf("%w: %s", ErrProfile1RequestsHash, header.RequestsHash.Hex())
+		return ErrProfile1RequestsHash
 	case header.BlobGasUsed == nil || header.ExcessBlobGas == nil:
 		return fmt.Errorf("%w: absent", ErrProfile1BlobGas)
 	case *header.BlobGasUsed != 0 || *header.ExcessBlobGas != 0:

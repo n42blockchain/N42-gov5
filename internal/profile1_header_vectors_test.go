@@ -456,14 +456,9 @@ func TestProfile1HeaderVectorV1(t *testing.T) {
 			h.WithdrawalsHash = nil
 			return seal(h)
 		}, hotstuff.ErrProfile1WithdrawalsRoot},
-		{"requestsHash empty-trie root", "B8", "requestsHash = 0x56e81f17...b421", func() *block.Header {
+		{"requestsHash absent", "B8", "requestsHash = nil (RLP stops before element 21)", func() *block.Header {
 			h := fresh()
-			h.RequestsHash = h256(hash.EmptyRootHash.Hex())
-			return seal(h)
-		}, hotstuff.ErrProfile1RequestsHash},
-		{"requestsHash empty-ommers hash", "B8", "requestsHash = 0x1dcc4de8...49347", func() *block.Header {
-			h := fresh()
-			h.RequestsHash = h256(hash.EmptyUncleHash.Hex())
+			h.RequestsHash = nil
 			return seal(h)
 		}, hotstuff.ErrProfile1RequestsHash},
 		{"blobGasUsed 1", "B9", "blobGasUsed = 1", func() *block.Header {
@@ -615,11 +610,12 @@ naming an ancestor. B2 seal by the leader of the view over sealHash. B3 difficul
 mixHash, ommersHash zero (the empty-list hash is refused), coinbase = leader. B4
 parent.time <= time (import) and time <= floor(now)+2 (vote time only). B6 withdrawalsRoot
 present and equal to keccak(concat(rlp([address, amount]))) of the rewards. B8 requestsHash
-= 0xe3b0c442...b855 (AM24). B9 blobGasUsed = excessBlobGas = 0. B12 element 22 = 0x80.
+present (its value is a deferred field, AM25; genesis and block 1 carry sha256("") =
+0xe3b0c442...b855). B9 blobGasUsed = excessBlobGas = 0. B12 element 22 = 0x80.
 B14 EIP-1559 baseFee from the parent header. A23 gasLimit = hotstuff.gasLimit.
 
-Deferred fields (A10/B13: stateRoot, receiptsRoot, logsBloom, gasUsed) of blocks 1 and 2
-are genesis's (an idle chain); their checks belong to V5. parentBeaconRoot is zero on block 1
+Deferred fields (A10/B13: stateRoot, receiptsRoot, logsBloom, gasUsed; AM25: requestsHash) of
+blocks 1 and 2 are genesis's (an idle chain); their checks belong to V5. parentBeaconRoot is zero on block 1
 (B5) and Blake3 of block 1's committee evidence (the genesis committee pool) on block 2; the
 evidence derivation itself is vector V2.
 `, v1Genesis, v.ChainID, v1File, v.GenesisHash, v.SealDST, v.CommitDomain)

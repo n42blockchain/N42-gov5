@@ -569,7 +569,12 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 					if err != nil {
 						return err
 					}
-					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts, gasUsed)
+					ownRequests, ownRequestsSet := ibs.BlockRequestsHash()
+					requestsHash, err := executedRequestsHashForWrite(bc.chainConfig, hdr, ownRequests, ownRequestsSet, result, hinted)
+					if err != nil {
+						return err
+					}
+					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts, gasUsed, requestsHash)
 				}
 				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
 					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)

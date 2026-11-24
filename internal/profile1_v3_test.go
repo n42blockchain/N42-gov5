@@ -164,6 +164,7 @@ type v3Runner struct {
 	lastReceipts []*block.Receipt
 	lastGP       *common.GasPool
 	lastUsedGas  uint64
+	lastRequests []hexutil.Bytes
 }
 
 func newV3Runner(t *testing.T, add map[types.Address]conf.GenesisAccount) (*v3Runner, types.Hash) {
@@ -340,7 +341,8 @@ func (r *v3Runner) execute(name string, header *block.Header, txs []*transaction
 		}
 		raw = append(raw, enc)
 	}
-	if _, err := ProcessExecutionBlockEnd(nil, r.cfg, ibs, header, nil); err != nil {
+	requests, err := ProcessExecutionBlockEnd(receipts, r.cfg, ibs, header, nil)
+	if err != nil {
 		r.t.Fatalf("%s: block end: %v", name, err)
 	}
 	// A8: devBlockReward to the coinbase and the faucet (HotStuff Finalize).
@@ -354,7 +356,7 @@ func (r *v3Runner) execute(name string, header *block.Header, txs []*transaction
 	if err := ibs.CommitBlock(rules, state.NewPlainStateWriter(rwtx, rwtx, number)); err != nil {
 		r.t.Fatalf("%s: commit: %v", name, err)
 	}
-	r.lastHeader, r.lastRoot, r.lastReceipts, r.lastGP, r.lastUsedGas = header, root, receipts, gp, usedGas
+	r.lastHeader, r.lastRoot, r.lastReceipts, r.lastGP, r.lastUsedGas, r.lastRequests = header, root, receipts, gp, usedGas, requests
 	return root, accounts, storage, raw
 }
 

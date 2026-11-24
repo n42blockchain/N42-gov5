@@ -4,6 +4,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -15,7 +16,8 @@ import (
 
 // Deferred execution (ChainConfig.DeferredExecutionTime; agreed cross-client
 // in n42-rs docs/PHASE_D_DEFERRED_EXECUTION.md): from the fork, a header's
-// Root, ReceiptHash, Bloom and GasUsed are the PARENT's executed values.
+// Root, ReceiptHash, Bloom and GasUsed are the PARENT's executed values, and
+// on profile 1 so is RequestsHash (AM25: the EIP-7685 requests hash).
 // Every node stores its own execution result of each block it applies
 // (rawdb.ExecutedResult); the next header is checked against it, and the
 // builder stamps it into the header it builds on top. The first deferred
@@ -31,7 +33,13 @@ func ExecutedResultOfHeader(config *params.ChainConfig, tx kv.Getter, h *block.H
 		// Before the fork a header carries its own result; so does the
 		// genesis header (nothing executed before it, and nothing stores a
 		// result for it).
-		return rawdb.ExecutedResult{Root: h.Root, ReceiptHash: h.ReceiptHash, Bloom: h.Bloom, GasUsed: h.GasUsed}, nil
+		// The requests hash likewise (sha256("") on a profile-1 genesis,
+		// which block 1 carries).
+		rh := rawdb.EmptyRequestsHash
+		if h.RequestsHash != nil {
+			rh = *h.RequestsHash
+		}
+		return rawdb.ExecutedResult{Root: h.Root, ReceiptHash: h.ReceiptHash, Bloom: h.Bloom, GasUsed: h.GasUsed, RequestsHash: rh}, nil
 	}
 	r, ok, err := rawdb.ReadExecutedResult(tx, h.Hash())
 	if err != nil {
@@ -66,8 +74,19 @@ func checkDeferredHeader(config *params.ChainConfig, tx kv.Getter, header, paren
 	if header.GasUsed != want.GasUsed {
 		return fmt.Errorf("deferred execution: header %d carries parent gas used %d, this node executed %d", header.Number.Uint64(), header.GasUsed, want.GasUsed)
 	}
+	if RequestsHashDeferred(config, header.Time) && (header.RequestsHash == nil || *header.RequestsHash != want.RequestsHash) {
+		got := "absent"
+		if header.RequestsHash != nil {
+			got = header.RequestsHash.Hex()
+		}
+		return fmt.Errorf("%w: header %d carries %s, this node executed %s", ErrDeferredRequestsHash, header.Number.Uint64(), got, want.RequestsHash.Hex())
+	}
 	return nil
 }
+
+// ErrDeferredRequestsHash: on profile 1 (AM25) a header's requestsHash is not
+// the EIP-7685 requests hash of this node's execution of the parent.
+var ErrDeferredRequestsHash = errors.New("deferred execution: requestsHash is not the parent's executed EIP-7685 requests hash")
 
 // ReceiptsRootFor is the receipts root a header carries for receipts, the
 // rule ValidateState checks against: the native concat root, or the
@@ -83,12 +102,15 @@ func ReceiptsRootFor(config *params.ChainConfig, number uint64, receipts []*bloc
 // executing it produced. gasUsed is the block's header gas figure
 // (HeaderGasUsed): under Amsterdam the EIP-8037 max(block regular gas, block
 // state gas) without refunds, which is not the receipts' cumulative gas.
-func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Hash, receipts []*block.Receipt, gasUsed uint64) rawdb.ExecutedResult {
+// requestsHash is the block's EIP-7685 requests hash (ExecutionRequestsHash
+// of what ProcessExecutionBlockEnd returned; sha256("") without requests).
+func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Hash, receipts []*block.Receipt, gasUsed uint64, requestsHash types.Hash) rawdb.ExecutedResult {
 	return rawdb.ExecutedResult{
-		Root:        root,
-		ReceiptHash: ReceiptsRootFor(config, number, receipts),
-		Bloom:       block.CreateBloom(receipts),
-		GasUsed:     gasUsed,
+		Root:         root,
+		ReceiptHash:  ReceiptsRootFor(config, number, receipts),
+		Bloom:        block.CreateBloom(receipts),
+		GasUsed:      gasUsed,
+		RequestsHash: requestsHash,
 	}
 }
 
@@ -116,6 +138,23 @@ func executedGasForWrite(config *params.ChainConfig, header *block.Header, recei
 		return ReceiptsGasUsed(receipts), nil
 	}
 	return 0, fmt.Errorf("deferred execution: block %d has no EIP-8037 gas figure to store", header.Number.Uint64())
+}
+
+// executedRequestsHashForWrite is the requests hash stored with a block's
+// deferred result when the leader's hint does not apply: what the block's
+// end-of-block processing recorded on its state (own), else the hint's,
+// else, where no header carries it deferred (not profile 1), the value of no
+// requests. A profile-1 block with neither has no figure.
+func executedRequestsHashForWrite(config *params.ChainConfig, header *block.Header, own types.Hash, ownSet bool, hint rawdb.ExecutedResult, hinted bool) (types.Hash, error) {
+	switch {
+	case ownSet:
+		return own, nil
+	case hinted:
+		return hint.RequestsHash, nil
+	case !RequestsHashDeferred(config, header.Time):
+		return rawdb.EmptyRequestsHash, nil
+	}
+	return types.Hash{}, fmt.Errorf("deferred execution: block %d has no EIP-7685 requests hash to store", header.Number.Uint64())
 }
 
 // RememberExecutedResult hands a sealed block's write the execution result

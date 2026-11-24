@@ -401,38 +401,41 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 	if err != nil {
 		return nil, err
 	}
-	return append(requests, pragueRequests...), nil
+	requests = append(requests, pragueRequests...)
+	// The deferred-execution write stores this hash with the block's result
+	// (on profile 1 the next header carries it, AM25).
+	ibs.SetBlockRequestsHash(ExecutionRequestsHash(requests))
+	return requests, nil
 }
 
 // StampRequestsHash sets a built header's RequestsHash from the requests the
 // block's execution produced, from the chain's Prague time on (EIP-7685);
-// other headers are left as they are.
+// other headers are left as they are. On profile 1 the value is the block's
+// own result, which the builder replaces with the parent's before sealing:
+// requestsHash is a deferred field there (AM25, A10).
 func StampRequestsHash(chainConfig *params.ChainConfig, header *block.Header, requests []hexutil.Bytes) {
 	if !chainConfig.IsPrague(header.Time) {
 		return
 	}
 	rh := ExecutionRequestsHash(requests)
-	if chainConfig.IsProfile1() {
-		// Profile 1 (AM24): every header carries EIP-7685's hash of no
-		// requests, sha256("").
-		rh = ExecutionRequestsHash(nil)
-	}
 	header.RequestsHash = &rh
+}
+
+// RequestsHashDeferred reports whether a header at time carries its parent's
+// executed requests hash instead of its own: profile 1 (AM25, A10).
+func RequestsHashDeferred(chainConfig *params.ChainConfig, time uint64) bool {
+	return chainConfig.IsProfile1() && chainConfig.IsPrague(time) && chainConfig.IsDeferredExecution(time)
 }
 
 // VerifyRequestsHash checks a header's RequestsHash against the requests the
 // block's execution produced, from the chain's Prague time on (EIP-7685);
-// other blocks pass.
+// other blocks pass. On profile 1 the header carries the parent's value,
+// checked against the stored result of the parent (checkDeferredHeader).
 func VerifyRequestsHash(chainConfig *params.ChainConfig, header *block.Header, requests []hexutil.Bytes) error {
-	if !chainConfig.IsPrague(header.Time) {
+	if !chainConfig.IsPrague(header.Time) || RequestsHashDeferred(chainConfig, header.Time) {
 		return nil
 	}
 	got := ExecutionRequestsHash(requests)
-	if chainConfig.IsProfile1() {
-		// Profile 1 (AM24): every header carries EIP-7685's hash of no
-		// requests, sha256("").
-		got = ExecutionRequestsHash(nil)
-	}
 	if header.RequestsHash == nil || *header.RequestsHash != got {
 		return fmt.Errorf("requests hash mismatch at block %s: header %v, computed %s", header.Number, header.RequestsHash, got.Hex())
 	}

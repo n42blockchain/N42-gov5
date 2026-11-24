@@ -288,12 +288,8 @@ func TestProfile1HeaderRefusals(t *testing.T) {
 			h.WithdrawalsHash = nil
 			return f.seal(h)
 		}, ErrProfile1WithdrawalsRoot},
-		{"B8 requestsHash empty-trie root", func(h *block.Header) *block.Header {
-			h.RequestsHash = h256(hash.EmptyRootHash.Hex())
-			return f.seal(h)
-		}, ErrProfile1RequestsHash},
-		{"B8 requestsHash empty-ommers hash", func(h *block.Header) *block.Header {
-			h.RequestsHash = h256(hash.EmptyUncleHash.Hex())
+		{"B8 requestsHash absent", func(h *block.Header) *block.Header {
+			h.RequestsHash = nil
 			return f.seal(h)
 		}, ErrProfile1RequestsHash},
 		{"B9 blobGasUsed 1", func(h *block.Header) *block.Header {
@@ -327,6 +323,21 @@ func TestProfile1HeaderRefusals(t *testing.T) {
 				t.Fatalf("VerifyHeader = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// requestsHash is a deferred field (AM25): the header check requires it to be
+// present, and its value -- the parent's executed EIP-7685 requests hash, not
+// necessarily sha256("") -- is checked against the parent's execution, not
+// here.
+func TestProfile1HeaderRequestsHashValueIsNotStatic(t *testing.T) {
+	f := newP1Fixture(t)
+	hs := f.chainOf(2)
+	h := f.child(hs[2], 3, nil)
+	rq := types.HexToHash("0x1d6c4ad8fdd6a87a1d03fb7d1c4c1ad8b1a6c7e4a3e5d1c0a6c3b2a1f0e9d8c7")
+	h.RequestsHash = &rq
+	if err := f.hs.VerifyHeader(f.chain, f.seal(h), true); err != nil {
+		t.Fatalf("VerifyHeader of a non-empty requestsHash = %v, want nil", err)
 	}
 }
 

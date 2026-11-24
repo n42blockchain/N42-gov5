@@ -2701,6 +2701,12 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	// HeaderGasUsed: under Amsterdam the EIP-8037 block figure), before the
 	// header takes the parent's below.
 	ownGasUsed := envCopy.header.GasUsed
+	// Likewise this block's own EIP-7685 requests hash (StampRequestsHash at
+	// the block end); on profile 1 the header carries the parent's (AM25).
+	ownRequestsHash := rawdb.EmptyRequestsHash
+	if envCopy.header.RequestsHash != nil {
+		ownRequestsHash = *envCopy.header.RequestsHash
+	}
 	if deferredExec {
 		// The header carries the parent's executed result; this block's own
 		// is recorded below and appears in the next header.
@@ -2714,6 +2720,10 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 			return fmt.Errorf("miner: deferred execution: %w", perr)
 		}
 		envCopy.header.Root, envCopy.header.ReceiptHash, envCopy.header.Bloom, envCopy.header.GasUsed = pr.Root, pr.ReceiptHash, pr.Bloom, pr.GasUsed
+		if internal.RequestsHashDeferred(w.chainConfig, envCopy.header.Time) {
+			rh := pr.RequestsHash
+			envCopy.header.RequestsHash = &rh
+		}
 	}
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
@@ -2725,7 +2735,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		if !ok {
 			return errors.New("miner: deferred execution: the build computed no root")
 		}
-		r := internal.ExecutedResultFor(w.chainConfig, envCopy.header.Number.Uint64(), root, envCopy.receipts, ownGasUsed)
+		r := internal.ExecutedResultFor(w.chainConfig, envCopy.header.Number.Uint64(), root, envCopy.receipts, ownGasUsed, ownRequestsHash)
 		exec = &r
 	}
 	dFinalize := time.Since(tCommitStart)

@@ -173,7 +173,7 @@ func TestProfile1VectorV5(t *testing.T) {
 		rewards := block.Rewards{{Address: coinbase, Amount: reward}, {Address: *cfg.HotStuff.DevFaucetAddress, Amount: reward}}
 		wh := hash.DeriveSha(rewards)
 		baseFee, _ := uint256.FromBig(misc.CalcBaseFee(cfg, parent))
-		zero, slot, rq := uint64(0), n, hotstuff.Profile1RequestsHash
+		zero, slot, rq := uint64(0), n, carried.RequestsHash
 		pbr := new(types.Hash)
 		if parent.Number.Uint64() > 0 {
 			ce, err := pool.BuildSimulatedCE(parent.Number.Uint64(), parent.Hash(), parent.ReceiptHash)
@@ -259,7 +259,7 @@ func TestProfile1VectorV5(t *testing.T) {
 		{"carries-idle", "No transactions; carries block 5's gasUsed 0.", v1SlotSecs, func() []*transaction.Transaction { return nil }, "zero"},
 	}
 
-	carried := rawdb.ExecutedResult{Root: genesis.Root, ReceiptHash: genesis.ReceiptHash, Bloom: genesis.Bloom, GasUsed: genesis.GasUsed}
+	carried := rawdb.ExecutedResult{Root: genesis.Root, ReceiptHash: genesis.ReceiptHash, Bloom: genesis.Bloom, GasUsed: genesis.GasUsed, RequestsHash: *genesis.RequestsHash}
 	parent := genesis
 	var headers []*block.Header
 	var bodies [][]*transaction.Transaction
@@ -273,7 +273,7 @@ func TestProfile1VectorV5(t *testing.T) {
 		chain.headers = append(chain.headers, h)
 		root, _, _, raw := r.execute(s.name, h, txs)
 		exec, st := r.lastGP.AmsterdamCounters()
-		res := ExecutedResultFor(cfg, h.Number.Uint64(), root, r.lastReceipts, HeaderGasUsed(cfg, h, r.lastGP, r.lastUsedGas))
+		res := ExecutedResultFor(cfg, h.Number.Uint64(), root, r.lastReceipts, HeaderGasUsed(cfg, h, r.lastGP, r.lastUsedGas), ExecutionRequestsHash(r.lastRequests))
 		if res.GasUsed != max(exec, st) {
 			t.Fatalf("%s: gasUsed %d, want max(%d, %d)", s.name, res.GasUsed, exec, st)
 		}
@@ -318,7 +318,7 @@ func TestProfile1VectorV5(t *testing.T) {
 	// resealed by its view's leader.
 	rebuild := func(k int, mut func(*block.Header)) *block.Header {
 		var par *block.Header
-		car := rawdb.ExecutedResult{Root: genesis.Root, ReceiptHash: genesis.ReceiptHash, Bloom: genesis.Bloom}
+		car := rawdb.ExecutedResult{Root: genesis.Root, ReceiptHash: genesis.ReceiptHash, Bloom: genesis.Bloom, RequestsHash: *genesis.RequestsHash}
 		if k == 0 {
 			par = genesis
 		} else {

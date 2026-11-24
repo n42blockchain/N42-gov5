@@ -904,9 +904,9 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 		}
 		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
 			// The EIP-7685 hash of no requests, sha256("") = 0xe3b0c442...b855,
-			// as on Ethereum (on profile 1: standard B8 as amended by AM24);
-			// the miner stamps the hash of the block's own requests before it
-			// gets here.
+			// as on Ethereum. The miner stamps the hash of the block's own
+			// requests before it gets here (on profile 1 the parent's
+			// executed requests hash, a deferred field: AM25).
 			rq := types.Hash(sha256.Sum256(nil))
 			header.RequestsHash = &rq
 		}

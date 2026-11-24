@@ -62,20 +62,23 @@ func TestRequestsHashBeforePragueTime(t *testing.T) {
 	}
 }
 
-// On a profile-1 chain (AM24) every header carries EIP-7685's hash of no
-// requests, sha256(""), whatever the block's requests, and an imported header
-// is held to it; the empty-trie root (AM3) is refused.
-func TestRequestsHashProfile1NoRequests(t *testing.T) {
+// On a profile-1 chain (AM25) requestsHash is a deferred field: the builder
+// stamps the block's own EIP-7685 hash (and replaces it with the parent's
+// before sealing), and the block's own execution does not check the header's
+// value -- the next header carries it, checked against the stored result.
+func TestRequestsHashProfile1IsDeferred(t *testing.T) {
 	cfg := requestsHashConfig(big.NewInt(0))
 	cfg.N42Profile = params.N42Profile1
-	sha := types.Hash(sha256.Sum256(nil))
+	requests := []hexutil.Bytes{{0x01, 0xaa}}
+	require.True(t, RequestsHashDeferred(cfg, 100))
 
 	header := &block.Header{Number: uint256.NewInt(1), Time: 100}
-	StampRequestsHash(cfg, header, []hexutil.Bytes{{0x01, 0xaa}})
+	StampRequestsHash(cfg, header, requests)
 	require.NotNil(t, header.RequestsHash)
-	require.Equal(t, sha, *header.RequestsHash)
-	require.NoError(t, VerifyRequestsHash(cfg, header, nil))
+	require.Equal(t, ExecutionRequestsHash(requests), *header.RequestsHash)
 
-	emptyRoot := hash.EmptyRootHash
-	require.Error(t, VerifyRequestsHash(cfg, &block.Header{Number: uint256.NewInt(1), Time: 100, RequestsHash: &emptyRoot}, nil), "the empty-trie root is refused on profile 1")
+	sha := types.Hash(sha256.Sum256(nil))
+	require.NoError(t, VerifyRequestsHash(cfg, &block.Header{Number: uint256.NewInt(1), Time: 100, RequestsHash: &sha}, requests),
+		"a block that produces requests is valid and carries its parent's value")
+	require.False(t, RequestsHashDeferred(requestsHashConfig(big.NewInt(0)), 100), "legacy chains keep the per-block check")
 }
