@@ -174,8 +174,13 @@ type ConsensusEngine struct {
 	// Set once by the adapter before the engine is published or started.
 	// Kept outside epoch snapshots so restart and validator changes retain
 	// the chain's schedule without changing validator-set commitments.
-	leaderTenure    uint64
-	pendingCommitQC *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
+	leaderTenure uint64
+	// Rotate-on-timeout activation (see ViewAfterTimeout): when
+	// rotateOnTimeout is set, a TC for a view >= rotateOnTimeoutFrom moves
+	// to the next tenure window. Set once by the adapter, like leaderTenure.
+	rotateOnTimeout     bool
+	rotateOnTimeoutFrom ViewNumber
+	pendingCommitQC     *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
 
 	// Batch BLS verification buffers (votes await batch pairing before
 	// being added to the collector). Reset on every view change.
@@ -668,6 +673,27 @@ func (e *ConsensusEngine) IsCurrentLeader() bool {
 // The supplied validator set may be current or historical.
 func (e *ConsensusEngine) LeaderForView(view ViewNumber, vs *ValidatorSet) ValidatorIndex {
 	return LeaderForViewWithTenure(view, vs, e.leaderTenure)
+}
+
+// SetRotateOnTimeout configures the rotate-on-timeout chain rule: from the
+// given TC view on, a timeout moves to the next leader-tenure window. Must
+// be called before the engine starts (consensus-critical, like the tenure).
+func (e *ConsensusEngine) SetRotateOnTimeout(enabled bool, fromView ViewNumber) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rotateOnTimeout = enabled
+	e.rotateOnTimeoutFrom = fromView
+}
+
+// viewAfterTC is the view entered on a TC for tcView under this engine's
+// chain rule (ViewAfterTimeout with the configured activation).
+func (e *ConsensusEngine) viewAfterTC(tcView ViewNumber) ViewNumber {
+	rotate := e.rotateOnTimeout && tcView >= e.rotateOnTimeoutFrom
+	var epochLength uint64
+	if e.epochManager != nil {
+		epochLength = e.epochManager.EpochLength()
+	}
+	return ViewAfterTimeout(tcView, e.leaderTenure, epochLength, rotate)
 }
 
 func (e *ConsensusEngine) isLeader(index ValidatorIndex, view ViewNumber, vs *ValidatorSet) bool {
@@ -1382,7 +1408,8 @@ func extractHighTCFromMessage(msg *ConsensusMsg) *TimeoutCertificate {
 // processEmbeddedTC implements the SyncInfo view-sync rule (Jolteon/Aptos): a
 // TC piggybacked on any vote/timeout is the network's proof that view tc.View
 // completed, so a lagging validator adopts it immediately — advancing to
-// tc.View+1 and locking on tc.HighQC — without waiting for a NewView it may
+// the view after tc.View (tc.View+1, or the next tenure window under
+// rotate-on-timeout) and locking on tc.HighQC — without waiting for a NewView it may
 // have missed. Runs before the view-gated buffering in processMessage so the
 // jump happens even for far-future messages. Safety is unaffected: advancing
 // views never violates the voting rule.
@@ -1393,7 +1420,7 @@ func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 	}
 
 	currentView := e.roundState.CurrentView()
-	targetView := tc.View + 1
+	targetView := e.viewAfterTC(tc.View)
 
 	// Nothing to gain if the TC doesn't move us forward. Still record it (if
 	// higher than what we hold) so we keep re-propagating the freshest TC.

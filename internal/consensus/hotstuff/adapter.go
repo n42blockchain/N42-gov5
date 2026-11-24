@@ -236,6 +236,10 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		h.outputCh,
 	)
 	h.engine.leaderTenure = max(h.config.LeaderTenure, 1)
+	if on, from := rotateOnTimeoutSetting(h.config); on {
+		h.engine.SetRotateOnTimeout(true, from)
+		log.Info("HotStuff rotate-on-timeout ENABLED", "fromTCView", from, "tenure", h.engine.leaderTenure)
+	}
 	// Record own address so the engine can find itself in a new set at an epoch
 	// boundary even while an observer (myIndex==NonMemberIndex can't index the set).
 	h.engine.SetSelfAddress(h.signer)
