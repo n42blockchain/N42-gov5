@@ -162,6 +162,21 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 		return err
 	}
 
+	// A config that names n42Profile is held to the profile's field set
+	// before anything else reads it (standard P4: fail closed at start-up).
+	var rawCfg struct {
+		Config json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(input, &rawCfg); err != nil {
+		return err
+	}
+	profile := params.ConfigJSONDeclaresProfile(rawCfg.Config)
+	if profile {
+		if err := params.ValidateProfile1ConfigJSON(rawCfg.Config); err != nil {
+			return fmt.Errorf("profile-1 genesis refused: %w", err)
+		}
+	}
+
 	*g = Genesis{
 		Config:        params.NormalizeConsensus(dec.Config),
 		Nonce:         nonce,
@@ -184,6 +199,39 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 		BlobGasUsed:   blobGasUsed,
 		ExcessBlobGas: excessBlobGas,
 		SlotNumber:    slotNumber,
+	}
+	if profile {
+		if err := g.ValidateProfile1(); err != nil {
+			return fmt.Errorf("profile-1 genesis refused: %w", err)
+		}
+	}
+	return nil
+}
+
+// ValidateProfile1 checks a Profile-1 genesis beyond its config: the config
+// values (ChainConfig.ValidateProfile1), an empty extraData (A6), a header
+// gasLimit equal to hotstuff.gasLimit (A23) and no zero-valued storage slot
+// in the alloc (A7; the storage-only empty account is refused for every
+// genesis when the block is built).
+func (g *Genesis) ValidateProfile1() error {
+	if g == nil || g.Config == nil {
+		return fmt.Errorf("missing chain config")
+	}
+	if err := g.Config.ValidateProfile1(); err != nil {
+		return err
+	}
+	if len(g.ExtraData) != 0 {
+		return fmt.Errorf("profile 1: extraData must be empty, got %d bytes", len(g.ExtraData))
+	}
+	if g.GasLimit != g.Config.HotStuff.GasLimit {
+		return fmt.Errorf("profile 1: genesis gasLimit %d differs from config.hotstuff.gasLimit %d", g.GasLimit, g.Config.HotStuff.GasLimit)
+	}
+	for addr, account := range g.Alloc {
+		for key, value := range account.Storage {
+			if value == (types.Hash{}) {
+				return fmt.Errorf("profile 1: alloc %s storage slot %s has value 0 (A7)", addr.Hex(), key.Hex())
+			}
+		}
 	}
 	return nil
 }

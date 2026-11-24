@@ -730,6 +730,14 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	cfg.ChainCfg = chainConfig
 
+	// A chain that names an N42 profile is re-checked against it on every
+	// start, from the stored config (standard P4: fail closed).
+	if chainConfig != nil && chainConfig.N42Profile != 0 {
+		if err := chainConfig.ValidateProfile1(); err != nil {
+			return nil, fmt.Errorf("profile-1 chain config refused: %w", err)
+		}
+	}
+
 	// Use the hardcoded genesis hash for P2P fork digest when a known chain is
 	// configured. The actual genesis block hash may differ due to Header struct
 	// evolution (e.g., added blob gas fields), but the chain data is identical.
