@@ -722,11 +722,13 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 		// leader produce exactly one block per height — taskLoop dedups repeat
 		// builds by sealHash, and propose/push/import all reference one block.
 		header.Time = parentHeader.Time + period
-
+	}
+	if parentHeader != nil {
 		// EIP-4788 committee-evidence link: stamp ParentBeaconRoot from the
 		// actual parent header via deterministic CE re-derivation, matching
 		// exactly what VerifyHeader recomputes. No-op until the committee pool
-		// is wired (SetCommitteeEvidence).
+		// is wired (SetCommitteeEvidence). Profile 1 links it too (B5, the
+		// pool is mandatory there under A19).
 		h.lock.RLock()
 		pool := h.committeePool
 		h.lock.RUnlock()
