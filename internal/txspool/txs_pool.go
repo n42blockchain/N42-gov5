@@ -694,6 +694,11 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, account
 	if sc := tx.BlobTxSidecar(); isOsaka && sc != nil && sc.Version == transaction.BlobSidecarVersion0 {
 		return ErrLegacyBlobSidecar
 	}
+	// Profile 1 caps the initcode of a creation from block 0, as execution
+	// does (C6).
+	if err := internal.CheckProfile1InitCode(pool.chainconfig, isGlamsterdam, tx.To() == nil, len(tx.Data())); err != nil {
+		return err
+	}
 	hasValue := tx.Value() != nil && !tx.Value().IsZero()
 	isSelfTransfer := tx.To() != nil && fromPtr != nil && *tx.To() == *fromPtr
 	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam, hasValue, isSelfTransfer)
