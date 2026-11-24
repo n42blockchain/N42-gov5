@@ -167,7 +167,7 @@ func TestHotStuffFinalize_RewardFuncPath(t *testing.T) {
 func TestHotStuffFinalize_DevBlockRewardCreditsCoinbaseAndFaucet(t *testing.T) {
 	faucet := types.Address{0x77}
 	cfg := &params.ChainConfig{HotStuff: &params.HotStuffConfig{
-		DevBlockReward:   50,
+		DevBlockReward:   params.NewDevReward(50),
 		DevFaucetAddress: &faucet,
 	}}
 	h := New(nil, cfg)

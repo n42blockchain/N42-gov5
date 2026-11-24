@@ -195,6 +195,13 @@ type ChainConfig struct {
 	ChainName string
 	ChainID   *big.Int `json:"chainId"` // chainId identifies the current chain and is used for replay protection
 
+	// N42Profile selects a fixed N42 rule set from block 0 (mixed production
+	// standard). 1 = Standard Profile 1: every rule of that standard holds
+	// from genesis without an activation field, and a genesis that names any
+	// field outside the profile is refused at start-up. 0/absent = a legacy
+	// chain, whose behaviour is unchanged.
+	N42Profile uint64 `json:"n42Profile,omitempty"`
+
 	Consensus ConsensusType `json:"consensus,omitempty"` // aura, ethash or clique
 
 	// Block-based fork fields
@@ -243,6 +250,12 @@ type ChainConfig struct {
 	BPO5Time        *big.Int `json:"bpo5Time,omitempty"`
 	FusakaTime      *big.Int `json:"fusakaTime,omitempty"`
 	GlamsterdamTime *big.Int `json:"glamsterdamTime,omitempty"` // EIP-7904 gas repricing
+
+	// AmsterdamTime is the Ethereum name of GlamsterdamTime, the only spelling
+	// a Profile-1 genesis may use. It is read only under N42Profile; there
+	// NormalizeConsensus copies it into GlamsterdamTime so every existing fork
+	// check sees it. A legacy genesis keeps ignoring it.
+	AmsterdamTime *big.Int `json:"amsterdamTime,omitempty"`
 
 	// DepositContractAddress is the beacon deposit contract whose DepositEvent
 	// logs become EIP-6110 deposit requests. Nil means the Ethereum mainnet
@@ -405,7 +418,11 @@ type ChainConfig struct {
 // default to Faker so the execution layer remains bootable for external-driver
 // scenarios such as Hive Engine API tests.
 func NormalizeConsensus(cfg *ChainConfig) *ChainConfig {
-	if cfg == nil || cfg.Consensus != "" {
+	if cfg == nil {
+		return cfg
+	}
+	normalizeProfile1(cfg)
+	if cfg.Consensus != "" {
 		return cfg
 	}
 	switch {
@@ -643,6 +660,16 @@ type HotStuffConfig struct {
 	// Validators is the genesis validator set for HotStuff consensus.
 	Validators []HotStuffValidatorConfig `json:"validators,omitempty"`
 
+	// Profile-1 fields (mixed production standard §5). They are read only
+	// under ChainConfig.N42Profile, where each one is mandatory and replaces
+	// a legacy field or a process-local knob; a legacy genesis ignores them.
+	BaseTimeoutMs          uint64 `json:"baseTimeoutMs,omitempty"`          // first view timeout (replaces baseTimeout)
+	MaxTimeoutMs           uint64 `json:"maxTimeoutMs,omitempty"`           // timeout backoff ceiling (replaces maxTimeout)
+	BlockIntervalMs        uint64 `json:"blockIntervalMs,omitempty"`        // minimum proposal pacing after the parent is held (replaces period)
+	DeferredExecutionDepth uint64 `json:"deferredExecutionDepth,omitempty"` // header N carries block N-k's execution; profile 1: k = 1
+	GasLimit               uint64 `json:"gasLimit,omitempty"`               // every header's gasLimit (equals the genesis header's)
+	MaxBlockBytes          uint64 `json:"maxBlockBytes,omitempty"`          // decoded RLP block size cap on every carrier
+
 	// CommitteePool, when enabled, runs the simulated BLS committee multi-sig
 	// (the 200K-voter / 512-committee pool carried over from the replay reseal)
 	// for live block production: each new block is stamped with consensus
@@ -655,8 +682,9 @@ type HotStuffConfig struct {
 	// and validator accounts stay at zero balance — which starves the txgen
 	// faucet. Consensus-relevant (part of state-root validation); every node
 	// carries it via the compiled-in chainspec. Zero/absent = no behavior
-	// change.
-	DevBlockReward uint64 `json:"devBlockReward,omitempty"`
+	// change. A legacy chainspec writes it as a JSON number (uint64); a
+	// Profile-1 genesis as a decimal string (up to 2^256-1), see DevReward.
+	DevBlockReward DevReward `json:"devBlockReward,omitzero"`
 
 	// DevFaucetAddress, when set together with DevBlockReward, receives the
 	// same per-block credit as the coinbase. Needed on chains whose validator

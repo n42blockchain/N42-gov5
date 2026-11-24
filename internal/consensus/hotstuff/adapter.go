@@ -735,14 +735,14 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	// (the txgen faucet loop needs a non-zero source). Consensus-relevant:
 	// runs identically on the build and the verify path, so the state root
 	// carries it and all nodes must share the chainspec. Zero = disabled.
-	if !ethELCompatEnabled(h.chainConfig) && h.chainConfig.HotStuff != nil && h.chainConfig.HotStuff.DevBlockReward > 0 {
-		amount := uint256.NewInt(h.chainConfig.HotStuff.DevBlockReward)
+	if !ethELCompatEnabled(h.chainConfig) && h.chainConfig.HotStuff != nil && h.chainConfig.HotStuff.DevBlockReward.Positive() {
+		amount := h.chainConfig.HotStuff.DevBlockReward.Amount()
 		ibs.AddBalance(header.Coinbase, amount)
 		rewards = append(rewards, &block.Reward{Address: header.Coinbase, Amount: amount})
 		// Chain-level dev faucet: validator addresses on BLS-resealed chains
 		// have no secp keys, so only a dedicated dev account can sign txs.
 		if fa := h.chainConfig.HotStuff.DevFaucetAddress; fa != nil && *fa != (types.Address{}) {
-			famount := uint256.NewInt(h.chainConfig.HotStuff.DevBlockReward)
+			famount := h.chainConfig.HotStuff.DevBlockReward.Amount()
 			ibs.AddBalance(*fa, famount)
 			rewards = append(rewards, &block.Reward{Address: *fa, Amount: famount})
 		}
