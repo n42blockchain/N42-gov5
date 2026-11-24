@@ -448,7 +448,12 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 		return nil
 	}
 
-	tc, err := e.timeoutCollector.BuildTCWithMessages(
+	build := e.timeoutCollector.BuildTCWithMessages
+	if e.profile1() {
+		// AM19: every counted timeout's high QC verifies; no genesis fallback.
+		build = e.timeoutCollector.BuildTCWithMessagesStrict
+	}
+	tc, err := build(
 		e.validatorSet(),
 		e.timeoutSigningMessage(currentView),
 		e.verifyQCAnyDomain,

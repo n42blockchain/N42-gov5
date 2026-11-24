@@ -10,6 +10,7 @@
 package hotstuff
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -231,6 +232,40 @@ func (tc *TimeoutCollector) BuildTCWithMessages(
 	message []byte,
 	verifyHighQC func(*QuorumCertificate) error,
 ) (*TimeoutCertificate, error) {
+	return tc.buildTC(vs, message, verifyHighQC, false)
+}
+
+// BuildTCWithMessagesStrict is the profile-1 TC builder (AM19): the leader
+// entering by TC proposes on the highest QC the certificate carries, so
+// every counted timeout's high QC must verify. A timeout whose high QC does
+// not verify (or a view-0 QC that is not the genesis QC) is refused, not
+// counted toward the TC, and there is no fallback to the genesis QC.
+func (tc *TimeoutCollector) BuildTCWithMessagesStrict(
+	vs *ValidatorSet,
+	message []byte,
+	verifyHighQC func(*QuorumCertificate) error,
+) (*TimeoutCertificate, error) {
+	return tc.buildTC(vs, message, verifyHighQC, true)
+}
+
+// strictHighQCError reports why a timeout's high QC is refused in strict
+// (profile-1) mode, nil when it may be counted.
+func strictHighQCError(qc *QuorumCertificate, verifyHighQC func(*QuorumCertificate) error) error {
+	if qc.View == 0 {
+		if qc.BlockHash != (types.Hash{}) || qc.SignerCount() != 0 {
+			return errors.New("view-0 high QC is not the genesis QC")
+		}
+		return nil
+	}
+	return verifyHighQC(qc)
+}
+
+func (tc *TimeoutCollector) buildTC(
+	vs *ValidatorSet,
+	message []byte,
+	verifyHighQC func(*QuorumCertificate) error,
+	strict bool,
+) (*TimeoutCertificate, error) {
 	quorumSize := vs.QuorumSize()
 	if len(tc.timeouts) < quorumSize {
 		return nil, &InsufficientVotesError{View: tc.view, Have: len(tc.timeouts), Need: quorumSize}
@@ -243,6 +278,13 @@ func (tc *TimeoutCollector) BuildTCWithMessages(
 	for idx, entry := range tc.timeouts {
 		if idx >= tc.setSize {
 			continue
+		}
+		if strict {
+			if err := strictHighQCError(&entry.highQC, verifyHighQC); err != nil {
+				log.Warn("BuildTC: timeout refused, its high QC does not verify",
+					"view", tc.view, "validator", idx, "highQC.view", entry.highQC.View, "err", err)
+				continue
+			}
 		}
 
 		if tc.verified[idx] {
@@ -281,7 +323,8 @@ func (tc *TimeoutCollector) BuildTCWithMessages(
 	// Defensive: verify the selected highQC even though processTimeout should
 	// have already verified each embedded QC individually.
 	// Only verify if QC has signers (skip mock/test QCs with empty bitmap).
-	if highestQC.View > 0 && len(highestQC.Signers) > 0 {
+	// Strict mode verified every counted high QC above: no fallback.
+	if !strict && highestQC.View > 0 && len(highestQC.Signers) > 0 {
 		if vErr := verifyHighQC(highestQC); vErr != nil {
 			log.Warn("BuildTC: highest QC failed verification, using genesis",
 				"view", tc.view, "highQC.view", highestQC.View, "err", vErr)

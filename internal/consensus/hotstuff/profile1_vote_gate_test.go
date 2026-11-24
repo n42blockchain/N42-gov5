@@ -341,3 +341,67 @@ func TestProfile1ResolvesOnlyTheGenesisSet(t *testing.T) {
 		t.Fatal("profile 1 resolved a set other than the genesis set")
 	}
 }
+
+// AM19: on profile 1 a timeout whose high QC does not verify is not counted
+// toward the TC, and the TC never falls back to the genesis QC.
+func TestProfile1TCRefusesTimeoutsWithAnUnverifiedHighQC(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	msg := H2V4TimeoutSigningMessage(p1TestIdentity, 7)
+	good := p1VoteQC(t, setup, p1TestIdentity, 5, types.Hash{0x55})
+	bad := QuorumCertificate{View: 6, BlockHash: types.Hash{0x66}, Signers: []bool{true, true, true, false}}
+	verify := func(qc *QuorumCertificate) error {
+		if qc.BlockHash == good.BlockHash {
+			return nil
+		}
+		return errors.New("forced: does not verify")
+	}
+
+	// Three good timeouts, one bad: the bad one is refused, the TC carries
+	// the verified high QC.
+	tc := NewTimeoutCollector(7, uint32(setup.vs.Len()))
+	for i := 0; i < 3; i++ {
+		if err := tc.AddVerifiedTimeout(ValidatorIndex(i), setup.keys[i].Sign(msg), good); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tc.AddVerifiedTimeout(3, setup.keys[3].Sign(msg), bad); err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tc.BuildTCWithMessagesStrict(setup.vs, msg, verify)
+	if err != nil {
+		t.Fatalf("strict TC: %v", err)
+	}
+	if cert.Signers[3] {
+		t.Fatal("the timeout with an unverified high QC was counted")
+	}
+	if cert.HighQC.View != good.View || cert.HighQC.BlockHash != good.BlockHash {
+		t.Fatalf("TC high QC = view %d %x, want the verified view %d", cert.HighQC.View, cert.HighQC.BlockHash[:2], good.View)
+	}
+
+	// Two good, two bad: no quorum, and no genesis fallback.
+	tc2 := NewTimeoutCollector(7, uint32(setup.vs.Len()))
+	for i := 0; i < 4; i++ {
+		qc := good
+		if i >= 2 {
+			qc = bad
+		}
+		if err := tc2.AddVerifiedTimeout(ValidatorIndex(i), setup.keys[i].Sign(msg), qc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cert, err := tc2.BuildTCWithMessagesStrict(setup.vs, msg, verify); err == nil {
+		t.Fatalf("strict TC formed without a quorum of verified high QCs: high QC view %d", cert.HighQC.View)
+	}
+
+	// A view-0 QC that is not the genesis QC is refused.
+	tc3 := NewTimeoutCollector(7, uint32(setup.vs.Len()))
+	forged := QuorumCertificate{View: 0, BlockHash: types.Hash{0x01}}
+	for i := 0; i < 3; i++ {
+		if err := tc3.AddVerifiedTimeout(ValidatorIndex(i), setup.keys[i].Sign(msg), forged); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tc3.BuildTCWithMessagesStrict(setup.vs, msg, verify); err == nil {
+		t.Fatal("strict TC accepted a forged view-0 high QC")
+	}
+}
