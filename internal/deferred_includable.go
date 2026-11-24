@@ -222,6 +222,9 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 		value := t.Value()
 		hasValue := value != nil && !value.IsZero()
 		selfTransfer := !create && *t.To() == from
+		if err := CheckProfile1InitCode(config, rules.IsGlamsterdam, create, len(t.Data())); err != nil {
+			return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
+		}
 		ig, err := IntrinsicGas(t.Data(), t.AccessList(), t.AuthList(), create, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam, hasValue, selfTransfer)
 		if err != nil {
 			return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
