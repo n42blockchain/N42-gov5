@@ -60,6 +60,22 @@ func WarnIfBlockCapNonStandard() {
 	}
 }
 
+// SetMaxBlockBytes makes n the only block-size bound of the p2p layer: the
+// gossip cap (and with it the pubsub router cap, see MaxGossipWireSize) and
+// the block chunk cap of every block stream (push, by-hash, ranges) both
+// become n, so MaxWireMessageSize, and the producer budget derived from it,
+// is n too. Profile 1 (mixed production standard B15/AM2) calls it once at
+// start-up with the genesis maxBlockBytes, before the p2p service starts;
+// N42_MAX_GOSSIP_MB is refused on such a chain. A chain outside the profile
+// never calls it and keeps the env-driven caps above. n = 0 is ignored.
+func SetMaxBlockBytes(n uint64) {
+	if n == 0 {
+		return
+	}
+	MaxGossipSize = n
+	MaxBlockChunkSize = n
+}
+
 func maxUint64(a, b uint64) uint64 {
 	if a > b {
 		return a
