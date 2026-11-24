@@ -62,6 +62,18 @@ func H2V4NewViewSigningMessage(identity H2V4ChainIdentity, view ViewNumber) []by
 	return h2V4Base(identity, h2V4NewView, view, 0)
 }
 
+// VerifyH2V4CommitQC verifies qc as a commit-domain (Round 2) certificate of
+// the chain identified by identity, signed by vs. The signer bitmap must be
+// exactly vs's width; there is no prepare-domain or legacy-domain fallback.
+// On profile 1, vs is the genesis validator set (AM5, E13).
+func VerifyH2V4CommitQC(identity H2V4ChainIdentity, qc *QuorumCertificate, vs *ValidatorSet) error {
+	if qc == nil || vs == nil {
+		return errors.New("h2v4 commit QC: nil certificate or validator set")
+	}
+	msg := H2V4CommitSigningMessage(identity, qc.View, qc.BlockHash, types.Hash{})
+	return verifyAggregateSignature(qc, vs, msg, "CommitQC")
+}
+
 // EnableH2V4 switches this engine to the chain-bound cross-client signing
 // profile. It must be called before the engine starts processing events.
 func (e *ConsensusEngine) EnableH2V4(identity H2V4ChainIdentity) {

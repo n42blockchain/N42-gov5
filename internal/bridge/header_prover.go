@@ -178,7 +178,7 @@ func ProveHeaderRange(
 		return nil, err
 	}
 
-	if err := VerifyHeaderChainLocally(headers, qcs, vs); err != nil {
+	if err := verifyHeaderChainFor(chain, headers, qcs, vs); err != nil {
 		return nil, fmt.Errorf("local verification failed: %w", err)
 	}
 
@@ -210,7 +210,7 @@ func ProveHeaderRangeWithSP1(
 		return nil, err
 	}
 
-	if err := VerifyHeaderChainLocally(headers, qcs, vs); err != nil {
+	if err := verifyHeaderChainFor(chain, headers, qcs, vs); err != nil {
 		return nil, fmt.Errorf("local verification failed: %w", err)
 	}
 
@@ -276,12 +276,71 @@ func ProveHeaderRangeWithSP1(
 	}
 }
 
+// verifyHeaderChainFor runs VerifyHeaderChainLocally on a legacy chain and
+// VerifyHeaderChainLocallyProfile1 on a profile-1 chain, whose certificates
+// verify only in the chain-bound commit domain (the identity is the chain ID
+// and the genesis block hash).
+func verifyHeaderChainFor(
+	chain common.IBlockChain,
+	headers []*block.Header,
+	qcs []hotstuff.QuorumCertificate,
+	vs *hotstuff.ValidatorSet,
+) error {
+	cfg := chain.Config()
+	if cfg == nil || !cfg.IsProfile1() {
+		return VerifyHeaderChainLocally(headers, qcs, vs)
+	}
+	if cfg.ChainID == nil || !cfg.ChainID.IsUint64() {
+		return fmt.Errorf("profile 1: chain ID is not a uint64, cannot bind the certificate domain")
+	}
+	genesis := chain.GenesisBlock()
+	if genesis == nil {
+		return fmt.Errorf("profile 1: genesis block unknown, cannot bind the certificate domain")
+	}
+	identity := hotstuff.H2V4ChainIdentity{ChainID: cfg.ChainID.Uint64(), GenesisHash: genesis.Hash()}
+	return VerifyHeaderChainLocallyProfile1(headers, qcs, vs, identity)
+}
+
 // VerifyHeaderChainLocally verifies a header chain without ZK, using direct
-// BLS signature verification. Used for testing and local validation.
+// BLS signature verification. Used for testing and local validation. It
+// accepts a certificate in either legacy signing domain, so it never serves a
+// profile-1 chain: use VerifyHeaderChainLocallyProfile1 there.
 func VerifyHeaderChainLocally(
 	headers []*block.Header,
 	qcs []hotstuff.QuorumCertificate,
 	vs *hotstuff.ValidatorSet,
+) error {
+	var verify func(*hotstuff.QuorumCertificate) error
+	if vs != nil {
+		verify = func(qc *hotstuff.QuorumCertificate) error { return hotstuff.VerifyQCAnyDomain(qc, vs) }
+	}
+	return verifyHeaderChain(headers, qcs, verify)
+}
+
+// VerifyHeaderChainLocallyProfile1 is VerifyHeaderChainLocally for a
+// profile-1 chain: every certificate verifies in the H2-v4 commit domain of
+// identity against genesisSet, the chain's fixed genesis validator set (AM5,
+// E13). There is no any-domain path, and a nil set is refused.
+func VerifyHeaderChainLocallyProfile1(
+	headers []*block.Header,
+	qcs []hotstuff.QuorumCertificate,
+	genesisSet *hotstuff.ValidatorSet,
+	identity hotstuff.H2V4ChainIdentity,
+) error {
+	if genesisSet == nil {
+		return fmt.Errorf("profile 1: header chain verification needs the genesis validator set")
+	}
+	return verifyHeaderChain(headers, qcs, func(qc *hotstuff.QuorumCertificate) error {
+		return hotstuff.VerifyH2V4CommitQC(identity, qc, genesisSet)
+	})
+}
+
+// verifyHeaderChain checks the parent links and QC layout of headers and,
+// when verify is non-nil, each non-genesis QC's aggregate signature.
+func verifyHeaderChain(
+	headers []*block.Header,
+	qcs []hotstuff.QuorumCertificate,
+	verify func(*hotstuff.QuorumCertificate) error,
 ) error {
 	if len(headers) != len(qcs) {
 		return fmt.Errorf("header/QC count mismatch")
@@ -325,8 +384,8 @@ func VerifyHeaderChainLocally(
 		}
 
 		// Verify QC BLS aggregate signature.
-		if vs != nil {
-			if err := hotstuff.VerifyQCAnyDomain(&qcs[i], vs); err != nil {
+		if verify != nil {
+			if err := verify(&qcs[i]); err != nil {
 				return fmt.Errorf("QC verification failed at block %d: %w", headers[i].Number.Uint64(), err)
 			}
 		}
