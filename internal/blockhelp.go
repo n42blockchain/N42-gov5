@@ -25,7 +25,6 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -414,8 +413,9 @@ func StampRequestsHash(chainConfig *params.ChainConfig, header *block.Header, re
 	}
 	rh := ExecutionRequestsHash(requests)
 	if chainConfig.IsProfile1() {
-		// Profile 1 (AM3): requestsHash is the empty-trie root in every header.
-		rh = hash.EmptyRootHash
+		// Profile 1 (AM24): every header carries EIP-7685's hash of no
+		// requests, sha256("").
+		rh = ExecutionRequestsHash(nil)
 	}
 	header.RequestsHash = &rh
 }
@@ -429,8 +429,9 @@ func VerifyRequestsHash(chainConfig *params.ChainConfig, header *block.Header, r
 	}
 	got := ExecutionRequestsHash(requests)
 	if chainConfig.IsProfile1() {
-		// Profile 1 (AM3): requestsHash is the empty-trie root in every header.
-		got = hash.EmptyRootHash
+		// Profile 1 (AM24): every header carries EIP-7685's hash of no
+		// requests, sha256("").
+		got = ExecutionRequestsHash(nil)
 	}
 	if header.RequestsHash == nil || *header.RequestsHash != got {
 		return fmt.Errorf("requests hash mismatch at block %s: header %v, computed %s", header.Number, header.RequestsHash, got.Hex())

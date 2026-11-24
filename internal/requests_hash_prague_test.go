@@ -62,19 +62,20 @@ func TestRequestsHashBeforePragueTime(t *testing.T) {
 	}
 }
 
-// On a profile-1 chain (AM3) every header carries the empty-trie root, with
-// or without requests, and an imported header is held to it.
-func TestRequestsHashProfile1EmptyTrieRoot(t *testing.T) {
+// On a profile-1 chain (AM24) every header carries EIP-7685's hash of no
+// requests, sha256(""), whatever the block's requests, and an imported header
+// is held to it; the empty-trie root (AM3) is refused.
+func TestRequestsHashProfile1NoRequests(t *testing.T) {
 	cfg := requestsHashConfig(big.NewInt(0))
 	cfg.N42Profile = params.N42Profile1
-	emptyRoot := hash.EmptyRootHash
+	sha := types.Hash(sha256.Sum256(nil))
 
 	header := &block.Header{Number: uint256.NewInt(1), Time: 100}
-	StampRequestsHash(cfg, header, nil)
+	StampRequestsHash(cfg, header, []hexutil.Bytes{{0x01, 0xaa}})
 	require.NotNil(t, header.RequestsHash)
-	require.Equal(t, emptyRoot, *header.RequestsHash)
+	require.Equal(t, sha, *header.RequestsHash)
 	require.NoError(t, VerifyRequestsHash(cfg, header, nil))
 
-	sha := types.Hash(sha256.Sum256(nil))
-	require.Error(t, VerifyRequestsHash(cfg, &block.Header{Number: uint256.NewInt(1), Time: 100, RequestsHash: &sha}, nil), "the EIP-7685 value is not the profile-1 value")
+	emptyRoot := hash.EmptyRootHash
+	require.Error(t, VerifyRequestsHash(cfg, &block.Header{Number: uint256.NewInt(1), Time: 100, RequestsHash: &emptyRoot}, nil), "the empty-trie root is refused on profile 1")
 }

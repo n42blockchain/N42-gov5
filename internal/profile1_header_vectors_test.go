@@ -456,9 +456,9 @@ func TestProfile1HeaderVectorV1(t *testing.T) {
 			h.WithdrawalsHash = nil
 			return seal(h)
 		}, hotstuff.ErrProfile1WithdrawalsRoot},
-		{"requestsHash sha256 of nothing", "B8", "requestsHash = 0xe3b0c442...b855", func() *block.Header {
+		{"requestsHash empty-trie root", "B8", "requestsHash = 0x56e81f17...b421", func() *block.Header {
 			h := fresh()
-			h.RequestsHash = h256("0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+			h.RequestsHash = h256(hash.EmptyRootHash.Hex())
 			return seal(h)
 		}, hotstuff.ErrProfile1RequestsHash},
 		{"requestsHash empty-ommers hash", "B8", "requestsHash = 0x1dcc4de8...49347", func() *block.Header {
@@ -594,8 +594,8 @@ Genesis hash: `+"`%s`"+`
 
 ## Contents of the JSON
 
-- `+"`genesis`"+`: header fields, RLP and hash of the genesis (ommersHash zero, requestsHash the
-  empty-trie root, element 22 the 0x80 gap, mobileRegistryRoot present and zero, extraData empty).
+- `+"`genesis`"+`: header fields, RLP and hash of the genesis (ommersHash zero, requestsHash
+  EIP-7685's sha256 of nothing, element 22 the 0x80 gap, mobileRegistryRoot present and zero, extraData empty).
 - `+"`headers`"+`: block 1 (view 1, no QC: nothing committed yet) and block 2 (view 2, the
   CommitQC of block 1 by validators 0, 1, 2). Each with its fields, RLP, hash, sealHash
   (keccak256 of the RLP with the last 96 extraData bytes removed, AM4), the seal (BLS,
@@ -615,7 +615,7 @@ naming an ancestor. B2 seal by the leader of the view over sealHash. B3 difficul
 mixHash, ommersHash zero (the empty-list hash is refused), coinbase = leader. B4
 parent.time <= time (import) and time <= floor(now)+2 (vote time only). B6 withdrawalsRoot
 present and equal to keccak(concat(rlp([address, amount]))) of the rewards. B8 requestsHash
-= 0x56e81f17...b421 (AM3). B9 blobGasUsed = excessBlobGas = 0. B12 element 22 = 0x80.
+= 0xe3b0c442...b855 (AM24). B9 blobGasUsed = excessBlobGas = 0. B12 element 22 = 0x80.
 B14 EIP-1559 baseFee from the parent header. A23 gasLimit = hotstuff.gasLimit.
 
 Deferred fields (A10/B13: stateRoot, receiptsRoot, logsBloom, gasUsed) of blocks 1 and 2
