@@ -1298,7 +1298,7 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 
 	// Decompress snappy.
 	raw := &rawSSZMarshaler{}
-	if err := enc.DecodeGossip(data, raw); err != nil {
+	if err := s.decodeConsensusGossip(enc, data, raw); err != nil {
 		log.Debug("hotstuff: failed to decode gossip message", "err", err)
 		return
 	}
