@@ -168,6 +168,10 @@ type IntraBlockState struct {
 	// leaves out slots that end the block at their starting value
 	// (SetStorageNetChange).
 	storageNetChange bool
+	// profile1: the chain runs Standard Profile 1, so the system address
+	// 0xff..fe is held to the unchanged-account rule like any other account
+	// (standard D3): it is written only if the block changed it.
+	profile1 bool
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
 	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
@@ -365,6 +369,7 @@ func (sdb *IntraBlockState) SetSkipUnchangedAccounts(on bool) {
 func (sdb *IntraBlockState) ApplyUnchangedAccountRule(config *params.ChainConfig, blockTime uint64) {
 	sdb.SetSkipUnchangedAccounts(config != nil && config.IsUnchangedAccountNoOp(blockTime))
 	sdb.SetStorageNetChange(config != nil && config.IsStorageNetChange(blockTime))
+	sdb.profile1 = config.IsProfile1()
 }
 
 // SetStorageNetChange sets whether the state root leaves out a slot the block
@@ -1762,9 +1767,10 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		// a zero-value transfer to an account not yet loaded: the balanceInc
 		// path dirties it for any amount), which re-appends an unchanged QMDB
 		// leaf and moves the positional root; the parallel commit already
-		// skips a zero CoinbaseDelta and writes only what changed. The system
-		// address is not subject to it: the Prague system calls write it as a
-		// live empty account on every block, and n42-rs does the same.
+		// skips a zero CoinbaseDelta and writes only what changed. Outside
+		// Standard Profile 1 the system address is not subject to it: the
+		// Prague system calls write it as a live empty account on every
+		// block, and n42-rs does the same. On Profile 1 it is (D3).
 		if s.skipUnchanged && s.unchangedThisBlock(addr, obj) {
 			continue
 		}
@@ -1893,7 +1899,7 @@ func (s *IntraBlockState) rootStorageKeys(obj *stateObject) []types.Hash {
 // original (a zero code hash read as the empty-code hash, as newObject
 // normalises the live copy).
 func (s *IntraBlockState) unchangedThisBlock(addr types.Address, obj *stateObject) bool {
-	if addr == SystemAddress || obj.created || obj.dirtyCode || len(s.rootStorageKeys(obj)) != 0 || len(s.activeWipedSlots(addr)) != 0 {
+	if (addr == SystemAddress && !s.profile1) || obj.created || obj.dirtyCode || len(s.rootStorageKeys(obj)) != 0 || len(s.activeWipedSlots(addr)) != 0 {
 		return false
 	}
 	if !obj.original.Initialised {
