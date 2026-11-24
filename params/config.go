@@ -626,6 +626,13 @@ type HotStuffConfig struct {
 	// Zero/absent means one, preserving the existing round-robin schedule.
 	// Consensus-critical: all members must use the same genesis setting.
 	LeaderTenure uint64 `json:"leaderTenure,omitempty"`
+	// RotateOnTimeoutView activates rotate-on-timeout: a timeout certificate
+	// for a view >= this value moves the chain to the first view of the next
+	// leader-tenure window instead of view+1, so a dead leader loses the rest
+	// of its tenure. Absent (nil) = disabled, the classic view+1 change.
+	// Consensus-critical: every member must use the same value. No effect
+	// with a tenure of one.
+	RotateOnTimeoutView *uint64 `json:"rotateOnTimeoutView,omitempty"`
 
 	// FastPropose skips slot boundary wait, reducing consensus latency by ~72%.
 	// When enabled, the leader proposes immediately after receiving ViewChanged,

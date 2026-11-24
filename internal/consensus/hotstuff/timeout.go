@@ -79,7 +79,7 @@ func (e *ConsensusEngine) onTimeout() error {
 		// timeout quorum forms the TC and advances — view progression must
 		// not depend on the next leader being alive (see tryFormTCAndAdvance).
 		quorumSize := e.validatorSet().QuorumSize()
-		nextView := view + 1
+		nextView := e.viewAfterTC(view)
 		if e.timeoutCollector != nil && e.timeoutCollector.HasQuorum(quorumSize) {
 			return e.tryFormTCAndAdvance(view, nextView)
 		}
@@ -164,7 +164,7 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 
 	nValidators := e.validatorSet().Len()
 	quorumSize := e.validatorSet().QuorumSize()
-	nextView := view + 1
+	nextView := e.viewAfterTC(view)
 
 	if e.timeoutCollector == nil {
 		e.timeoutCollector = NewTimeoutCollector(view, nValidators)
@@ -344,11 +344,13 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 		return &InvalidSignatureError{View: nv.View, ValidatorIndex: nv.Leader}
 	}
 
-	// TC must be for the previous view.
-	if nv.TimeoutCert.View != nv.View-1 {
+	// The TC must be for the view this NewView succeeds: nv.view - 1, or,
+	// under rotate-on-timeout, the view whose successor is nv.view
+	// (ViewAfterTimeout).
+	if e.viewAfterTC(nv.TimeoutCert.View) != nv.View {
 		return &InvalidTCError{
 			View:   nv.TimeoutCert.View,
-			Reason: "TC view does not match expected view (nv.view - 1)",
+			Reason: "TC view does not precede the NewView view",
 		}
 	}
 	if err := e.verifyTCWithSet(&nv.TimeoutCert, e.resolveQCValidatorSet(nv.TimeoutCert.View, len(nv.TimeoutCert.Signers))); err != nil {

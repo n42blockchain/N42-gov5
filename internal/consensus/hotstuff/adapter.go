@@ -262,11 +262,16 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 	)
 	// The chainspec's tenure when it sets one; otherwise the process-wide
 	// N42_HOTSTUFF_LEADER_TENURE (default 1), which the qs fleet's
-	// benchmark runs set on every validator.
+	// benchmark runs set on every validator. Rotate-on-timeout jumps by
+	// this same tenure (viewAfterTC).
 	if h.config.LeaderTenure > 0 {
 		h.engine.leaderTenure = h.config.LeaderTenure
 	} else {
 		h.engine.leaderTenure = LeaderTenure()
+	}
+	if on, from := rotateOnTimeoutSetting(h.config); on {
+		h.engine.SetRotateOnTimeout(true, from)
+		log.Info("HotStuff rotate-on-timeout ENABLED", "fromTCView", from, "tenure", h.engine.leaderTenure)
 	}
 	// Record own address so the engine can find itself in a new set at an epoch
 	// boundary even while an observer (myIndex==NonMemberIndex can't index the set).

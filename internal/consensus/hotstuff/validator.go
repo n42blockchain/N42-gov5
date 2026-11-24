@@ -20,6 +20,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/params"
 )
 
 // ValidatorInfo holds the address and BLS public key of a validator.
@@ -157,7 +158,7 @@ func (vs *ValidatorSet) Clone() *ValidatorSet {
 // is also the leader of v+1, so its speculative build of v+1 (on its own
 // in-memory post-state of v) overlaps the followers' import of v instead of
 // waiting behind it; a leader that times out keeps the view for the rest of
-// its tenure (a benchmark lever; production wants rotate-on-timeout).
+// its tenure unless rotate-on-timeout is active (see ViewAfterTimeout).
 var leaderTenure = func() uint64 {
 	if v := os.Getenv("N42_HOTSTUFF_LEADER_TENURE"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n >= 1 {
@@ -166,6 +167,34 @@ var leaderTenure = func() uint64 {
 	}
 	return 1
 }()
+
+// rotateOnTimeoutEnv is the bench-only override of the chainspec's
+// hotstuff.rotateOnTimeoutView: N42_HOTSTUFF_ROTATE_ON_TIMEOUT=1 (or true)
+// enables rotate-on-timeout from the first view, =0 (or false) disables it,
+// unset defers to the chainspec. Consensus-visible: every member of a
+// network must run the same value, so production sets the chainspec field.
+func rotateOnTimeoutEnv() (set, on bool) {
+	switch os.Getenv("N42_HOTSTUFF_ROTATE_ON_TIMEOUT") {
+	case "1", "true", "TRUE", "on":
+		return true, true
+	case "0", "false", "FALSE", "off":
+		return true, false
+	}
+	return false, false
+}
+
+// rotateOnTimeoutSetting resolves the rotate-on-timeout activation from the
+// env override, then the chainspec field. It returns whether the rule is on
+// and the first TC view it applies to.
+func rotateOnTimeoutSetting(cfg *params.HotStuffConfig) (bool, ViewNumber) {
+	if set, on := rotateOnTimeoutEnv(); set {
+		return on, 0
+	}
+	if cfg != nil && cfg.RotateOnTimeoutView != nil {
+		return true, *cfg.RotateOnTimeoutView
+	}
+	return false, 0
+}
 
 // LeaderTenure reports the configured consecutive-view tenure.
 func LeaderTenure() uint64 { return leaderTenure }
@@ -186,6 +215,44 @@ func LeaderForViewWithTenure(view ViewNumber, vs *ValidatorSet, tenure uint64) V
 		return 0
 	}
 	return ValidatorIndex((view / max(tenure, 1)) % uint64(vs.Len()))
+}
+
+// ViewAfterTimeout is the view a validator enters once it holds a timeout
+// certificate for tcView (rotate-on-timeout rule, consensus-visible).
+//
+// The leader schedule itself stays the pure grid (view / tenure) % n; the
+// rule moves the view instead. Without rotation (rotate=false), or with a
+// tenure of one, the next view is tcView+1, the classic HotStuff view change.
+// With rotation the next view is the first view of the NEXT tenure window,
+// (tcView/tenure + 1) * tenure, so a timed-out leader loses the rest of its
+// tenure and the next validator in rotation leads a full, fresh tenure.
+// Because the leader stays a function of the view alone, every follower
+// (proposal check, vote routing, NewView check, TC/QC aggregation) agrees
+// with no extra state, and a restart recomputes the same leader from the
+// persisted view.
+//
+// The jump never crosses an epoch boundary: epoch transitions (validator-set
+// changes) fire only on the exact boundary view b (b-1 divisible by
+// epochLength), so when epochs are enabled the target is clamped to the
+// first boundary above tcView. The boundary view is then entered normally;
+// if its grid leader is the one that timed out, one more timeout moves on.
+func ViewAfterTimeout(tcView ViewNumber, tenure, epochLength uint64, rotate bool) ViewNumber {
+	next := tcView + 1
+	if !rotate || tenure <= 1 || next == 0 {
+		return next
+	}
+	window := tcView/tenure + 1
+	target := window * tenure
+	if target/tenure != window || target < next { // overflow: stay classic
+		return next
+	}
+	if epochLength > 0 && tcView >= 1 {
+		boundary := ((tcView-1)/epochLength+1)*epochLength + 1
+		if boundary > tcView && boundary < target {
+			target = boundary
+		}
+	}
+	return target
 }
 
 // IsLeader checks if the given validator is the leader for the given view.
