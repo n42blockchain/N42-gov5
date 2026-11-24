@@ -170,7 +170,9 @@ type IntraBlockState struct {
 	storageNetChange bool
 	// profile1: the chain runs Standard Profile 1, so the system address
 	// 0xff..fe is held to the unchanged-account rule like any other account
-	// (standard D3): it is written only if the block changed it.
+	// (standard D3): it is written only if the block changed it; and under
+	// the storage net-change rule a slot whose pre-block value was never
+	// captured is compared with the value read from the state (D5).
 	profile1 bool
 
 	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
@@ -1861,7 +1863,8 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 // whose starting value was never captured is kept: it was first stored to in
 // the transaction that created its contract (GetCommittedState answers zero
 // for it without a read), and where it ends at zero its write is the delete
-// of a leaf that is not there.
+// of a leaf that is not there. On Profile 1 such a slot's pre-block value is
+// read instead (standard D5: equal => no write).
 func (s *IntraBlockState) rootStorageKeys(obj *stateObject) []types.Hash {
 	if !s.storageNetChange {
 		return obj.dirtyKeys
@@ -1872,11 +1875,30 @@ func (s *IntraBlockState) rootStorageKeys(obj *stateObject) []types.Hash {
 		// not what the tree holds. A slot set and reset to zero must still be
 		// written as a delete; the wipe capture cannot be relied on to list it
 		// (a reader that cannot enumerate storage captures nothing).
-		return obj.dirtyKeys
+		if !s.profile1 {
+			return obj.dirtyKeys
+		}
+		// Profile 1 (D5): compare each slot with the value the state held
+		// at the start of the block, read from the reader. A slot the wipe
+		// capture seeds as a delete keeps its op, which overwrites the seed.
+		seeded := s.activeWipedSlots(obj.address)
+		return filterKeys(obj.dirtyKeys, func(key types.Hash) bool {
+			if _, ok := seeded[key]; ok {
+				return true
+			}
+			pre, ok := s.preBlockStorage(obj, key)
+			return !ok || obj.dirtyValue(key) != pre
+		})
 	}
 	var keys []types.Hash
 	for i, key := range obj.dirtyKeys {
 		origin, ok := obj.blockOrigin(key)
+		if !ok && s.profile1 {
+			// Standard D5 compares every slot with its pre-block value: one
+			// never captured (first stored in the transaction that created
+			// its contract) is read here rather than kept unconditionally.
+			origin, ok = s.preBlockStorage(obj, key)
+		}
 		if ok && obj.dirtyValue(key) == origin {
 			if keys == nil {
 				keys = append(make([]types.Hash, 0, len(obj.dirtyKeys)), obj.dirtyKeys[:i]...)
@@ -1891,6 +1913,50 @@ func (s *IntraBlockState) rootStorageKeys(obj *stateObject) []types.Hash {
 		return obj.dirtyKeys
 	}
 	return keys
+}
+
+// filterKeys returns the keys keep accepts, reusing keys itself when keep
+// accepts all of them.
+func filterKeys(keys []types.Hash, keep func(types.Hash) bool) []types.Hash {
+	var out []types.Hash
+	for i, key := range keys {
+		if !keep(key) {
+			if out == nil {
+				out = append(make([]types.Hash, 0, len(keys)), keys[:i]...)
+			}
+			continue
+		}
+		if out != nil {
+			out = append(out, key)
+		}
+	}
+	if out == nil {
+		return keys
+	}
+	return out
+}
+
+// preBlockStorage reads a slot's value at the start of the block from the
+// state reader, for a slot whose starting value was never captured. ok is
+// false (the slot is then kept) when the read fails; the error is recorded
+// on the object.
+func (s *IntraBlockState) preBlockStorage(obj *stateObject, key types.Hash) (uint256.Int, bool) {
+	var v uint256.Int
+	var (
+		enc []byte
+		err error
+	)
+	if s.snap != nil && !s.snap.CanWrite() {
+		enc, err = s.snap.ReadAccountStorage(obj.address, &key)
+	} else {
+		enc, err = s.stateReader.ReadAccountStorage(obj.address, &key)
+	}
+	if err != nil {
+		obj.setError(err)
+		return v, false
+	}
+	v.SetBytes(enc)
+	return v, true
 }
 
 // unchangedThisBlock reports whether a live object ends the block as it was
