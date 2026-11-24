@@ -81,7 +81,12 @@ func init() {
 }
 
 // Current returns the active mode.
-func Current() Mode { return Mode(current.Load()) }
+func Current() Mode {
+	if profile1Enforced.Load() {
+		return Enforce
+	}
+	return Mode(current.Load())
+}
 
 // SetForTest overrides the mode and returns a function restoring the
 // previous value. Tests only.
