@@ -311,7 +311,10 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 	// from spinning thousands of views ahead of the chain. If the block is already
 	// imported (a direct push arrived before the Proposal), vote now; otherwise
 	// defer until EventBlockImported fires onBlockImported, which casts the vote.
-	if e.importedBlocks[proposal.BlockHash] {
+	// Profile 1 (A13, AM19, AM23): Round 1 only through tryDeferredVote,
+	// which requires the vote-time check; an import alone does not pass the
+	// B4 clock bound.
+	if e.importedBlocks[proposal.BlockHash] && !e.profile1() {
 		if !e.extendsJustify(view, proposal.BlockHash) {
 			return nil // extends-rule violation logged; do not vote
 		}
@@ -342,7 +345,8 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 // ("vote only once the block is imported locally") and never takes this
 // path. Returns whether it voted.
 func (e *ConsensusEngine) tryHeaderVote(view ViewNumber) (bool, error) {
-	if !e.twoPhaseVote {
+	// Profile 1 (AM19, AM23): a header alone never carries Round 1.
+	if !e.twoPhaseVote || e.profile1() {
 		return false, nil
 	}
 	pending, ok := e.pendingProposals[view]
@@ -384,6 +388,13 @@ func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
 	justify, ok := e.pendingJustifyBlocks[view]
 	if !ok || (justify != (types.Hash{}) && !e.importedBlocks[justify]) {
 		return false, nil
+	}
+	if e.profile1() {
+		// Profile 1: the parent must be positively known, so the extends
+		// rule below never takes its fail-open branch.
+		if parent, known := e.importedParents[pending]; !known || parent == (types.Hash{}) {
+			return false, nil
+		}
 	}
 	if !e.extendsJustify(view, pending) {
 		return false, nil // extends-rule violation logged; do not vote
@@ -782,7 +793,7 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		e.viewTiming.BlockExecuted = &t
 	}
 	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash &&
-		!e.roundState.HasVotedInView(view) {
+		!e.roundState.HasVotedInView(view) && !e.profile1() {
 		if !e.extendsJustify(view, blockHash) {
 			return nil // extends-rule violation logged; do not vote
 		}
