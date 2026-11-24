@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	gosync "sync"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -51,7 +52,16 @@ var (
 	ErrProfile1Nonce      = errors.New("profile 1: nonce is not zero")
 	ErrProfile1MixHash    = errors.New("profile 1: mixHash is not zero")
 	ErrProfile1OmmersHash = errors.New("profile 1: ommersHash is not zero")
+	// ErrProfile1TimeBeforeParent: header.time < parent.time (B4; equal
+	// timestamps are valid, O7). Checked on import and at vote time.
+	ErrProfile1TimeBeforeParent = errors.New("profile 1: timestamp before parent")
+	// ErrProfile1TimeFuture: header.time > floor(now) + 2 (B4). Checked only
+	// at vote time (StaticHeaderCheck), never on import of a committed block.
+	ErrProfile1TimeFuture = errors.New("profile 1: timestamp too far ahead of the local clock")
 )
+
+// profile1ClockSkew is B4's vote-time bound in seconds above floor(now).
+const profile1ClockSkew = 2
 
 // profile1Validators is the profile-1 validator set: the genesis set, fixed
 // for the chain's life (AM5). Parsed once from the chain config so the header
@@ -220,6 +230,9 @@ func (h *HotStuff) checkProfile1Header(chain consensus.ChainHeaderReader, header
 	if err := checkProfile1Constants(header); err != nil {
 		return err
 	}
+	if header.Time < parent.Time {
+		return fmt.Errorf("%w: %d < parent %d", ErrProfile1TimeBeforeParent, header.Time, parent.Time)
+	}
 	if err := h.checkProfile1QC(chain, header, parent, view, qc, batch); err != nil {
 		return err
 	}
@@ -285,6 +298,33 @@ func checkProfile1Constants(header *block.Header) error {
 		return fmt.Errorf("%w: %s", ErrProfile1MixHash, header.MixDigest.Hex())
 	case header.UncleHash != (types.Hash{}):
 		return fmt.Errorf("%w: %s", ErrProfile1OmmersHash, header.UncleHash.Hex())
+	}
+	return nil
+}
+
+// StaticHeaderCheck is the header half of the Round-1 vote gate (A13, E6,
+// AM19): every import-time header rule of VerifyHeader, which needs the
+// parent header, plus on profile 1 the vote-time clock bound of B4,
+// header.time <= floor(now) + 2. The clock bound is deliberately absent from
+// VerifyHeader: importing a committed block must not depend on the clock.
+func (h *HotStuff) StaticHeaderCheck(chain consensus.ChainHeaderReader, header *block.Header, now time.Time) error {
+	if err := h.verifyHeaderWithBatch(chain, header, nil); err != nil {
+		return err
+	}
+	if h.chainConfig.IsProfile1() {
+		return checkProfile1Clock(header, now)
+	}
+	return nil
+}
+
+// checkProfile1Clock applies B4's upper bound against the local clock now.
+func checkProfile1Clock(header *block.Header, now time.Time) error {
+	secs := now.Unix()
+	if secs < 0 {
+		secs = 0
+	}
+	if limit := uint64(secs) + profile1ClockSkew; header.Time > limit {
+		return fmt.Errorf("%w: %d > floor(now) + %d = %d", ErrProfile1TimeFuture, header.Time, profile1ClockSkew, limit)
 	}
 	return nil
 }
