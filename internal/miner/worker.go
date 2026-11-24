@@ -2602,7 +2602,7 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		ParentHash: parent.Hash(),
 		Coinbase:   param.coinbase,
 		Number:     uint256.NewInt(0).Add(parentNumber, uint256.NewInt(1)),
-		GasLimit:   CalcGasLimit(parent.GasLimit, w.minerConf.GasCeil),
+		GasLimit:   headerGasLimit(w.chainConfig, parent.GasLimit, w.minerConf.GasCeil),
 		Time:       uint64(timestamp),
 		Difficulty: uint256.NewInt(0),
 		BaseFee:    uint256.NewInt(0),
@@ -2617,7 +2617,7 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		header.BaseFee, _ = uint256.FromBig(misc.CalcBaseFee(w.chainConfig, parent))
 		if !w.chainConfig.IsLondon(parentNumber.Uint64()) {
 			parentGasLimit := parent.GasLimit * params.ElasticityMultiplier
-			header.GasLimit = CalcGasLimit(parentGasLimit, w.minerConf.GasCeil)
+			header.GasLimit = headerGasLimit(w.chainConfig, parentGasLimit, w.minerConf.GasCeil)
 		}
 	}
 
@@ -2634,7 +2634,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 		family:    mapset.NewSet(),
 		coinbase:  coinbase,
 		header:    header,
-		gasPool:   new(common.GasPool).AddGas(fillGasBudget(header.GasLimit)),
+		gasPool:   new(common.GasPool).AddGas(fillGasBudgetFor(w.chainConfig, header.GasLimit)),
 	}
 
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.ParentHash, 3) {
