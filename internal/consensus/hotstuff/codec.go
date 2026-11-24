@@ -100,6 +100,11 @@ func encodeQC(qc *QuorumCertificate) ([]byte, error) {
 	return wire.MarshalSSZ()
 }
 
+// EncodeQC encodes a QuorumCertificate as the SSZ bytes embedded in header
+// extraData (B1). Exported for the profile-1 header vectors and for other
+// clients' conformance tooling.
+func EncodeQC(qc *QuorumCertificate) ([]byte, error) { return encodeQC(qc) }
+
 // DecodeQC decodes a QuorumCertificate from SSZ-encoded bytes.
 // Exported for use by the cross-chain bridge (QC extraction from block headers).
 func DecodeQC(data []byte) (*QuorumCertificate, error) { return decodeQC(data) }

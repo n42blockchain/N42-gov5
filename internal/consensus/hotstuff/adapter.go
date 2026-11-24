@@ -125,6 +125,16 @@ type HotStuff struct {
 	// checks that link, continuing the resealed chain's BLS multi-sig.
 	committeePool CommitteePool
 	ceReader      CEReader
+
+	// Profile 1 (header_profile.go): the fixed genesis validator set and the
+	// chain-bound H2-v4 identity the header QCs are checked against.
+	p1Validators profile1Validators
+	p1Identity   *H2V4ChainIdentity
+	// p1Stamps keeps the timestamp the leader stamped per (view, parent), so a
+	// rebuild for the same view and parent yields the identical header (F6).
+	p1Stamps profile1Stamps
+	// now is the clock of the profile-1 timestamp stamp (tests override it).
+	now func() time.Time
 }
 
 // SetCommitteeEvidence injects the live BLS committee pool and the consensus-
@@ -251,6 +261,10 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 	// Record own address so the engine can find itself in a new set at an epoch
 	// boundary even while an observer (myIndex==NonMemberIndex can't index the set).
 	h.engine.SetSelfAddress(h.signer)
+	if h.chainConfig.IsProfile1() {
+		// Profile-1 vote gates and certificate strictness (A13, A14, E13).
+		h.engine.SetProfile1(vs)
+	}
 	if observer {
 		h.engine.removed = true // inactive until reconfig adds it; still processes events
 	}
@@ -271,40 +285,9 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 // initializes the consensus engine. This is the production entry point called
 // from node.go after Authorize.
 func (h *HotStuff) InitEngineFromConfig() error {
-	cfg := h.config
-	if cfg == nil || len(cfg.Validators) == 0 {
-		return fmt.Errorf("hotstuff: no validators configured in chain config")
-	}
-
-	validators := make([]ValidatorInfo, 0, len(cfg.Validators))
-	for i, vc := range cfg.Validators {
-		// Validate address format: must be 42-char 0x-prefixed hex.
-		addrStr := strings.TrimSpace(vc.Address)
-		if len(addrStr) != 42 || !strings.HasPrefix(addrStr, "0x") {
-			return fmt.Errorf("hotstuff: validator %d has malformed address: %q", i, vc.Address)
-		}
-		addr := types.HexToAddress(addrStr)
-		if addr == (types.Address{}) {
-			return fmt.Errorf("hotstuff: validator %d has zero address", i)
-		}
-
-		blsHex := strings.TrimPrefix(vc.BLSKey, "0x")
-		pubKeyBytes, err := hex.DecodeString(blsHex)
-		if err != nil {
-			return fmt.Errorf("hotstuff: validator %d has invalid BLS key hex: %w", i, err)
-		}
-		if len(pubKeyBytes) != 48 {
-			return fmt.Errorf("hotstuff: validator %d BLS key wrong length: got %d, want 48", i, len(pubKeyBytes))
-		}
-		pubKey, err := bls.PublicKeyFromBytes(pubKeyBytes)
-		if err != nil {
-			return fmt.Errorf("hotstuff: validator %d has invalid BLS public key: %w", i, err)
-		}
-
-		validators = append(validators, ValidatorInfo{
-			Address:   addr,
-			PublicKey: pubKey,
-		})
+	validators, err := validatorsFromConfig(h.config)
+	if err != nil {
+		return err
 	}
 
 	n := uint32(len(validators))
@@ -314,6 +297,46 @@ func (h *HotStuff) InitEngineFromConfig() error {
 	faultTolerance := (n - 1) / 3
 
 	return h.InitEngine(validators, faultTolerance)
+}
+
+// validatorsFromConfig parses the genesis validator set of the chain config,
+// in list order (= QC bitmap order = leader index).
+func validatorsFromConfig(cfg *params.HotStuffConfig) ([]ValidatorInfo, error) {
+	if cfg == nil || len(cfg.Validators) == 0 {
+		return nil, fmt.Errorf("hotstuff: no validators configured in chain config")
+	}
+
+	validators := make([]ValidatorInfo, 0, len(cfg.Validators))
+	for i, vc := range cfg.Validators {
+		// Validate address format: must be 42-char 0x-prefixed hex.
+		addrStr := strings.TrimSpace(vc.Address)
+		if len(addrStr) != 42 || !strings.HasPrefix(addrStr, "0x") {
+			return nil, fmt.Errorf("hotstuff: validator %d has malformed address: %q", i, vc.Address)
+		}
+		addr := types.HexToAddress(addrStr)
+		if addr == (types.Address{}) {
+			return nil, fmt.Errorf("hotstuff: validator %d has zero address", i)
+		}
+
+		blsHex := strings.TrimPrefix(vc.BLSKey, "0x")
+		pubKeyBytes, err := hex.DecodeString(blsHex)
+		if err != nil {
+			return nil, fmt.Errorf("hotstuff: validator %d has invalid BLS key hex: %w", i, err)
+		}
+		if len(pubKeyBytes) != 48 {
+			return nil, fmt.Errorf("hotstuff: validator %d BLS key wrong length: got %d, want 48", i, len(pubKeyBytes))
+		}
+		pubKey, err := bls.PublicKeyFromBytes(pubKeyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("hotstuff: validator %d has invalid BLS public key: %w", i, err)
+		}
+
+		validators = append(validators, ValidatorInfo{
+			Address:   addr,
+			PublicKey: pubKey,
+		})
+	}
+	return validators, nil
 }
 
 // Engine returns the inner consensus state machine (may be nil if not initialized).
@@ -413,9 +436,15 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return nil
 	}
 
-	headerView, qc, _, err := decodeHeaderExtra(header.Extra)
-	if err != nil {
-		return err
+	profile1 := h.chainConfig.IsProfile1()
+	var headerView ViewNumber
+	var qc *QuorumCertificate
+	if !profile1 {
+		var err error
+		headerView, qc, _, err = decodeHeaderExtra(header.Extra)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Resolve the parent by the header's OWN ParentHash — not by number. A
@@ -452,7 +481,11 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return fmt.Errorf("parent %x has height %v, want %v", header.ParentHash[:8], parentHeader.Number, &wantParentNum)
 	}
 
-	if header.Time <= parentHeader.Time {
+	if profile1 {
+		if err := h.checkProfile1Header(chain, header, parentHeader, batch); err != nil {
+			return err
+		}
+	} else if header.Time <= parentHeader.Time {
 		return errors.New("timestamp must be after parent")
 	}
 
@@ -472,18 +505,10 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	if header.GasUsed > usedLimit {
 		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, usedLimit)
 	}
-	// EIP-1559 BaseFee re-derivation is deliberately NOT enforced here.
-	// A head-adjacency gate was tried and is unsound: the FIRST header of
-	// every catch-up batch extends the local head by definition, so a
-	// laggard importing replay-v2 history (whose BaseFee is copied across
-	// a gap-filled timeline and does not re-derive) would wedge at the
-	// first batch boundary — and which headers got checked was
-	// timing-dependent (CurrentBlock advances concurrently with batch
-	// verification). A public multi-validator deployment needs a
-	// provenance watermark (e.g. replay head recorded in DbInfo at reseed)
-	// below which the check is skipped and above which it is enforced
-	// unconditionally; on the permissioned fleet every producer derives
-	// BaseFee via misc.CalcBaseFee, so the economic risk is nil.
+	// EIP-1559 baseFee (B14) and the fixed gas limit (A23) are checked on
+	// profile-1 chains (checkProfile1Gas). Legacy chains keep the old rule:
+	// no re-derivation, because replay-v2 history copies baseFee across a
+	// gap-filled timeline and does not re-derive.
 
 	// MobileAnchor is a scheduled header fork, not an optional producer hint.
 	// Enforce the RLP shape on both sides of the boundary so a validator started
@@ -599,6 +624,18 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// Set the coinbase to the signer.
 	header.Coinbase = signer
 
+	profile1 := h.chainConfig.IsProfile1()
+	if profile1 {
+		// A23: every header carries hotstuff.gasLimit, no step toward a
+		// local gas ceiling. B3: the constant fields are zero.
+		if h.chainConfig.HotStuff != nil {
+			header.GasLimit = h.chainConfig.HotStuff.GasLimit
+		}
+		header.UncleHash = types.Hash{}
+		header.MixDigest = types.Hash{}
+		header.Nonce = block.BlockNonce{}
+	}
+
 	// Difficulty is 0: HotStuff orders blocks by view number and chooses the
 	// canonical chain by commit authority (CommitToCanonical), never by total
 	// difficulty. Zero matches the post-merge/PoS convention (EIP-3675: a non-PoW
@@ -663,7 +700,10 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 				header.ParentHash[:8], header.Number, perr)
 		}
 	}
-	if parentHeader != nil {
+	if parentHeader != nil && profile1 {
+		// B4: max(parent.time, floor(now)), fixed per (view, parent).
+		header.Time = h.profile1Stamp(view, parentHeader)
+	} else if parentHeader != nil {
 		period := h.config.Period
 		if period == 0 {
 			period = 3 // default 3 second blocks
@@ -854,7 +894,11 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 			}
 		}
 		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
-			rq := hash.EmptyRootHash // keccak256(RLP([])): no EIP-7685 requests
+			// No EIP-7685 requests on a native chain. The value is the
+			// empty-trie root keccak256(rlp("")) = 0x56e81f17...b421, NOT
+			// keccak256(rlp([])) (that is the empty-ommers hash 0x1dcc4de8...)
+			// and not EIP-7685's sha256("") (standard B8 as corrected by AM3).
+			rq := hash.EmptyRootHash
 			header.RequestsHash = &rq
 		}
 		if cfg.IsGlamsterdam(header.Time) && header.SlotNumber == nil {

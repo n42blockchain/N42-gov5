@@ -171,6 +171,10 @@ type ConsensusEngine struct {
 	// import, so a CommitQC still proves 2f+1 validators executed the block
 	// before it can commit. Off (default) = classic import-gated Round 1.
 	twoPhaseVote bool
+	// p1Set is the fixed genesis validator set of a profile-1 chain (nil on
+	// every other chain): it switches on the profile-1 vote gates and
+	// certificate strictness (engine_profile1.go). Set once before Start.
+	p1Set *ValidatorSet
 	// Set once by the adapter before the engine is published or started.
 	// Kept outside epoch snapshots so restart and validator changes retain
 	// the chain's schedule without changing validator-set commitments.
@@ -866,6 +870,10 @@ func (e *ConsensusEngine) validatorSetForView(view ViewNumber) *ValidatorSet {
 // The subsequent BLS aggregate check confirms correctness, so this can only ever
 // pick the RIGHT set or fail the signature — never admit a forged certificate.
 func (e *ConsensusEngine) resolveQCValidatorSet(view ViewNumber, bitmapLen int) *ValidatorSet {
+	if e.p1Set != nil {
+		// Profile 1 (AM5, E13): the genesis set, never a same-size fallback.
+		return e.p1Set
+	}
 	primary := e.validatorSetForView(view)
 	if primary != nil && int(primary.Len()) == bitmapLen {
 		return primary

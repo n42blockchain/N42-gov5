@@ -52,6 +52,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 		if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blockHash, blockNumber.Uint64()) {
 			n.NotifyBlockImported(blockHash, blk.TxHash())
 		}
+		s.profile1CheckImported(blk)
 		return nil
 	}
 
@@ -89,6 +90,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 	if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blockHash, blockNumber.Uint64()) {
 		n.NotifyBlockImported(blockHash, blk.TxHash())
 	}
+	s.profile1CheckImported(blk)
 	s.retryDeferredChildren(blockHash)
 
 	return nil

@@ -77,7 +77,24 @@ func headersForCompactTest() map[string]*Header {
 		GasLimit: 0, Time: 0,
 	}
 
-	return map[string]*Header{"full": full, "resealEmpty": resealEmpty, "minimal": minimal}
+	// Profile 1 (mixed production standard B3, B8, B12): ommersHash exactly
+	// zero (not the empty-list hash every decoder used to default to),
+	// element 22 the empty gap, slot number and registry root present.
+	p1Slot := uint64(7)
+	p1Zero := uint64(0)
+	profile1 := &Header{
+		ParentHash: hashOf(30), Coinbase: types.Address{0x42},
+		Root: hashOf(31), TxHash: hash.EmptyRootHash, ReceiptHash: hash.EmptyRootHash,
+		Difficulty: uint256.NewInt(0), Number: uint256.NewInt(7),
+		GasLimit: 480_000_000, Time: 1_795_564_856,
+		Extra:           append([]byte("N42H\x07\x00\x00\x00\x00\x00\x00\x00"), make([]byte, 96)...),
+		BaseFee:         uint256.NewInt(875_000_000),
+		WithdrawalsHash: func() *types.Hash { h := hashOf(32); return &h }(), RequestsHash: &emptyConst,
+		BlobGasUsed: &p1Zero, ExcessBlobGas: &p1Zero, ParentBeaconRoot: new(types.Hash),
+		SlotNumber: &p1Slot, MobileRegistryRoot: new(types.Hash),
+	}
+
+	return map[string]*Header{"full": full, "resealEmpty": resealEmpty, "minimal": minimal, "profile1": profile1}
 }
 
 // TestCompactHeaderRoundTrip: decode(encode(h)) must reproduce every field and

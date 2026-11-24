@@ -197,6 +197,7 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 		if n := s.cfg.blockImportNotifier; n != nil {
 			n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 		}
+		s.profile1CheckImported(blk)
 		return
 	}
 	cur := blk
@@ -251,4 +252,5 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 	if n := s.cfg.blockImportNotifier; n != nil {
 		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 	}
+	s.profile1CheckImported(blk)
 }

@@ -2589,7 +2589,13 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		}
 	}
 
-	if parent.Time >= param.timestamp {
+	if w.chainConfig.IsProfile1() {
+		// Profile 1 allows equal timestamps (B4); the engine's Prepare
+		// stamps max(parent.time, floor(now)).
+		if parent.Time > param.timestamp {
+			timestamp = parent.Time
+		}
+	} else if parent.Time >= param.timestamp {
 		timestamp = parent.Time + 1
 	}
 

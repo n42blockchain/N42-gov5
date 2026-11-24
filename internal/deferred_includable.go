@@ -44,6 +44,15 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	if number == 0 {
 		return false, false, nil
 	}
+	// Profile 1 (A13, E6, AM19, AM23): the static header rules and the
+	// vote-time clock bound come first, also for a block already executed
+	// here -- import checks everything but the clock.
+	profile1 := bc.chainConfig.IsProfile1()
+	if profile1 {
+		if retry, err := bc.profile1VoteHeaderCheck(hdr); err != nil {
+			return true, retry, err
+		}
+	}
 	// Already executed here (a catch-up range import or the gossip copy landed
 	// first): the state the includability check would read is this block's own
 	// post-state, where its transactions read as nonces already used. Nothing
@@ -64,7 +73,11 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 		return true, true, fmt.Errorf("%w: parent %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], number)
 	}
 	if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parent); err != nil {
-		return true, errors.Is(err, ErrDeferredResultUnknown), err
+		retry := errors.Is(err, ErrDeferredResultUnknown)
+		if profile1 && !retry {
+			err = profile1DeferredRefusal("deferred_result", err)
+		}
+		return true, retry, err
 	}
 	// Senders and the stateless rules first, outside the tree's readers lock.
 	// A block decoded from the wire carries no sender -- the import's hint
@@ -74,6 +87,9 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// writes: the check can run beside the import of a child without a race.
 	plan, err := deferredTxPlan(bc.chainConfig, hdr, blk.Transactions())
 	if err != nil {
+		if profile1 {
+			err = profile1DeferredRefusal("includability", err)
+		}
 		return true, false, err
 	}
 	// The applied-head check and the state reads below must see one state:
@@ -97,7 +113,13 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 				ErrDeferredParentNotApplied, got[:6], hdr.Root[:6])
 		}
 	}
-	return true, false, bc.checkSenderStates(number, plan)
+	if err := bc.checkSenderStates(number, plan); err != nil {
+		if profile1 {
+			err = profile1DeferredRefusal("includability", err)
+		}
+		return true, false, err
+	}
+	return true, false, nil
 }
 
 // deferredSender is one sender's transactions in block order.
