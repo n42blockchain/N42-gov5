@@ -11,10 +11,19 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// profile1Chain reports whether the chain runs Standard Profile 1.
-func (s *Service) profile1Chain() bool {
+// profile1Chain reports whether the chain runs Standard Profile 1. A chain
+// whose Config cannot be read (a partial stand-in) counts as not profile 1.
+func (s *Service) profile1Chain() (p1 bool) {
 	c, ok := s.cfg.chain.(interface{ Config() *params.ChainConfig })
-	return ok && c.Config().IsProfile1()
+	if !ok {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			p1 = false
+		}
+	}()
+	return c.Config().IsProfile1()
 }
 
 // profile1CheckImported runs the deferred proposal check on a block that an
