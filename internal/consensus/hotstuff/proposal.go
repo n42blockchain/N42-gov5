@@ -414,8 +414,11 @@ func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
 // deferred execution moves one block back. Without this the Round-2 gate waits
 // for the block's own import and the cycle stays import-bound -- 35zzq measured
 // the same 1.33 s block time as the round without deferred execution.
+//
+// Profile 1 (A13, AM19, AM23): never; the CommitVote waits for this node's
+// own execution of the block (importedBlocks), not for its parent's.
 func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
-	if !e.checkedBlocks[blockHash] {
+	if e.profile1() || !e.checkedBlocks[blockHash] {
 		return false
 	}
 	parent, ok := e.importedParents[blockHash]

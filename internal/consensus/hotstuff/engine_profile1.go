@@ -28,6 +28,8 @@ func (e *ConsensusEngine) SetProfile1(set *ValidatorSet) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.p1Set = set
+	// The two-phase gate is profile 1's only vote shape (A13).
+	e.twoPhaseVote = set != nil || e.twoPhaseVote
 }
 
 // profile1 reports whether the engine runs profile-1 rules.
