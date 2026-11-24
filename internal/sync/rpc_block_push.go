@@ -64,6 +64,7 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
 			n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 		}
+		s.profile1CheckImported(blk)
 		return
 	}
 	s.handlePushedBlock(blk, DeferredCheckConcurrentOn())
@@ -156,6 +157,7 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 	if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
 		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 	}
+	s.profile1CheckImported(blk)
 	s.retryDeferredChildren(blk.Hash())
 }
 
@@ -190,6 +192,9 @@ func (s *Service) deferredCheck(blk block.IBlock) {
 	}
 	if !checked {
 		return
+	}
+	if s.profile1Chain() && (err == nil || !retry) {
+		s.p1Verdicts.put(blk.Hash(), err == nil)
 	}
 	if err == nil {
 		log.Info("deferred check: block passes, vote may proceed before its import", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "tMs", time.Now().UnixMilli())

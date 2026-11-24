@@ -113,6 +113,10 @@ type Service struct {
 	deferredPending  map[types.Hash][]block.IBlock
 	deferredAttempts map[types.Hash]int
 
+	// p1Verdicts: final deferred-check verdicts on a profile-1 chain
+	// (profile1_vote_check.go).
+	p1Verdicts profile1Verdicts
+
 	// pushInflight: blocks the direct-push handler has decoded and is
 	// importing. The gossip copy of the same block is ignored on its header
 	// before the full decode (every block arrived twice, and the second copy
