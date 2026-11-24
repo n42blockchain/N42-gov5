@@ -208,11 +208,32 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 	return nil
 }
 
+// isZeroGenesisBalance reports whether an alloc balance (decimal or 0x hex,
+// empty = 0) is zero; an unparsable balance is not zero here and fails later
+// where it is decoded.
+func isZeroGenesisBalance(s string) bool {
+	if s == "" {
+		return true
+	}
+	var v *uint256.Int
+	var err error
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		digits := strings.TrimLeft(s[2:], "0")
+		if digits == "" {
+			return true
+		}
+		v, err = uint256.FromHex("0x" + digits)
+	} else {
+		v, err = uint256.FromDecimal(s)
+	}
+	return err == nil && v.IsZero()
+}
+
 // ValidateProfile1 checks a Profile-1 genesis beyond its config: the config
 // values (ChainConfig.ValidateProfile1), an empty extraData (A6), a header
 // gasLimit equal to hotstuff.gasLimit (A23) and no zero-valued storage slot
-// in the alloc (A7; the storage-only empty account is refused for every
-// genesis when the block is built).
+// and no storage-only entry in the alloc (A7, AM12; the storage-only entry
+// is also refused for every genesis when the block is built).
 func (g *Genesis) ValidateProfile1() error {
 	if g == nil || g.Config == nil {
 		return fmt.Errorf("missing chain config")
@@ -227,6 +248,9 @@ func (g *Genesis) ValidateProfile1() error {
 		return fmt.Errorf("profile 1: genesis gasLimit %d differs from config.hotstuff.gasLimit %d", g.GasLimit, g.Config.HotStuff.GasLimit)
 	}
 	for addr, account := range g.Alloc {
+		if account.Nonce == 0 && len(account.Code) == 0 && len(account.Storage) > 0 && isZeroGenesisBalance(account.Balance) {
+			return fmt.Errorf("profile 1: alloc %s has storage but nonce 0, zero balance and no code (storage-only entry, A7)", addr.Hex())
+		}
 		for key, value := range account.Storage {
 			if value == (types.Hash{}) {
 				return fmt.Errorf("profile 1: alloc %s storage slot %s has value 0 (A7)", addr.Hex(), key.Hex())

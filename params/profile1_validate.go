@@ -357,6 +357,13 @@ func (h *HotStuffConfig) validateProfile1() error {
 	if !h.DevBlockReward.Quoted() {
 		return errors.New("profile 1: config.hotstuff.devBlockReward must be a decimal string (wei)")
 	}
+	// Rewards are paid as EIP-4895 withdrawals, whose amount is a uint64 of
+	// gwei (AM12).
+	if gwei, rem := new(big.Int).QuoRem(h.DevBlockReward.Amount().ToBig(), big.NewInt(1e9), new(big.Int)); rem.Sign() != 0 {
+		return fmt.Errorf("profile 1: config.hotstuff.devBlockReward %s wei is not a whole number of gwei", h.DevBlockReward)
+	} else if !gwei.IsUint64() {
+		return fmt.Errorf("profile 1: config.hotstuff.devBlockReward %s wei exceeds 2^64-1 gwei", h.DevBlockReward)
+	}
 	if h.DevFaucetAddress == nil || *h.DevFaucetAddress == (types.Address{}) {
 		return errors.New("profile 1: config.hotstuff.devFaucetAddress is mandatory and must not be the zero address")
 	}
