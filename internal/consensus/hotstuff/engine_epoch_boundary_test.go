@@ -153,8 +153,12 @@ func TestAdvanceToViewNoEpochTransitionWhenNothingStaged(t *testing.T) {
 	if err := engine.advanceToView(3); err != nil {
 		t.Fatalf("advanceToView: %v", err)
 	}
-	if engine.epochManager.CurrentEpoch() != 0 {
-		t.Fatalf("CurrentEpoch = %d, want 0 (no transition)", engine.epochManager.CurrentEpoch())
+	// The epoch counter follows the view; the set is carried forward unchanged.
+	if engine.epochManager.CurrentEpoch() != 1 {
+		t.Fatalf("CurrentEpoch = %d, want 1 (carried forward)", engine.epochManager.CurrentEpoch())
+	}
+	if engine.epochManager.CurrentValidatorSet() != setup.vs {
+		t.Fatal("validator set changed without a staged set")
 	}
 	if engine.myIndex != 0 {
 		t.Fatalf("myIndex = %d, want unchanged 0", engine.myIndex)
