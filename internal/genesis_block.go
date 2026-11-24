@@ -321,6 +321,11 @@ func applyProfile1GenesisHeader(head *block.Header) {
 	requests := hash.EmptyRootHash
 	head.RequestsHash = &requests
 	head.BlockAccessListHash = nil
+	if head.SlotNumber == nil {
+		// B10: element 23 is the block number, 0 here (uint64Ptr leaves a
+		// zero slot nil; the RLP bytes are the same, the field is explicit).
+		head.SlotNumber = new(uint64)
+	}
 	head.MobileRegistryRoot = new(types.Hash)
 }
 
