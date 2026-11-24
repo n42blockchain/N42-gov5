@@ -3825,6 +3825,11 @@ func (bc *BlockChain) syncChain(remoteBlock uint64, peerID peer.ID) {
 // a chosen block time before the chainspec carries the fork. Logged loudly:
 // every node of the chain must agree on it.
 func txRootBlake3Time(config *params.ChainConfig) uint64 {
+	if config.IsProfile1() {
+		// Profile 1 has no BLAKE3 transactions root (A12); the env override
+		// is refused at start-up (P3).
+		return 0
+	}
 	if config != nil && config.TxRootBlake3Time != nil {
 		return gateFrom(config.TxRootBlake3Time)
 	}
@@ -3850,6 +3855,11 @@ func txRootBlake3Time(config *params.ChainConfig) uint64 {
 // (a Unix timestamp), applied to the chain config too so every fork check
 // in the node sees it. Logged loudly: every node of the chain must agree.
 func deferredExecutionTime(config *params.ChainConfig) uint64 {
+	if config.IsProfile1() {
+		// Profile 1: deferred execution from block 0 (A10); the env override
+		// is refused at start-up (P3).
+		return 1
+	}
 	if config != nil && config.DeferredExecutionTime != nil {
 		return gateFrom(config.DeferredExecutionTime)
 	}

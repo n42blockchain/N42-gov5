@@ -227,16 +227,20 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 	if !observer {
 		engineIndex = ValidatorIndex(myIndex)
 	}
+	baseTimeout, maxTimeout := h.config.BaseTimeout, h.config.MaxTimeout
+	if h.chainConfig.IsProfile1() {
+		baseTimeout, maxTimeout = h.chainConfig.HotStuffTimeoutsMs()
+	}
 	h.engine = NewConsensusEngineWithEpochManager(
 		engineIndex,
 		h.secretKey,
 		h.epochManager,
-		h.config.BaseTimeout,
-		h.config.MaxTimeout,
+		baseTimeout,
+		maxTimeout,
 		h.outputCh,
 	)
 	h.engine.leaderTenure = max(h.config.LeaderTenure, 1)
-	if on, from := rotateOnTimeoutSetting(h.config); on {
+	if on, from := rotateOnTimeoutFor(h.chainConfig, h.config); on {
 		h.engine.SetRotateOnTimeout(true, from)
 		log.Info("HotStuff rotate-on-timeout ENABLED", "fromTCView", from, "tenure", h.engine.leaderTenure)
 	}
@@ -247,7 +251,7 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		h.engine.removed = true // inactive until reconfig adds it; still processes events
 	}
 
-	if h.config.TwoPhaseVoteGate {
+	if h.config.TwoPhaseVoteGate || h.chainConfig.IsProfile1() {
 		h.engine.SetTwoPhaseVote(true)
 		log.Info("HotStuff two-phase vote gate ENABLED (order-then-execute: R1 static, R2 import-gated)")
 	}

@@ -393,6 +393,9 @@ func (c *ChainConfig) IsFusaka(time uint64) bool {
 // IsGlamsterdam returns whether time is either equal to the Glamsterdam fork time or greater.
 // Glamsterdam implements EIP-7904 gas repricing, reducing simple transfer gas from 21000 to 4500.
 func (c *ChainConfig) IsGlamsterdam(time uint64) bool {
+	if c.IsProfile1() && c.GlamsterdamTime == nil {
+		return isForked(c.AmsterdamTime, time)
+	}
 	return isForked(c.GlamsterdamTime, time)
 }
 
@@ -439,8 +442,20 @@ func (c *ChainConfig) IsBAL(time uint64) bool {
 // leave MobileAnchorTime nil, so this is always false there). When enabled,
 // the n42 leader binds the committed mobile-registry root into the header
 // (Header.MobileRegistryRoot) as a pure header commitment — no state write.
+//
+// Under Profile 1 it holds from block 0 with no activation field (A20).
 func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
+	if c.IsProfile1() {
+		return true
+	}
 	return isForked(c.MobileAnchorTime, time)
+}
+
+// HasMobileAnchor reports whether the chain runs the MobileAnchor fork at any
+// time: a scheduled MobileAnchorTime, or Profile 1 (from block 0). Start-up
+// checks that only ask "is the fork configured at all" use it.
+func (c *ChainConfig) HasMobileAnchor() bool {
+	return c != nil && (c.MobileAnchorTime != nil || c.IsProfile1())
 }
 
 // IsMobileRegistryRootInHeader returns whether a header at time carries
@@ -469,19 +484,31 @@ func (c *ChainConfig) IsTxRootBlake3(time uint64) bool {
 
 // IsDeferredExecution returns whether a header at time carries its parent's
 // execution fields (DeferredExecutionTime).
+// Under Profile 1 it holds from block 0 (A10, depth 1).
 func (c *ChainConfig) IsDeferredExecution(time uint64) bool {
+	if c.IsProfile1() {
+		return true
+	}
 	return isForked(c.DeferredExecutionTime, time)
 }
 
 // IsUnchangedAccountNoOp returns whether a block at time leaves an account it
 // touched but did not change out of the state root (UnchangedAccountNoOpTime).
+// Under Profile 1 it holds from block 0 (A9).
 func (c *ChainConfig) IsUnchangedAccountNoOp(time uint64) bool {
+	if c.IsProfile1() {
+		return true
+	}
 	return isForked(c.UnchangedAccountNoOpTime, time)
 }
 
 // IsStorageNetChange returns whether a block at time leaves a slot it stored
 // to but did not change out of the state root (StorageNetChangeTime).
+// Under Profile 1 it holds from block 0 (decisions of 2026-11-23).
 func (c *ChainConfig) IsStorageNetChange(time uint64) bool {
+	if c.IsProfile1() {
+		return true
+	}
 	return isForked(c.StorageNetChangeTime, time)
 }
 

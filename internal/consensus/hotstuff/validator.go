@@ -195,6 +195,17 @@ func rotateOnTimeoutSetting(cfg *params.HotStuffConfig) (bool, ViewNumber) {
 	return false, 0
 }
 
+// rotateOnTimeoutFor is rotateOnTimeoutSetting with the chain's profile
+// applied first: under Profile 1 the rule holds from view 0 and no env
+// override is read (one set is refused at start-up, P3).
+func rotateOnTimeoutFor(chainConfig *params.ChainConfig, cfg *params.HotStuffConfig) (bool, ViewNumber) {
+	if chainConfig.IsProfile1() {
+		on, from := chainConfig.HotStuffRotateOnTimeout()
+		return on, from
+	}
+	return rotateOnTimeoutSetting(cfg)
+}
+
 // LeaderTenure reports the configured consecutive-view tenure.
 func LeaderTenure() uint64 { return leaderTenure }
 

@@ -145,7 +145,7 @@ var legacyProtoBlocks atomic.Bool
 // direction only costs compatibility with peers that predate RLP, which is why
 // the default is off.
 func AllowLegacyProtoBlocks(cfg *params.ChainConfig) {
-	legacyProtoBlocks.Store(cfg != nil && cfg.BALTime == nil && cfg.MobileAnchorTime == nil)
+	legacyProtoBlocks.Store(cfg != nil && cfg.BALTime == nil && !cfg.HasMobileAnchor())
 }
 
 // decodeChunkedBlock accepts both generations of the block-range wire payload.

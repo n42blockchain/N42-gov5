@@ -1733,7 +1733,7 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 // when the pool is not configured/enabled.
 func (n *Node) wireCommitteePool(hs *hotstuff.HotStuff) error {
 	hsCfg := n.config.ChainCfg.HotStuff
-	if hsCfg == nil || hsCfg.CommitteePool == nil || !hsCfg.CommitteePool.Enabled {
+	if !n.config.ChainCfg.HotStuffCommitteePoolEnabled() {
 		return nil
 	}
 	cp := hsCfg.CommitteePool
@@ -1792,7 +1792,7 @@ func (n *Node) Start() error {
 	// leader but has no registry/root provider; otherwise it would appear healthy
 	// until its turn, then repeatedly propose headers every follower rejects.
 	if n.config.NodeCfg.Miner && n.config.ChainCfg != nil &&
-		n.config.ChainCfg.MobileAnchorTime != nil && !n.config.MobileVerifyCfg.Enabled {
+		n.config.ChainCfg.HasMobileAnchor() && !n.config.MobileVerifyCfg.Enabled {
 		return errors.New("mobileverify must be enabled on a mining node when MobileAnchorTime is configured")
 	}
 
@@ -1889,7 +1889,7 @@ func (n *Node) Start() error {
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
 		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
-		if hs.Config().InteropV4 {
+		if hs.Config().InteropV4 || n.config.ChainCfg.IsProfile1() {
 			if n.config.ChainCfg == nil || n.config.ChainCfg.ChainID == nil || !n.config.ChainCfg.ChainID.IsUint64() {
 				return errors.New("hotstuff H2-v4 requires a uint64 chain ID")
 			}
@@ -2540,7 +2540,7 @@ func (n *Node) startMobileVerify() error {
 			// wired, so post-fork the leader would stamp a nil MobileRegistryRoot
 			// that every follower rejects. That is the exact state the pre-start
 			// guard exists to prevent — make it fatal here too, not a log line.
-			if n.config.NodeCfg.Miner && n.config.ChainCfg != nil && n.config.ChainCfg.MobileAnchorTime != nil {
+			if n.config.NodeCfg.Miner && n.config.ChainCfg != nil && n.config.ChainCfg.HasMobileAnchor() {
 				return fmt.Errorf("mobileverify packet service failed to start on a MobileAnchor mining node: %w", err)
 			}
 			log.Error("mobileverify: packet service failed to start", "err", err)
