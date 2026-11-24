@@ -496,18 +496,10 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	if header.GasUsed > usedLimit {
 		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, usedLimit)
 	}
-	// EIP-1559 BaseFee re-derivation is deliberately NOT enforced here.
-	// A head-adjacency gate was tried and is unsound: the FIRST header of
-	// every catch-up batch extends the local head by definition, so a
-	// laggard importing replay-v2 history (whose BaseFee is copied across
-	// a gap-filled timeline and does not re-derive) would wedge at the
-	// first batch boundary — and which headers got checked was
-	// timing-dependent (CurrentBlock advances concurrently with batch
-	// verification). A public multi-validator deployment needs a
-	// provenance watermark (e.g. replay head recorded in DbInfo at reseed)
-	// below which the check is skipped and above which it is enforced
-	// unconditionally; on the permissioned fleet every producer derives
-	// BaseFee via misc.CalcBaseFee, so the economic risk is nil.
+	// EIP-1559 baseFee (B14) and the fixed gas limit (A23) are checked on
+	// profile-1 chains (checkProfile1Gas). Legacy chains keep the old rule:
+	// no re-derivation, because replay-v2 history copies baseFee across a
+	// gap-filled timeline and does not re-derive.
 
 	// MobileAnchor is a scheduled header fork, not an optional producer hint.
 	// Enforce the RLP shape on both sides of the boundary so a validator started

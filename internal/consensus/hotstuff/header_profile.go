@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 )
 
 // maxProfile1ExtraLen bounds a profile-1 header's extraData (B1).
@@ -74,6 +75,15 @@ var (
 	// ErrProfile1Element22: header element 22 (block access list hash) is
 	// present; profile 1 writes the empty 0x80 gap (B12, O6).
 	ErrProfile1Element22 = errors.New("profile 1: element 22 is not the empty gap")
+)
+
+// Profile-1 gas refusals (A23, B14).
+var (
+	// ErrProfile1GasLimit: gasLimit differs from config.hotstuff.gasLimit (A23).
+	ErrProfile1GasLimit = errors.New("profile 1: gasLimit is not hotstuff.gasLimit")
+	// ErrProfile1BaseFee: baseFee is not EIP-1559's value from the parent
+	// header as written (B14).
+	ErrProfile1BaseFee = errors.New("profile 1: baseFee is not the EIP-1559 value of the parent")
 )
 
 // Profile1RequestsHash is requestsHash on every profile-1 header including
@@ -253,6 +263,9 @@ func (h *HotStuff) checkProfile1Header(chain consensus.ChainHeaderReader, header
 	if err := checkProfile1Fields(header); err != nil {
 		return err
 	}
+	if err := h.checkProfile1Gas(header, parent); err != nil {
+		return err
+	}
 	if header.Time < parent.Time {
 		return fmt.Errorf("%w: %d < parent %d", ErrProfile1TimeBeforeParent, header.Time, parent.Time)
 	}
@@ -368,6 +381,28 @@ func checkProfile1Fields(header *block.Header) error {
 		return fmt.Errorf("%w: blobGasUsed %d, excessBlobGas %d", ErrProfile1BlobGas, *header.BlobGasUsed, *header.ExcessBlobGas)
 	case header.BlockAccessListHash != nil:
 		return fmt.Errorf("%w: %s", ErrProfile1Element22, header.BlockAccessListHash.Hex())
+	}
+	return nil
+}
+
+// checkProfile1Gas applies A23 (gasLimit equals hotstuff.gasLimit, no ramp)
+// and B14 (baseFee is EIP-1559's value from the parent header, elasticity 2,
+// denominator 8, with the parent's gasUsed field as written, which under
+// deferred execution is the grandparent's execution).
+func (h *HotStuff) checkProfile1Gas(header, parent *block.Header) error {
+	var want uint64
+	if h.chainConfig != nil && h.chainConfig.HotStuff != nil {
+		want = h.chainConfig.HotStuff.GasLimit
+	}
+	if want == 0 || header.GasLimit != want {
+		return fmt.Errorf("%w: %d, want %d", ErrProfile1GasLimit, header.GasLimit, want)
+	}
+	if header.BaseFee == nil {
+		return fmt.Errorf("%w: absent", ErrProfile1BaseFee)
+	}
+	if expected := misc.CalcBaseFee(h.chainConfig, parent); header.BaseFee.ToBig().Cmp(expected) != 0 {
+		return fmt.Errorf("%w: %s, want %s (parent baseFee %s, gasUsed %d, gasLimit %d)",
+			ErrProfile1BaseFee, header.BaseFee, expected, parent.BaseFee, parent.GasUsed, parent.GasLimit)
 	}
 	return nil
 }
