@@ -271,40 +271,9 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 // initializes the consensus engine. This is the production entry point called
 // from node.go after Authorize.
 func (h *HotStuff) InitEngineFromConfig() error {
-	cfg := h.config
-	if cfg == nil || len(cfg.Validators) == 0 {
-		return fmt.Errorf("hotstuff: no validators configured in chain config")
-	}
-
-	validators := make([]ValidatorInfo, 0, len(cfg.Validators))
-	for i, vc := range cfg.Validators {
-		// Validate address format: must be 42-char 0x-prefixed hex.
-		addrStr := strings.TrimSpace(vc.Address)
-		if len(addrStr) != 42 || !strings.HasPrefix(addrStr, "0x") {
-			return fmt.Errorf("hotstuff: validator %d has malformed address: %q", i, vc.Address)
-		}
-		addr := types.HexToAddress(addrStr)
-		if addr == (types.Address{}) {
-			return fmt.Errorf("hotstuff: validator %d has zero address", i)
-		}
-
-		blsHex := strings.TrimPrefix(vc.BLSKey, "0x")
-		pubKeyBytes, err := hex.DecodeString(blsHex)
-		if err != nil {
-			return fmt.Errorf("hotstuff: validator %d has invalid BLS key hex: %w", i, err)
-		}
-		if len(pubKeyBytes) != 48 {
-			return fmt.Errorf("hotstuff: validator %d BLS key wrong length: got %d, want 48", i, len(pubKeyBytes))
-		}
-		pubKey, err := bls.PublicKeyFromBytes(pubKeyBytes)
-		if err != nil {
-			return fmt.Errorf("hotstuff: validator %d has invalid BLS public key: %w", i, err)
-		}
-
-		validators = append(validators, ValidatorInfo{
-			Address:   addr,
-			PublicKey: pubKey,
-		})
+	validators, err := validatorsFromConfig(h.config)
+	if err != nil {
+		return err
 	}
 
 	n := uint32(len(validators))
@@ -314,6 +283,46 @@ func (h *HotStuff) InitEngineFromConfig() error {
 	faultTolerance := (n - 1) / 3
 
 	return h.InitEngine(validators, faultTolerance)
+}
+
+// validatorsFromConfig parses the genesis validator set of the chain config,
+// in list order (= QC bitmap order = leader index).
+func validatorsFromConfig(cfg *params.HotStuffConfig) ([]ValidatorInfo, error) {
+	if cfg == nil || len(cfg.Validators) == 0 {
+		return nil, fmt.Errorf("hotstuff: no validators configured in chain config")
+	}
+
+	validators := make([]ValidatorInfo, 0, len(cfg.Validators))
+	for i, vc := range cfg.Validators {
+		// Validate address format: must be 42-char 0x-prefixed hex.
+		addrStr := strings.TrimSpace(vc.Address)
+		if len(addrStr) != 42 || !strings.HasPrefix(addrStr, "0x") {
+			return nil, fmt.Errorf("hotstuff: validator %d has malformed address: %q", i, vc.Address)
+		}
+		addr := types.HexToAddress(addrStr)
+		if addr == (types.Address{}) {
+			return nil, fmt.Errorf("hotstuff: validator %d has zero address", i)
+		}
+
+		blsHex := strings.TrimPrefix(vc.BLSKey, "0x")
+		pubKeyBytes, err := hex.DecodeString(blsHex)
+		if err != nil {
+			return nil, fmt.Errorf("hotstuff: validator %d has invalid BLS key hex: %w", i, err)
+		}
+		if len(pubKeyBytes) != 48 {
+			return nil, fmt.Errorf("hotstuff: validator %d BLS key wrong length: got %d, want 48", i, len(pubKeyBytes))
+		}
+		pubKey, err := bls.PublicKeyFromBytes(pubKeyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("hotstuff: validator %d has invalid BLS public key: %w", i, err)
+		}
+
+		validators = append(validators, ValidatorInfo{
+			Address:   addr,
+			PublicKey: pubKey,
+		})
+	}
+	return validators, nil
 }
 
 // Engine returns the inner consensus state machine (may be nil if not initialized).
