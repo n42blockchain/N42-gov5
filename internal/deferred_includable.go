@@ -222,6 +222,16 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 		value := t.Value()
 		hasValue := value != nil && !value.IsZero()
 		selfTransfer := !create && *t.To() == from
+		if config.IsProfile1() && t.Type() == transaction.SetCodeTxType {
+			// Profile 1 holds a set-code transaction to the EIP-7702 shape
+			// in execution (C3); one execution refuses is not includable.
+			if create {
+				return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, ErrSetCodeTxCreate)
+			}
+			if len(t.AuthList()) == 0 {
+				return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, ErrEmptyAuthList)
+			}
+		}
 		if err := CheckProfile1InitCode(config, rules.IsGlamsterdam, create, len(t.Data())); err != nil {
 			return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
 		}
