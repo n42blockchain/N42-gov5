@@ -160,6 +160,7 @@ type v3Runner struct {
 	// What the last run produced: its header, receipts, gas pool and the
 	// receipts' cumulative gas.
 	lastHeader   *block.Header
+	lastRoot     types.Hash
 	lastReceipts []*block.Receipt
 	lastGP       *common.GasPool
 	lastUsedGas  uint64
@@ -174,6 +175,12 @@ func newV3Runner(t *testing.T, add map[types.Address]conf.GenesisAccount) (*v3Ru
 	for addr, acct := range add {
 		g.Alloc[addr] = acct
 	}
+	return newV3RunnerFrom(t, g)
+}
+
+// newV3RunnerFrom is newV3Runner on the given genesis.
+func newV3RunnerFrom(t *testing.T, g *conf.Genesis) (*v3Runner, types.Hash) {
+	t.Helper()
 	db := memdb.NewTestDB(t)
 	rwtx := memdb.BeginRw(t, db)
 	// The genesis header from ToBlock; the alloc written to plain state as
@@ -255,7 +262,6 @@ func (r *v3Runner) sign(to *types.Address, value *uint256.Int, gas uint64, data 
 // record. It mirrors StateProcessor.Process and HotStuff's Finalize.
 func (r *v3Runner) run(name, desc string, beaconRoot types.Hash, txs []*transaction.Transaction, absent ...types.Address) v3Block {
 	r.t.Helper()
-	rwtx := r.tx
 	number := r.parent.Number.Uint64() + 1
 	header := &block.Header{
 		ParentHash:       r.parent.Hash(),
@@ -267,47 +273,9 @@ func (r *v3Runner) run(name, desc string, beaconRoot types.Hash, txs []*transact
 		Difficulty:       uint256.NewInt(0),
 		ParentBeaconRoot: &beaconRoot,
 	}
-	ibs := state.New(state.NewPlainStateReader(rwtx))
-	ibs.SetRootComputer(r.rc)
-	ibs.ApplyUnchangedAccountRule(r.cfg, header.Time)
-	if err := ProcessExecutionBlockStart(header.ParentBeaconRoot, r.cfg, ibs, header, nil); err != nil {
-		r.t.Fatalf("%s: block start: %v", name, err)
-	}
-	gp := new(common.GasPool).AddGas(header.GasLimit)
-	var usedGas uint64
-	hashFn := func(uint64) types.Hash { return types.Hash{} }
-	raw := make([]hexutil.Bytes, 0, len(txs))
-	receipts := make([]*block.Receipt, 0, len(txs))
-	for i, tx := range txs {
-		ibs.Prepare(tx.Hash(), types.Hash{}, i)
-		receipt, _, err := ApplyTransaction(r.cfg, hashFn, nil, &r.coinbase, gp, ibs, state.NewNoopWriter(), header, tx, &usedGas, vm2.Config{})
-		if err != nil {
-			r.t.Fatalf("%s: tx %d: %v", name, i, err)
-		}
-		receipts = append(receipts, receipt)
-		enc, err := transaction.EncodeEthereumTransaction(tx)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		raw = append(raw, enc)
-	}
-	if _, err := ProcessExecutionBlockEnd(nil, r.cfg, ibs, header, nil); err != nil {
-		r.t.Fatalf("%s: block end: %v", name, err)
-	}
-	// A8: devBlockReward to the coinbase and the faucet (HotStuff Finalize).
-	ibs.AddBalance(r.coinbase, r.reward)
-	ibs.AddBalance(r.faucet, r.reward)
-	ibs.ApplyUnchangedAccountRule(r.cfg, header.Time)
-	ibs.SetRootComputer(r.rc)
-	root := ibs.IntermediateRoot()
-	accounts, storage := ibs.LastRootDirtySet()
-	rules := r.cfg.Rules(number)
-	if err := ibs.CommitBlock(rules, state.NewPlainStateWriter(rwtx, rwtx, number)); err != nil {
-		r.t.Fatalf("%s: commit: %v", name, err)
-	}
+	root, accounts, storage, raw := r.execute(name, header, txs)
 	header.Root = root
 	r.parent = header
-	r.lastHeader, r.lastReceipts, r.lastGP, r.lastUsedGas = header, receipts, gp, usedGas
 
 	out := v3Block{
 		Case:        name,
@@ -336,6 +304,58 @@ func (r *v3Runner) run(name, desc string, beaconRoot types.Hash, txs []*transact
 		}
 	}
 	return out
+}
+
+// execute runs txs as the body of header on the runner's state (the header's
+// coinbase is paid the fees and the A8 reward) and commits the result. It
+// returns the QMDB root after the block, the write set and the encoded
+// transactions; the receipts and gas pool are kept in r.last*. The runner's
+// parent is not advanced.
+func (r *v3Runner) execute(name string, header *block.Header, txs []*transaction.Transaction) (types.Hash, map[types.Address]*account.StateAccount, map[types.Address]map[types.Hash]*uint256.Int, []hexutil.Bytes) {
+	r.t.Helper()
+	rwtx := r.tx
+	number := header.Number.Uint64()
+	coinbase := header.Coinbase
+	ibs := state.New(state.NewPlainStateReader(rwtx))
+	ibs.SetRootComputer(r.rc)
+	ibs.ApplyUnchangedAccountRule(r.cfg, header.Time)
+	if err := ProcessExecutionBlockStart(header.ParentBeaconRoot, r.cfg, ibs, header, nil); err != nil {
+		r.t.Fatalf("%s: block start: %v", name, err)
+	}
+	gp := new(common.GasPool).AddGas(header.GasLimit)
+	var usedGas uint64
+	hashFn := func(uint64) types.Hash { return types.Hash{} }
+	raw := make([]hexutil.Bytes, 0, len(txs))
+	receipts := make([]*block.Receipt, 0, len(txs))
+	for i, tx := range txs {
+		ibs.Prepare(tx.Hash(), types.Hash{}, i)
+		receipt, _, err := ApplyTransaction(r.cfg, hashFn, nil, &coinbase, gp, ibs, state.NewNoopWriter(), header, tx, &usedGas, vm2.Config{})
+		if err != nil {
+			r.t.Fatalf("%s: tx %d: %v", name, i, err)
+		}
+		receipts = append(receipts, receipt)
+		enc, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		raw = append(raw, enc)
+	}
+	if _, err := ProcessExecutionBlockEnd(nil, r.cfg, ibs, header, nil); err != nil {
+		r.t.Fatalf("%s: block end: %v", name, err)
+	}
+	// A8: devBlockReward to the coinbase and the faucet (HotStuff Finalize).
+	ibs.AddBalance(coinbase, r.reward)
+	ibs.AddBalance(r.faucet, r.reward)
+	ibs.ApplyUnchangedAccountRule(r.cfg, header.Time)
+	ibs.SetRootComputer(r.rc)
+	root := ibs.IntermediateRoot()
+	accounts, storage := ibs.LastRootDirtySet()
+	rules := r.cfg.Rules(number)
+	if err := ibs.CommitBlock(rules, state.NewPlainStateWriter(rwtx, rwtx, number)); err != nil {
+		r.t.Fatalf("%s: commit: %v", name, err)
+	}
+	r.lastHeader, r.lastRoot, r.lastReceipts, r.lastGP, r.lastUsedGas = header, root, receipts, gp, usedGas
+	return root, accounts, storage, raw
 }
 
 func v3AccountOps(accounts map[types.Address]*account.StateAccount) []v3AccountOp {

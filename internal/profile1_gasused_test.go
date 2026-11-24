@@ -72,5 +72,5 @@ func TestProfile1DeferredGasUsedIsEIP8037(t *testing.T) {
 func profile1ExecutedResult(r *v3Runner) rawdb.ExecutedResult {
 	h := r.lastHeader
 	gasUsed := HeaderGasUsed(r.cfg, h, r.lastGP, r.lastUsedGas)
-	return ExecutedResultFor(r.cfg, h.Number.Uint64(), h.Root, r.lastReceipts, gasUsed)
+	return ExecutedResultFor(r.cfg, h.Number.Uint64(), r.lastRoot, r.lastReceipts, gasUsed)
 }
