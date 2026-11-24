@@ -573,10 +573,12 @@ func (st *StateTransition) preCheck(gasBailout bool) error {
 
 // checkSetCodeTxShape applies geth's EIP-7702 transaction checks: no set-code
 // transaction before Prague, none without a recipient, none with an empty
-// authorization list. N42 native chains are left to their own rules.
+// authorization list. N42 native chains are left to their own rules, except a
+// Profile-1 chain, which holds the shape as part of the type (standard C3).
 func (st *StateTransition) checkSetCodeTxShape() error {
 	m, ok := st.msg.(setCodeTxMessage)
-	if !ok || !m.IsSetCodeTx() || st.evm.ChainConfig().IsN42Native() {
+	cfg := st.evm.ChainConfig()
+	if !ok || !m.IsSetCodeTx() || (cfg.IsN42Native() && !cfg.IsProfile1()) {
 		return nil
 	}
 	if !st.evm.ChainRules().IsPrague {
