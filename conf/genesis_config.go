@@ -108,6 +108,21 @@ type genesisAccountJSON struct {
 // UnmarshalJSON accepts both the repository's native genesis format and
 // Hive/Geth-style genesis files where numeric and byte fields are hex strings.
 func (g *Genesis) UnmarshalJSON(input []byte) error {
+	// A config that names n42Profile is held to the profile's field set
+	// before anything else reads it (standard P4: fail closed at start-up).
+	var rawCfg struct {
+		Config json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(input, &rawCfg); err != nil {
+		return err
+	}
+	profile := params.ConfigJSONDeclaresProfile(rawCfg.Config)
+	if profile {
+		if err := params.ValidateProfile1ConfigJSON(rawCfg.Config); err != nil {
+			return fmt.Errorf("profile-1 genesis refused: %w", err)
+		}
+	}
+
 	var dec genesisJSON
 	if err := json.Unmarshal(input, &dec); err != nil {
 		return err
@@ -160,21 +175,6 @@ func (g *Genesis) UnmarshalJSON(input []byte) error {
 	slotNumber, err := decodeGenesisUint64("slotNumber", dec.SlotNumber)
 	if err != nil {
 		return err
-	}
-
-	// A config that names n42Profile is held to the profile's field set
-	// before anything else reads it (standard P4: fail closed at start-up).
-	var rawCfg struct {
-		Config json.RawMessage `json:"config"`
-	}
-	if err := json.Unmarshal(input, &rawCfg); err != nil {
-		return err
-	}
-	profile := params.ConfigJSONDeclaresProfile(rawCfg.Config)
-	if profile {
-		if err := params.ValidateProfile1ConfigJSON(rawCfg.Config); err != nil {
-			return fmt.Errorf("profile-1 genesis refused: %w", err)
-		}
 	}
 
 	*g = Genesis{
