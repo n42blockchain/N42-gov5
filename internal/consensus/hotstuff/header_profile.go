@@ -12,7 +12,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	gosync "sync"
+	"sync"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -97,7 +97,7 @@ const profile1ClockSkew = 2
 // for the chain's life (AM5). Parsed once from the chain config so the header
 // checks work on nodes that run no consensus engine.
 type profile1Validators struct {
-	once gosync.Once
+	once sync.Once
 	set  *ValidatorSet
 	err  error
 }
@@ -405,4 +405,56 @@ func (h *HotStuff) checkProfile1Gas(header, parent *block.Header) error {
 			ErrProfile1BaseFee, header.BaseFee, expected, parent.BaseFee, parent.GasUsed, parent.GasLimit)
 	}
 	return nil
+}
+
+// maxProfile1Stamps bounds the per-(view, parent) timestamp cache.
+const maxProfile1Stamps = 64
+
+type profile1StampKey struct {
+	view   ViewNumber
+	parent types.Hash
+}
+
+// profile1Stamps remembers the timestamp stamped for each (view, parent) a
+// leader built on.
+type profile1Stamps struct {
+	mu sync.Mutex
+	m  map[profile1StampKey]uint64
+}
+
+// profile1Stamp is the leader's B4 timestamp, max(parent.time, floor(now)),
+// fixed the first time it is computed for (view, parent): a rebuild of the
+// same view on the same parent re-stamps the same value, so the leader still
+// produces one block per view (F6) even though the clock moved.
+func (h *HotStuff) profile1Stamp(view ViewNumber, parent *block.Header) uint64 {
+	key := profile1StampKey{view: view, parent: parent.Hash()}
+	st := &h.p1Stamps
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if t, ok := st.m[key]; ok {
+		return t
+	}
+	clock := h.now
+	if clock == nil {
+		clock = time.Now
+	}
+	t := parent.Time
+	if secs := clock().Unix(); secs > 0 && uint64(secs) > t {
+		t = uint64(secs)
+	}
+	if st.m == nil {
+		st.m = make(map[profile1StampKey]uint64)
+	}
+	if len(st.m) >= maxProfile1Stamps {
+		for k := range st.m {
+			if k.view < view {
+				delete(st.m, k)
+			}
+		}
+		if len(st.m) >= maxProfile1Stamps {
+			clear(st.m)
+		}
+	}
+	st.m[key] = t
+	return t
 }

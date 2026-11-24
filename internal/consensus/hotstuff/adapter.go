@@ -130,6 +130,11 @@ type HotStuff struct {
 	// chain-bound H2-v4 identity the header QCs are checked against.
 	p1Validators profile1Validators
 	p1Identity   *H2V4ChainIdentity
+	// p1Stamps keeps the timestamp the leader stamped per (view, parent), so a
+	// rebuild for the same view and parent yields the identical header (F6).
+	p1Stamps profile1Stamps
+	// now is the clock of the profile-1 timestamp stamp (tests override it).
+	now func() time.Time
 }
 
 // SetCommitteeEvidence injects the live BLS committee pool and the consensus-
@@ -615,6 +620,18 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// Set the coinbase to the signer.
 	header.Coinbase = signer
 
+	profile1 := h.chainConfig.IsProfile1()
+	if profile1 {
+		// A23: every header carries hotstuff.gasLimit, no step toward a
+		// local gas ceiling. B3: the constant fields are zero.
+		if h.chainConfig.HotStuff != nil {
+			header.GasLimit = h.chainConfig.HotStuff.GasLimit
+		}
+		header.UncleHash = types.Hash{}
+		header.MixDigest = types.Hash{}
+		header.Nonce = block.BlockNonce{}
+	}
+
 	// Difficulty is 0: HotStuff orders blocks by view number and chooses the
 	// canonical chain by commit authority (CommitToCanonical), never by total
 	// difficulty. Zero matches the post-merge/PoS convention (EIP-3675: a non-PoW
@@ -679,7 +696,10 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 				header.ParentHash[:8], header.Number, perr)
 		}
 	}
-	if parentHeader != nil {
+	if parentHeader != nil && profile1 {
+		// B4: max(parent.time, floor(now)), fixed per (view, parent).
+		header.Time = h.profile1Stamp(view, parentHeader)
+	} else if parentHeader != nil {
 		period := h.config.Period
 		if period == 0 {
 			period = 3 // default 3 second blocks
