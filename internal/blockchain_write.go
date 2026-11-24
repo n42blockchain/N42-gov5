@@ -107,7 +107,7 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 	if !ok {
 		return errors.New("WriteBlockWithState: ibs must be *state.IntraBlockState")
 	}
-	_, err := bc.writeBlockWithState(blk, receipts, stateDB, nopay)
+	_, err := bc.writeBlockWithState(blk, receipts, stateDB, nopay, nil)
 	if err != nil && bc.qmdbEnabled {
 		// The leader path replays the sealed dirty set onto the LIVE tree
 		// inside writeBlockWithState; a failure after that replay (e.g. the
@@ -145,7 +145,11 @@ func checkQMDBLeaderSealParent(tx kv.Tx, blockNumber uint64, parentHash types.Ha
 
 // writeBlockWithState persists block, receipts, state, and reward data, then
 // decides whether a reorg is needed. Returns the resulting WriteStatus.
-func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, retErr error) {
+//
+// blockGas, when known, is the header gas figure execution returned
+// (HeaderGasUsed); under deferred execution it is stored with the block's
+// result.
+func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int, blockGas *uint64) (status WriteStatus, retErr error) {
 	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
 	if err != nil {
 		return NonStatTy, err
@@ -561,7 +565,11 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				// derive it here as a follower does.
 				result, hinted := bc.takeExecutedResultHint(blk.Hash())
 				if !hinted || result.Root != root {
-					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
+					gasUsed, err := executedGasForWrite(bc.chainConfig, hdr, receipts, blockGas, result, hinted)
+					if err != nil {
+						return err
+					}
+					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts, gasUsed)
 				}
 				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
 					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)

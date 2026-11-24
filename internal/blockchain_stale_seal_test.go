@@ -40,7 +40,7 @@ func TestWriteBlockWithStateRejectsStaleQMDBSealBeforeOtherWrites(t *testing.T) 
 	ibs := state.New(nil)
 	ibs.SetRootComputer(commitment.NewQMDBRootComputer()) // isolated miner tree
 
-	_, err := bc.writeBlockWithState(stale, nil, ibs, nil)
+	_, err := bc.writeBlockWithState(stale, nil, ibs, nil, nil)
 	if !errors.Is(err, ErrStaleSeal) {
 		t.Fatalf("writeBlockWithState() error = %v, want ErrStaleSeal", err)
 	}

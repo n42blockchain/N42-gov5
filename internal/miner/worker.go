@@ -2697,6 +2697,10 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	envCopy := env.copy()
 	dCopy := time.Since(tCommitStart)
 	deferredExec := block.DeferredAt(envCopy.header.Time)
+	// This block's own header gas figure (fillTransactions stamped
+	// HeaderGasUsed: under Amsterdam the EIP-8037 block figure), before the
+	// header takes the parent's below.
+	ownGasUsed := envCopy.header.GasUsed
 	if deferredExec {
 		// The header carries the parent's executed result; this block's own
 		// is recorded below and appears in the next header.
@@ -2721,7 +2725,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		if !ok {
 			return errors.New("miner: deferred execution: the build computed no root")
 		}
-		r := internal.ExecutedResultFor(w.chainConfig, envCopy.header.Number.Uint64(), root, envCopy.receipts)
+		r := internal.ExecutedResultFor(w.chainConfig, envCopy.header.Number.Uint64(), root, envCopy.receipts, ownGasUsed)
 		exec = &r
 	}
 	dFinalize := time.Since(tCommitStart)

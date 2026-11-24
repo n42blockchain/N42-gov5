@@ -2342,7 +2342,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			if bc.tryZKFastPath(blk) {
 				start := time.Now()
 				wstart := time.Now()
-				status, werr := bc.writeBlockWithState(blk, nil, nil, nil)
+				status, werr := bc.writeBlockWithState(blk, nil, nil, nil, nil)
 				if werr != nil {
 					return it.index, werr
 				}
@@ -2575,7 +2575,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		}
 
 		wstart := time.Now()
-		status, err := bc.writeBlockWithState(blk, receipts, ibs, nopay)
+		status, err := bc.writeBlockWithState(blk, receipts, ibs, nopay, &usedGas)
 		if err != nil {
 			// writeBlockWithState rolled its tx back, but execution above already
 			// put this block's appends on the non-transactional live QMDB tree

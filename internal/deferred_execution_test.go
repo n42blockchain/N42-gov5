@@ -66,7 +66,7 @@ func TestDeferredHeaderCheckAcrossTheFork(t *testing.T) {
 
 func TestExecutedResultForUsesReceipts(t *testing.T) {
 	receipts := []*block.Receipt{{CumulativeGasUsed: 21000}, {CumulativeGasUsed: 42000}}
-	r := ExecutedResultFor(&params.ChainConfig{}, 5, types.Hash{7}, receipts)
+	r := ExecutedResultFor(&params.ChainConfig{}, 5, types.Hash{7}, receipts, ReceiptsGasUsed(receipts))
 	if r.GasUsed != 42000 || r.Root != (types.Hash{7}) {
 		t.Fatalf("result %+v", r)
 	}

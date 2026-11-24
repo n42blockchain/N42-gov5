@@ -157,6 +157,12 @@ type v3Runner struct {
 	sender   types.Address
 	nonce    uint64
 	signer   transaction.Signer
+	// What the last run produced: its header, receipts, gas pool and the
+	// receipts' cumulative gas.
+	lastHeader   *block.Header
+	lastReceipts []*block.Receipt
+	lastGP       *common.GasPool
+	lastUsedGas  uint64
 }
 
 func newV3Runner(t *testing.T, add map[types.Address]conf.GenesisAccount) (*v3Runner, types.Hash) {
@@ -271,11 +277,14 @@ func (r *v3Runner) run(name, desc string, beaconRoot types.Hash, txs []*transact
 	var usedGas uint64
 	hashFn := func(uint64) types.Hash { return types.Hash{} }
 	raw := make([]hexutil.Bytes, 0, len(txs))
+	receipts := make([]*block.Receipt, 0, len(txs))
 	for i, tx := range txs {
 		ibs.Prepare(tx.Hash(), types.Hash{}, i)
-		if _, _, err := ApplyTransaction(r.cfg, hashFn, nil, &r.coinbase, gp, ibs, state.NewNoopWriter(), header, tx, &usedGas, vm2.Config{}); err != nil {
+		receipt, _, err := ApplyTransaction(r.cfg, hashFn, nil, &r.coinbase, gp, ibs, state.NewNoopWriter(), header, tx, &usedGas, vm2.Config{})
+		if err != nil {
 			r.t.Fatalf("%s: tx %d: %v", name, i, err)
 		}
+		receipts = append(receipts, receipt)
 		enc, err := transaction.EncodeEthereumTransaction(tx)
 		if err != nil {
 			r.t.Fatal(err)
@@ -298,6 +307,7 @@ func (r *v3Runner) run(name, desc string, beaconRoot types.Hash, txs []*transact
 	}
 	header.Root = root
 	r.parent = header
+	r.lastHeader, r.lastReceipts, r.lastGP, r.lastUsedGas = header, receipts, gp, usedGas
 
 	out := v3Block{
 		Case:        name,

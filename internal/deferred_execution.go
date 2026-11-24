@@ -80,18 +80,42 @@ func ReceiptsRootFor(config *params.ChainConfig, number uint64, receipts []*bloc
 }
 
 // ExecutedResultFor assembles the stored result of a block from what
-// executing it produced.
-func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Hash, receipts []*block.Receipt) rawdb.ExecutedResult {
-	var gasUsed uint64
-	if n := len(receipts); n > 0 {
-		gasUsed = receipts[n-1].CumulativeGasUsed
-	}
+// executing it produced. gasUsed is the block's header gas figure
+// (HeaderGasUsed): under Amsterdam the EIP-8037 max(block regular gas, block
+// state gas) without refunds, which is not the receipts' cumulative gas.
+func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Hash, receipts []*block.Receipt, gasUsed uint64) rawdb.ExecutedResult {
 	return rawdb.ExecutedResult{
 		Root:        root,
 		ReceiptHash: ReceiptsRootFor(config, number, receipts),
 		Bloom:       block.CreateBloom(receipts),
 		GasUsed:     gasUsed,
 	}
+}
+
+// ReceiptsGasUsed is the last receipt's cumulative gas: the header gas
+// figure of a block before Amsterdam.
+func ReceiptsGasUsed(receipts []*block.Receipt) uint64 {
+	if n := len(receipts); n > 0 && receipts[n-1] != nil {
+		return receipts[n-1].CumulativeGasUsed
+	}
+	return 0
+}
+
+// executedGasForWrite is the gas figure stored with a block's deferred
+// result when the leader's hint does not apply: the figure execution
+// returned (blockGas), else the hint's (it is the same block's
+// transactions; only the root disagreed), else, before Amsterdam, the
+// receipts' cumulative gas. An Amsterdam block with neither has no figure.
+func executedGasForWrite(config *params.ChainConfig, header *block.Header, receipts []*block.Receipt, blockGas *uint64, hint rawdb.ExecutedResult, hinted bool) (uint64, error) {
+	switch {
+	case blockGas != nil:
+		return *blockGas, nil
+	case hinted:
+		return hint.GasUsed, nil
+	case config == nil || !config.IsGlamsterdam(header.Time):
+		return ReceiptsGasUsed(receipts), nil
+	}
+	return 0, fmt.Errorf("deferred execution: block %d has no EIP-8037 gas figure to store", header.Number.Uint64())
 }
 
 // RememberExecutedResult hands a sealed block's write the execution result

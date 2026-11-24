@@ -150,7 +150,7 @@ func TestWriteBlockWithTdRejectsUnexpectedType(t *testing.T) {
 func TestWriteBlockWithStateRejectsUnexpectedType(t *testing.T) {
 	bc := &BlockChain{}
 
-	status, err := bc.writeBlockWithState(&nonConcreteBlockStub{}, nil, nil, nil)
+	status, err := bc.writeBlockWithState(&nonConcreteBlockStub{}, nil, nil, nil, nil)
 	if err == nil || err.Error() != "unexpected block type" {
 		t.Fatalf("writeBlockWithState() error = %v", err)
 	}
