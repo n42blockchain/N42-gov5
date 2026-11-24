@@ -29,6 +29,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/lib/rlp"
+	"github.com/n42blockchain/N42/params"
 )
 
 const (
@@ -78,7 +79,23 @@ type blockSizeLimiter struct {
 // header. The budget scales with encoder.MaxWireMessageSize, so raising
 // N42_MAX_GOSSIP_MB (network-wide) automatically raises the packing budget.
 func newBlockSizeLimiter(header *block.Header) *blockSizeLimiter {
-	limit := encoder.MaxWireMessageSize()
+	return newBlockSizeLimiterFor(header, encoder.MaxWireMessageSize())
+}
+
+// blockByteLimit is the block-size bound the builder budgets against. On a
+// Profile-1 chain it is the genesis config.hotstuff.maxBlockBytes (standard
+// B15/F3: transactions <= maxBlockBytes/10*9 - 32 KiB - header), the only
+// size bound there (AM2). Elsewhere it is the p2p wire bound, as before.
+func blockByteLimit(cfg *params.ChainConfig) uint64 {
+	if cfg.IsProfile1() && cfg.HotStuff != nil && cfg.HotStuff.MaxBlockBytes > 0 {
+		return cfg.HotStuff.MaxBlockBytes
+	}
+	return encoder.MaxWireMessageSize()
+}
+
+// newBlockSizeLimiterFor derives the packing budget from an explicit block
+// byte bound (see blockByteLimit).
+func newBlockSizeLimiterFor(header *block.Header, limit uint64) *blockSizeLimiter {
 	// uint64 -> int without overflow on 32-bit builds; the bound is bytes.
 	safe := int(limit / blockSizeSafetyDen * blockSizeSafetyNum)
 	if safe < 0 {

@@ -103,3 +103,23 @@ func fillGasBudget(headerGasLimit uint64) uint64 {
 	}
 	return headerGasLimit
 }
+
+// headerGasLimit is the gas limit the builder stamps on a new header. On a
+// Profile-1 chain every header carries config.hotstuff.gasLimit exactly
+// (standard A23: no ramp, no drift toward --miner.gasceil, no stress jump);
+// elsewhere the parent's limit moves toward gasCeil as before.
+func headerGasLimit(cfg *params.ChainConfig, parentGasLimit, gasCeil uint64) uint64 {
+	if cfg.IsProfile1() && cfg.HotStuff != nil && cfg.HotStuff.GasLimit > 0 {
+		return cfg.HotStuff.GasLimit
+	}
+	return CalcGasLimit(parentGasLimit, gasCeil)
+}
+
+// fillGasBudgetFor is fillGasBudget for a given chain: a Profile-1 builder
+// fills to the header gas limit (A23) and ignores N42_MINER_FILL_GAS.
+func fillGasBudgetFor(cfg *params.ChainConfig, headerGasLimit uint64) uint64 {
+	if cfg.IsProfile1() {
+		return headerGasLimit
+	}
+	return fillGasBudget(headerGasLimit)
+}

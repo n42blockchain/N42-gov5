@@ -390,6 +390,9 @@ type worker struct {
 	pacingAnchorNum  uint64
 	pacingAnchorSet  bool
 
+	// parentHeld feeds the Profile-1 pacing rule (pacing_profile1.go).
+	parentHeld parentHeld
+
 	// Pending-block snapshot for RPC readers, built LAZILY: updateSnapshot
 	// stores the raw material and pendingBlockAndReceipts assembles on first
 	// read. Building eagerly cost every block ~30-45ms of the leader's
@@ -1113,6 +1116,9 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 			bc.RememberSealedHeader(h)
 		}
 	}
+	if w.chainConfig.IsProfile1() {
+		w.parentHeld.note(blk.Hash(), time.Now())
+	}
 	sealhash := w.engine.SealHash(blk.Header())
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1407,6 +1413,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	wd := newBuildStallWatchdog(buildStallDiagEnabled, log.LogDir())
 	defer wd.Cancel()
 
+	// Profile-1 pacing counts from when the parent was first held; a build
+	// is triggered only once it is (see parentHeld).
+	if w.chainConfig.IsProfile1() {
+		w.parentHeld.note(parentHash, triggerAt)
+	}
+
 	w.mu.RLock()
 	coinbase := w.coinbase
 	w.mu.RUnlock()
@@ -1452,7 +1464,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if contentionDiagEnabled {
 					st.paceEnterAt = time.Now()
 				}
-				if err := w.paceBlock(num); err != nil {
+				if err := w.pace(num, parentHash); err != nil {
 					return err
 				}
 				if contentionDiagEnabled {
@@ -1658,7 +1670,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		if contentionDiagEnabled {
 			tPaceEnter = time.Now()
 		}
-		if err := w.paceBlock(current.header.Number.Uint64()); err != nil {
+		if err := w.pace(current.header.Number.Uint64(), current.header.ParentHash); err != nil {
 			return err
 		}
 		if contentionDiagEnabled {
@@ -2128,7 +2140,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// raised gas limit yet encode to >1 MiB, above the p2p bound, and a block no
 	// follower can receive livelocks import-gated HotStuff voting forever. See
 	// block_size.go.
-	sizeLimiter := newBlockSizeLimiter(header)
+	sizeLimiter := newBlockSizeLimiterFor(header, blockByteLimit(w.chainConfig))
 
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
@@ -2420,7 +2432,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			}
 			// Not applicable: rebuild the set and take the serial path.
 			txSet = builder.NewTxByPriceAndNonce(pending, header.BaseFee)
-			sizeLimiter = newBlockSizeLimiter(header)
+			sizeLimiter = newBlockSizeLimiterFor(header, blockByteLimit(w.chainConfig))
 		}
 	}
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
@@ -2618,7 +2630,7 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		ParentHash: parent.Hash(),
 		Coinbase:   param.coinbase,
 		Number:     uint256.NewInt(0).Add(parentNumber, uint256.NewInt(1)),
-		GasLimit:   CalcGasLimit(parent.GasLimit, w.minerConf.GasCeil),
+		GasLimit:   headerGasLimit(w.chainConfig, parent.GasLimit, w.minerConf.GasCeil),
 		Time:       uint64(timestamp),
 		Difficulty: uint256.NewInt(0),
 		BaseFee:    uint256.NewInt(0),
@@ -2633,7 +2645,7 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		header.BaseFee, _ = uint256.FromBig(misc.CalcBaseFee(w.chainConfig, parent))
 		if !w.chainConfig.IsLondon(parentNumber.Uint64()) {
 			parentGasLimit := parent.GasLimit * params.ElasticityMultiplier
-			header.GasLimit = CalcGasLimit(parentGasLimit, w.minerConf.GasCeil)
+			header.GasLimit = headerGasLimit(w.chainConfig, parentGasLimit, w.minerConf.GasCeil)
 		}
 	}
 
@@ -2650,7 +2662,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 		family:    mapset.NewSet(),
 		coinbase:  coinbase,
 		header:    header,
-		gasPool:   new(common.GasPool).AddGas(fillGasBudget(header.GasLimit)),
+		gasPool:   new(common.GasPool).AddGas(fillGasBudgetFor(w.chainConfig, header.GasLimit)),
 	}
 
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.ParentHash, 3) {
