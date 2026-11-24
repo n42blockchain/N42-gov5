@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 
 	"github.com/urfave/cli/v2"
 
@@ -66,7 +67,22 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err := json.NewDecoder(file).Decode(genesis); err != nil {
 		utils.Fatalf("invalid genesis file: %v", err)
 	}
-	conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
+	if genesis.Config.IsProfile1() {
+		// Profile 1: the genesis file is the only source (P3). Report every
+		// HIVE_* input that would rewrite it instead of applying any.
+		var set []string
+		conf.ApplyHiveGenesisEnv(genesis, func(key string) (string, bool) {
+			if _, ok := os.LookupEnv(key); ok {
+				set = append(set, key)
+			}
+			return "", false
+		})
+		if len(set) > 0 {
+			utils.Fatalf("profile-1 genesis: environment overrides of the genesis are refused (P3); unset: %s", strings.Join(set, ", "))
+		}
+	} else {
+		conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
+	}
 	if genesis.Config == nil {
 		utils.Fatalf("invalid genesis file: missing chain config")
 	}

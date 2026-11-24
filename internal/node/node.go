@@ -736,6 +736,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if err := chainConfig.ValidateProfile1(); err != nil {
 			return nil, fmt.Errorf("profile-1 chain config refused: %w", err)
 		}
+		if err := enforceProfile1Startup(cliCtx, cfg, chainConfig, os.Environ()); err != nil {
+			return nil, err
+		}
 	}
 
 	// Use the hardcoded genesis hash for P2P fork digest when a known chain is
