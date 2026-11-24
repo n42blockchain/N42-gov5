@@ -739,6 +739,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if err := enforceProfile1Startup(cliCtx, cfg, chainConfig, os.Environ()); err != nil {
 			return nil, err
 		}
+		applyProfile1Limits(chainConfig)
 	}
 
 	// Use the hardcoded genesis hash for P2P fork digest when a known chain is
