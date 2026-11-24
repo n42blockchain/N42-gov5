@@ -26,6 +26,7 @@
 package sync
 
 import (
+	gosync "sync"
 	"sync/atomic"
 	"time"
 
@@ -55,6 +56,45 @@ func anchorWarn(msg string, ctx ...interface{}) {
 		return
 	}
 	log.Warn(msg, ctx...)
+}
+
+// unknownEpochWarnInterval rate-limits the unknown-epoch WARN per epoch. Each
+// screened range re-reports the epoch, so without it a node waiting for a set
+// logs one line per range. Only the log is limited: verdicts are never cached
+// here, so a set that becomes known later is used on the next screen.
+const unknownEpochWarnInterval = 30 * time.Second
+
+// maxUnknownEpochWarnKeys bounds the per-epoch warn bookkeeping.
+const maxUnknownEpochWarnKeys = 64
+
+var unknownEpochWarn struct {
+	mu   gosync.Mutex
+	last map[uint64]time.Time
+}
+
+// shouldWarnUnknownEpoch reports whether the unknown-epoch WARN for epoch is
+// due at now, and records it when it is.
+func shouldWarnUnknownEpoch(epoch uint64, now time.Time) bool {
+	unknownEpochWarn.mu.Lock()
+	defer unknownEpochWarn.mu.Unlock()
+	if last, ok := unknownEpochWarn.last[epoch]; ok && now.Sub(last) < unknownEpochWarnInterval {
+		return false
+	}
+	if unknownEpochWarn.last == nil {
+		unknownEpochWarn.last = make(map[uint64]time.Time)
+	}
+	if len(unknownEpochWarn.last) >= maxUnknownEpochWarnKeys {
+		for e, t := range unknownEpochWarn.last {
+			if now.Sub(t) >= unknownEpochWarnInterval {
+				delete(unknownEpochWarn.last, e)
+			}
+		}
+		if len(unknownEpochWarn.last) >= maxUnknownEpochWarnKeys {
+			return false
+		}
+	}
+	unknownEpochWarn.last[epoch] = now
+	return true
 }
 
 // anchorVerifier returns the consensus-side header-QC verifier, or nil when
@@ -266,7 +306,9 @@ func (s *Service) anchorScreen(pid peer.ID, blocks []block.IBlock, mode syncanch
 			break
 		}
 	}
-	if sawUnknownEpoch {
+	if sawUnknownEpoch && !shouldWarnUnknownEpoch(unknownEpoch, time.Now()) {
+		log.Debug("sync anchor: validator set for a QC epoch is unknown", "epoch", unknownEpoch)
+	} else if sawUnknownEpoch {
 		log.Warn("sync anchor: validator set for a QC epoch is unknown; blocks above the last anchor stay unexecuted until it is provided (epoch_schedule.json)",
 			"epoch", unknownEpoch)
 	}
