@@ -56,7 +56,6 @@ var (
 	emptyCodeHashValue = crypto.Keccak256Hash(nil)
 	emptyUncleHash     = hash.EmptyUncleHash // rlpHash([]*Header(nil)) = 0x1dcc4de8...
 	emptyRewardsHash   = hash.DeriveSha(block.Rewards(nil))
-	emptyRequestsHash  = hash.EmptyRootHash // keccak256(RLP([])) = 0x56e81f17...
 )
 
 // ptrU64 returns a fresh *uint64 pointer. Avoids shared mutable state across headers.
@@ -831,7 +830,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							BlobGasUsed:      ptrU64(0),
 							ExcessBlobGas:    ptrU64(0),
 							ParentBeaconRoot: copyHash(gapParentCEHash),
-							RequestsHash:     copyHash(emptyRequestsHash),
+							RequestsHash:     e.requestsHashAt(gapTime),
 						}
 						if err := e.stampForkHeaderFields(gapHeader, nil); err != nil {
 							return err
@@ -1091,7 +1090,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					BlobGasUsed:      ptrU64(0),
 					ExcessBlobGas:    ptrU64(0),
 					ParentBeaconRoot: copyHash(parentCEHash),
-					RequestsHash:     copyHash(emptyRequestsHash),
+					RequestsHash:     e.requestsHashAt(srcTime),
 				}
 
 				if err := e.stampForkHeaderFields(newHeader, srcHeader); err != nil {
@@ -1727,6 +1726,18 @@ func (e *EngineV2) writeNewBlock(dstTx kv.RwTx, blk *block.Block, num uint64) er
 //
 // A target that schedules the root before any source root exists is refused:
 // there is no value to stamp.
+// requestsHashAt returns the RequestsHash of a replayed block at time: none
+// before the target chain's Prague time, and from it the EIP-7685 hash of no
+// requests, as on Ethereum. Replay runs no end-of-block request system calls,
+// so a replayed block has none to commit to.
+func (e *EngineV2) requestsHashAt(time uint64) *types.Hash {
+	if !e.cfg.ChainConfig.IsPrague(time) {
+		return nil
+	}
+	h := internal.ExecutionRequestsHash(nil)
+	return &h
+}
+
 func (e *EngineV2) stampForkHeaderFields(h *block.Header, src *block.Header) error {
 	if src != nil && src.MobileRegistryRoot != nil {
 		root := *src.MobileRegistryRoot

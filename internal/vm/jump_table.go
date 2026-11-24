@@ -113,7 +113,7 @@ func validateAndFillMaxStack(jt *JumpTable) {
 //   - EIP-8037/8038: state-creation and state-access gas — SSTORE moves to
 //     the Amsterdam schedule (STORAGE_WRITE 10000, fresh slot +97920, clear
 //     refund 11616); account-creation charges live in gasCall/evm.create
-//   - EIP-7843: SLOTNUM (N42 chains already have it from their Fusaka preset)
+//   - EIP-7843: SLOTNUM
 //
 // The former EIP-7904 repricing (demoted to Informational upstream) is gone;
 // its constants remain in params for chains that shipped the old preset.

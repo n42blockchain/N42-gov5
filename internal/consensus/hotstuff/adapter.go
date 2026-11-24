@@ -14,6 +14,7 @@ package hotstuff
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -846,7 +847,9 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 			}
 		}
 		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
-			rq := hash.EmptyRootHash // keccak256(RLP([])): no EIP-7685 requests
+			// The EIP-7685 hash of no requests; the miner stamps the hash
+			// of the block's own requests before it gets here.
+			rq := types.Hash(sha256.Sum256(nil))
 			header.RequestsHash = &rq
 		}
 		if cfg.IsGlamsterdam(header.Time) && header.SlotNumber == nil {
