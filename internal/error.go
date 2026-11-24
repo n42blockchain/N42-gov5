@@ -112,6 +112,17 @@ var (
 	// initcode is larger than the EIP-3860 cap.
 	ErrMaxInitCodeSizeExceeded = errors.New("max initcode size exceeded")
 
+	// ErrTxTypeNotInProfile1 is returned for a transaction whose type is not
+	// valid on an N42 Standard Profile 1 chain: only types 0, 1, 2 and 4 are
+	// (transaction.Profile1TxTypeAllowed).
+	ErrTxTypeNotInProfile1 = errors.New("transaction type is not valid on an N42 Profile-1 chain")
+
+	// ErrBlobTxOnNativeChain is returned for a blob (type-3) transaction on
+	// a Profile-1 chain: it has no blob sidecar network and its producers do
+	// not account blob gas (decision O2). The Rust client refuses it with the
+	// same words.
+	ErrBlobTxOnNativeChain = errors.New("blob (EIP-4844, type 3) transactions are not supported on an N42-native chain")
+
 	// ErrTipAboveFeeCap is a sanity error to ensure no one is able to specify a
 	// transaction with a tip higher than the total fee cap.
 	ErrTipAboveFeeCap = errors.New("max priority fee per gas higher than max fee per gas")
