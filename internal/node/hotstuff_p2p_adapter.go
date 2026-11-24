@@ -26,6 +26,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/params"
 )
 
 // Compile-time check: *hotstuffP2PAdapter must satisfy hotstuff.P2PDirectSender,
@@ -47,11 +48,27 @@ const rotorStreamDeadline = 10 * time.Second
 // reachable via .P2P.SetStreamHandler for any other caller).
 type hotstuffP2PAdapter struct {
 	p2p.P2P
+
+	// streamLimit bounds one direct consensus stream body; zero means the
+	// shared gossip cap (encoder.MaxGossipSize).
+	streamLimit int64
 }
 
 // newHotstuffP2PAdapter wraps a p2p.P2P so it satisfies hotstuff.P2PDirectSender.
 func newHotstuffP2PAdapter(svc p2p.P2P) *hotstuffP2PAdapter {
 	return &hotstuffP2PAdapter{P2P: svc}
+}
+
+// newHotstuffP2PAdapterFor is newHotstuffP2PAdapter for a given chain. On a
+// Profile-1 chain the gossip cap is maxBlockBytes (B15), so a direct
+// consensus stream is bounded by the consensus message cap instead (G5:
+// hotstuff.MaxConsensusMsg decoded, its snappy maximum on the wire).
+func newHotstuffP2PAdapterFor(svc p2p.P2P, cfg *params.ChainConfig) *hotstuffP2PAdapter {
+	a := newHotstuffP2PAdapter(svc)
+	if cfg.IsProfile1() {
+		a.streamLimit = int64(hotstuff.MaxConsensusWireMsg)
+	}
+	return a
 }
 
 // SendRawBytes opens a new libp2p stream to pid on the given protocol
@@ -92,7 +109,7 @@ func (a *hotstuffP2PAdapter) SetStreamHandler(topic string, handler func(data []
 	h.SetStreamHandler(protocol.ID(topic), func(stream network.Stream) {
 		defer stream.Close()
 		_ = stream.SetReadDeadline(time.Now().Add(rotorStreamDeadline))
-		data, err := readRotorStream(stream)
+		data, err := readRotorStreamLimit(stream, a.streamLimit)
 		if err != nil {
 			// Log rather than drop silently: an oversized payload here is the
 			// same class of failure as an unpropagatable block, and without a
@@ -107,10 +124,18 @@ func (a *hotstuffP2PAdapter) SetStreamHandler(topic string, handler func(data []
 }
 
 func readRotorStream(r io.Reader) ([]byte, error) {
+	return readRotorStreamLimit(r, 0)
+}
+
+// readRotorStreamLimit reads one direct stream body of at most limit bytes
+// (zero: the shared gossip cap).
+func readRotorStreamLimit(r io.Reader, limit int64) ([]byte, error) {
 	// Direct streams bypass GossipSub's WithMaxMessageSize gate but carry the
 	// same snappy gossip envelope. Apply the same 1 MiB bound before allocating
 	// the full body so a peer cannot hold many handlers on unbounded io.ReadAll.
-	limit := int64(encoder.MaxGossipSize)
+	if limit <= 0 {
+		limit = int64(encoder.MaxGossipSize)
+	}
 	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err

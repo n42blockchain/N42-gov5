@@ -1899,7 +1899,7 @@ func (n *Node) Start() error {
 		forkDigest := utils.ToBytes4(n.p2pGenesisHash[:])
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
-		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
+		svc := hotstuff.NewService(hs, newHotstuffP2PAdapterFor(n.p2p, n.config.ChainCfg), n.db, gossipTopic, rpcTopic)
 		if hs.Config().InteropV4 || n.config.ChainCfg.IsProfile1() {
 			if n.config.ChainCfg == nil || n.config.ChainCfg.ChainID == nil || !n.config.ChainCfg.ChainID.IsUint64() {
 				return errors.New("hotstuff H2-v4 requires a uint64 chain ID")
