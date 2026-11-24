@@ -44,6 +44,13 @@ var (
 	// ErrProfile1Proposer: coinbase is not the leader of the header's view
 	// (B2, B3).
 	ErrProfile1Proposer = errors.New("profile 1: coinbase is not the leader of the view")
+	// ErrProfile1Difficulty, ErrProfile1Nonce, ErrProfile1MixHash and
+	// ErrProfile1OmmersHash: a constant field is not zero (B3). The
+	// empty-list ommers hash 0x1dcc4de8... is refused like any other value.
+	ErrProfile1Difficulty = errors.New("profile 1: difficulty is not zero")
+	ErrProfile1Nonce      = errors.New("profile 1: nonce is not zero")
+	ErrProfile1MixHash    = errors.New("profile 1: mixHash is not zero")
+	ErrProfile1OmmersHash = errors.New("profile 1: ommersHash is not zero")
 )
 
 // profile1Validators is the profile-1 validator set: the genesis set, fixed
@@ -210,6 +217,9 @@ func (h *HotStuff) checkProfile1Header(chain consensus.ChainHeaderReader, header
 	if err != nil {
 		return err
 	}
+	if err := checkProfile1Constants(header); err != nil {
+		return err
+	}
 	if err := h.checkProfile1QC(chain, header, parent, view, qc, batch); err != nil {
 		return err
 	}
@@ -258,6 +268,23 @@ func (h *HotStuff) verifyProfile1Seal(header *block.Header, view ViewNumber, sea
 	}
 	if h.signatures != nil {
 		h.signatures.Add(key, addr)
+	}
+	return nil
+}
+
+// checkProfile1Constants applies B3: difficulty, nonce, mixHash and
+// ommersHash are zero. The coinbase half of B3 is checked with the seal.
+// gov5 block bodies carry no ommers, so "no ommers" holds by construction.
+func checkProfile1Constants(header *block.Header) error {
+	switch {
+	case header.Difficulty != nil && !header.Difficulty.IsZero():
+		return fmt.Errorf("%w: %s", ErrProfile1Difficulty, header.Difficulty)
+	case header.Nonce != (block.BlockNonce{}):
+		return fmt.Errorf("%w: %x", ErrProfile1Nonce, header.Nonce[:])
+	case header.MixDigest != (types.Hash{}):
+		return fmt.Errorf("%w: %s", ErrProfile1MixHash, header.MixDigest.Hex())
+	case header.UncleHash != (types.Hash{}):
+		return fmt.Errorf("%w: %s", ErrProfile1OmmersHash, header.UncleHash.Hex())
 	}
 	return nil
 }
