@@ -283,7 +283,18 @@ type EpochManager struct {
 	// the immediately previous set covers every legitimate cross-boundary check.
 	prevSet      *ValidatorSet
 	setSinceView uint64
+
+	// fixedSet pins the genesis validator set (Profile 1, standard AM5): no
+	// next set is ever staged, whatever its source. Set once at engine init.
+	fixedSet bool
 }
+
+// SetFixedSet pins the current validator set: every later StageNextEpoch is
+// refused. Profile 1 runs on the genesis set (standard AM5).
+func (em *EpochManager) SetFixedSet() { em.fixedSet = true }
+
+// FixedSet reports whether the validator set is pinned.
+func (em *EpochManager) FixedSet() bool { return em.fixedSet }
 
 const maxHistoricalEpochs = 3
 
@@ -506,7 +517,12 @@ func (em *EpochManager) ValidatorSetForView(view uint64) *ValidatorSet {
 }
 
 // StageNextEpoch stages a new validator set for the next epoch.
+// A pinned set (SetFixedSet) refuses it.
 func (em *EpochManager) StageNextEpoch(validators []ValidatorInfo, faultTolerance uint32) {
+	if em.fixedSet {
+		log.Warn("Refused to stage a validator set change: the validator set is fixed (profile 1)", "validators", len(validators))
+		return
+	}
 	em.nextSet = NewValidatorSet(validators, faultTolerance)
 }
 

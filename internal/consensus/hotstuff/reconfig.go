@@ -25,6 +25,7 @@ package hotstuff
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -71,6 +72,10 @@ type ReconfigurationManager struct {
 	committed bool
 }
 
+// errFixedValidatorSet refuses a validator-set change on a chain whose set is
+// the genesis set (Profile 1, standard AM5).
+var errFixedValidatorSet = errors.New("reconfig: the validator set is fixed to the genesis set on this chain (profile 1); validator changes are refused")
+
 // NewReconfigurationManager creates a ReconfigurationManager for the given EpochManager.
 func NewReconfigurationManager(em *EpochManager) *ReconfigurationManager {
 	return &ReconfigurationManager{
@@ -89,6 +94,9 @@ func (rm *ReconfigurationManager) ProposeAddValidator(addr types.Address, pubKey
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	if rm.epochManager.FixedSet() {
+		return errFixedValidatorSet
+	}
 	if pubKey == nil {
 		return fmt.Errorf("reconfig: BLS public key required for validator %s", addr.Hex())
 	}
@@ -134,6 +142,10 @@ func (rm *ReconfigurationManager) ProposeRemoveValidator(addr types.Address) err
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	if rm.epochManager.FixedSet() {
+		return errFixedValidatorSet
+	}
+
 	// Guard: no proposals when a transition is already staged
 	if rm.epochManager.HasStagedNext() {
 		return fmt.Errorf("reconfig: epoch transition already staged, wait for epoch boundary before proposing")
@@ -176,6 +188,12 @@ func (rm *ReconfigurationManager) ProposeRemoveValidator(addr types.Address) err
 func (rm *ReconfigurationManager) MarkCommitted() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
+
+	if rm.epochManager.FixedSet() {
+		// Profile 1: nothing can be pending; drop anything that is.
+		rm.pendingAdds, rm.pendingRemoves, rm.committed = nil, nil, false
+		return
+	}
 
 	if !rm.hasPendingChanges() {
 		return

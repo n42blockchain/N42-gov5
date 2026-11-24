@@ -223,6 +223,10 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 	} else {
 		h.epochManager = NewEpochManager(vs)
 	}
+	if h.chainConfig.IsProfile1() {
+		// Profile 1 runs on the genesis validator set (standard AM5).
+		h.epochManager.SetFixedSet()
+	}
 	engineIndex := NonMemberIndex
 	if !observer {
 		engineIndex = ValidatorIndex(myIndex)
