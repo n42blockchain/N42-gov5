@@ -2366,6 +2366,10 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 					}
 					continue
 				}
+				if internal.CheckProfile1TxType(w.chainConfig, tx.Type()) != nil {
+					txSet.Pop() // invalid on a Profile-1 chain: never packed
+					continue
+				}
 				txSize, decision, sizeErr := sizeLimiter.admit(tx)
 				if sizeErr != nil || decision != packAccept {
 					if decision == packStop {
@@ -2462,6 +2466,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			break
 		}
 
+		if internal.CheckProfile1TxType(w.chainConfig, tx.Type()) != nil {
+			// Invalid on a Profile-1 chain (block validity refuses it): skip
+			// the account without executing it, as the parallel fill does.
+			txSet.Pop()
+			continue
+		}
 		txSize, decision, sizeErr := sizeLimiter.admit(tx)
 		if decision == packStop {
 			log.Trace("Block size budget exhausted, stopping tx packing",
