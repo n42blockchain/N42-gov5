@@ -38,3 +38,23 @@ func CheckProfile1TxType(config *params.ChainConfig, typ uint8) error {
 	}
 	return fmt.Errorf("%w: %w: type 0x%02x", ErrTxTypeNotSupported, ErrTxTypeNotInProfile1, typ)
 }
+
+// CheckProfile1InitCode refuses, on a Standard Profile 1 chain, a creation
+// transaction whose initcode exceeds the cap execution enforces: EIP-7954's
+// 131,072 bytes under Amsterdam, EIP-3860's 49,152 before it (C6). The pool
+// and the deferred includability check apply it so that neither admits a
+// transaction execution refuses; a chain outside the profile is never
+// refused here.
+func CheckProfile1InitCode(config *params.ChainConfig, isGlamsterdam, create bool, size int) error {
+	if !create || !config.IsProfile1() {
+		return nil
+	}
+	limit := params.MaxInitCodeSize
+	if isGlamsterdam {
+		limit = params.MaxInitCodeSizeEIP7954
+	}
+	if size > limit {
+		return fmt.Errorf("%w: code size %d limit %d", ErrMaxInitCodeSizeExceeded, size, limit)
+	}
+	return nil
+}
