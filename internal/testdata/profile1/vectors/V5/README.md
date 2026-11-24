@@ -91,3 +91,27 @@ one; `gov5Message` is its full message.
 The four AM25/B8 refusals follow the earlier ones (appended; the earlier order is unchanged).
 
 V1 has the remaining header-profile rules (B1-B3, B6, B12, B8 presence).
+
+## Builder request contracts (EIP-8282): `builder_request_contracts.json`
+
+Case `builder-request-contract-code-no-call`: code at the EIP-8282 builder deposit
+(`0x0000BFF46984E3725691FA540A8C7589300D8282`) and exit request (`0x000064D678505AD48F8CCB093BC65613800E8282`)
+addresses on a native profile-1 chain. Native chains make no end-of-block EIP-8282 call (gov5:
+`UsesEIP8282BuilderRequests` is off), so the code never runs: no storage write, no request, state and results as without the calls.
+A client that makes the calls (evm2 on an AMSTERDAM spec id) splits from this vector.
+
+The code is placed through `allocAdditions` (V1 `genesis_8s.json` + the V5 sender + both addresses with nonce 1, balance 0, code
+`5f546001015f5500` = PUSH0 SLOAD PUSH1 1 ADD PUSH0 SSTORE STOP, codeHash
+`0x7229351fba5bacfb493ac7423bbd736f88bb0debc78b192bd1ec041c4fbdf39f`), not mid-chain: the real contracts come from a keyless pre-signed
+CREATE (Nick's method) that a test cannot sign. Two unsealed blocks, each with its executed `stateRoot`, `receiptsRoot`, `gasUsed`, `requests`,
+`requestsHash` and QMDB write set:
+
+| Block | Case | stateRoot | receiptsRoot | gasUsed | requestsHash |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `idle-with-builder-code` | `0x959b5e91...538b` | empty | 0 | sha256("") |
+| 2 | `requests-with-builder-code` (V5 block 7's two txs) | `0x63456d12...0ed8` | `0x1ac6d164...1066` | 1077120 | `0x9f1fcb7b...a2c4` (types 0x01, 0x02 only) |
+
+Asserted by gov5: neither address nor its storage is in any block's write set; slot 0 of both stays 0 and code, nonce unchanged.
+Control: the same genesis without the two accounts and the same blocks give the same account and storage writes (but the EIP-2935 parent-hash slot),
+receiptsRoot, gasUsed, requests and requestsHash; only stateRoot differs, by the two static accounts.
+Sensitivity: the same blocks executed with the config made non-native write slot 0 of both addresses and change stateRoot.
