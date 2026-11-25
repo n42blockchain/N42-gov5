@@ -1471,7 +1471,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// not, so a stale seal would be rejected by
 			// checkQMDBLeaderSealParent with nothing left to rebuild — the
 			// view is lost. One marker read keeps the fast path honest.
-			stale := false
+			stale, staleTime := false, false
 			if bc, ok := w.chain.(*internal.BlockChain); ok && !bc.AppliedHeadIs(parentHash) {
 				stale = true
 			}
@@ -1486,25 +1486,39 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if err := w.pace(num, parentHash); err != nil {
 					return err
 				}
-				if contentionDiagEnabled {
-					st.paceDur = time.Since(st.paceEnterAt)
-					st.specHitAt = time.Now()
-					st.triggerAt = triggerAt
+				// Profile 1 (B4): the parked block was stamped and executed
+				// when it was built, before the A17 wait. Once a second has
+				// turned since, its time is not max(parent.time, floor(now))
+				// any more: rebuild below (the wait is paid, so the rebuild
+				// paces for 0).
+				staleTime = w.chainConfig.IsProfile1() && st.block.Time() < uint64(time.Now().Unix())
+				if !staleTime {
+					if contentionDiagEnabled {
+						st.paceDur = time.Since(st.paceEnterAt)
+						st.specHitAt = time.Now()
+						st.triggerAt = triggerAt
+					}
+					log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12], "tMs", time.Now().UnixMilli())
+					if contentionDiagEnabled {
+						st.taskChSentAt = time.Now()
+					}
+					select {
+					case w.taskCh <- st:
+					case <-w.ctx.Done():
+						return w.ctx.Err()
+					}
+					return nil
 				}
-				log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12], "tMs", time.Now().UnixMilli())
-				if contentionDiagEnabled {
-					st.taskChSentAt = time.Now()
-				}
-				select {
-				case w.taskCh <- st:
-				case <-w.ctx.Done():
-					return w.ctx.Err()
-				}
-				return nil
 			}
 			specStatus = "miss"
-			specReason = "stale-applied-head-moved"
-			log.Info("miner: speculative build discarded, applied head moved", "parent", parentHash.Hex()[:12])
+			if staleTime {
+				specReason = "stale-timestamp"
+				log.Info("miner: speculative build discarded, stamped before the pacing wait",
+					"parent", parentHash.Hex()[:12], "headerTime", st.block.Time())
+			} else {
+				specReason = "stale-applied-head-moved"
+				log.Info("miner: speculative build discarded, applied head moved", "parent", parentHash.Hex()[:12])
+			}
 		} else {
 			specStatus = "miss"
 			specReason = "not-started"
