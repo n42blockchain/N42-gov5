@@ -651,13 +651,20 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// Encode view number in extra-data.
 	var view ViewNumber
 	var committedQC *QuorumCertificate
+	// rememberStamp: the B4 stamp is fixed per (view, parent) only when the
+	// block is built in the view it is proposed in. A speculative build runs
+	// during the previous view, before the A17 wait, so its clock reading is
+	// not the proposal time and must not pin the rebuild after the wait.
+	rememberStamp := true
 	if ce := h.Engine(); ce != nil {
 		view = ce.CurrentView()
 		if profile1 {
 			// The header's view must be the view the block is proposed in
 			// (B2 binds the coinbase to that view's leader), including for a
 			// speculative build that runs during the previous view.
+			cur := view
 			view = ce.BuildView()
+			rememberStamp = view == cur
 		}
 		lastCommittedQC := ce.LastCommittedQC()
 		if !isEmptyHeaderQC(&lastCommittedQC) {
@@ -709,7 +716,7 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	}
 	if parentHeader != nil && profile1 {
 		// B4: max(parent.time, floor(now)), fixed per (view, parent).
-		header.Time = h.profile1Stamp(view, parentHeader)
+		header.Time = h.profile1Stamp(view, parentHeader, rememberStamp)
 	} else if parentHeader != nil {
 		period := h.config.Period
 		if period == 0 {

@@ -441,14 +441,20 @@ type profile1Stamps struct {
 // profile1Stamp is the leader's B4 timestamp, max(parent.time, floor(now)),
 // fixed the first time it is computed for (view, parent): a rebuild of the
 // same view on the same parent re-stamps the same value, so the leader still
-// produces one block per view (F6) even though the clock moved.
-func (h *HotStuff) profile1Stamp(view ViewNumber, parent *block.Header) uint64 {
+// produces one block per view (F6) even though the clock moved. With remember
+// false (a speculative build during the previous view) the stamp is computed
+// but neither read from nor stored in the cache: the proposal's time is taken
+// after the A17 wait, and a speculative reading pinned there gave a gov5
+// leader extending a gov5 parent parent.time instead of floor(now) (0 s delta).
+func (h *HotStuff) profile1Stamp(view ViewNumber, parent *block.Header, remember bool) uint64 {
 	key := profile1StampKey{view: view, parent: parent.Hash()}
 	st := &h.p1Stamps
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if t, ok := st.m[key]; ok {
-		return t
+	if remember {
+		if t, ok := st.m[key]; ok {
+			return t
+		}
 	}
 	clock := h.now
 	if clock == nil {
@@ -457,6 +463,9 @@ func (h *HotStuff) profile1Stamp(view ViewNumber, parent *block.Header) uint64 {
 	t := parent.Time
 	if secs := clock().Unix(); secs > 0 && uint64(secs) > t {
 		t = uint64(secs)
+	}
+	if !remember {
+		return t
 	}
 	if st.m == nil {
 		st.m = make(map[profile1StampKey]uint64)
