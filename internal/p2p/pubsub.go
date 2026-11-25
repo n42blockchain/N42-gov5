@@ -108,6 +108,88 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 	}
 }
 
+// subscriberPollInterval is how often PublishToTopicWhenSubscribed re-reads the
+// topic's subscriber count while waiting.
+const subscriberPollInterval = 100 * time.Millisecond
+
+// subscriberTarget caps the wanted number of topic subscribers at the number
+// of connected peers that speak pubsub, so a node with fewer connections than
+// the target does not wait for subscribers that cannot exist. It never drops
+// below one while target > 0: with no pubsub peer at all the message would
+// reach nobody.
+func subscriberTarget(target, pubsubPeers int) int {
+	if target <= 0 {
+		return 0
+	}
+	if pubsubPeers < 1 {
+		pubsubPeers = 1
+	}
+	return min(target, pubsubPeers)
+}
+
+// subscribersReady reports whether a topic with the given number of subscribed
+// peers may be published to. It deliberately counts subscribers, not the
+// GossipSub mesh: pubsub.MinTopicSize asks the router's EnoughPeers, which
+// counts len(mesh[topic]), and the mesh is held near D (8) and pruned above
+// Dhi (12), so a target above ~12 can never be met however many peers
+// subscribe.
+func subscribersReady(subscribed, pubsubPeers, target int) bool {
+	return subscribed >= subscriberTarget(target, pubsubPeers)
+}
+
+// waitForSubscribers polls count until subscribersReady holds, maxWait
+// passes, or ctx ends. It returns ready=false on the deadline and a non-nil
+// error only when ctx ends first.
+func waitForSubscribers(ctx context.Context, maxWait time.Duration, target int, count func() (subscribed, pubsubPeers int)) (ready bool, err error) {
+	deadline := time.NewTimer(maxWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(subscriberPollInterval)
+	defer tick.Stop()
+	for {
+		if sub, all := count(); subscribersReady(sub, all, target) {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-deadline.C:
+			return false, nil
+		case <-tick.C:
+		}
+	}
+}
+
+// PublishToTopicWhenSubscribed publishes data to topic once at least
+// min(minSubscribers, connected pubsub peers) peers are subscribed to it, or
+// once maxWait has passed, whichever comes first. Use it instead of
+// pubsub.WithReadiness(pubsub.MinTopicSize(n)) whenever n can exceed the mesh
+// low-water mark (Dlo): MinTopicSize measures the mesh, not the subscribers,
+// and never becomes ready for large n. On the deadline the message is still
+// published (late and possibly partial beats never) and a warning is logged.
+// It returns an error without publishing only when ctx ends first.
+func (s *Service) PublishToTopicWhenSubscribed(ctx context.Context, topic string, data []byte, minSubscribers int, maxWait time.Duration) error {
+	topicHandle, err := s.JoinTopic(topic)
+	if err != nil {
+		return err
+	}
+	if minSubscribers > 0 {
+		count := func() (int, int) {
+			return len(topicHandle.ListPeers()), len(s.pubsub.ListPeers(""))
+		}
+		ready, err := waitForSubscribers(ctx, maxWait, minSubscribers, count)
+		if err != nil {
+			return errors.Wrapf(err, "waiting for %d subscribers on topic %s", minSubscribers, topic)
+		}
+		if !ready {
+			sub, all := count()
+			log.Warn("Publishing before enough peers subscribed to the topic",
+				"topic", topic, "subscribed", sub, "pubsubPeers", all,
+				"want", subscriberTarget(minSubscribers, all), "waited", maxWait)
+		}
+	}
+	return topicHandle.Publish(ctx, data)
+}
+
 // emptyTopicWarnInterval bounds how often a given topic may report that it has
 // no subscribers.
 const emptyTopicWarnInterval = time.Minute
