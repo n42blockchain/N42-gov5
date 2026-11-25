@@ -1445,6 +1445,16 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		log.Errorf("Failed to set account manager backends: %v", err)
 	}
 
+	// Wire the live BLS committee-evidence pool on every HotStuff node, not
+	// only on miners: an importing node must check each header's
+	// ParentBeaconRoot link and record the per-block evidence exactly as a
+	// validator does. No-op unless the pool is enabled (always on profile 1).
+	if hs, ok := resolveHotStuffEngine(engine); ok {
+		if err = node.wireCommitteePool(hs); err != nil {
+			return nil, err
+		}
+	}
+
 	gpoParams := cfg.GPO
 	if gpoParams.Default == nil {
 		gpoParams.Default = cfg.Miner.GasPrice
@@ -1735,12 +1745,8 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 		if err := hs.InitEngineFromConfig(); err != nil {
 			return fmt.Errorf("hotstuff engine init failed: %w", err)
 		}
-
-		// Wire the live BLS committee-evidence pool (continues the resealed
-		// chain's multi-sig for newly produced blocks). No-op unless enabled.
-		if err := n.wireCommitteePool(hs); err != nil {
-			return err
-		}
+		// The live BLS committee-evidence pool is wired at node construction
+		// (NewNode) for every node, not only for miners.
 	}
 	return nil
 }
