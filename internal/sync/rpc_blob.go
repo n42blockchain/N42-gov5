@@ -70,10 +70,15 @@ func (s *Service) blobSidecarsByRangeRPCHandler(ctx context.Context, msg interfa
 	}
 
 	resp := &sync_pb.BlobSidecarsResponse{}
+	// Profile 1: ranges are committed-only (committedServeCeiling).
+	ceiling, capped := s.committedServeCeiling()
 
 	if err := s.cfg.chain.DB().View(ctx, func(tx kv.Tx) error {
 		for i := uint64(0); i < req.Count; i++ {
 			blockNum := req.StartBlock + i
+			if capped && blockNum > ceiling {
+				break
+			}
 
 			// Look up canonical hash for block number.
 			blockHash, err := rawdb.ReadCanonicalHash(tx, blockNum)

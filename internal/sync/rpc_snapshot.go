@@ -276,9 +276,15 @@ func (s *Service) changeSetRangeRPCHandler(ctx context.Context, msg interface{},
 	}
 
 	resp := &sync_pb.CompressedBatchResponse{}
+	// Profile 1: ranges are committed-only (committedServeCeiling). ToBlock
+	// is exclusive; an executed but uncommitted block's changes stay local.
+	toBlock := req.ToBlock
+	if ceiling, capped := s.committedServeCeiling(); capped && toBlock > ceiling+1 {
+		toBlock = ceiling + 1
+	}
 
 	if err := s.cfg.chain.DB().View(ctx, func(tx kv.Tx) error {
-		entries, err := snapshot.ReadAccountChangeSets(tx, req.FromBlock, req.ToBlock, 8192)
+		entries, err := snapshot.ReadAccountChangeSets(tx, req.FromBlock, toBlock, 8192)
 		if err != nil {
 			return err
 		}
