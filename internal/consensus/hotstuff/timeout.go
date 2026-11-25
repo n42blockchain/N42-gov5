@@ -10,6 +10,7 @@
 package hotstuff
 
 import (
+	"errors"
 	"sort"
 	"time"
 
@@ -130,11 +131,29 @@ func (e *ConsensusEngine) onTimeout() error {
 		return err
 	}
 
-	return e.processTimeout(timeoutMsg)
+	return e.processOwnTimeout(timeoutMsg)
 }
 
-// processTimeout processes a timeout message.
+// processOwnTimeout counts this node's own, freshly signed timeout: its
+// signature needs no verification.
+func (e *ConsensusEngine) processOwnTimeout(timeout *TimeoutMessage) error {
+	return e.processTimeoutWith(timeout, true)
+}
+
+// processTimeout processes a timeout message received from the network.
 func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
+	return e.processTimeoutWith(timeout, false)
+}
+
+// processTimeoutWith is the timeout handler. Signatures of current-view
+// timeouts are not verified one by one on arrival (AM22(b)): a timeout is
+// decoded (subgroup check), its sender and embedded high QC are checked
+// (the QC through the verified-certificate cache), and it is collected as
+// pending. When the pending set reaches the TC threshold the collector
+// batch-verifies it with one pairing check and drops any invalid signature
+// (bisection) before the TC is built, so the emitted TC only aggregates
+// verified signatures. own marks this node's own signature.
+func (e *ConsensusEngine) processTimeoutWith(timeout *TimeoutMessage, own bool) error {
 	view := e.roundState.CurrentView()
 
 	if timeout.View < view {
@@ -145,13 +164,21 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 		return e.handleFutureViewTimeout(view, timeout)
 	}
 
+	// A byte-identical repeat (re-broadcast, or a relayed copy) of a
+	// timeout already collected needs no crypto at all.
+	if e.timeoutCollector != nil && e.timeoutCollector.HasSignature(timeout.Sender, timeout.Signature) {
+		return nil
+	}
+
 	// Current-view timeout processing.
-	pk, err := e.validatorSet().GetPublicKey(timeout.Sender)
-	if err != nil {
+	vs := e.validatorSet()
+	if _, err := vs.GetPublicKey(timeout.Sender); err != nil {
 		return err
 	}
 	msg := e.timeoutSigningMessage(view)
-	if !VerifyBLSSignature(timeout.Signature, pk, msg) {
+
+	sig, sErr := bls.SignatureFromBytes(timeout.Signature)
+	if sErr != nil {
 		return &InvalidSignatureError{View: view, ValidatorIndex: timeout.Sender}
 	}
 
@@ -162,24 +189,25 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 		return err
 	}
 
-	nValidators := e.validatorSet().Len()
-	quorumSize := e.validatorSet().QuorumSize()
+	nValidators := vs.Len()
+	quorumSize := vs.QuorumSize()
 	nextView := e.viewAfterTC(view)
 
 	if e.timeoutCollector == nil {
 		e.timeoutCollector = NewTimeoutCollector(view, nValidators)
 	}
 
-	sig, sErr := bls.SignatureFromBytes(timeout.Signature)
-	if sErr != nil {
-		return &InvalidSignatureError{View: view, ValidatorIndex: timeout.Sender}
+	var addErr error
+	if own && timeout.Sender == e.myIndex {
+		addErr = e.timeoutCollector.addVerifiedTimeoutBytes(timeout.Sender, sig, timeout.Signature, timeout.HighQC.Clone())
+	} else {
+		addErr = e.timeoutCollector.AddPendingTimeout(timeout.Sender, sig, timeout.Signature, timeout.HighQC.Clone(), vs, msg)
 	}
-
-	if err := e.timeoutCollector.AddVerifiedTimeout(timeout.Sender, sig, timeout.HighQC.Clone()); err != nil {
-		if _, ok := err.(*DuplicateVoteError); ok {
+	if addErr != nil {
+		if _, ok := addErr.(*DuplicateVoteError); ok {
 			return nil
 		}
-		return err
+		return addErr
 	}
 
 	// ANY node holding a timeout quorum forms the TC and advances — view
@@ -318,7 +346,7 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 	}); err != nil {
 		return err
 	}
-	return e.processTimeout(ownTimeout)
+	return e.processOwnTimeout(ownTimeout)
 }
 
 // processNewView processes a NewView message from the new leader.
@@ -459,6 +487,14 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 		e.verifyQCAnyDomain,
 	)
 	if err != nil {
+		var short *InsufficientVotesError
+		if errors.As(err, &short) {
+			// The batch check dropped invalid timeouts and the valid ones
+			// are below quorum: keep collecting.
+			log.Debug("TC not formed yet: valid timeouts below quorum",
+				"view", currentView, "have", short.Have, "need", short.Need)
+			return nil
+		}
 		return err
 	}
 

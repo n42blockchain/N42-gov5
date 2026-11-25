@@ -10,11 +10,13 @@
 package hotstuff
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
@@ -155,6 +157,7 @@ type TimeoutCollector struct {
 
 type timeoutEntry struct {
 	signature common.Signature
+	sigBytes  []byte // wire bytes, kept for duplicate detection (nil if unknown)
 	highQC    QuorumCertificate
 }
 
@@ -207,6 +210,124 @@ func (tc *TimeoutCollector) AddVerifiedTimeoutFromBytes(validatorIndex Validator
 		return fmt.Errorf("invalid signature bytes: %w", err)
 	}
 	return tc.AddVerifiedTimeout(validatorIndex, sig, highQC)
+}
+
+// AddPendingTimeout adds a timeout whose signature is NOT yet verified; it
+// is verified in a batch when the collector reaches the TC threshold
+// (verifyPending). A sender's slot is not first-come: if the slot holds an
+// unverified timeout with other signature bytes, that one is checked now
+// and replaced if it is invalid, so a forged timeout cannot squat on an
+// honest validator's slot. Returns DuplicateVoteError for a repeat.
+func (tc *TimeoutCollector) AddPendingTimeout(validatorIndex ValidatorIndex, signature common.Signature,
+	sigBytes []byte, highQC QuorumCertificate, vs *ValidatorSet, message []byte) error {
+	existing, exists := tc.timeouts[validatorIndex]
+	if exists {
+		if tc.verified[validatorIndex] || bytes.Equal(existing.sigBytes, sigBytes) {
+			return &DuplicateVoteError{View: tc.view, ValidatorIndex: validatorIndex}
+		}
+		pk, err := vs.GetPublicKey(validatorIndex)
+		if err == nil {
+			notePairingCheck()
+			if existing.signature.Verify(pk, message) {
+				tc.verified[validatorIndex] = true
+				return &DuplicateVoteError{View: tc.view, ValidatorIndex: validatorIndex}
+			}
+		}
+		log.Warn("timeout collector: replacing an invalid pending timeout", "view", tc.view, "validator", validatorIndex)
+	}
+	tc.timeouts[validatorIndex] = timeoutEntry{
+		signature: signature,
+		sigBytes:  append([]byte(nil), sigBytes...),
+		highQC:    highQC,
+	}
+	delete(tc.verified, validatorIndex)
+	return nil
+}
+
+// addVerifiedTimeoutBytes adds a verified timeout (this node's own) and
+// keeps its wire bytes for duplicate detection.
+func (tc *TimeoutCollector) addVerifiedTimeoutBytes(validatorIndex ValidatorIndex, signature common.Signature,
+	sigBytes []byte, highQC QuorumCertificate) error {
+	if _, exists := tc.timeouts[validatorIndex]; exists && tc.verified[validatorIndex] {
+		return &DuplicateVoteError{View: tc.view, ValidatorIndex: validatorIndex}
+	}
+	// An unverified entry in our own slot is someone else's forgery.
+	tc.timeouts[validatorIndex] = timeoutEntry{
+		signature: signature,
+		sigBytes:  append([]byte(nil), sigBytes...),
+		highQC:    highQC,
+	}
+	tc.verified[validatorIndex] = true
+	return nil
+}
+
+// HasSignature reports whether the collector already holds exactly these
+// signature bytes from validatorIndex (a repeat that needs no crypto).
+func (tc *TimeoutCollector) HasSignature(validatorIndex ValidatorIndex, sigBytes []byte) bool {
+	entry, ok := tc.timeouts[validatorIndex]
+	return ok && entry.sigBytes != nil && bytes.Equal(entry.sigBytes, sigBytes)
+}
+
+// verifyPending verifies every not-yet-verified timeout with one batched
+// pairing check (all timeouts of a view sign the same preimage, E10). If the
+// batch fails it is bisected until the invalid signatures are isolated;
+// those entries are removed (the slot is free for the sender's genuine
+// timeout) and returned. Valid entries are marked verified.
+func (tc *TimeoutCollector) verifyPending(vs *ValidatorSet, message []byte) []ValidatorIndex {
+	var idxs []ValidatorIndex
+	var sigs []common.Signature
+	var pks []common.PublicKey
+	var bad []ValidatorIndex
+	for idx, entry := range tc.timeouts {
+		if tc.verified[idx] || idx >= tc.setSize {
+			continue
+		}
+		pk, err := vs.GetPublicKey(idx)
+		if err != nil {
+			bad = append(bad, idx)
+			continue
+		}
+		idxs = append(idxs, idx)
+		sigs = append(sigs, entry.signature)
+		pks = append(pks, pk)
+	}
+	var check func(lo, hi int)
+	check = func(lo, hi int) {
+		if lo >= hi {
+			return
+		}
+		var ok bool
+		notePairingCheck()
+		if hi-lo == 1 {
+			ok = sigs[lo].Verify(pks[lo], message)
+		} else {
+			var err error
+			ok, err = blst.VerifySameMessageBatch(sigs[lo:hi], pks[lo:hi], message)
+			if err != nil {
+				ok = false
+			}
+		}
+		if ok {
+			for _, idx := range idxs[lo:hi] {
+				tc.verified[idx] = true
+			}
+			return
+		}
+		if hi-lo == 1 {
+			bad = append(bad, idxs[lo])
+			return
+		}
+		mid := (lo + hi) / 2
+		check(lo, mid)
+		check(mid, hi)
+	}
+	check(0, len(idxs))
+	for _, idx := range bad {
+		log.Warn("timeout collector: dropping timeout with an invalid signature", "view", tc.view, "validator", idx)
+		delete(tc.timeouts, idx)
+		delete(tc.verified, idx)
+	}
+	return bad
 }
 
 // TimeoutCount returns the number of collected timeouts.
@@ -272,6 +393,11 @@ func (tc *TimeoutCollector) buildTC(
 		return nil, &InsufficientVotesError{View: tc.view, Have: len(tc.timeouts), Need: quorumSize}
 	}
 
+	// Batch-verify every pending signature first (one pairing check when
+	// all are valid); invalid ones are dropped, so only verified timeouts
+	// are counted toward, and aggregated into, the TC.
+	tc.verifyPending(vs, message)
+
 	var highestQC *QuorumCertificate
 	validSigs := make([]common.Signature, 0, len(tc.timeouts))
 	signers := make([]bool, tc.setSize)
@@ -288,22 +414,9 @@ func (tc *TimeoutCollector) buildTC(
 			}
 		}
 
-		if tc.verified[idx] {
-			validSigs = append(validSigs, entry.signature)
-			signers[idx] = true
-			if highestQC == nil || entry.highQC.View > highestQC.View {
-				qcCopy := entry.highQC.Clone()
-				highestQC = &qcCopy
-			}
-			continue
-		}
-
-		pk, err := vs.GetPublicKey(idx)
-		if err != nil {
-			continue
-		}
-		notePairingCheck()
-		if !entry.signature.Verify(pk, message) {
+		// verifyPending verified or dropped every entry it could check;
+		// an unverified one left here is never counted.
+		if !tc.verified[idx] {
 			continue
 		}
 		validSigs = append(validSigs, entry.signature)
