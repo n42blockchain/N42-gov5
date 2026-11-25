@@ -37,7 +37,7 @@ import (
 // the EIP-8037 block figure max(block regular gas, block state gas), regular
 // gas before refunds (B13), and requestsHash the parent's EIP-7685 requests
 // hash (AM25): block 7 calls the EIP-7002 and EIP-7251 contracts, block 8
-// carries the hash of the two requests. Blocks 1 and 2 have equal timestamps (B4). Each
+// carries the hash of the two requests. Every block is one slot after its parent (B4, AM27). Each
 // header passes gov5's import verification and its deferred-field check;
 // each refusal breaks one rule and is refused by gov5.
 //
@@ -234,7 +234,7 @@ func TestProfile1VectorV5(t *testing.T) {
 			"The genesis is V1's genesis_8s.json plus allocAdditions (the V3 test sender, key = keccak256(\"" + v3SenderSeed + "\")).",
 			"Blocks are built like V1's (extraData N42H || view || CommitQC of the parent by validators 0, 1, 2 || seal, leader(v) = v mod 4, withdrawalsRoot of the A8 rewards, parentBeaconRoot = Blake3 of the parent's committee evidence from block 2); V1 has the per-field rules.",
 			"executed = the block's own result, stored by gov5 and carried by the next header: stateRoot (QMDB), receiptsRoot, logsBloom, gasUsed. blockRegularGas, blockStateGas and receiptsCumulativeGasUsed show where gasUsed comes from.",
-			"Blocks 1 and 2 have equal timestamps (B4: parent.time <= time); both run the EIP-4788 system call with the same timestamp, so block 2's root slot overwrites block 1's in the same ring-buffer index; the effect is in block 2's executed stateRoot, carried by block 3.",
+			"Every block is stamped one slot (8 s) after its parent on the genesis grid (B4, AM27); equal timestamps are refused.",
 			"check: import = header verification on import (gov5 VerifyHeader); vote = only before the Round-1 vote at nowUnix; deferred = the deferred fields against the parent's stored result (gov5 checkDeferredHeader, on import and in the vote gate).",
 			"AM25: block 7 calls the EIP-7002 contract 0x00000961...7002 (validator pubkey 0xa1 x 48 || amount 1000000000 gwei, 8 bytes big-endian; 1 wei fee) and the EIP-7251 contract 0x0000BBdD...7251 (source pubkey 0xa1 x 48 || target pubkey 0xb2 x 48; 1 wei fee). Its end-of-block calls dequeue both: executed.requests (type 0x01: source address || pubkey || amount, 8 bytes little-endian as the contract emits it; type 0x02: source address || source pubkey || target pubkey) and executed.requestsHash. Block 8 carries that hash; its own queues are empty, so it produces sha256(\"\").",
 		},
@@ -254,7 +254,7 @@ func TestProfile1VectorV5(t *testing.T) {
 			func() []*transaction.Transaction {
 				return []*transaction.Transaction{r.sign(nil, uint256.NewInt(0), 10_000_000, v3StoreInitcode)}
 			}, "blockStateGas"},
-		{"sstore-clear-equal-timestamp", "Same timestamp as block 1 (B4 allows parent.time == time). Clears the contract's slot 1 (1 -> 0): a refund, so receiptsCumulativeGasUsed is below blockRegularGas; gasUsed ignores the refund.", 0,
+		{"sstore-clear", "Clears the contract's slot 1 (1 -> 0): a refund, so receiptsCumulativeGasUsed is below blockRegularGas; gasUsed ignores the refund.", v1SlotSecs,
 			func() []*transaction.Transaction {
 				return []*transaction.Transaction{r.sign(&contract, uint256.NewInt(0), 10_000_000, storeCall(1, 0))}
 			}, "blockRegularGas"},
@@ -328,9 +328,6 @@ func TestProfile1VectorV5(t *testing.T) {
 		receiptsGas = append(receiptsGas, r.lastUsedGas)
 		carried, parent = res, h
 	}
-	if headers[1].Time != headers[0].Time {
-		t.Fatal("blocks 1 and 2 must have equal timestamps")
-	}
 	if receiptsGas[1] >= results[1].GasUsed || receiptsGas[0] == results[0].GasUsed {
 		t.Fatalf("refund/state-gas blocks do not separate gasUsed from the receipts: %v vs %+v", receiptsGas, results)
 	}
@@ -366,6 +363,7 @@ func TestProfile1VectorV5(t *testing.T) {
 	errName := map[error]string{
 		hotstuff.ErrProfile1TimeBeforeParent: "ErrProfile1TimeBeforeParent",
 		hotstuff.ErrProfile1TimeFuture:       "ErrProfile1TimeFuture",
+		hotstuff.ErrProfile1TimeOffGrid:      "ErrProfile1TimeOffGrid",
 		hotstuff.ErrProfile1BlobGas:          "ErrProfile1BlobGas",
 		hotstuff.ErrProfile1BaseFee:          "ErrProfile1BaseFee",
 		hotstuff.ErrProfile1GasLimit:         "ErrProfile1GasLimit",
@@ -416,8 +414,8 @@ func TestProfile1VectorV5(t *testing.T) {
 		func(h *block.Header) { h.GasUsed = out.Blocks[2].Executed.RegularGas + out.Blocks[2].Executed.StateGas })
 	imp("gasUsed above the parent's gasLimit", "B13", "block 3 with gasUsed = gasLimit + 1", 2,
 		func(h *block.Header) { h.GasUsed = h.GasLimit + 1 }, nil, "exceeds gasLimit")
-	imp("timestamp before parent", "B4", "block 2 with time = block 1 time - 1", 1,
-		func(h *block.Header) { h.Time = headers[0].Time - 1 }, hotstuff.ErrProfile1TimeBeforeParent, "")
+	imp("timestamp before parent", "B4", "block 2 with time = block 1 time - 8 (on the slot grid)", 1,
+		func(h *block.Header) { h.Time = headers[0].Time - v1SlotSecs }, hotstuff.ErrProfile1TimeBeforeParent, "")
 	imp("blobGasUsed 1", "B9", "block 3 with blobGasUsed = 1", 2,
 		func(h *block.Header) { h.BlobGasUsed = &one }, hotstuff.ErrProfile1BlobGas, "")
 	imp("excessBlobGas 1", "B9", "block 3 with excessBlobGas = 1", 2,
@@ -441,7 +439,7 @@ func TestProfile1VectorV5(t *testing.T) {
 	add("timestamp beyond floor(now)+2", "B4", "vote", "block 3 checked with now = time - 3 (accepted on import)", now,
 		ahead, hs.StaticHeaderCheck(chain, ahead, time.Unix(int64(now), 0)), hotstuff.ErrProfile1TimeFuture, "")
 	if err := hs.StaticHeaderCheck(chain, headers[1], time.Unix(int64(headers[1].Time), 0)); err != nil {
-		t.Fatalf("block 2 (equal timestamp) refused at vote time: %v", err)
+		t.Fatalf("block 2 refused at vote time: %v", err)
 	}
 
 	// AM25 (appended after the earlier refusals, whose order is published).
@@ -453,6 +451,11 @@ func TestProfile1VectorV5(t *testing.T) {
 		func(h *block.Header) { e := hash.EmptyRootHash; h.RequestsHash = &e }, ErrDeferredRequestsHash, "")
 	imp("requestsHash absent", "B8", "block 8 with requestsHash = nil (RLP stops before element 21)", 7,
 		func(h *block.Header) { h.RequestsHash = nil }, hotstuff.ErrProfile1RequestsHash, "")
+	// AM27 (appended after the earlier refusals, whose order is published).
+	imp("timestamp equal to parent", "B4", "block 2 with time = block 1 time", 1,
+		func(h *block.Header) { h.Time = headers[0].Time }, hotstuff.ErrProfile1TimeBeforeParent, "")
+	imp("timestamp off the slot grid", "B4", "block 2 with time = block 1 time + 9", 1,
+		func(h *block.Header) { h.Time = headers[0].Time + v1SlotSecs + 1 }, hotstuff.ErrProfile1TimeOffGrid, "")
 
 	writeProfile1Vector(t, "V5", "header_validity.json", out)
 	mirrorProfile1File(t, "V5", "README.md")

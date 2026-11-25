@@ -446,9 +446,9 @@ func TestProfile1HeaderVectorV1(t *testing.T) {
 			h.UncleHash = hash.EmptyUncleHash
 			return seal(h)
 		}, hotstuff.ErrProfile1OmmersHash},
-		{"timestamp before parent", "B4", "time = block 1 time - 1", func() *block.Header {
+		{"timestamp before parent", "B4", "time = block 1 time - 8 (on the slot grid)", func() *block.Header {
 			h := fresh()
-			h.Time = b1.Time - 1
+			h.Time = b1.Time - v1SlotSecs
 			return seal(h)
 		}, hotstuff.ErrProfile1TimeBeforeParent},
 		{"withdrawalsRoot absent", "B6", "withdrawalsRoot = nil (RLP stops before element 17)", func() *block.Header {
@@ -486,6 +486,17 @@ func TestProfile1HeaderVectorV1(t *testing.T) {
 			h.GasLimit++
 			return seal(h)
 		}, hotstuff.ErrProfile1GasLimit},
+		// AM27 (appended after the earlier refusals, whose order is published).
+		{"timestamp equal to parent", "B4", "time = block 1 time (same slot)", func() *block.Header {
+			h := fresh()
+			h.Time = b1.Time
+			return seal(h)
+		}, hotstuff.ErrProfile1TimeBeforeParent},
+		{"timestamp off the slot grid", "B4", "time = block 1 time + 9", func() *block.Header {
+			h := fresh()
+			h.Time = b1.Time + v1SlotSecs + 1
+			return seal(h)
+		}, hotstuff.ErrProfile1TimeOffGrid},
 	}
 	errName := map[error]string{}
 	for name, e := range map[string]error{
@@ -495,6 +506,7 @@ func TestProfile1HeaderVectorV1(t *testing.T) {
 		"ErrProfile1MixHash": hotstuff.ErrProfile1MixHash, "ErrProfile1OmmersHash": hotstuff.ErrProfile1OmmersHash,
 		"ErrProfile1TimeBeforeParent": hotstuff.ErrProfile1TimeBeforeParent,
 		"ErrProfile1TimeFuture":       hotstuff.ErrProfile1TimeFuture,
+		"ErrProfile1TimeOffGrid":      hotstuff.ErrProfile1TimeOffGrid,
 		"ErrProfile1WithdrawalsRoot":  hotstuff.ErrProfile1WithdrawalsRoot,
 		"ErrProfile1RequestsHash":     hotstuff.ErrProfile1RequestsHash, "ErrProfile1BlobGas": hotstuff.ErrProfile1BlobGas,
 		"ErrProfile1Element22": hotstuff.ErrProfile1Element22, "ErrProfile1BaseFee": hotstuff.ErrProfile1BaseFee,
@@ -608,7 +620,8 @@ B1 extraData layout `+"`N42H || view u64 LE || [QC] || seal(96)`"+`, at most 409
 QC is zero bytes; the QC is a commit-domain QC of the genesis set, below the header's view,
 naming an ancestor. B2 seal by the leader of the view over sealHash. B3 difficulty, nonce,
 mixHash, ommersHash zero (the empty-list hash is refused), coinbase = leader. B4
-parent.time <= time (import) and time <= floor(now)+2 (vote time only). B6 withdrawalsRoot
+(AM27) (time - G) mod 8 = 0 and time >= parent.time + 8 (import), time <= floor(now)+2
+(vote time only). B6 withdrawalsRoot
 present and equal to keccak(concat(rlp([address, amount]))) of the rewards. B8 requestsHash
 present (its value is a deferred field, AM25; genesis and block 1 carry sha256("") =
 0xe3b0c442...b855). B9 blobGasUsed = excessBlobGas = 0. B12 element 22 = 0x80.
