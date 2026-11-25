@@ -1060,31 +1060,44 @@ func (s *Service) handleBroadcast(output EngineOutput, tDeq time.Time) {
 		return
 	}
 
-	publishCtx := s.ctx
-	publishOpts := []pubsub.PubOpt(nil)
-	var cancel context.CancelFunc
 	if output.Message.Type == MsgTimeout {
 		// Timeout messages are deterministic for (view, validator). If the first
-		// copy is published while only a startup fragment of the mesh is ready,
-		// later copies are suppressed by GossipSub's seen cache and the other
-		// validators can remain below TC quorum forever. Wait until this node has
-		// enough subscribed topic peers to make a quorum with itself. Bound the
-		// wait so repeated timeout events cannot leak blocked publishers when the
-		// network genuinely lacks quorum.
+		// copy is published while only a startup fragment of the network has
+		// subscribed, later copies are suppressed by GossipSub's seen cache and
+		// the other validators can remain below TC quorum forever. Wait until
+		// enough peers have subscribed to the topic to make a quorum with this
+		// node. The wait counts subscribers, not the GossipSub mesh:
+		// pubsub.MinTopicSize measures the mesh, which is held near D=8 (pruned
+		// above Dhi=12), so from n >= ~14 a quorum-1 target never became ready,
+		// every timeout was dropped and the chain halted at its first timed-out
+		// view.
+		// Bounded: after timeoutPublishMaxWait the timeout is published anyway.
 		if eng := s.engine.Engine(); eng != nil {
 			peerTarget := timeoutPublishPeerTarget(eng.CurrentValidatorSet().QuorumSize())
-			if peerTarget > 0 {
-				publishOpts = append(publishOpts, pubsub.WithReadiness(pubsub.MinTopicSize(peerTarget)))
-				publishCtx, cancel = context.WithTimeout(s.ctx, 30*time.Second)
-				defer cancel()
+			if sp, ok := s.p2p.(SubscribedPublisher); ok && peerTarget > 0 {
+				if err := sp.PublishToTopicWhenSubscribed(s.ctx, topic, gossipBytes, peerTarget, timeoutPublishMaxWait); err != nil {
+					log.Warn("hotstuff: broadcast failed", "err", err)
+				}
+				return
 			}
 		}
 	}
 
-	if err := s.p2p.PublishToTopic(publishCtx, topic, gossipBytes, publishOpts...); err != nil {
+	if err := s.p2p.PublishToTopic(s.ctx, topic, gossipBytes); err != nil {
 		log.Warn("hotstuff: broadcast failed", "err", err)
 	}
 }
+
+// SubscribedPublisher is implemented by p2p.Service and the node adapter
+// around it: publish once enough peers have subscribed to the topic, or once
+// maxWait has passed.
+type SubscribedPublisher interface {
+	PublishToTopicWhenSubscribed(ctx context.Context, topic string, data []byte, minSubscribers int, maxWait time.Duration) error
+}
+
+// timeoutPublishMaxWait bounds how long a timeout waits for topic subscribers
+// before it is published regardless.
+const timeoutPublishMaxWait = 30 * time.Second
 
 const h2V4GossipTopic = "/n42/h2/4/ssz_snappy"
 
