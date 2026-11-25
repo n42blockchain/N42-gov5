@@ -50,7 +50,55 @@ func initGenesis(cliCtx *cli.Context) error {
 		err          error
 		genesisBlock *block.Block
 	)
+	genesis, preset := prepareInitGenesis(cliCtx)
 
+	chaindb, err := node.OpenDatabase(cliCtx.Context, &DefaultConfig, nil, kv.ChainDB.String())
+	if err != nil {
+		utils.Fatalf("Failed to open database: %v", err)
+	}
+	defer chaindb.Close()
+
+	if err := chaindb.Update(context.Background(), func(tx kv.RwTx) error {
+		storedHash, err := rawdb.ReadCanonicalHash(tx, 0)
+		if err != nil {
+			return err
+		}
+
+		if storedHash != (types.Hash{}) {
+			return fmt.Errorf("genesis state already exists")
+
+		}
+		genesisBlock, err = node.WriteGenesisBlock(tx, genesis)
+		if err != nil {
+			return err
+		}
+		if err := node.WriteChainConfig(tx, genesisBlock.Hash(), genesis); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		utils.Fatalf("Failed to write genesis state to database: %v", err)
+	}
+	if err := node.PersistDataDirNetworkBinding(&DefaultConfig, genesis.Config, genesisBlock.Hash()); err != nil {
+		utils.Fatalf("Failed to persist datadir network binding: %v", err)
+	}
+	if preset.Profile.IsEthereumEL() {
+		ethGenesisHash, err := internalcore.EthereumCompatibleGenesisHash(genesis)
+		if err != nil {
+			utils.Fatalf("Failed to compute Ethereum-compatible genesis hash: %v", err)
+		}
+		if err := node.PersistEthereumGenesisHash(DefaultConfig.NodeCfg.DataDir, ethGenesisHash); err != nil {
+			utils.Fatalf("Failed to persist Ethereum-compatible genesis hash: %v", err)
+		}
+	}
+	log.Info("Successfully wrote genesis state", "hash", genesisBlock.Hash())
+	return nil
+}
+
+// prepareInitGenesis reads and validates the genesis file named by the first
+// argument, applies the network preset to DefaultConfig and checks the
+// datadir binding: the common front half of init and init-snapshot.
+func prepareInitGenesis(cliCtx *cli.Context) (*conf.Genesis, params.NetworkPreset) {
 	// Make sure we have a valid genesis JSON
 	genesisPath := cliCtx.Args().First()
 	if len(genesisPath) == 0 {
@@ -101,48 +149,7 @@ func initGenesis(cliCtx *cli.Context) error {
 	if err := node.ValidateDataDirNetworkBinding(&DefaultConfig, genesis.Config, nil); err != nil {
 		utils.Fatalf("Failed to validate datadir network binding: %v", err)
 	}
-
-	chaindb, err := node.OpenDatabase(cliCtx.Context, &DefaultConfig, nil, kv.ChainDB.String())
-	if err != nil {
-		utils.Fatalf("Failed to open database: %v", err)
-	}
-	defer chaindb.Close()
-
-	if err := chaindb.Update(context.Background(), func(tx kv.RwTx) error {
-		storedHash, err := rawdb.ReadCanonicalHash(tx, 0)
-		if err != nil {
-			return err
-		}
-
-		if storedHash != (types.Hash{}) {
-			return fmt.Errorf("genesis state already exists")
-
-		}
-		genesisBlock, err = node.WriteGenesisBlock(tx, genesis)
-		if err != nil {
-			return err
-		}
-		if err := node.WriteChainConfig(tx, genesisBlock.Hash(), genesis); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		utils.Fatalf("Failed to write genesis state to database: %v", err)
-	}
-	if err := node.PersistDataDirNetworkBinding(&DefaultConfig, genesis.Config, genesisBlock.Hash()); err != nil {
-		utils.Fatalf("Failed to persist datadir network binding: %v", err)
-	}
-	if preset.Profile.IsEthereumEL() {
-		ethGenesisHash, err := internalcore.EthereumCompatibleGenesisHash(genesis)
-		if err != nil {
-			utils.Fatalf("Failed to compute Ethereum-compatible genesis hash: %v", err)
-		}
-		if err := node.PersistEthereumGenesisHash(DefaultConfig.NodeCfg.DataDir, ethGenesisHash); err != nil {
-			utils.Fatalf("Failed to persist Ethereum-compatible genesis hash: %v", err)
-		}
-	}
-	log.Info("Successfully wrote genesis state", "hash", genesisBlock.Hash())
-	return nil
+	return genesis, preset
 }
 
 func resolveInitNetworkPreset(cliCtx *cli.Context, chainCfg *params.ChainConfig) (params.NetworkPreset, error) {
