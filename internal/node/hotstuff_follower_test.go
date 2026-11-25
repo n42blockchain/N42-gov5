@@ -4,6 +4,7 @@
 package node
 
 import (
+	"encoding/hex"
 	"math/big"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -97,5 +99,31 @@ func TestHotStuffFollowerExecutesBlockRewards(t *testing.T) {
 		if gotRewards[i].Address != wantRewards[i].Address || !gotRewards[i].Amount.Eq(wantRewards[i].Amount) {
 			t.Fatalf("reward %d: follower %+v, validator %+v", i, gotRewards[i], wantRewards[i])
 		}
+	}
+}
+
+// A node without a validator key runs no consensus engine; on profile 1 it
+// still resolves the fixed validator set (so it can authenticate cohort
+// reporters), while a legacy chain keeps exposing none.
+func TestResolveBridgeValidatorSetProfile1WithoutEngine(t *testing.T) {
+	cfg := followerTestChainConfig()
+	for i := 0; i < 4; i++ {
+		sk, err := bls.RandKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.HotStuff.Validators = append(cfg.HotStuff.Validators, params.HotStuffValidatorConfig{
+			Address: types.BytesToAddress([]byte{byte(i + 1)}).Hex(),
+			BLSKey:  hex.EncodeToString(sk.PublicKey().Marshal()),
+		})
+	}
+	vs := resolveBridgeValidatorSet(hotstuff.New(cfg.HotStuff, cfg))
+	if vs == nil || vs.Len() != 4 {
+		t.Fatalf("profile-1 follower validator set = %v, want the 4 genesis validators", vs)
+	}
+	legacy := *cfg
+	legacy.N42Profile = 0
+	if vs := resolveBridgeValidatorSet(hotstuff.New(legacy.HotStuff, &legacy)); vs != nil {
+		t.Fatal("legacy follower must not expose a validator set without its engine")
 	}
 }

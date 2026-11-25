@@ -332,8 +332,13 @@ func resolveHotStuffEngine(engine consensus.Engine) (*hotstuff.HotStuff, bool) {
 
 func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
 	hs, ok := resolveHotStuffEngine(engine)
-	if !ok || hs.Engine() == nil {
+	if !ok {
 		return nil
+	}
+	if hs.Engine() == nil {
+		// A node without a validator key runs no consensus engine; on
+		// profile 1 the set is fixed by the chain config.
+		return hs.Profile1ValidatorSet()
 	}
 	return hs.Engine().CurrentValidatorSet()
 }
@@ -348,21 +353,32 @@ func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
 // etherbase or BLS key returns a non-nil error instead of silently disabling
 // authentication: running a cohort participant with verify==nil is fail-OPEN
 // and re-opens the reporter-spoofing/censorship vector Layer 1 closes, so the
-// caller fails closed (fatal on a mining node). The validator set is read fresh
-// on every verification so epoch rotations are honoured.
+// caller fails closed (fatal on a mining node). A non-mining node without a
+// key whose validator set is known without a consensus engine (profile 1)
+// gets a nil signer and a working verifier: verify-only. The validator set is
+// read fresh on every verification so epoch rotations are honoured.
 func (n *Node) buildCohortAuth() (mobileverify.CohortSigner, mobileverify.CohortVerifier, error) {
 	if _, ok := resolveHotStuffEngine(n.engine); !ok {
 		return nil, nil, nil
 	}
+	var signer mobileverify.CohortSigner
 	etherbase, err := n.Etherbase()
 	if err != nil {
-		return nil, nil, fmt.Errorf("cohort auth: etherbase unavailable: %w", err)
+		err = fmt.Errorf("cohort auth: etherbase unavailable: %w", err)
+	} else if blsKey, kerr := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase); kerr != nil {
+		err = fmt.Errorf("cohort auth: BLS key unavailable for %s: %w", etherbase, kerr)
+	} else {
+		signer = func(msg []byte) []byte { return blsKey.Sign(msg).Marshal() }
 	}
-	blsKey, err := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cohort auth: BLS key unavailable for %s: %w", etherbase, err)
+		if n.config.NodeCfg.Miner || resolveBridgeValidatorSet(n.engine) == nil {
+			return nil, nil, err
+		}
+		// A node that does not mine has no validator key to sign with, but
+		// verifying needs none: with the validator set known (profile 1) it
+		// still authenticates every reporter instead of running fail-open.
+		log.Info("mobileverify: cohort reporter authentication verify-only (no local validator key)", "reason", err)
 	}
-	signer := func(msg []byte) []byte { return blsKey.Sign(msg).Marshal() }
 	verifier := func(reporter types.Address, msg, sig []byte) bool {
 		vs := resolveBridgeValidatorSet(n.engine)
 		if vs == nil {

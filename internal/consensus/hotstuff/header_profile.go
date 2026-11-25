@@ -119,6 +119,21 @@ func (h *HotStuff) profile1Set() (*ValidatorSet, error) {
 	return h.p1Validators.set, h.p1Validators.err
 }
 
+// Profile1ValidatorSet returns the fixed validator set of a profile-1 chain
+// (AM5), parsed from the chain config, so nodes that run no consensus engine
+// (non-validators) can still authenticate validator-signed messages. It is
+// nil on a chain outside profile 1, whose set may rotate at epoch boundaries.
+func (h *HotStuff) Profile1ValidatorSet() *ValidatorSet {
+	if !h.chainConfig.IsProfile1() {
+		return nil
+	}
+	vs, err := h.profile1Set()
+	if err != nil {
+		return nil
+	}
+	return vs
+}
+
 // decodeProfile1Extra decodes extraData in the one layout of B1 and nothing
 // else: "N42H" || view u64 LE || QC || seal(96), at most 4096 bytes. The QC is
 // absent as zero bytes (no other spelling of an empty QC) and must be the
