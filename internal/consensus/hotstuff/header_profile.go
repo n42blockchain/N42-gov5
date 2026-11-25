@@ -300,11 +300,11 @@ func (h *HotStuff) checkProfile1Header(chain consensus.ChainHeaderReader, header
 }
 
 // profile1Grid returns the slot grid (G, I) of the chain: the genesis
-// timestamp and blockIntervalMs in seconds (A17, AM27).
+// timestamp and blockIntervalMs in milliseconds (A17, AM27, AM27a).
 func (h *HotStuff) profile1Grid(chain consensus.ChainHeaderReader) (uint64, uint64, error) {
-	iv := h.chainConfig.Profile1SlotSeconds()
+	iv := h.chainConfig.Profile1SlotMs()
 	if iv == 0 {
-		return 0, 0, errors.New("profile 1: blockIntervalMs is not a positive whole number of seconds")
+		return 0, 0, errors.New("profile 1: blockIntervalMs is not positive")
 	}
 	h.lock.RLock()
 	g, ok := h.p1GenesisTime, h.p1GenesisTimeSet
@@ -328,12 +328,20 @@ func (h *HotStuff) profile1Grid(chain consensus.ChainHeaderReader) (uint64, uint
 
 // checkProfile1Time applies B4's import rules (AM27): the timestamp is a slot
 // start of the genesis grid, (time - G) mod I == 0, and lies in a later slot
-// than the parent's, time >= parent.time + I.
+// than the parent's, time >= parent.time + I. When blockIntervalMs is not a
+// whole number of seconds (AM27a) only time >= parent.time is checked.
 func (h *HotStuff) checkProfile1Time(chain consensus.ChainHeaderReader, header, parent *block.Header) error {
-	g, iv, err := h.profile1Grid(chain)
+	g, ivMs, err := h.profile1Grid(chain)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrProfile1TimeOffGrid, err)
 	}
+	if ivMs%1000 != 0 {
+		if header.Time < parent.Time {
+			return fmt.Errorf("%w: %d < parent %d", ErrProfile1TimeBeforeParent, header.Time, parent.Time)
+		}
+		return nil
+	}
+	iv := ivMs / 1000
 	if !params.Profile1OnGrid(g, iv, header.Time) {
 		return fmt.Errorf("%w: %d (genesis %d, interval %d s)", ErrProfile1TimeOffGrid, header.Time, g, iv)
 	}
@@ -516,17 +524,22 @@ func (h *HotStuff) profile1Stamp(chain consensus.ChainHeaderReader, view ViewNum
 	if clock == nil {
 		clock = time.Now
 	}
-	g, iv, err := h.profile1Grid(chain)
+	g, ivMs, err := h.profile1Grid(chain)
 	var t uint64
+	whole := ivMs%1000 == 0
+	iv := ivMs / 1000
 	switch {
 	case err != nil:
 		// No grid (cannot happen on a validated profile-1 genesis): stamp
 		// the parent's time so the header is refused rather than guessed.
 		t = parent.Time
-	case remember && minerTime >= parent.Time+iv && params.Profile1OnGrid(g, iv, minerTime):
+	case whole && remember && minerTime >= parent.Time+iv && params.Profile1OnGrid(g, iv, minerTime):
+		t = minerTime
+	case !whole && remember && minerTime >= parent.Time && minerTime*1000 <= uint64(clock().UnixMilli()):
+		// Millisecond grid: the miner's own floor(slot start/1000).
 		t = minerTime
 	default:
-		t = params.Profile1SlotTime(g, iv, parent.Time, clock())
+		t = params.Profile1SlotStartMs(g, ivMs, parent.Time, clock()) / 1000
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()

@@ -74,3 +74,40 @@ func TestProfile1SlotSeconds(t *testing.T) {
 		t.Fatalf("legacy chain = %d, want 0", got)
 	}
 }
+
+// AM27a: millisecond grid. 8000 ms is byte-identical to the whole-second
+// rule; 30 ms and 1500 ms pick slots from the clock and never go backwards.
+func TestProfile1SlotStartMs(t *testing.T) {
+	const g = uint64(1_000_000)
+	at := func(sec uint64, ms int64) time.Time { return time.Unix(int64(sec), ms*int64(time.Millisecond)) }
+	for _, parent := range []uint64{g, g + 8, g + 16, g + 40} {
+		for _, now := range []time.Time{at(g-5, 0), at(g+8, 300), at(g+19, 500), at(g+40, 0), at(g+41, 1)} {
+			if got, want := Profile1SlotStartMs(g, 8000, parent, now), Profile1SlotTime(g, 8, parent, now)*1000; got != want {
+				t.Fatalf("8000 ms: %d, want %d", got, want)
+			}
+		}
+	}
+	// 1500 ms: slot starts at g*1000 + s*1500.
+	if got := Profile1SlotStartMs(g, 1500, g, at(g, 0)); got != g*1000+1500 {
+		t.Errorf("1500 block 1: %d", got)
+	}
+	if got := Profile1SlotStartMs(g, 1500, g+3, at(g+3, 100)); got != g*1000+4500 {
+		t.Errorf("1500 mid-slot: %d", got-g*1000)
+	}
+	// 30 ms: parent stamped g+2 (smallest slot with floor >= g+2 is 67), clock behind.
+	if got := Profile1SlotStartMs(g, 30, g+2, at(g, 0)); got != g*1000+68*30 {
+		t.Errorf("30 ms behind clock: %d", got-g*1000)
+	}
+	// Stamps (floor of start/1000) are non-decreasing across a run of blocks.
+	for _, iv := range []uint64{30, 1500} {
+		parent, last := g, g
+		for i := 0; i < 500; i++ {
+			now := time.UnixMilli(int64(g*1000) + int64(i)*7)
+			st := Profile1SlotStartMs(g, iv, parent, now) / 1000
+			if st < last {
+				t.Fatalf("I=%d: stamp %d went below %d", iv, st, last)
+			}
+			parent, last = st, st
+		}
+	}
+}

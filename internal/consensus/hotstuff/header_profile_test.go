@@ -479,3 +479,39 @@ func TestProfile1ExtraDecodeIsStrict(t *testing.T) {
 		t.Fatalf("legacy layout = %v, want %v", err, ErrProfile1Extra)
 	}
 }
+
+// AM27a: with a non-whole-second blockIntervalMs B4 only requires
+// header.time >= parent.time, and the leader's stamp is floor(slot start/1000).
+func TestProfile1MsGridTime(t *testing.T) {
+	for _, ms := range []uint64{30, 1500} {
+		f := newP1Fixture(t)
+		f.cfg.HotStuff.BlockIntervalMs = ms
+		parent := f.chainOf(1)[1]
+		same := f.child(parent, 2, nil)
+		same.Time = parent.Time
+		if err := f.hs.checkProfile1Time(f.chain, same, parent); err != nil {
+			t.Fatalf("I=%d: equal seconds refused: %v", ms, err)
+		}
+		later := f.child(parent, 2, nil)
+		later.Time = parent.Time + 3
+		if err := f.hs.checkProfile1Time(f.chain, later, parent); err != nil {
+			t.Fatalf("I=%d: later time refused: %v", ms, err)
+		}
+		early := f.child(parent, 2, nil)
+		early.Time = parent.Time - 1
+		if err := f.hs.checkProfile1Time(f.chain, early, parent); !errors.Is(err, ErrProfile1TimeBeforeParent) {
+			t.Fatalf("I=%d: time < parent = %v, want %v", ms, err, ErrProfile1TimeBeforeParent)
+		}
+		// Stamp: floor of the slot start, never below the parent's time.
+		now := time.Unix(int64(parent.Time), 400_000_000)
+		f.hs.now = func() time.Time { return now }
+		h := &block.Header{ParentHash: parent.Hash(), Number: uint256.NewInt(2)}
+		if err := f.hs.Prepare(f.chain, h); err != nil {
+			t.Fatal(err)
+		}
+		start := params.Profile1SlotStartMs(p1TestGenesisT0, ms, parent.Time, now)
+		if h.Time != start/1000 || h.Time < parent.Time {
+			t.Fatalf("I=%d: stamp %d, want floor(%d/1000) >= parent %d", ms, h.Time, start, parent.Time)
+		}
+	}
+}

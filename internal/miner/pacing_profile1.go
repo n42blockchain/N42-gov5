@@ -103,41 +103,57 @@ func (w *worker) pace(num uint64, parent types.Hash) error {
 	}
 }
 
-// profile1SlotSeconds is the slot interval I in seconds: the genesis
+// profile1SlotMs is the slot interval I in milliseconds: the genesis
 // blockIntervalMs, or the miner's copy of it when the chain config carries
-// none (tests). 0 when it is not a positive whole number of seconds.
-func (w *worker) profile1SlotSeconds() uint64 {
-	if iv := w.chainConfig.Profile1SlotSeconds(); iv != 0 {
+// none (tests). 0 when there is none.
+func (w *worker) profile1SlotMs() uint64 {
+	if iv := w.chainConfig.Profile1SlotMs(); iv != 0 {
 		return iv
 	}
-	if ms := w.minerConf.BlockIntervalMs; ms != 0 && ms%1000 == 0 {
-		return ms / 1000
-	}
-	return 0
+	return w.minerConf.BlockIntervalMs
 }
 
 // profile1Target is the A17 slot start for a block on parent proposed at
-// now: G + s*I with s = max(sP+1, ceil((now-G)/I)). ok is false when the
-// parent or genesis header or the interval is unavailable.
-func (w *worker) profile1Target(parent types.Hash, now time.Time) (uint64, bool) {
-	iv := w.profile1SlotSeconds()
+// now: G*1000 + s*I (ms) with s = max(sP+1, ceil((now-G)/I)). It returns the
+// header stamp floor(start/1000) and the start in unix milliseconds. ok is
+// false when the parent or genesis header or the interval is unavailable.
+func (w *worker) profile1Target(parent types.Hash, now time.Time) (stamp, startMs uint64, ok bool) {
+	iv := w.profile1SlotMs()
 	if iv == 0 || parent == (types.Hash{}) || w.chain == nil {
-		return 0, false
+		return 0, 0, false
 	}
 	gi := w.chain.GetHeaderByNumber(uint256.NewInt(0))
-	g, ok := gi.(*block.Header)
-	if gi == nil || !ok || g == nil {
-		return 0, false
+	g, isHdr := gi.(*block.Header)
+	if gi == nil || !isHdr || g == nil {
+		return 0, 0, false
 	}
 	pi, err := w.chain.GetHeaderByHash(parent)
 	if err != nil || pi == nil {
-		return 0, false
+		return 0, 0, false
 	}
-	ph, ok := pi.(*block.Header)
-	if !ok || ph == nil {
-		return 0, false
+	ph, isHdr := pi.(*block.Header)
+	if !isHdr || ph == nil {
+		return 0, 0, false
 	}
-	return params.Profile1SlotTime(g.Time, iv, ph.Time, now), true
+	startMs = params.Profile1SlotStartMs(g.Time, iv, ph.Time, now)
+	return startMs / 1000, startMs, true
+}
+
+// waitUntilMs holds the caller until the wall clock reaches the unix
+// millisecond t (A17: publish no earlier than the slot start).
+func (w *worker) waitUntilMs(t uint64) error {
+	wait := time.Until(time.UnixMilli(int64(t)))
+	if wait <= 0 || !w.isRunning() {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-w.ctx.Done():
+		return w.ctx.Err()
+	}
 }
 
 // waitUntilUnix holds the caller until the wall clock reaches the unix second

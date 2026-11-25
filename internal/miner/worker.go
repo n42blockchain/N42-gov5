@@ -1442,7 +1442,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// this view is triggered, s = max(sP+1, ceil((now-G)/I)); the header is
 	// stamped G + s*I and published no earlier than that. A speculative
 	// build stamps the same target through Prepare's clock reading.
-	var p1Target uint64
+	var p1Target, p1TargetMs uint64
 	p1HasTarget := false
 	if !speculative && w.chainConfig.IsProfile1() {
 		p1Parent := parentHash
@@ -1451,7 +1451,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				p1Parent = head.Hash()
 			}
 		}
-		p1Target, p1HasTarget = w.profile1Target(p1Parent, time.Now())
+		p1Target, p1TargetMs, p1HasTarget = w.profile1Target(p1Parent, time.Now())
 	}
 
 	w.mu.RLock()
@@ -1508,7 +1508,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 					// rebuild below.
 					staleTime = !p1HasTarget || st.block.Time() != p1Target
 					if !staleTime {
-						if err := w.waitUntilUnix(p1Target); err != nil {
+						if err := w.waitUntilMs(p1TargetMs); err != nil {
 							return err
 						}
 					}
@@ -1736,7 +1736,11 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		}
 		if w.chainConfig.IsProfile1() {
 			// Publish no earlier than the start of the stamped slot.
-			if err := w.waitUntilUnix(current.header.Time); err != nil {
+			waitMs := current.header.Time * 1000
+			if p1HasTarget && current.header.Time == p1Target {
+				waitMs = p1TargetMs
+			}
+			if err := w.waitUntilMs(waitMs); err != nil {
 				return err
 			}
 		} else if err := w.pace(current.header.Number.Uint64(), current.header.ParentHash); err != nil {
