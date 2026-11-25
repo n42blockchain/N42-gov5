@@ -175,6 +175,10 @@ type ConsensusEngine struct {
 	// every other chain): it switches on the profile-1 vote gates and
 	// certificate strictness (engine_profile1.go). Set once before Start.
 	p1Set *ValidatorSet
+	// certCache remembers certificates (QC / TC) that verified, so the
+	// copies carried by many timeouts, votes and NewViews cost one pairing
+	// check, not one each (AM22(b), cert_cache.go). Nil caches nothing.
+	certCache *verifiedCertCache
 	// Set once by the adapter before the engine is published or started.
 	// Kept outside epoch snapshots so restart and validator changes retain
 	// the chain's schedule without changing validator-set commitments.
@@ -465,6 +469,7 @@ func NewConsensusEngineWithEpochManager(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
+		certCache:                 newVerifiedCertCache(verifiedCertCacheSize),
 	}
 	// Seed the first view's timing from the round state so the very first
 	// committed view is reported under its real view number.
@@ -507,6 +512,7 @@ func WithRecoveredState(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
+		certCache:                 newVerifiedCertCache(verifiedCertCacheSize),
 	}
 	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)

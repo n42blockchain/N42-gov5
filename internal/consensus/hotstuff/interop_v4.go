@@ -133,14 +133,14 @@ func (e *ConsensusEngine) verifyQCWithSet(qc *QuorumCertificate, vs *ValidatorSe
 	if err := e.profile1CertError(qc.View, len(qc.Signers)); err != nil {
 		return err
 	}
-	return verifyAggregateSignature(qc, vs, e.voteSigningMessage(qc.View, qc.BlockHash), "QC")
+	return e.certCache.verifyQCCached(qc, vs, e.voteSigningMessage(qc.View, qc.BlockHash), "QC")
 }
 
 func (e *ConsensusEngine) verifyCommitQCWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
 	if err := e.profile1CertError(qc.View, len(qc.Signers)); err != nil {
 		return err
 	}
-	return verifyAggregateSignature(qc, vs, e.commitSigningMessage(qc.View, qc.BlockHash), "CommitQC")
+	return e.certCache.verifyQCCached(qc, vs, e.commitSigningMessage(qc.View, qc.BlockHash), "CommitQC")
 }
 
 func (e *ConsensusEngine) verifyQCAnyDomain(qc *QuorumCertificate) error {
@@ -148,6 +148,13 @@ func (e *ConsensusEngine) verifyQCAnyDomain(qc *QuorumCertificate) error {
 }
 
 func (e *ConsensusEngine) verifyQCAnyDomainWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
+	// A commit-domain QC fails the vote-domain check first; look both
+	// domains up in the cache before paying that failed pairing again.
+	if e.profile1CertError(qc.View, len(qc.Signers)) == nil &&
+		(e.certCache.qcCached(qc, vs, e.voteSigningMessage(qc.View, qc.BlockHash)) ||
+			e.certCache.qcCached(qc, vs, e.commitSigningMessage(qc.View, qc.BlockHash))) {
+		return nil
+	}
 	if err := e.verifyQCWithSet(qc, vs); err == nil {
 		return nil
 	}
@@ -158,7 +165,7 @@ func (e *ConsensusEngine) verifyTC(tc *TimeoutCertificate) error {
 	if err := e.profile1CertError(tc.View, len(tc.Signers)); err != nil {
 		return err
 	}
-	return verifyTCAgainstMessage(tc, e.validatorSet(), e.timeoutSigningMessage(tc.View))
+	return e.certCache.verifyTCCached(tc, e.validatorSet(), e.timeoutSigningMessage(tc.View))
 }
 
 // verifyTCWithSet is verifyTC against an explicit validator set — the merge
@@ -170,7 +177,7 @@ func (e *ConsensusEngine) verifyTCWithSet(tc *TimeoutCertificate, vs *ValidatorS
 	if err := e.profile1CertError(tc.View, len(tc.Signers)); err != nil {
 		return err
 	}
-	return verifyTCAgainstMessage(tc, vs, e.timeoutSigningMessage(tc.View))
+	return e.certCache.verifyTCCached(tc, vs, e.timeoutSigningMessage(tc.View))
 }
 
 // VerifyCommitQCWithResolvedSet verifies a CommitQC against the validator set
