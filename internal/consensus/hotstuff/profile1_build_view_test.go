@@ -5,6 +5,7 @@ package hotstuff
 
 import (
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -104,5 +105,60 @@ func TestProfile1PrepareLinksParentCommitteeEvidence(t *testing.T) {
 	c2.ParentBeaconRoot = h2.ParentBeaconRoot
 	if err := f.hs.VerifyHeader(f.chain, f.seal(c2), true); err != nil {
 		t.Fatalf("VerifyHeader of the linked block 2: %v", err)
+	}
+}
+
+// TestProfile1SpeculativeStampDoesNotPinTheProposal: the next view's leader
+// builds speculatively during the previous view (clock T, right after the
+// parent arrived), then pays the A17 wait and rebuilds in its own view at
+// T+8. The rebuild must stamp floor(now) = T+8, not the speculative T. Mixed
+// pre-run 2 (2026-11-25): gov5 v1 extending gov5 v0's block sealed at
+// parent.time + 8 s but stamped parent.time (header deltas 0/16/8/8), since
+// the speculative Prepare had fixed the (view, parent) stamp.
+func TestProfile1SpeculativeStampDoesNotPinTheProposal(t *testing.T) {
+	f := newP1Fixture(t)
+	parent := f.chainOf(1)[1]
+	setup := newTestSetup(t, 4)
+	probe, _ := newP1Engine(t, setup, 0)
+	v := probe.CurrentView()
+	next := int(LeaderForViewWithTenure(v+1, setup.vs, probe.leaderTenure))
+	if int(LeaderForViewWithTenure(v, setup.vs, probe.leaderTenure)) == next {
+		t.Fatalf("test needs distinct leaders for views %d and %d", v, v+1)
+	}
+	e, _ := newP1Engine(t, setup, next)
+	f.hs.lock.Lock()
+	f.hs.engine = e
+	f.hs.lock.Unlock()
+
+	clock := time.Unix(int64(parent.Time), 300_000_000)
+	f.hs.now = func() time.Time { return clock }
+	prepare := func() *block.Header {
+		h := &block.Header{ParentHash: parent.Hash(), Number: uint256.NewInt(2)}
+		if err := f.hs.Prepare(f.chain, h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	spec := prepare()
+	if spec.Time != parent.Time {
+		t.Fatalf("speculative stamp = %d, want %d", spec.Time, parent.Time)
+	}
+
+	// The view turns to this node's, the A17 slot (8 s) elapses, the miner
+	// discards the stale speculative block and rebuilds.
+	e.mu.Lock()
+	e.roundState.AdvanceView(v + 1)
+	e.mu.Unlock()
+	clock = clock.Add(8 * time.Second)
+	real := prepare()
+	if real.Time != parent.Time+8 {
+		t.Fatalf("proposal stamp = %d (delta %d s), want parent.time + 8 = %d",
+			real.Time, int64(real.Time)-int64(parent.Time), parent.Time+8)
+	}
+	// Within its own view the stamp stays fixed (one proposal per view, F6).
+	clock = clock.Add(2 * time.Second)
+	if again := prepare(); again.Time != real.Time {
+		t.Fatalf("rebuild in the proposal view stamped %d, first stamp %d", again.Time, real.Time)
 	}
 }
