@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/n42blockchain/N42/internal/snapshotjoin"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
@@ -100,8 +101,14 @@ func main() {
 	}
 	computer.SetCold(tx)
 	root := computer.Tree().Root()
-	if root != qmdb.Hash(header.Root) {
-		fatalf("QMDB root %x does not match checkpoint header root %x", root, header.Root)
+	// Under deferred execution (profile 1, k = 1) the applied state of N is
+	// header(N+1).Root; header(N).Root is the state after N-1 (SYNC §5.3.1).
+	post, err := snapshotjoin.PostStateHeader(tx, chainConfig, header)
+	if err != nil {
+		fatalf("%v (on a deferred chain export a bundle with n42-reth-state-dump --bundle from a running node)", err)
+	}
+	if root != qmdb.Hash(post.Root) {
+		fatalf("QMDB root %x does not match header(%d).Root %x, the applied state of block %d", root, post.Number.Uint64(), post.Root, blockNumber)
 	}
 	metadata := qmdb.PortableSnapshotMetadata{
 		ChainID:     chainConfig.ChainID.Uint64(),
