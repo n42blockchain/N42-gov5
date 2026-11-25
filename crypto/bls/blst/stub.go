@@ -136,6 +136,11 @@ func VerifyMultipleSignatures(_ [][]byte, _ [][32]byte, _ []common.PublicKey) (b
 	panic(err)
 }
 
+// VerifySameMessageBatch -- stub
+func VerifySameMessageBatch(_ []common.Signature, _ []common.PublicKey, _ []byte) (bool, error) {
+	panic(err)
+}
+
 // NewAggregateSignature -- stub
 func NewAggregateSignature() common.Signature {
 	panic(err)

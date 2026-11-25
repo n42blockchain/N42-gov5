@@ -328,6 +328,52 @@ func VerifyMultipleSignaturesVarMsg(sigs [][]byte, msgs [][]byte, pubKeys []comm
 	return result, nil
 }
 
+// VerifySameMessageBatch verifies n signatures by n public keys over ONE
+// message with a single pairing check (small-exponent batch verification):
+// with random non-zero 64-bit coefficients r_i it checks
+// e(sum r_i*pk_i, H(msg)) == e(g1, sum r_i*sig_i). A batch that contains an
+// invalid signature passes with probability at most 2^-63, so, unlike a
+// plain aggregate check, invalid signatures that cancel each other out are
+// caught. Signatures and public keys must come from SignatureFromBytes /
+// PublicKeyFromBytes (or Sign), which perform the subgroup checks.
+func VerifySameMessageBatch(sigs []common.Signature, pubKeys []common.PublicKey, msg []byte) (bool, error) {
+	n := len(sigs)
+	if n == 0 || n != len(pubKeys) {
+		return false, pkgerrors.Errorf("signatures and public keys: %d vs %d", n, len(pubKeys))
+	}
+	rawSigs := make([]*blstSignature, n)
+	rawPks := make([]*blstPublicKey, n)
+	for i := 0; i < n; i++ {
+		s, ok := sigs[i].(*Signature)
+		if !ok || s == nil || s.s == nil {
+			return false, pkgerrors.New("uninitialized signature")
+		}
+		pk, ok := unwrapPublicKey(pubKeys[i])
+		if !ok {
+			return false, errUninitializedPublicKey
+		}
+		rawSigs[i], rawPks[i] = s.s, pk.p
+	}
+	if n == 1 {
+		return rawSigs[0].Verify(false, rawPks[0], false, msg, dst), nil
+	}
+	const coeffBytes = randBitsEntropy / 8
+	scalars := make([]byte, n*coeffBytes)
+	randGen := rand.NewGenerator()
+	if r, err := randGen.Read(scalars); err != nil || r != len(scalars) {
+		return false, errors.New("failed to read random bytes for batch verification")
+	}
+	for i := 0; i < n; i++ {
+		scalars[i*coeffBytes] |= 0x01 // non-zero coefficient
+	}
+	aggSig := blst.P2AffinesMult(rawSigs, scalars, randBitsEntropy)
+	aggPk := blst.P1AffinesMult(rawPks, scalars, randBitsEntropy)
+	if aggSig == nil || aggPk == nil {
+		return false, errors.New("batch verification: multi-scalar multiplication failed")
+	}
+	return aggSig.ToAffine().Verify(false, aggPk.ToAffine(), false, msg, dst), nil
+}
+
 // Marshal a signature into a LittleEndian byte slice.
 func (s *Signature) Marshal() []byte {
 	return s.s.Compress()
