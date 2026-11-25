@@ -1683,10 +1683,21 @@ func resolveN42ConsensusEngine(cfg *conf.Config, chainKv kv.RwDB) (consensus.Eng
 		apos.SetHardForkAllocDir(cfg.NodeCfg.DataDir)
 		return apos.New(cfg.ChainCfg.Apos, chainKv, cfg.ChainCfg), nil
 	case params.HotStuffConsensus:
-		return hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg), nil
+		hs := hotstuff.New(cfg.ChainCfg.HotStuff, cfg.ChainCfg)
+		// Every node executes blocks, so the reward function (B6) belongs to
+		// the engine from construction, not to the mining path: a node
+		// without a validator key would otherwise refuse every block.
+		hs.SetRewardFunc(hotStuffRewardFunc)
+		return hs, nil
 	default:
 		return nil, fmt.Errorf("invalid engine name %s", cfg.ChainCfg.Consensus)
 	}
+}
+
+// hotStuffRewardFunc is the HotStuff block reward function: it delegates to
+// the APoS reward logic.
+func hotStuffRewardFunc(chainCfg *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+	return apos.DoReward(chainCfg, ibs, header, chain)
 }
 
 func bundlerChainID(chainCfg *params.ChainConfig) (uint64, error) {
@@ -1719,11 +1730,8 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 		}
 		hs.Authorize(etherbase, blsKey)
 
-		// Inject reward function (delegates to apos reward logic).
-		hs.SetRewardFunc(func(chainCfg *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
-			return apos.DoReward(chainCfg, ibs, header, chain)
-		})
-
+		// The reward function is set at engine construction
+		// (resolveN42ConsensusEngine) so non-mining nodes execute blocks too.
 		if err := hs.InitEngineFromConfig(); err != nil {
 			return fmt.Errorf("hotstuff engine init failed: %w", err)
 		}
