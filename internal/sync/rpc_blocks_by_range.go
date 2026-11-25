@@ -218,8 +218,18 @@ func (s *Service) writeBodiesRange(ctx context.Context, startSlot, endSlot *uint
 
 	blks := make([]types.IBlock, 0)
 	truncated := false
+	// Profile 1: ranges are committed-only. A number above the committed head
+	// is answered as not stored (prefix served, or the usual miss error).
+	ceiling, capped := s.committedServeCeiling()
 	for ; startSlot.Cmp(endSlot) <= 0; startSlot = new(uint256.Int).AddUint64(startSlot, step) {
-		b, err := s.cfg.chain.GetBlockByNumber(startSlot)
+		var b types.IBlock
+		var err error
+		if capped && startSlot.GtUint64(ceiling) {
+			log.Debug("bodies-by-range: request runs past the committed head, not serving above it",
+				"at", startSlot.Uint64(), "committed", ceiling)
+		} else {
+			b, err = s.cfg.chain.GetBlockByNumber(startSlot)
+		}
 		if err != nil {
 			log.Warn("Could not retrieve blocks", "err", err)
 			if len(blks) > 0 || reply.blocks > 0 {
