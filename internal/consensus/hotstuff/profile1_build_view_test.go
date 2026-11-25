@@ -110,11 +110,10 @@ func TestProfile1PrepareLinksParentCommitteeEvidence(t *testing.T) {
 
 // TestProfile1SpeculativeStampDoesNotPinTheProposal: the next view's leader
 // builds speculatively during the previous view (clock T, right after the
-// parent arrived), then pays the A17 wait and rebuilds in its own view at
-// T+8. The rebuild must stamp floor(now) = T+8, not the speculative T. Mixed
-// pre-run 2 (2026-11-25): gov5 v1 extending gov5 v0's block sealed at
-// parent.time + 8 s but stamped parent.time (header deltas 0/16/8/8), since
-// the speculative Prepare had fixed the (view, parent) stamp.
+// parent arrived). Under AM27 that build stamps the target slot directly,
+// parent.time + I, known before the wait. The speculative reading is still
+// not cached: if the view is entered late (here mid next slot) the proposal
+// moves to the following boundary, parent.time + 2I.
 func TestProfile1SpeculativeStampDoesNotPinTheProposal(t *testing.T) {
 	f := newP1Fixture(t)
 	parent := f.chainOf(1)[1]
@@ -141,20 +140,20 @@ func TestProfile1SpeculativeStampDoesNotPinTheProposal(t *testing.T) {
 	}
 
 	spec := prepare()
-	if spec.Time != parent.Time {
-		t.Fatalf("speculative stamp = %d, want %d", spec.Time, parent.Time)
+	if spec.Time != parent.Time+8 {
+		t.Fatalf("speculative stamp = %d, want the target slot parent.time + 8 = %d", spec.Time, parent.Time+8)
 	}
 
-	// The view turns to this node's, the A17 slot (8 s) elapses, the miner
-	// discards the stale speculative block and rebuilds.
+	// The view turns to this node's only mid next slot (late QC): the
+	// speculative stamp must not pin the proposal to the slot already begun.
 	e.mu.Lock()
 	e.roundState.AdvanceView(v + 1)
 	e.mu.Unlock()
-	clock = clock.Add(8 * time.Second)
+	clock = clock.Add(11 * time.Second)
 	real := prepare()
-	if real.Time != parent.Time+8 {
-		t.Fatalf("proposal stamp = %d (delta %d s), want parent.time + 8 = %d",
-			real.Time, int64(real.Time)-int64(parent.Time), parent.Time+8)
+	if real.Time != parent.Time+16 {
+		t.Fatalf("proposal stamp = %d (delta %d s), want the next boundary parent.time + 16 = %d",
+			real.Time, int64(real.Time)-int64(parent.Time), parent.Time+16)
 	}
 	// Within its own view the stamp stays fixed (one proposal per view, F6).
 	clock = clock.Add(2 * time.Second)

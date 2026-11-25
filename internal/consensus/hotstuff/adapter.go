@@ -131,6 +131,10 @@ type HotStuff struct {
 	// chain-bound H2-v4 identity the header QCs are checked against.
 	p1Validators profile1Validators
 	p1Identity   *H2V4ChainIdentity
+	// p1GenesisTime is the genesis timestamp G of the profile-1 slot grid
+	// (A17, AM27), resolved once from the stored genesis.
+	p1GenesisTime    uint64
+	p1GenesisTimeSet bool
 	// p1Stamps keeps the timestamp the leader stamped per (view, parent), so a
 	// rebuild for the same view and parent yields the identical header (F6).
 	p1Stamps profile1Stamps
@@ -715,8 +719,9 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 		}
 	}
 	if parentHeader != nil && profile1 {
-		// B4: max(parent.time, floor(now)), fixed per (view, parent).
-		header.Time = h.profile1Stamp(view, parentHeader, rememberStamp)
+		// A17/B4 (AM27): the start of the proposal's slot on the genesis
+		// grid, fixed per (view, parent).
+		header.Time = h.profile1Stamp(chain, view, parentHeader, header.Time, rememberStamp)
 	} else if parentHeader != nil {
 		period := h.config.Period
 		if period == 0 {

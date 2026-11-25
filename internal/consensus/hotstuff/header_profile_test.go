@@ -185,11 +185,12 @@ func TestProfile1HeaderValid(t *testing.T) {
 	if err := f.hs.VerifyHeader(f.chain, h3, true); err != nil {
 		t.Fatalf("valid profile-1 header refused: %v", err)
 	}
-	// Equal timestamps are valid (B4, O7).
-	h3eq := f.child(hs[2], 3, nil)
-	h3eq.Time = hs[2].Time
-	if err := f.hs.VerifyHeader(f.chain, f.seal(h3eq), true); err != nil {
-		t.Fatalf("equal timestamp refused: %v", err)
+	// A header that skips slots (after a timeout) is valid: any later slot
+	// of the genesis grid (B4, AM27).
+	h3skip := f.child(hs[2], 3, nil)
+	h3skip.Time = hs[2].Time + 3*p1TestSlot
+	if err := f.hs.VerifyHeader(f.chain, f.seal(h3skip), true); err != nil {
+		t.Fatalf("header three slots after its parent refused: %v", err)
 	}
 	// The vote-time check accepts time == floor(now)+2.
 	now := time.Unix(int64(h3.Time)-2, 999_000_000)
@@ -280,10 +281,26 @@ func TestProfile1HeaderRefusals(t *testing.T) {
 			h.UncleHash = hash.EmptyUncleHash
 			return f.seal(h)
 		}, ErrProfile1OmmersHash},
-		{"B4 timestamp before parent", func(h *block.Header) *block.Header {
-			h.Time = parent.Time - 1
+		{"B4 timestamp before parent (on the grid)", func(h *block.Header) *block.Header {
+			h.Time = parent.Time - p1TestSlot
 			return f.seal(h)
 		}, ErrProfile1TimeBeforeParent},
+		{"B4 timestamp equal to the parent's (AM27)", func(h *block.Header) *block.Header {
+			h.Time = parent.Time
+			return f.seal(h)
+		}, ErrProfile1TimeBeforeParent},
+		{"B4 timestamp off the grid, one second late", func(h *block.Header) *block.Header {
+			h.Time = parent.Time + p1TestSlot + 1
+			return f.seal(h)
+		}, ErrProfile1TimeOffGrid},
+		{"B4 timestamp off the grid, between parent and next slot", func(h *block.Header) *block.Header {
+			h.Time = parent.Time + 1
+			return f.seal(h)
+		}, ErrProfile1TimeOffGrid},
+		{"B4 timestamp before the genesis", func(h *block.Header) *block.Header {
+			h.Time = p1TestGenesisT0 - p1TestSlot
+			return f.seal(h)
+		}, ErrProfile1TimeOffGrid},
 		{"B6 withdrawalsRoot absent", func(h *block.Header) *block.Header {
 			h.WithdrawalsHash = nil
 			return f.seal(h)
@@ -353,6 +370,37 @@ func TestProfile1HeaderClockOnlyAtVoteTime(t *testing.T) {
 	if err := f.hs.VerifyHeader(f.chain, h, true); err != nil {
 		t.Fatalf("VerifyHeader of a future-stamped header: %v", err)
 	}
+	// The grid and later-slot rules apply before voting too.
+	for _, bad := range []struct {
+		t    uint64
+		want error
+	}{{hs[1].Time + 1, ErrProfile1TimeOffGrid}, {hs[1].Time, ErrProfile1TimeBeforeParent}} {
+		hb := f.child(hs[1], 2, nil)
+		hb.Time = bad.t
+		hb = f.seal(hb)
+		if err := f.hs.StaticHeaderCheck(f.chain, hb, time.Unix(int64(hb.Time)+60, 0)); !errors.Is(err, bad.want) {
+			t.Fatalf("StaticHeaderCheck time %d = %v, want %v", bad.t, err, bad.want)
+		}
+	}
+}
+
+// Block 1's parent is the genesis (time G): block 1 is stamped G + s*I with
+// s >= 1, and a block 1 at G is refused (B4, AM27).
+func TestProfile1Block1Time(t *testing.T) {
+	f := newP1Fixture(t)
+	h := f.child(f.genesis, 1, nil)
+	h.Time = p1TestGenesisT0
+	if err := f.hs.VerifyHeader(f.chain, f.seal(h), true); !errors.Is(err, ErrProfile1TimeBeforeParent) {
+		t.Fatalf("block 1 at G = %v, want %v", err, ErrProfile1TimeBeforeParent)
+	}
+	f.hs.now = func() time.Time { return time.Unix(p1TestGenesisT0-30, 0) }
+	p := &block.Header{ParentHash: f.genesis.Hash(), Number: uint256.NewInt(1)}
+	if err := f.hs.Prepare(f.chain, p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Time != p1TestGenesisT0+p1TestSlot {
+		t.Fatalf("block 1 stamped before G: %d, want G + I = %d", p.Time, p1TestGenesisT0+p1TestSlot)
+	}
 }
 
 func TestProfile1PrepareStamps(t *testing.T) {
@@ -361,35 +409,54 @@ func TestProfile1PrepareStamps(t *testing.T) {
 	clock := time.Unix(int64(parent.Time)+5, 700_000_000)
 	f.hs.now = func() time.Time { return clock }
 
-	prepare := func() *block.Header {
-		h := &block.Header{ParentHash: parent.Hash(), Number: uint256.NewInt(2), GasLimit: 30_000_000}
+	prepareOn := func(f *p1Fixture, p *block.Header, minerTime uint64) *block.Header {
+		h := &block.Header{ParentHash: p.Hash(), Number: uint256.NewInt(p.Number.Uint64() + 1), GasLimit: 30_000_000, Time: minerTime}
 		if err := f.hs.Prepare(f.chain, h); err != nil {
 			t.Fatal(err)
 		}
 		return h
 	}
-	h := prepare()
-	if h.Time != parent.Time+5 {
-		t.Fatalf("stamp = %d, want floor(now) = %d", h.Time, parent.Time+5)
+	// On-time parent: the next slot, parent.time + I (A17, AM27).
+	h := prepareOn(f, parent, 0)
+	if h.Time != parent.Time+p1TestSlot {
+		t.Fatalf("stamp = %d, want parent.time + I = %d", h.Time, parent.Time+p1TestSlot)
 	}
 	if h.GasLimit != p1TestGasLimit {
 		t.Fatalf("gasLimit = %d, want hotstuff.gasLimit %d (A23)", h.GasLimit, p1TestGasLimit)
 	}
-	// A rebuild of the same view on the same parent re-stamps the same time.
+	// A rebuild of the same view on the same parent re-stamps the same time,
+	// even past the slot boundary.
 	clock = clock.Add(3 * time.Second)
-	if again := prepare(); again.Time != h.Time {
+	if again := prepareOn(f, parent, 0); again.Time != h.Time {
 		t.Fatalf("rebuild stamped %d, first stamp %d (one proposal per view)", again.Time, h.Time)
 	}
-	// A clock behind the parent stamps the parent's time (equal timestamps).
-	f2 := newP1Fixture(t)
-	p2 := f2.chainOf(1)[1]
-	f2.hs.now = func() time.Time { return time.Unix(int64(p2.Time)-10, 0) }
-	h2 := &block.Header{ParentHash: p2.Hash(), Number: uint256.NewInt(2)}
-	if err := f2.hs.Prepare(f2.chain, h2); err != nil {
-		t.Fatal(err)
+
+	cases := []struct {
+		name      string
+		now       time.Time
+		minerTime uint64
+		wantSlots uint64 // stamp = parent.time + wantSlots*I
+	}{
+		{"clock behind the parent", time.Unix(int64(parent.Time)-10, 0), 0, 1},
+		{"late parent: view entered mid next slot", time.Unix(int64(parent.Time)+11, 0), 0, 2},
+		{"after a TC three slots later, mid-slot", time.Unix(int64(parent.Time)+3*p1TestSlot+1, 0), 0, 4},
+		{"exactly on a boundary", time.Unix(int64(parent.Time)+2*p1TestSlot, 0), 0, 2},
+		{"miner slot chosen before the wait is kept past the boundary", time.Unix(int64(parent.Time)+p1TestSlot, 200_000_000), parent.Time + p1TestSlot, 1},
+		{"off-grid miner time is ignored", time.Unix(int64(parent.Time)+3, 0), parent.Time + 3, 1},
+		{"miner time equal to the parent is ignored", time.Unix(int64(parent.Time)+3, 0), parent.Time, 1},
 	}
-	if h2.Time != p2.Time {
-		t.Fatalf("stamp = %d, want parent time %d", h2.Time, p2.Time)
+	for _, c := range cases {
+		f2 := newP1Fixture(t)
+		p2 := f2.chainOf(1)[1]
+		now := c.now
+		f2.hs.now = func() time.Time { return now }
+		got := prepareOn(f2, p2, c.minerTime)
+		if want := p2.Time + c.wantSlots*p1TestSlot; got.Time != want {
+			t.Errorf("%s: stamp = parent + %d, want parent + %d", c.name, int64(got.Time)-int64(p2.Time), want-p2.Time)
+		}
+		if (got.Time-p1TestGenesisT0)%p1TestSlot != 0 {
+			t.Errorf("%s: stamp %d off the grid", c.name, got.Time)
+		}
 	}
 }
 

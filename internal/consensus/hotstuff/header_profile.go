@@ -23,6 +23,7 @@ import (
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
+	"github.com/n42blockchain/N42/params"
 )
 
 // maxProfile1ExtraLen bounds a profile-1 header's extraData (B1).
@@ -54,9 +55,14 @@ var (
 	ErrProfile1Nonce      = errors.New("profile 1: nonce is not zero")
 	ErrProfile1MixHash    = errors.New("profile 1: mixHash is not zero")
 	ErrProfile1OmmersHash = errors.New("profile 1: ommersHash is not zero")
-	// ErrProfile1TimeBeforeParent: header.time < parent.time (B4; equal
-	// timestamps are valid, O7). Checked on import and at vote time.
-	ErrProfile1TimeBeforeParent = errors.New("profile 1: timestamp before parent")
+	// ErrProfile1TimeBeforeParent: header.time < parent.time + I, i.e. the
+	// header is not in a later slot than its parent (B4, AM27; equal
+	// timestamps are invalid). Checked on import and at vote time.
+	ErrProfile1TimeBeforeParent = errors.New("profile 1: timestamp not in a slot after the parent")
+	// ErrProfile1TimeOffGrid: (header.time - G) mod I != 0, the timestamp is
+	// not a slot start counted from the genesis timestamp G (B4, AM27).
+	// Checked on import and at vote time.
+	ErrProfile1TimeOffGrid = errors.New("profile 1: timestamp not on the slot grid")
 	// ErrProfile1TimeFuture: header.time > floor(now) + 2 (B4). Checked only
 	// at vote time (StaticHeaderCheck), never on import of a committed block.
 	ErrProfile1TimeFuture = errors.New("profile 1: timestamp too far ahead of the local clock")
@@ -284,13 +290,57 @@ func (h *HotStuff) checkProfile1Header(chain consensus.ChainHeaderReader, header
 	if err := h.checkProfile1Gas(header, parent); err != nil {
 		return err
 	}
-	if header.Time < parent.Time {
-		return fmt.Errorf("%w: %d < parent %d", ErrProfile1TimeBeforeParent, header.Time, parent.Time)
+	if err := h.checkProfile1Time(chain, header, parent); err != nil {
+		return err
 	}
 	if err := h.checkProfile1QC(chain, header, parent, view, qc, batch); err != nil {
 		return err
 	}
 	return h.verifyProfile1Seal(header, view, seal)
+}
+
+// profile1Grid returns the slot grid (G, I) of the chain: the genesis
+// timestamp and blockIntervalMs in seconds (A17, AM27).
+func (h *HotStuff) profile1Grid(chain consensus.ChainHeaderReader) (uint64, uint64, error) {
+	iv := h.chainConfig.Profile1SlotSeconds()
+	if iv == 0 {
+		return 0, 0, errors.New("profile 1: blockIntervalMs is not a positive whole number of seconds")
+	}
+	h.lock.RLock()
+	g, ok := h.p1GenesisTime, h.p1GenesisTimeSet
+	h.lock.RUnlock()
+	if ok {
+		return g, iv, nil
+	}
+	if chain == nil {
+		return 0, 0, errors.New("genesis header unavailable")
+	}
+	gi := chain.GetHeaderByNumber(uint256.NewInt(0))
+	gh, isHdr := gi.(*block.Header)
+	if gi == nil || !isHdr || gh == nil {
+		return 0, 0, errors.New("genesis header unavailable")
+	}
+	h.lock.Lock()
+	h.p1GenesisTime, h.p1GenesisTimeSet = gh.Time, true
+	h.lock.Unlock()
+	return gh.Time, iv, nil
+}
+
+// checkProfile1Time applies B4's import rules (AM27): the timestamp is a slot
+// start of the genesis grid, (time - G) mod I == 0, and lies in a later slot
+// than the parent's, time >= parent.time + I.
+func (h *HotStuff) checkProfile1Time(chain consensus.ChainHeaderReader, header, parent *block.Header) error {
+	g, iv, err := h.profile1Grid(chain)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrProfile1TimeOffGrid, err)
+	}
+	if !params.Profile1OnGrid(g, iv, header.Time) {
+		return fmt.Errorf("%w: %d (genesis %d, interval %d s)", ErrProfile1TimeOffGrid, header.Time, g, iv)
+	}
+	if header.Time < parent.Time+iv {
+		return fmt.Errorf("%w: %d < parent %d + %d", ErrProfile1TimeBeforeParent, header.Time, parent.Time, iv)
+	}
+	return nil
 }
 
 // verifyProfile1Seal checks B2 (AM4): the proposer is the leader of the
@@ -439,21 +489,26 @@ type profile1Stamps struct {
 	m  map[profile1StampKey]uint64
 }
 
-// profile1Stamp is the leader's B4 timestamp, max(parent.time, floor(now)),
-// fixed the first time it is computed for (view, parent): a rebuild of the
-// same view on the same parent re-stamps the same value, so the leader still
-// produces one block per view (F6) even though the clock moved. With remember
-// false (a speculative build during the previous view) the stamp is computed
-// but neither read from nor stored in the cache: the proposal's time is taken
-// after the A17 wait, and a speculative reading pinned there gave a gov5
-// leader extending a gov5 parent parent.time instead of floor(now) (0 s delta).
-func (h *HotStuff) profile1Stamp(view ViewNumber, parent *block.Header, remember bool) uint64 {
+// profile1Stamp is the leader's B4 timestamp (A17, AM27): the start of the
+// slot the block is proposed in, G + s*I with s = max(sP+1, ceil((now-G)/I)).
+// It is fixed the first time it is computed for (view, parent): a rebuild of
+// the same view on the same parent re-stamps the same value, so the leader
+// still produces one block per view (F6) even though the clock moved past
+// the boundary. minerTime is the time the miner chose before its pacing wait;
+// when it is a slot of this grid after the parent's it is used instead of
+// the clock (after the wait now is just past G + s*I, where ceil would give
+// s+1). With remember false (a speculative build during the previous view)
+// the stamp is computed from the clock -- the target slot, known before the
+// wait -- but neither read from nor stored in the cache: a late view entry
+// moves the proposal to a later slot.
+func (h *HotStuff) profile1Stamp(chain consensus.ChainHeaderReader, view ViewNumber, parent *block.Header, minerTime uint64, remember bool) uint64 {
 	key := profile1StampKey{view: view, parent: parent.Hash()}
 	st := &h.p1Stamps
-	st.mu.Lock()
-	defer st.mu.Unlock()
 	if remember {
-		if t, ok := st.m[key]; ok {
+		st.mu.Lock()
+		t, ok := st.m[key]
+		st.mu.Unlock()
+		if ok {
 			return t
 		}
 	}
@@ -461,10 +516,20 @@ func (h *HotStuff) profile1Stamp(view ViewNumber, parent *block.Header, remember
 	if clock == nil {
 		clock = time.Now
 	}
-	t := parent.Time
-	if secs := clock().Unix(); secs > 0 && uint64(secs) > t {
-		t = uint64(secs)
+	g, iv, err := h.profile1Grid(chain)
+	var t uint64
+	switch {
+	case err != nil:
+		// No grid (cannot happen on a validated profile-1 genesis): stamp
+		// the parent's time so the header is refused rather than guessed.
+		t = parent.Time
+	case remember && minerTime >= parent.Time+iv && params.Profile1OnGrid(g, iv, minerTime):
+		t = minerTime
+	default:
+		t = params.Profile1SlotTime(g, iv, parent.Time, clock())
 	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	if !remember {
 		return t
 	}
