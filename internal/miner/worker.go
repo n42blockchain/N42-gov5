@@ -1667,6 +1667,29 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	wd.SetStep("prepareWork")
+	// Profile 1 (A17, B4): the leader stamps max(parent.time, floor(now))
+	// when it proposes, which is after the A17 wait. The header's time feeds
+	// execution (TIMESTAMP, system calls), so the wait has to come before the
+	// header is prepared, not between preparation and seal: waiting after
+	// stamping put the time of the build trigger on a block published one
+	// interval later (mixed round 3: 0 s deltas on a foreign parent).
+	profile1Paced := false
+	if !speculative && w.chainConfig.IsProfile1() {
+		paceParent := parentHash
+		if paceParent == (types.Hash{}) {
+			if head := w.chain.CurrentBlock(); head != nil {
+				paceParent = head.Hash()
+			}
+		}
+		if paceParent != (types.Hash{}) {
+			if err := w.pace(0, paceParent); err != nil {
+				return err
+			}
+			timestamp = time.Now().Unix()
+			profile1Paced = true
+		}
+	}
+
 	tPrepareWork := time.Now()
 	current, err := w.prepareWork(&generateParams{timestamp: uint64(timestamp), coinbase: coinbase, parentHash: parentHash})
 	if pf != nil {
@@ -1685,7 +1708,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// see the speculative-hit path in this function's caller flow).
 	var tPaceEnter time.Time
 	var dPace time.Duration
-	if !speculative {
+	if !speculative && !profile1Paced {
 		if contentionDiagEnabled {
 			tPaceEnter = time.Now()
 		}
