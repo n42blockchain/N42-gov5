@@ -87,4 +87,10 @@ func TestTimeoutPathScale100(t *testing.T) {
 	perNodeView := float64(timeoutOps) / float64(uint64(alive)*timeoutViews)
 	t.Logf("n=%d live=%d timed-out views=%d pairing checks=%d per live node per timed-out view=%.1f",
 		n, alive, timeoutViews, timeoutOps, perNodeView)
+	// Before AM22(b) this was 135 (one pairing per timeout signature plus
+	// one per carried high QC); batched verification and the certificate
+	// cache bring it to one batch check per node per timed-out view.
+	if perNodeView > 3 {
+		t.Fatalf("timeout path is %.1f pairing checks per node per timed-out view, want <= 3", perNodeView)
+	}
 }
