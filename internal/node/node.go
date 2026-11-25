@@ -206,11 +206,12 @@ type Node struct {
 	historyExpirer    *HistoryExpirer
 	snapshotMgr       *snapshot.Manager
 
-	p2pGenesisHash     types.Hash              // genesis hash used for P2P fork digest
-	exexManager        *exex.Manager           // Execution Extensions manager
-	hotstuffService    *hotstuff.Service       // HotStuff BFT consensus service (nil if not using HotStuff)
-	bundlerService     *bundler.BundlerService // ERC-4337 bundler service (nil if disabled)
-	peerdasService     *peerdas.Service        // PeerDAS (EIP-7594) data availability service (nil if disabled)
+	p2pGenesisHash     types.Hash               // genesis hash used for P2P fork digest
+	exexManager        *exex.Manager            // Execution Extensions manager
+	hotstuffService    *hotstuff.Service        // HotStuff BFT consensus service (nil if not using HotStuff)
+	hotstuffFollower   *hotstuff.DecideFollower // commit follower of a profile-1 non-validator (nil otherwise)
+	bundlerService     *bundler.BundlerService  // ERC-4337 bundler service (nil if disabled)
+	peerdasService     *peerdas.Service         // PeerDAS (EIP-7594) data availability service (nil if disabled)
 	ddnSigner          *ddnreceipt.Signer
 	ddnGateway         *ddngateway.Gateway
 	mcpServer          *mcp.Server                 // MCP (Model Context Protocol) server for AI agents (nil if disabled)
@@ -1767,6 +1768,34 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 	return nil
 }
 
+// startHotStuffDecideFollower makes a profile-1 node that runs no consensus
+// engine (no validator key) follow the committed chain: without it the node
+// imports and executes every block but its canonical head, moved only by a
+// HotStuff commit, never leaves genesis. No-op on other chains and engines.
+func (n *Node) startHotStuffDecideFollower() error {
+	hs, ok := resolveHotStuffEngine(n.engine)
+	if !ok || hs.Engine() != nil || !n.config.ChainCfg.IsProfile1() || n.p2p == nil {
+		return nil
+	}
+	realBC, ok := n.blockChain.(*internal.BlockChain)
+	if !ok {
+		return errors.New("hotstuff decide follower: concrete blockchain unavailable")
+	}
+	if n.config.ChainCfg.ChainID == nil || !n.config.ChainCfg.ChainID.IsUint64() {
+		return errors.New("hotstuff decide follower requires a uint64 chain ID")
+	}
+	identity := hotstuff.H2V4ChainIdentity{ChainID: n.config.ChainCfg.ChainID.Uint64(), GenesisHash: n.p2pGenesisHash}
+	f, err := hotstuff.NewDecideFollower(hs, realBC, n.p2p, identity)
+	if err != nil {
+		return err
+	}
+	if err := f.Start(); err != nil {
+		return err
+	}
+	n.hotstuffFollower = f
+	return nil
+}
+
 // wireCommitteePool constructs the simulated BLS committee pool from config and
 // injects it into the HotStuff engine (ParentBeaconRoot link + VerifyHeader) and
 // the blockchain (per-block evidence write), so live block production keeps the
@@ -1971,6 +2000,8 @@ func (n *Node) Start() error {
 		if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
 			realBC.SetExecutedHook(svc.NotifyBlockExecuted)
 		}
+	} else if err := n.startHotStuffDecideFollower(); err != nil {
+		return err
 	}
 
 	log.PrintStartupProgress(2, 6, "JSON-RPC services")
@@ -3499,6 +3530,9 @@ func (n *Node) stopServices() []error {
 		{"HotStuff service", func() error {
 			if n.hotstuffService != nil {
 				n.hotstuffService.Stop()
+			}
+			if n.hotstuffFollower != nil {
+				n.hotstuffFollower.Stop()
 			}
 			return nil
 		}},
