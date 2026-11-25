@@ -124,6 +124,7 @@ func (vc *VoteCollector) BuildQCWithMessage(vs *ValidatorSet, message []byte) (*
 		if err != nil {
 			continue
 		}
+		notePairingCheck()
 		if !sig.Verify(pk, message) {
 			continue
 		}
@@ -301,6 +302,7 @@ func (tc *TimeoutCollector) buildTC(
 		if err != nil {
 			continue
 		}
+		notePairingCheck()
 		if !entry.signature.Verify(pk, message) {
 			continue
 		}
@@ -406,6 +408,7 @@ func verifyTCAgainstMessage(tc *TimeoutCertificate, vs *ValidatorSet, msg []byte
 	}
 
 	aggPK := bls.AggregateMultiplePubkeys(pubKeys)
+	notePairingCheck()
 	if !sig.Verify(aggPK, msg) {
 		return &InvalidTCError{View: tc.View, Reason: "aggregated signature verification failed"}
 	}
@@ -449,6 +452,7 @@ func verifyAggregateSignature(qc *QuorumCertificate, vs *ValidatorSet, message [
 	}
 
 	aggPK := bls.AggregateMultiplePubkeys(pubKeys)
+	notePairingCheck()
 	if !sig.Verify(aggPK, message) {
 		return &InvalidQCError{View: qc.View, Reason: fmt.Sprintf("%s aggregated signature verification failed", certKind)}
 	}

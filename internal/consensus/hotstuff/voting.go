@@ -507,6 +507,7 @@ func batchVerifyVotes(votes []pendingVote) []pendingVote {
 	}
 
 	// Batch verify all at once.
+	notePairingCheck()
 	ok, err := blst.VerifyMultipleSignaturesVarMsg(sigs, msgs, pks)
 	if err == nil && ok {
 		return votes // All valid.

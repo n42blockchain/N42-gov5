@@ -330,6 +330,7 @@ func (h *HotStuff) verifyProfile1Seal(header *block.Header, view ViewNumber, sea
 		return fmt.Errorf("%w: %v", ErrProfile1Seal, err)
 	}
 	digest := sealHash(header)
+	notePairingCheck()
 	if !sig.Verify(pk, digest[:]) {
 		return fmt.Errorf("%w: not the leader's signature over sealHash %s", ErrProfile1Seal, digest.Hex())
 	}

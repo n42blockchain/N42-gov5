@@ -10,6 +10,8 @@
 package hotstuff
 
 import (
+	"sync/atomic"
+
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 )
@@ -20,5 +22,18 @@ func VerifyBLSSignature(sigBytes []byte, pk common.PublicKey, message []byte) bo
 	if err != nil {
 		return false
 	}
+	notePairingCheck()
 	return sig.Verify(pk, message)
 }
+
+// pairingChecks counts the BLS pairing checks (one final exponentiation
+// each: a single verify, an aggregate verify, or one batched multi-pairing)
+// this package has performed. It is a measurement hook for the scale tests
+// (AM22(b)); production code never reads it.
+var pairingChecks atomic.Uint64
+
+func notePairingCheck() { pairingChecks.Add(1) }
+
+// PairingChecks returns the process-wide number of BLS pairing checks the
+// consensus engine has run so far (test and diagnostics hook).
+func PairingChecks() uint64 { return pairingChecks.Load() }
