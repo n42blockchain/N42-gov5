@@ -15,11 +15,10 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// A17 + B4: on Profile 1 a leader proposes no earlier than blockIntervalMs
-// after it first held the parent and stamps max(parent.time, floor(now)) at
-// that point. The header time must therefore be taken after the wait, not at
-// the build trigger (mixed round 3: gov5 stamped the trigger second and
-// published one interval later, 0 s after a foreign parent).
+// A17 + B4 (AM27): on Profile 1 the leader stamps the start of its slot on
+// the genesis grid, G + s*I with s = max(sP+1, ceil((now-G)/I)), chosen when
+// the build is triggered, and hands the block to the sealer no earlier than
+// that second.
 func TestCommitWorkProfile1StampsAfterPacing(t *testing.T) {
 	f := mnTNewChainFixture(t)
 	w := mnTBareWorker(t, f, &mnTStubTxsPool{})
@@ -35,44 +34,49 @@ func TestCommitWorkProfile1StampsAfterPacing(t *testing.T) {
 	if !w.chainConfig.IsProfile1() {
 		t.Fatal("worker config is not Profile 1")
 	}
-	const interval = 2000 * time.Millisecond
-	w.minerConf.BlockIntervalMs = uint64(interval / time.Millisecond)
+	const iv = uint64(2)
+	w.minerConf.BlockIntervalMs = iv * 1000
 
 	// The zero parent hash builds on the local head (the genesis here).
 	parent := f.Chain.CurrentBlock()
+	g := f.Chain.GetHeaderByNumber(uint256.NewInt(0)).(*block.Header).Time
 	trigger := time.Now()
 	w.parentHeld.note(parent.Hash(), trigger)
+	lo := params.Profile1SlotTime(g, iv, parent.Time(), trigger)
 
 	if err := w.commitWork(nil, false, trigger.Unix(), types.Hash{}, false, trigger); err != nil {
 		t.Fatalf("commitWork: %v", err)
 	}
 	handed := time.Now()
+	hi := params.Profile1SlotTime(g, iv, parent.Time(), handed)
 	var tk *task
 	select {
 	case tk = <-w.taskCh:
 	default:
 		t.Fatal("commitWork did not send a task")
 	}
-	if handed.Sub(trigger) < interval {
-		t.Fatalf("handed to the sealer %v after the parent was held, want >= %v", handed.Sub(trigger), interval)
-	}
 	got := tk.block.Time()
-	want := max(parent.Time(), uint64(trigger.Add(interval).Unix()))
-	if got < want {
-		t.Fatalf("header time %d stamped before the pacing wait; want >= %d (floor(trigger+interval))", got, want)
+	if !params.Profile1OnGrid(g, iv, got) {
+		t.Fatalf("header time %d is off the grid (G %d, I %d)", got, g, iv)
 	}
-	if got > uint64(handed.Unix()) {
-		t.Fatalf("header time %d is after the hand-off second %d", got, handed.Unix())
+	if got < lo || got > hi || got < parent.Time()+iv {
+		t.Fatalf("header time %d, want the trigger's slot start %d (<= %d)", got, lo, hi)
+	}
+	if uint64(handed.Unix()) < got {
+		t.Fatalf("handed to the sealer at %v, before the stamped slot start %d", handed, got)
 	}
 }
 
-// A speculative build is stamped when it runs, during the previous view,
-// before the A17 wait. On Profile 1 a parked block whose second has passed by
-// the time the wait ends must not be handed to the sealer; one stamped in the
-// current second still is.
+// A speculative build stamps the slot it targets. On Profile 1 a parked block
+// is handed over at that slot's start only if it is still the proposal's
+// slot; one stamped for an earlier slot (the view was entered late) is
+// rebuilt.
 func TestSpeculativeHitProfile1DropsStaleTimestamp(t *testing.T) {
 	f := mnTNewChainFixture(t)
-	parentHash := types.Hash{0x5e}
+	parent := f.Chain.CurrentBlock()
+	parentHash := parent.Hash()
+	g := f.Chain.GetHeaderByNumber(uint256.NewInt(0)).(*block.Header).Time
+	const iv = uint64(1)
 	setup := func(blockTime uint64) (*worker, block.IBlock) {
 		w := mnTBareWorker(t, f, &mnTStubTxsPool{})
 		w.coinbase = f.Coinbase
@@ -81,39 +85,45 @@ func TestSpeculativeHitProfile1DropsStaleTimestamp(t *testing.T) {
 		cfg := *f.Config
 		cfg.N42Profile = params.N42Profile1
 		w.chainConfig = &cfg
-		w.minerConf.BlockIntervalMs = 1000
-		// Held long enough ago that the A17 wait is already over.
-		w.parentHeld.note(parentHash, time.Now().Add(-5*time.Second))
+		w.minerConf.BlockIntervalMs = iv * 1000
 		blk := block.NewBlock(&block.Header{ParentHash: parentHash, Number: uint256.NewInt(1), Time: blockTime}, nil)
 		w.specMu.Lock()
 		w.specTask, w.specParent = &task{block: blk}, parentHash
 		w.specMu.Unlock()
 		return w, blk
 	}
-
-	// Fresh: stamped a second ahead of now, so still current after the wait.
-	w, blk := setup(uint64(time.Now().Unix()) + 1)
-	if err := w.commitWork(nil, false, time.Now().Unix(), parentHash, false, time.Now()); err != nil {
-		t.Fatalf("fresh speculative hit: %v", err)
-	}
-	select {
-	case tk := <-w.taskCh:
-		if tk.block != blk {
-			t.Fatal("fresh speculative hit handed over a different block")
+	// Retry across a second boundary between the expectation and the build.
+	for attempt := 0; ; attempt++ {
+		target := params.Profile1SlotTime(g, iv, parent.Time(), time.Now())
+		w, blk := setup(target)
+		if err := w.commitWork(nil, false, time.Now().Unix(), parentHash, false, time.Now()); err != nil {
+			t.Fatalf("fresh speculative hit: %v", err)
 		}
-	default:
-		t.Fatal("fresh speculative block was not handed to the sealer")
+		var tk *task
+		select {
+		case tk = <-w.taskCh:
+		default:
+			t.Fatal("commitWork did not send a task")
+		}
+		if tk.block == blk {
+			if uint64(time.Now().Unix()) < target {
+				t.Fatalf("handed over before the slot start %d", target)
+			}
+			break
+		}
+		if attempt == 3 {
+			t.Fatal("speculative block stamped with the proposal's slot was not handed to the sealer")
+		}
 	}
 
-	// Stale: stamped seconds before the wait ended. The rebuild that follows
-	// cannot find the made-up parent and fails; what matters is that the
-	// stale block never reaches the sealer.
-	w, blk = setup(uint64(time.Now().Unix()) - 3)
+	// Stamped for an earlier slot: never handed to the sealer.
+	target := params.Profile1SlotTime(g, iv, parent.Time(), time.Now())
+	w, blk := setup(target - iv)
 	_ = w.commitWork(nil, false, time.Now().Unix(), parentHash, false, time.Now())
 	select {
 	case tk := <-w.taskCh:
 		if tk.block == blk {
-			t.Fatal("speculative block stamped before the pacing wait was handed to the sealer")
+			t.Fatal("speculative block stamped for an earlier slot was handed to the sealer")
 		}
 	default:
 	}

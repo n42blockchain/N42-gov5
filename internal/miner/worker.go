@@ -1438,6 +1438,22 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		w.parentHeld.note(parentHash, triggerAt)
 	}
 
+	// Profile 1 (A17, AM27): the proposal's slot is fixed when the build for
+	// this view is triggered, s = max(sP+1, ceil((now-G)/I)); the header is
+	// stamped G + s*I and published no earlier than that. A speculative
+	// build stamps the same target through Prepare's clock reading.
+	var p1Target uint64
+	p1HasTarget := false
+	if !speculative && w.chainConfig.IsProfile1() {
+		p1Parent := parentHash
+		if p1Parent == (types.Hash{}) {
+			if head := w.chain.CurrentBlock(); head != nil {
+				p1Parent = head.Hash()
+			}
+		}
+		p1Target, p1HasTarget = w.profile1Target(p1Parent, time.Now())
+	}
+
 	w.mu.RLock()
 	coinbase := w.coinbase
 	w.mu.RUnlock()
@@ -1483,15 +1499,22 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if contentionDiagEnabled {
 					st.paceEnterAt = time.Now()
 				}
-				if err := w.pace(num, parentHash); err != nil {
+				if w.chainConfig.IsProfile1() {
+					// Profile 1 (A17, AM27): the parked block was stamped
+					// with the slot it targeted when it was built. It is
+					// handed over at that slot's start only if that is
+					// still this proposal's slot; a late view entry (TC,
+					// late parent) moved the proposal to a later slot, so
+					// rebuild below.
+					staleTime = !p1HasTarget || st.block.Time() != p1Target
+					if !staleTime {
+						if err := w.waitUntilUnix(p1Target); err != nil {
+							return err
+						}
+					}
+				} else if err := w.pace(num, parentHash); err != nil {
 					return err
 				}
-				// Profile 1 (B4): the parked block was stamped and executed
-				// when it was built, before the A17 wait. Once a second has
-				// turned since, its time is not max(parent.time, floor(now))
-				// any more: rebuild below (the wait is paid, so the rebuild
-				// paces for 0).
-				staleTime = w.chainConfig.IsProfile1() && st.block.Time() < uint64(time.Now().Unix())
 				if !staleTime {
 					if contentionDiagEnabled {
 						st.paceDur = time.Since(st.paceEnterAt)
@@ -1513,8 +1536,8 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			specStatus = "miss"
 			if staleTime {
 				specReason = "stale-timestamp"
-				log.Info("miner: speculative build discarded, stamped before the pacing wait",
-					"parent", parentHash.Hex()[:12], "headerTime", st.block.Time())
+				log.Info("miner: speculative build discarded, stamped for another slot",
+					"parent", parentHash.Hex()[:12], "headerTime", st.block.Time(), "slotTime", p1Target)
 			} else {
 				specReason = "stale-applied-head-moved"
 				log.Info("miner: speculative build discarded, applied head moved", "parent", parentHash.Hex()[:12])
@@ -1681,27 +1704,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	wd.SetStep("prepareWork")
-	// Profile 1 (A17, B4): the leader stamps max(parent.time, floor(now))
-	// when it proposes, which is after the A17 wait. The header's time feeds
-	// execution (TIMESTAMP, system calls), so the wait has to come before the
-	// header is prepared, not between preparation and seal: waiting after
-	// stamping put the time of the build trigger on a block published one
-	// interval later (mixed round 3: 0 s deltas on a foreign parent).
-	profile1Paced := false
-	if !speculative && w.chainConfig.IsProfile1() {
-		paceParent := parentHash
-		if paceParent == (types.Hash{}) {
-			if head := w.chain.CurrentBlock(); head != nil {
-				paceParent = head.Hash()
-			}
-		}
-		if paceParent != (types.Hash{}) {
-			if err := w.pace(0, paceParent); err != nil {
-				return err
-			}
-			timestamp = time.Now().Unix()
-			profile1Paced = true
-		}
+	// Profile 1 (A17, AM27): the stamp is the slot start chosen above, known
+	// before the wait; Prepare keeps it (or the stamp already fixed for this
+	// view and parent). The wait until the stamped slot starts follows
+	// prepareWork below.
+	if p1HasTarget {
+		timestamp = int64(p1Target)
 	}
 
 	tPrepareWork := time.Now()
@@ -1722,11 +1730,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// see the speculative-hit path in this function's caller flow).
 	var tPaceEnter time.Time
 	var dPace time.Duration
-	if !speculative && !profile1Paced {
+	if !speculative {
 		if contentionDiagEnabled {
 			tPaceEnter = time.Now()
 		}
-		if err := w.pace(current.header.Number.Uint64(), current.header.ParentHash); err != nil {
+		if w.chainConfig.IsProfile1() {
+			// Publish no earlier than the start of the stamped slot.
+			if err := w.waitUntilUnix(current.header.Time); err != nil {
+				return err
+			}
+		} else if err := w.pace(current.header.Number.Uint64(), current.header.ParentHash); err != nil {
 			return err
 		}
 		if contentionDiagEnabled {
