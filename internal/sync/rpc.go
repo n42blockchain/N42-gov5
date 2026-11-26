@@ -62,6 +62,7 @@ func (s *Service) registerRPCHandlers() {
 		p2p.RPCBlockByHashTopicV1+s.cfg.p2p.Encoding().ProtocolSuffix(),
 		s.blockByHashStreamHandler,
 	)
+	s.registerV11Handlers()
 }
 
 // unregisterHandlers removes all registered RPC stream handlers.
@@ -87,6 +88,9 @@ func (s *Service) unregisterHandlers() {
 	}
 	for _, t := range topics {
 		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(t + suffix))
+	}
+	for _, h := range s.v11Handlers() {
+		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(h.proto))
 	}
 }
 

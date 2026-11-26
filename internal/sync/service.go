@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/sync/v11"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -122,6 +123,10 @@ type Service struct {
 	// before the full decode (every block arrived twice, and the second copy
 	// was decoded, re-validated under validateBlockLock and re-imported).
 	pushInflight sync.Map
+
+	// stateSync serves the QMDB state-sync protocols (rpc_v11.go).
+	stateSync     *v11.Server
+	stateSyncOnce sync.Once
 
 	cfg    *config
 	ctx    context.Context

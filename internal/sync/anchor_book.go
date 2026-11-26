@@ -145,6 +145,31 @@ func (b *anchorBook) recordLinksLocked(blocks []block.IBlock) {
 	}
 }
 
+// recordHeaderLinks adds the parent links of headers (any order, e.g. a
+// commit_qc/1 reply from the QC's block down) to the skeleton, so a verified
+// QC on the top header authenticates every one of them and the held tail
+// block they reach.
+func (b *anchorBook) recordHeaderLinks(headers []*block.Header) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.initLocked()
+	for _, h := range headers {
+		if h == nil || h.Number == nil {
+			continue
+		}
+		hash := h.Hash()
+		if _, ok := b.links[hash]; ok {
+			continue
+		}
+		if len(b.linkOrder) >= maxAnchorLinks {
+			delete(b.links, b.linkOrder[0])
+			b.linkOrder = b.linkOrder[1:]
+		}
+		b.links[hash] = anchorLink{parent: h.ParentHash, number: h.Number.Uint64()}
+		b.linkOrder = append(b.linkOrder, hash)
+	}
+}
+
 // hasUnauthLink reports whether h is a recorded link that is not yet
 // authenticated (a QC naming it can extend authentication).
 func (b *anchorBook) hasUnauthLink(h types.Hash) bool {

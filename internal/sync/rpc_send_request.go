@@ -12,6 +12,7 @@ import (
 	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/sync/syncwire"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/proto/sync_pb"
 )
@@ -41,6 +42,27 @@ func sendBodiesByRange(ctx context.Context, chain common.IBlockChain, p2pProvide
 	blockEnd, overflow := new(uint256.Int).AddOverflow(blockStart, uint256.NewInt(span))
 	if overflow || span > rangeLimit {
 		return nil, errors.New("requested range exceeds bounds")
+	}
+
+	// v1.1: prefer /2 (committed-only, byte budget, END trailer) when the
+	// peer lists it in identify; fall back to /1 when it does not or when
+	// multistream refuses it (the peer is then marked v1-only for an hour).
+	if h := hostOf(p2pProvider); req.Step == 1 && peerSpeaks(h, pid, syncwire.ProtocolBodiesByRangeV2) {
+		blocks, err := rangeV2Blocks(ctx, h, pid, blockStart.Uint64(), req.Count)
+		if err == nil {
+			if blockProcessor != nil {
+				for _, b := range blocks {
+					if perr := blockProcessor(b); perr != nil {
+						return nil, perr
+					}
+				}
+			}
+			return blocks, nil
+		}
+		if !isProtocolNotSupported(err) {
+			return nil, err
+		}
+		log.Debug("bodies-by-range/2 refused by multistream, using /1", "peer", pid.String())
 	}
 
 	topic, err := p2p.TopicFromMessage(p2p.BodiesByRangeMessageName)
