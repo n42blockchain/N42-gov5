@@ -116,6 +116,27 @@ func TestFirstSealedOnParentAndRecordSealedOnParent(t *testing.T) {
 	}
 }
 
+// TestRecordSealedOnParentPrunesWindow: entries are full sealed blocks, so
+// the map must stay at the 256-height window on every seal rather than grow to
+// a 512-entry slack first (a validator sealing every 4th height held 512 own
+// blocks, ~2,048 heights, before the first prune).
+func TestRecordSealedOnParentPrunesWindow(t *testing.T) {
+	w := newTestWorkerForSealedBookkeeping()
+	const step = 4 // one seal per 4 heights, a 4-validator rotation
+	for n := uint64(step); n <= 4000; n += step {
+		blk := block.NewBlock(&block.Header{Number: uint256.NewInt(n)}, nil)
+		w.recordSealedOnParent(types.Hash{byte(n), byte(n >> 8)}, blk)
+		for _, b := range w.sealedOnParent {
+			if n > 256 && b.Number64().Uint64() < n-256 {
+				t.Fatalf("at height %d: entry for height %d outside the 256-height window", n, b.Number64().Uint64())
+			}
+		}
+	}
+	if got, max := len(w.sealedOnParent), 256/step+1; got > max {
+		t.Fatalf("sealedOnParent holds %d entries, want <= %d", got, max)
+	}
+}
+
 func TestCheckSealParentAppliedDelegatesWithoutAsyncWriter(t *testing.T) {
 	w := &worker{}
 	header := &block.Header{Number: uint256.NewInt(1)}

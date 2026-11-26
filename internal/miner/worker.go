@@ -1230,9 +1230,11 @@ func (w *worker) recordSealedOnParent(parent types.Hash, blk block.IBlock) {
 	if _, ok := w.sealedOnParent[parent]; !ok {
 		w.sealedOnParent[parent] = blk
 	}
-	if len(w.sealedOnParent) <= 512 {
-		return
-	}
+	// Prune on every seal, not only past a 512-entry slack: each entry is a
+	// full sealed block with its transactions, and with N validators the
+	// slack let 512 own blocks (~2,048 heights at N=4, ~180 MB of 1,200-tx
+	// blocks) accumulate before the first prune. The map holds at most the
+	// node's own seals inside the 256-height window, so the scan is short.
 	number := blk.Number64().Uint64()
 	if number <= 256 {
 		return
