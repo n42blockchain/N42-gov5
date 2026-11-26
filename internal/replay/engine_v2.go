@@ -803,6 +803,12 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			}
 			// Gap fill compares source times; target times are slot times.
 			prevTime = e.p1SrcTime
+			if newBlockNum == 1 {
+				// readParentInfo ran before the genesis was written.
+				if parentHash, err = rawdb.ReadCanonicalHash(dstTx, 0); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Set MPT StateReader once per batch (dstTx is constant within batch).
@@ -1516,6 +1522,16 @@ func (e *EngineV2) replayBlockTxs(
 	return txs, receipts, usedGas
 }
 
+// txRulesConfig is the chain config transactions execute under: the target
+// config, or on a profile-1 replay with Profile1TxRules set, that config
+// (diagnostic: the source chain's own fork rules).
+func (e *EngineV2) txRulesConfig() *params.ChainConfig {
+	if e.cfg.Profile1TxRules != nil {
+		return e.cfg.Profile1TxRules
+	}
+	return e.cfg.ChainConfig
+}
+
 // replayTxs executes txs with srcHeader as the block context and returns the
 // transactions that applied, their receipts, the receipts' cumulative gas and
 // the header gas figure (internal.HeaderGasUsed: EIP-8037 under Amsterdam).
@@ -1529,7 +1545,7 @@ func (e *EngineV2) replayTxs(
 ) ([]*transaction.Transaction, block.Receipts, uint64, uint64) {
 	gp := new(common.GasPool).AddGas(srcHeader.GasLimit)
 	if len(txs) == 0 {
-		return nil, nil, 0, internal.HeaderGasUsed(e.cfg.ChainConfig, srcHeader, gp, 0)
+		return nil, nil, 0, internal.HeaderGasUsed(e.txRulesConfig(), srcHeader, gp, 0)
 	}
 	srcBlkHash := blockHash
 	var (
@@ -1551,7 +1567,7 @@ func (e *EngineV2) replayTxs(
 
 		ibs.Prepare(tx.Hash(), srcBlkHash, i)
 		receipt, _, err := internal.ApplyTransaction(
-			e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
+			e.txRulesConfig(), blockHashFunc, nil, &srcHeader.Coinbase,
 			gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
 		)
 		// AutoTopup diagnostic: if the tx cannot pay (insufficient funds), credit
@@ -1581,7 +1597,7 @@ func (e *EngineV2) replayTxs(
 				acc.Add(acc, deficit)
 				ibs.Prepare(tx.Hash(), srcBlkHash, i)
 				receipt, _, err = internal.ApplyTransaction(
-					e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
+					e.txRulesConfig(), blockHashFunc, nil, &srcHeader.Coinbase,
 					gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
 				)
 			}
@@ -1617,7 +1633,7 @@ func (e *EngineV2) replayTxs(
 		receipts = append(receipts, receipt)
 		e.stats.TxReplayed.Add(1)
 	}
-	return replayed, receipts, usedGas, internal.HeaderGasUsed(e.cfg.ChainConfig, srcHeader, gp, usedGas)
+	return replayed, receipts, usedGas, internal.HeaderGasUsed(e.txRulesConfig(), srcHeader, gp, usedGas)
 }
 
 // readParentInfo reads the parent hash and timestamp for the block before `from`.

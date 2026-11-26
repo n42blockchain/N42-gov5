@@ -91,6 +91,9 @@ func main() {
 			gasUsedPrev, gasUsedPrev2           uint64
 			driftAtMillion                      []uint64
 			coinbases                           = map[[20]byte]uint64{}
+			rewardBlocks, rewardEntries         uint64
+			rewardTotal                         = new(big.Int)
+			rewardTo                            = map[[20]byte]uint64{}
 		)
 		baseFee := new(big.Int).SetUint64(params.InitialBaseFee)
 		if gh.BaseFee != nil {
@@ -136,6 +139,16 @@ func main() {
 				baseLow++
 			}
 			gasUsedPrev = h.GasUsed
+			if bd, ok := blk.Body().(*block.Body); ok && bd != nil && len(bd.Rewards) > 0 {
+				rewardBlocks++
+				for _, r := range bd.Rewards {
+					rewardEntries++
+					rewardTo[r.Address]++
+					if r.Amount != nil {
+						rewardTotal.Add(rewardTotal, r.Amount.ToBig())
+					}
+				}
+			}
 			bt := blk.Transactions()
 			if len(bt) > 0 {
 				txBlocks++
@@ -177,6 +190,7 @@ func main() {
 		fmt.Printf("txs %d in %d blocks (distinct coinbases %d); missing blocks %d\n", txs, txBlocks, len(coinbases), missing)
 		fmt.Printf("base fee: final %s min %s; txs below new baseFee: legacy/type1 %d, dynamic %d; dynamic effective price changed %d; source baseFee < new %d blocks\n",
 			baseFee, minBase, legacyLow, dynLow, dynPriceChanged, baseLow)
+		fmt.Printf("source rewards: %d blocks, %d entries to %d addresses, total %s wei\n", rewardBlocks, rewardEntries, len(rewardTo), rewardTotal)
 		fmt.Printf("blocks gasUsed > L: %d; max block size %d bytes\n", overLimit, maxSize)
 		return nil
 	})

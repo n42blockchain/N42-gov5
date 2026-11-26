@@ -89,6 +89,15 @@ type ConfigV2 struct {
 	// its hotstuff.validators in list order (header seals and CommitQCs).
 	Profile1Genesis *conf.Genesis
 	Profile1Keys    []blscommon.SecretKey
+	// Profile1SourceRewards credits each source block's body rewards
+	// (historic APoS rewards) in its profile-1 block and lists them in the
+	// body, after the dev block reward. Off: they are dropped.
+	Profile1SourceRewards bool
+	// Profile1TxRules, when set, is the chain config the source
+	// transactions execute under instead of the profile-1 config
+	// (diagnostic: measures which outcome changes the profile-1 fork rules
+	// cause). Headers, system calls and rewards stay profile 1.
+	Profile1TxRules *params.ChainConfig
 }
 
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.

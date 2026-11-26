@@ -186,6 +186,16 @@ func (e *EngineV2) p1Block(dstTx kv.RwTx, histAgg *state.HistoryAggregator, qmdb
 		return nil, fmt.Errorf("block %d end (requests): %w", number, err)
 	}
 	rewards := p1Rewards(cfg, ibs, h.Coinbase)
+	if e.cfg.Profile1SourceRewards && src != nil {
+		if bd, ok := src.Body().(*block.Body); ok && bd != nil {
+			for _, r := range bd.Rewards {
+				if r.Amount != nil && !r.Amount.IsZero() {
+					ibs.AddBalance(r.Address, r.Amount)
+					rewards = append(rewards, &block.Reward{Address: r.Address, Amount: r.Amount.Clone()})
+				}
+			}
+		}
+	}
 	if err := ibs.FinalizeTx(rules, w); err != nil {
 		return nil, fmt.Errorf("finalize block %d: %w", number, err)
 	}
