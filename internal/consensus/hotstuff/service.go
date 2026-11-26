@@ -497,6 +497,8 @@ type Service struct {
 	rpcTopic     string // fully qualified RPC topic string
 	h2V4Identity *H2V4ChainIdentity
 
+	decodeFailures atomic.Uint64 // inbound consensus messages that did not decode
+
 	blockProducer    BlockProducer
 	blockFetcher     BlockFetcher
 	slashingExecutor *SlashingExecutor
@@ -1312,13 +1314,13 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 	// Decompress snappy.
 	raw := &rawSSZMarshaler{}
 	if err := s.decodeConsensusGossip(enc, data, raw); err != nil {
-		log.Debug("hotstuff: failed to decode gossip message", "err", err)
+		s.noteDecodeFailure("gossip", via, err)
 		return
 	}
 
 	consensusMsg, err := DecodeConsensusMsg(raw.data)
 	if err != nil {
-		log.Debug("hotstuff: failed to decode consensus message", "err", err)
+		s.noteDecodeFailure("consensus", via, err)
 		return
 	}
 
@@ -1346,6 +1348,15 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 		Via:        via,
 	}); err != nil {
 		log.Debug("hotstuff: message processing error", "type", consensusMsg.Type, "err", err)
+	}
+}
+
+// noteDecodeFailure reports an inbound consensus message that did not
+// decode. Throttled: the first five, then every hundredth.
+func (s *Service) noteDecodeFailure(stage, via string, err error) {
+	n := s.decodeFailures.Add(1)
+	if n <= 5 || n%100 == 0 {
+		log.Warn("hotstuff: inbound consensus message failed to decode", "stage", stage, "via", via, "count", n, "err", err)
 	}
 }
 
