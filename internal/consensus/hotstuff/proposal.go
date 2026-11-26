@@ -224,6 +224,13 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 		return &InvalidSignatureError{View: view, ValidatorIndex: proposal.Proposer}
 	}
 
+	// Proposal equivocation (M3d): a second, different proposal signed by
+	// this view's leader is evidence and is refused -- no vote, no execution
+	// request, no state change -- whatever order the two arrive in.
+	if e.observeProposal(proposal, pk, msg) {
+		return nil
+	}
+
 	// Verify justify_qc aggregate BLS signature (genesis QC is exempt).
 	if proposal.JustifyQC.View > 0 {
 		if vErr := e.verifyQCAnyDomainWithSet(&proposal.JustifyQC, e.resolveQCValidatorSet(proposal.JustifyQC.View, len(proposal.JustifyQC.Signers))); vErr != nil {

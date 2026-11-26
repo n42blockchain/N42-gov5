@@ -175,6 +175,10 @@ type ConsensusEngine struct {
 	tcCounted     bool
 	voteStats                 voteIntakeStats
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
+	// First verified proposal per view for proposal equivocation detection,
+	// bounded to the last proposalEquivocationWindow views (FIFO order).
+	proposalSeen      map[ViewNumber]*proposalRecord
+	proposalSeenOrder []ViewNumber
 
 	// twoPhaseVote (chainspec hotstuff.twoPhaseVoteGate) moves the execution
 	// guarantee from Round 1 to Round 2 — the order-then-execute shape every
@@ -1332,8 +1336,15 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg, mt msgTiming) error {
 		}
 	}
 
-	// Discard stale messages (except Decide/NewView).
+	// Discard stale messages (except Decide/NewView). A stale proposal is
+	// still checked against the view's recorded first proposal so a double
+	// proposal arriving after the view advanced is caught as equivocation.
 	if msgView > 0 && msgView < currentView && msg.Type != MsgDecide && msg.Type != MsgNewView {
+		if msg.Type == MsgProposal {
+			if p, ok := msg.Payload.(*Proposal); ok {
+				e.checkStaleProposal(p)
+			}
+		}
 		return nil
 	}
 
