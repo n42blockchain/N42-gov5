@@ -123,7 +123,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 		return nil, err
 	}
 
-	blockCache, _ := lru.New[types.Hash, *block.Block](blockCacheLimit)
+	blockCache := newBlockLRU(blockCacheLimit, blockCacheMaxTxs, blockCacheMinBlocks)
 	futureBlocks, _ := lru.New[types.Hash, *block.Block](maxFutureBlocks)
 	receiptsCache, _ := lru.New[types.Hash, []*block.Receipt](receiptsCacheLimit)
 	tdCache, _ := lru.New[types.Hash, *uint256.Int](tdCacheLimit)

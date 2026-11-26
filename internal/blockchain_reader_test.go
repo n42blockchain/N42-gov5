@@ -73,7 +73,7 @@ func newReaderTestChain(t *testing.T) (bc *BlockChain, genesis, child *block.Blo
 		t.Fatal(err)
 	}
 
-	blockCache, _ := lru.New[types.Hash, *block.Block](8)
+	blockCache := newBlockLRU(8, 0, 0)
 	tdCache, _ := lru.New[types.Hash, *uint256.Int](8)
 	numberCache, _ := lru.New[types.Hash, uint64](8)
 	headerCache, _ := lru.New[types.Hash, *block.Header](8)

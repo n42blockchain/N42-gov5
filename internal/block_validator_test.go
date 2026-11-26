@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -121,7 +120,7 @@ func TestValidateBodyAcceptsShanghaiBlockBuiltWithLegacyTxRoot(t *testing.T) {
 		ReceiptHash: hash.DeriveSha(block.Receipts(nil)),
 	}
 	blk := testConcreteBlock(header, &block.Body{Txs: []*transaction.Transaction{tx}})
-	blockCache, _ := lru.New[types.Hash, *block.Block](1)
+	blockCache := newBlockLRU(1, 0, 0)
 	validator := &BlockValidator{
 		bc: &BlockChain{
 			ctx:        context.Background(),

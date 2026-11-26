@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -85,7 +84,7 @@ func TestCommitToCanonicalPrimesBlockCacheWhenEnabled(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			cache, _ := lru.New[types.Hash, *block.Block](2)
+			cache := newBlockLRU(2, 0, 0)
 			bc := &BlockChain{ChainDB: db, ctx: ctx, blockCache: cache}
 			bc.currentBlock.Store(parent)
 
