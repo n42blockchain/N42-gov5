@@ -12,6 +12,7 @@ import (
 	comtypes "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/sync/syncwire"
+	"github.com/n42blockchain/N42/internal/sync/v11"
 	"github.com/n42blockchain/N42/internal/syncanchor"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/params"
@@ -75,14 +76,14 @@ type fakeQCSource struct {
 	last *hotstuff.QuorumCertificate
 }
 
-func (s fakeQCSource) committedHead() uint64 { return s.head }
-func (s fakeQCSource) canonicalHash(n uint64) comtypes.Hash {
+func (s fakeQCSource) CommittedHead() uint64 { return s.head }
+func (s fakeQCSource) CanonicalHash(n uint64) comtypes.Hash {
 	if n >= uint64(len(s.f.blocks)) || n > s.head {
 		return comtypes.Hash{}
 	}
 	return s.f.blocks[n].Hash()
 }
-func (s fakeQCSource) headerByHash(h comtypes.Hash) *block.Header {
+func (s fakeQCSource) HeaderByHash(h comtypes.Hash) *block.Header {
 	for _, b := range s.f.blocks {
 		if b.Hash() == h {
 			return b.Header().(*block.Header)
@@ -90,17 +91,17 @@ func (s fakeQCSource) headerByHash(h comtypes.Hash) *block.Header {
 	}
 	return nil
 }
-func (s fakeQCSource) headerAt(n uint64) *block.Header {
+func (s fakeQCSource) CanonicalHeader(n uint64) *block.Header {
 	if n >= uint64(len(s.f.blocks)) || n > s.head {
 		return nil
 	}
 	return s.f.blocks[n].Header().(*block.Header)
 }
-func (s fakeQCSource) lastCommittedQC() *hotstuff.QuorumCertificate { return s.last }
+func (s fakeQCSource) LastCommittedQC() *hotstuff.QuorumCertificate { return s.last }
 
-func commitQCWire(t *testing.T, src commitQCSource, req syncwire.CommitQCRequest) []byte {
+func commitQCWire(t *testing.T, src v11.CommitQCSource, req syncwire.CommitQCRequest) []byte {
 	t.Helper()
-	payload, code, msg := serveCommitQC(src, req)
+	payload, code, msg := v11.ServeCommitQC(src, req)
 	if code != syncwire.CodeSuccess {
 		return syncwire.AppendError(nil, code, msg)
 	}
@@ -115,7 +116,7 @@ func TestCommitQCServeReadVerify(t *testing.T) {
 		{Number: 19, Hash: f.blocks[19].Hash()},
 		{Number: 19},
 	} {
-		rep, err := readCommitQC(bytes.NewReader(commitQCWire(t, src, req)), req)
+		rep, err := v11.ReadCommitQC(bytes.NewReader(commitQCWire(t, src, req)), req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -128,7 +129,7 @@ func TestCommitQCServeReadVerify(t *testing.T) {
 	}
 	// "Your highest": the persisted QC and its own header.
 	src.last = f.commitQC(t, 38)
-	rep, err := readCommitQC(bytes.NewReader(commitQCWire(t, src, syncwire.CommitQCRequest{})), syncwire.CommitQCRequest{})
+	rep, err := v11.ReadCommitQC(bytes.NewReader(commitQCWire(t, src, syncwire.CommitQCRequest{})), syncwire.CommitQCRequest{})
 	if err != nil || len(rep.Headers) != 1 || rep.Headers[0].Number.Uint64() != 38 {
 		t.Fatalf("highest: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestCommitQCRefusals(t *testing.T) {
 		"uncommitted":    {Number: 27, Hash: f.blocks[27].Hash()},
 		"top, no QC yet": {Number: 25},
 	} {
-		_, err := readCommitQC(bytes.NewReader(commitQCWire(t, src, req)), req)
+		_, err := v11.ReadCommitQC(bytes.NewReader(commitQCWire(t, src, req)), req)
 		var ce *syncwire.CodeError
 		if !errors.As(err, &ce) || ce.Code != syncwire.CodeResourceUnavailable {
 			t.Fatalf("%s: %v", name, err)
@@ -163,7 +164,7 @@ func TestCommitQCFarAnchorHasNoHeaders(t *testing.T) {
 	f := newQCFixture(t, 302, bare)
 	src := fakeQCSource{f: f, head: 302}
 	req := syncwire.CommitQCRequest{Number: 2}
-	rep, err := readCommitQC(bytes.NewReader(commitQCWire(t, src, req)), req)
+	rep, err := v11.ReadCommitQC(bytes.NewReader(commitQCWire(t, src, req)), req)
 	if err != nil || len(rep.Headers) != 0 || rep.QC.BlockHash != f.blocks[299].Hash() {
 		t.Fatalf("far anchor: %v %d", err, len(rep.Headers))
 	}
@@ -201,13 +202,13 @@ func TestCommitQCClientRejects(t *testing.T) {
 	forged := *good
 	forged.AggregateSignature = append([]byte(nil), good.AggregateSignature...)
 	forged.AggregateSignature[5] ^= 0x40
-	if rep, err := readCommitQC(bytes.NewReader(wire(&forged, headers(10, 8))), req); err == nil {
+	if rep, err := v11.ReadCommitQC(bytes.NewReader(wire(&forged, headers(10, 8))), req); err == nil {
 		if r := VerifyCommitQCWith(f.verify, rep.QC); r.Verdict == syncanchor.Verified {
 			t.Fatal("forged QC verified")
 		}
 	}
 	prep := f.com.qc(t, f.vs, 11, f.blocks[10].Hash(), hotstuff.SigningMessage(11, f.blocks[10].Hash()))
-	rep, err := readCommitQC(bytes.NewReader(wire(prep, headers(10, 8))), req)
+	rep, err := v11.ReadCommitQC(bytes.NewReader(wire(prep, headers(10, 8))), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,13 +217,13 @@ func TestCommitQCClientRejects(t *testing.T) {
 	}
 	broken := headers(10, 8)
 	broken[1], broken[2] = broken[2], broken[1]
-	if _, err := readCommitQC(bytes.NewReader(wire(good, broken)), req); !errors.Is(err, errCommitQCFault) {
+	if _, err := v11.ReadCommitQC(bytes.NewReader(wire(good, broken)), req); !errors.Is(err, v11.ErrCommitQCFault) {
 		t.Fatalf("unlinked: %v", err)
 	}
-	if _, err := readCommitQC(bytes.NewReader(wire(good, headers(10, 9))), req); !errors.Is(err, errCommitQCFault) {
+	if _, err := v11.ReadCommitQC(bytes.NewReader(wire(good, headers(10, 9))), req); !errors.Is(err, v11.ErrCommitQCFault) {
 		t.Fatalf("short of the request: %v", err)
 	}
-	if _, err := readCommitQC(bytes.NewReader(wire(good, headers(9, 8))), req); !errors.Is(err, errCommitQCFault) {
+	if _, err := v11.ReadCommitQC(bytes.NewReader(wire(good, headers(9, 8))), req); !errors.Is(err, v11.ErrCommitQCFault) {
 		t.Fatalf("first header not the QC block: %v", err)
 	}
 }
@@ -239,7 +240,7 @@ func TestCommitQCReleasesHeldTail(t *testing.T) {
 		t.Fatal("tail releasable before any anchor")
 	}
 	req := syncwire.CommitQCRequest{Number: 8, Hash: f.blocks[8].Hash()}
-	rep, err := readCommitQC(bytes.NewReader(commitQCWire(t, fakeQCSource{f: f, head: 12}, req)), req)
+	rep, err := v11.ReadCommitQC(bytes.NewReader(commitQCWire(t, fakeQCSource{f: f, head: 12}, req)), req)
 	if err != nil {
 		t.Fatal(err)
 	}
