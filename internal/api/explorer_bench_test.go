@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -349,4 +350,39 @@ func TestExplorerCachedReceiptsRespectCanonical(t *testing.T) {
 	r, err = a.BlockChain().GetReceipts(blk.Hash())
 	require.NoError(t, err)
 	require.Nil(t, r)
+}
+
+// TestExplorerFullBlockTxsMatchTxByHash: every transaction object of
+// eth_getBlockByNumber(n, true) equals eth_getTransactionByHash for it, as on
+// geth (same block hash, index and effective gasPrice from the header base
+// fee).
+func TestExplorerFullBlockTxsMatchTxByHash(t *testing.T) {
+	fx := explorerGetFixture(t)
+	a := explorerColdAPI(t, fx)
+	res, err := NewBlockChainAPI(a).GetBlockByNumber(context.Background(), explorerBlockNr(fx, 0), true)
+	require.NoError(t, err)
+	txs, ok := res["transactions"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, txs, explorerTxsPerBlock)
+	txAPI := NewTransactionAPI(a, new(AddrLocker))
+	for i, tx := range fx.Blocks[0].Transactions() {
+		one, err := txAPI.GetTransactionByHash(context.Background(), avmtypes.FromastHash(tx.Hash()))
+		require.NoError(t, err)
+		var want, got map[string]interface{}
+		enc, _ := json.Marshal(one)
+		require.NoError(t, json.Unmarshal(enc, &want))
+		enc, _ = json.Marshal(txs[i])
+		require.NoError(t, json.Unmarshal(enc, &got))
+		// The full block reports its own "hash" as every tx's blockHash; on
+		// this Faker chain eth_getTransactionByHash reports the native hash
+		// (they coincide on HotStuff/APoS chains).
+		blockHash, _ := json.Marshal(res["hash"])
+		require.Equal(t, strings.Trim(string(blockHash), `"`), got["blockHash"])
+		delete(want, "blockHash")
+		delete(got, "blockHash")
+		require.Equal(t, want, got, "tx %d", i)
+	}
+	// base fee 7 + tip 2 = 9, under the fee cap of 20.
+	first, _ := json.Marshal(txs[0])
+	require.Contains(t, string(first), `"gasPrice":"0x9"`)
 }
