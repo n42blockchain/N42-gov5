@@ -1693,7 +1693,25 @@ func (s *Service) recoverState() error {
 	ce.RestoreVoteCommitments(state.LastVotedView, state.LastVotedHash,
 		state.LastCommitVotedView, state.LastCommitVotedHash)
 
-	s.reportPersistedStateDivergence(state)
+	if s.reportPersistedStateDivergence(state) == persistedStateConsistent {
+		// The committed block is canonical and applied here, so it counts as
+		// imported: a proposal justified by its QC (every proposal after a
+		// cold restart of the whole validator set, when nothing newer is
+		// imported) can be voted on. Without this the deferred vote waits
+		// for an import of the justify block that never comes, and a fleet
+		// restarted together from its committed head never commits again.
+		hash := state.LastCommittedQC.BlockHash
+		var parent types.Hash
+		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+			if n := rawdb.ReadHeaderNumber(tx, hash); n != nil {
+				if h := rawdb.ReadHeader(tx, hash, *n); h != nil {
+					parent = h.ParentHash
+				}
+			}
+			return nil
+		})
+		ce.MarkImportedOnRecovery(hash, parent)
+	}
 
 	return nil
 }

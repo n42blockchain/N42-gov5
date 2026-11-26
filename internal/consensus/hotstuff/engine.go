@@ -610,6 +610,15 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	}
 }
 
+// MarkImportedOnRecovery records a block that is applied locally when the
+// engine recovers (the committed head) as imported. Must only be called
+// before the engine starts processing events.
+func (e *ConsensusEngine) MarkImportedOnRecovery(blockHash, parentHash types.Hash) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rememberImported(blockHash, parentHash)
+}
+
 // RestoreVoteCommitments reinstates the journalled vote commitments after a
 // restart. It must run on EVERY startup that finds a persisted record — not
 // only when the recovered view is ahead — because the double-vote guard is what
