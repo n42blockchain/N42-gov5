@@ -1441,12 +1441,26 @@ func (e *EngineV2) replayBlockTxs(
 	srcHeader *block.Header,
 	dstTx kv.Tx,
 ) ([]*transaction.Transaction, block.Receipts, uint64) {
-	txs := srcBlk.Transactions()
-	if len(txs) == 0 {
-		return nil, nil, 0
-	}
+	txs, receipts, usedGas, _ := e.replayTxs(ibs, stateWriter, srcBlk.Transactions(), srcBlk.Hash(), srcHeader, dstTx)
+	return txs, receipts, usedGas
+}
 
+// replayTxs executes txs with srcHeader as the block context and returns the
+// transactions that applied, their receipts, the receipts' cumulative gas and
+// the header gas figure (internal.HeaderGasUsed: EIP-8037 under Amsterdam).
+func (e *EngineV2) replayTxs(
+	ibs *state.IntraBlockState,
+	stateWriter state.StateWriter,
+	txs []*transaction.Transaction,
+	blockHash types.Hash,
+	srcHeader *block.Header,
+	dstTx kv.Tx,
+) ([]*transaction.Transaction, block.Receipts, uint64, uint64) {
 	gp := new(common.GasPool).AddGas(srcHeader.GasLimit)
+	if len(txs) == 0 {
+		return nil, nil, 0, internal.HeaderGasUsed(e.cfg.ChainConfig, srcHeader, gp, 0)
+	}
+	srcBlkHash := blockHash
 	var (
 		usedGas  uint64
 		replayed []*transaction.Transaction
@@ -1464,7 +1478,7 @@ func (e *EngineV2) replayBlockTxs(
 	for i, tx := range txs {
 		e.stats.TxTotal.Add(1)
 
-		ibs.Prepare(tx.Hash(), srcBlk.Hash(), i)
+		ibs.Prepare(tx.Hash(), srcBlkHash, i)
 		receipt, _, err := internal.ApplyTransaction(
 			e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
 			gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
@@ -1494,7 +1508,7 @@ func (e *EngineV2) replayBlockTxs(
 					e.topups[*from] = acc
 				}
 				acc.Add(acc, deficit)
-				ibs.Prepare(tx.Hash(), srcBlk.Hash(), i)
+				ibs.Prepare(tx.Hash(), srcBlkHash, i)
 				receipt, _, err = internal.ApplyTransaction(
 					e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
 					gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
@@ -1532,7 +1546,7 @@ func (e *EngineV2) replayBlockTxs(
 		receipts = append(receipts, receipt)
 		e.stats.TxReplayed.Add(1)
 	}
-	return replayed, receipts, usedGas
+	return replayed, receipts, usedGas, internal.HeaderGasUsed(e.cfg.ChainConfig, srcHeader, gp, usedGas)
 }
 
 // readParentInfo reads the parent hash and timestamp for the block before `from`.
