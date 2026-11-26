@@ -1504,6 +1504,7 @@ func (e *EngineV2) replayBlockTxs(
 		if err != nil {
 			e.stats.TxFailed.Add(1)
 			e.stats.skipReason("evm_error")
+			e.stats.skipReason(txErrorClass(err))
 			// Log failures with the sending address + nonce. The default path keeps
 			// the original small cap; the AutoTopup diagnostic raises it to capture
 			// the (rare) residual failures it cannot fund, without spamming normal

@@ -5,6 +5,7 @@ package replay
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -49,9 +50,32 @@ func TestStatsMarshalJSON(t *testing.T) {
 
 func TestStatsSkipReasonUnknownIsNoop(t *testing.T) {
 	s := NewStats()
+	preset := len(s.SkipReasons)
 	// Must not panic for a reason outside the preset map.
 	s.skipReason("not_a_real_reason")
-	if len(s.SkipReasons) != 4 {
-		t.Fatalf("SkipReasons grew to %d entries, want the preset 4", len(s.SkipReasons))
+	if len(s.SkipReasons) != preset {
+		t.Fatalf("SkipReasons grew to %d entries, want the preset %d", len(s.SkipReasons), preset)
+	}
+}
+
+// Every class txErrorClass returns is a preset counter.
+func TestTxErrorClassesArePreset(t *testing.T) {
+	s := NewStats()
+	for _, msg := range []string{
+		"max fee per gas less than block base fee: address 0x1, maxFeePerGas: 1, baseFee: 7",
+		"insufficient funds for gas * price + value",
+		"nonce too high",
+		"intrinsic gas too low",
+		"gas limit reached",
+		"transaction type not supported",
+		"something else",
+	} {
+		c := txErrorClass(errors.New(msg))
+		if _, ok := s.SkipReasons[c]; !ok {
+			t.Fatalf("%q -> %q, not a preset counter", msg, c)
+		}
+	}
+	if c := txErrorClass(errors.New("max fee per gas less than block base fee")); c != "err_fee_below_base_fee" {
+		t.Fatalf("fee below base fee classified %q", c)
 	}
 }

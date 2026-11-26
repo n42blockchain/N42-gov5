@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,9 +21,9 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
@@ -40,14 +41,14 @@ var DefaultSkipAddresses = map[types.Address]bool{
 
 // Config configures the replay engine.
 type Config struct {
-	SourcePath    string                  // Old chain data directory (contains chaindata/)
-	TargetPath    string                  // New chain data directory (will be created)
-	FromBlock     uint64                  // Start block (inclusive, default 1)
-	ToBlock       uint64                  // End block (0 = auto-detect latest)
-	ChainConfig   *params.ChainConfig     // New chain config for EVM execution
-	SkipAddresses map[types.Address]bool  // Addresses to filter (default: deposit contracts)
-	BatchSize     int                     // Commit batch size in blocks (default: 1000)
-	ProgressFn    func(stats *Stats)      // Called periodically with progress (may be nil)
+	SourcePath    string                 // Old chain data directory (contains chaindata/)
+	TargetPath    string                 // New chain data directory (will be created)
+	FromBlock     uint64                 // Start block (inclusive, default 1)
+	ToBlock       uint64                 // End block (0 = auto-detect latest)
+	ChainConfig   *params.ChainConfig    // New chain config for EVM execution
+	SkipAddresses map[types.Address]bool // Addresses to filter (default: deposit contracts)
+	BatchSize     int                    // Commit batch size in blocks (default: 1000)
+	ProgressFn    func(stats *Stats)     // Called periodically with progress (may be nil)
 }
 
 // Stats tracks replay progress.
@@ -79,6 +80,14 @@ func NewStats() *Stats {
 			"empty_create":     {},
 			"sender_unknown":   {},
 			"evm_error":        {},
+			// Classes of evm_error (txErrorClass), counted as well.
+			"err_fee_below_base_fee": {},
+			"err_insufficient_funds": {},
+			"err_nonce":              {},
+			"err_intrinsic_gas":      {},
+			"err_gas_limit":          {},
+			"err_tx_type":            {},
+			"err_other":              {},
 		},
 		StartTime: time.Now(),
 	}
@@ -88,6 +97,28 @@ func (s *Stats) skipReason(reason string) {
 	if c, ok := s.SkipReasons[reason]; ok {
 		c.Add(1)
 	}
+}
+
+// txErrorClass names the class of a transaction apply error for the
+// err_* skip counters (a re-derived block context can refuse a transaction
+// the source chain accepted, e.g. a fee cap below the new base fee).
+func txErrorClass(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "less than block base fee"), strings.Contains(msg, "fee cap less than"):
+		return "err_fee_below_base_fee"
+	case strings.Contains(msg, "insufficient funds"):
+		return "err_insufficient_funds"
+	case strings.Contains(msg, "nonce"):
+		return "err_nonce"
+	case strings.Contains(msg, "intrinsic gas"):
+		return "err_intrinsic_gas"
+	case strings.Contains(msg, "gas limit"):
+		return "err_gas_limit"
+	case strings.Contains(msg, "tx type"), strings.Contains(msg, "transaction type"):
+		return "err_tx_type"
+	}
+	return "err_other"
 }
 
 // MarshalJSON serializes Stats with atomic values properly loaded.
@@ -149,10 +180,10 @@ func (s *Stats) BlocksPerSecond() float64 {
 
 // Engine performs the replay operation.
 type Engine struct {
-	cfg    Config
-	srcDB  kv.RwDB
-	dstDB  kv.RwDB
-	stats  *Stats
+	cfg   Config
+	srcDB kv.RwDB
+	dstDB kv.RwDB
+	stats *Stats
 }
 
 // NewEngine creates a replay engine. Call Run() to execute.
