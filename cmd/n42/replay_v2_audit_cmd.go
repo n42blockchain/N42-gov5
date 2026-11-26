@@ -31,6 +31,7 @@ var replayV2AuditCommand = &cli.Command{
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "target", Usage: "Replay target datadir (opened read-only)", Required: true},
 		&cli.StringFlag{Name: "p1-genesis", Usage: "The profile-1 genesis JSON the target was replayed on", Required: true},
+		&cli.Uint64Flag{Name: "from", Usage: "First block to audit", Value: 1},
 		&cli.Uint64Flag{Name: "to", Usage: "Last block to audit (0 = head)"},
 		&cli.IntFlag{Name: "workers", Usage: "Concurrent auditors, each on its own block range", Value: 1},
 		&cli.Uint64Flag{Name: "chunk", Usage: "Blocks per audit range", Value: 20000},
@@ -75,6 +76,7 @@ func runReplayV2Audit(cliCtx *cli.Context) error {
 		return err
 	}
 	workers, chunk := max(1, cliCtx.Int("workers")), max(uint64(1), cliCtx.Uint64("chunk"))
+	from := max(uint64(1), cliCtx.Uint64("from"))
 	type rangeResult struct {
 		from, to, txs, maxGap, headTime uint64
 		err                             error
@@ -131,14 +133,14 @@ func runReplayV2Audit(cliCtx *cli.Context) error {
 		}()
 	}
 	go func() {
-		for f := uint64(1); f <= head; f += chunk {
+		for f := from; f <= head; f += chunk {
 			ranges <- [2]uint64{f, min(head, f+chunk-1)}
 		}
 		close(ranges)
 	}()
 	var txs, maxGap, headTime uint64
 	var firstErr error
-	for f := uint64(1); f <= head; f += chunk {
+	for f := from; f <= head; f += chunk {
 		r := <-results
 		if r.err != nil && (firstErr == nil) {
 			firstErr = fmt.Errorf("FAIL in range %d-%d: %w", r.from, r.to, r.err)
@@ -153,7 +155,7 @@ func runReplayV2Audit(cliCtx *cli.Context) error {
 		return firstErr
 	}
 	pc := g.Config.HotStuff.CommitteePool
-	fmt.Printf("PASS: %d blocks (%d txs) audited in %s with %d workers: codecs, profile-1 header rules, vote gate, CommitQC + seal, body commitments, committee evidence (pool %d, committee %d); max slot gap %ds; genesis %s head time %d\n",
-		head, txs, time.Since(start).Round(time.Second), workers, pc.PoolSize, pc.CommitteeSize, maxGap, genesis.Hash().Hex(), headTime)
+	fmt.Printf("PASS: blocks %d-%d (%d txs) audited in %s with %d workers: codecs, profile-1 header rules, vote gate, CommitQC + seal, body commitments, committee evidence (pool %d, committee %d); max slot gap %ds; genesis %s head time %d\n",
+		from, head, txs, time.Since(start).Round(time.Second), workers, pc.PoolSize, pc.CommitteeSize, maxGap, genesis.Hash().Hex(), headTime)
 	return nil
 }
