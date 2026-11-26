@@ -90,10 +90,13 @@ func cachedFor(chainID *big.Int) (london, eip2930 Signer, eip155 EIP155Signer) {
 	cachedSigners.mu.Lock()
 	defer cachedSigners.mu.Unlock()
 	if cachedSigners.chainID == nil || cachedSigners.chainID.Cmp(chainID) != 0 {
-		cachedSigners.chainID = new(big.Int).Set(chainID)
-		cachedSigners.eip155 = NewEIP155Signer(chainID)
-		cachedSigners.eip2930 = NewEIP2930Signer(chainID)
-		cachedSigners.london = NewLondonSigner(chainID)
+		// Build from the private copy: the cached signers outlive the call,
+		// so they must not alias a big.Int the caller may later reuse.
+		id := new(big.Int).Set(chainID)
+		cachedSigners.chainID = id
+		cachedSigners.eip155 = NewEIP155Signer(id)
+		cachedSigners.eip2930 = NewEIP2930Signer(id)
+		cachedSigners.london = NewLondonSigner(id)
 	}
 	return cachedSigners.london, cachedSigners.eip2930, cachedSigners.eip155
 }
@@ -142,11 +145,17 @@ func MakeSignerWithTimestamp(config *params.ChainConfig, blockNumber *big.Int, t
 // Use this in transaction-handling code where the current block number and fork
 // configuration are unknown. If you have a ChainConfig, use LatestSigner instead.
 // If you have a ChainConfig and know the current block number, use MakeSigner instead.
+//
+// The returned signer is shared (see cachedFor): the txpool and RPC admission
+// paths call this once per transaction, and a fresh signer per call was both
+// garbage and, once stored in a sender-cache entry, ~100 B retained per entry
+// (up to 2^20 entries).
 func LatestSignerForChainID(chainID *big.Int) Signer {
 	if chainID == nil {
 		return HomesteadSigner{}
 	}
-	return NewLondonSigner(chainID)
+	london, _, _ := cachedFor(chainID)
+	return london
 }
 
 // SignNewTx creates a transaction and signs it.
