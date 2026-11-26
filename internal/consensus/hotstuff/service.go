@@ -1240,6 +1240,19 @@ func (s *Service) logVoteRouting() {
 	}
 }
 
+// consensusSubscriptionBuffer is the depth of the consensus topic's
+// subscription queue. go-libp2p-pubsub hands a message to a subscription
+// with a non-blocking send and DROPS it when the queue is full (the
+// "subscriber too slow" path, visible only as a pubsub Info log). The
+// library default is 32. A leader of an n-member set receives up to n-1
+// Round 1 votes (and later n-1 commit votes and n timeouts) in one burst,
+// while this loop handles them one at a time under the engine lock with BLS
+// verification; at n = 100 the default queue lost about two thirds of a
+// view's votes and no QC ever formed (gate 5a). The queue holds pointers,
+// so a deep one costs little; this depth covers several views of traffic
+// for a set far larger than any profile-1 set.
+const consensusSubscriptionBuffer = 16384
+
 // subscribeMessages subscribes to the HotStuff gossip topic and processes incoming messages.
 func (s *Service) subscribeMessages() {
 	defer s.wg.Done()
@@ -1252,14 +1265,14 @@ func (s *Service) subscribeMessages() {
 	enc := s.p2p.Encoding()
 	topic := s.gossipTopic + enc.ProtocolSuffix()
 
-	sub, err := s.p2p.SubscribeToTopic(topic)
+	sub, err := s.p2p.SubscribeToTopic(topic, pubsub.WithBufferSize(consensusSubscriptionBuffer))
 	if err != nil {
 		log.Error("hotstuff: failed to subscribe to gossip topic", "err", err)
 		return
 	}
 	defer sub.Cancel()
 
-	log.Info("hotstuff: subscribed to gossip topic", "topic", topic)
+	log.Info("hotstuff: subscribed to gossip topic", "topic", topic, "buffer", consensusSubscriptionBuffer)
 
 	msgCount := 0
 	for {
