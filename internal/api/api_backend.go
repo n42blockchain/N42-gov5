@@ -266,20 +266,7 @@ func (b *API) GetEVM(ctx context.Context, msg *transaction.Message, ibs *state.I
 // GetTransaction returns the transaction, block hash, block number, and tx index
 // for the given transaction hash.
 func (b *API) GetTransaction(ctx context.Context, txHash types.Hash) (*transaction.Transaction, types.Hash, uint64, uint64, error) {
-	var (
-		t           *transaction.Transaction
-		blockHash   types.Hash
-		blockNumber uint64
-		index       uint64
-		err         error
-	)
-	if dbErr := b.db.View(ctx, func(tx kv.Tx) error {
-		t, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(tx, txHash)
-		return err
-	}); dbErr != nil {
-		return nil, types.Hash{}, 0, 0, dbErr
-	}
-	return t, blockHash, blockNumber, index, err
+	return b.readCanonicalTransaction(ctx, txHash)
 }
 
 // ChainDb returns the underlying key-value database.
