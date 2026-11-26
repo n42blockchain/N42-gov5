@@ -83,6 +83,13 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 			Validator: vote.Voter,
 			Hash1:     prevHash,
 			Hash2:     vote.BlockHash,
+
+			EvidenceKind: EvidenceKindVote,
+			PublicKey:    pk.Marshal(),
+			Msg1:         e.voteSigningMessage(view, prevHash),
+			Msg2:         e.voteSigningMessage(view, vote.BlockHash),
+			Sig1:         e.equivocationSigs[vote.Voter],
+			Sig2:         vote.Signature,
 		})
 		return nil
 	}
@@ -110,6 +117,7 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 				return &InvalidSignatureError{View: view, ValidatorIndex: vote.Voter}
 			}
 			e.equivocationTracker[vote.Voter] = vote.BlockHash
+			e.equivocationSigs[vote.Voter] = append([]byte(nil), vote.Signature...)
 		}
 		return nil
 	}
@@ -197,6 +205,7 @@ func (e *ConsensusEngine) flushPrepareVotes() error {
 	for _, pv := range valid {
 		if _, exists := e.equivocationTracker[pv.voter]; !exists {
 			e.equivocationTracker[pv.voter] = collectorHash
+			e.equivocationSigs[pv.voter] = append([]byte(nil), pv.sigBytes...)
 		}
 		if err := e.voteCollector.AddVerifiedVoteFromBytes(pv.voter, pv.sigBytes); err != nil {
 			if _, ok := err.(*DuplicateVoteError); ok {
@@ -324,6 +333,13 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote, mt msgTiming) error 
 			Validator: cv.Voter,
 			Hash1:     prevHash,
 			Hash2:     cv.BlockHash,
+
+			EvidenceKind: EvidenceKindCommitVote,
+			PublicKey:    pk.Marshal(),
+			Msg1:         e.commitSigningMessage(view, prevHash),
+			Msg2:         e.commitSigningMessage(view, cv.BlockHash),
+			Sig1:         e.commitEquivocationSigs[cv.Voter],
+			Sig2:         cv.Signature,
 		})
 		return nil // discard conflicting commit vote
 	}
@@ -344,6 +360,7 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote, mt msgTiming) error 
 				return &InvalidSignatureError{View: view, ValidatorIndex: cv.Voter}
 			}
 			e.commitEquivocationTracker[cv.Voter] = cv.BlockHash
+			e.commitEquivocationSigs[cv.Voter] = append([]byte(nil), cv.Signature...)
 		}
 		return nil
 	}
@@ -410,6 +427,7 @@ func (e *ConsensusEngine) flushCommitVotes() error {
 	for _, pv := range valid {
 		if _, exists := e.commitEquivocationTracker[pv.voter]; !exists {
 			e.commitEquivocationTracker[pv.voter] = collectorHash
+			e.commitEquivocationSigs[pv.voter] = append([]byte(nil), pv.sigBytes...)
 		}
 		if err := e.commitCollector.AddVerifiedVoteFromBytes(pv.voter, pv.sigBytes); err != nil {
 			if _, ok := err.(*DuplicateVoteError); ok {

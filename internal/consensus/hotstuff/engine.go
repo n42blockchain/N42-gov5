@@ -64,6 +64,11 @@ type EngineOutput struct {
 	Validator ValidatorIndex
 	Hash1     types.Hash
 	Hash2     types.Hash
+	// Evidence detail for OutputEquivocationDetected (both signed messages).
+	EvidenceKind string // "vote" | "commit_vote" | "proposal"
+	PublicKey    []byte
+	Msg1, Msg2   []byte // signed bytes
+	Sig1, Sig2   []byte
 
 	// Epoch transition fields
 	NewEpoch       uint64
@@ -161,6 +166,13 @@ type ConsensusEngine struct {
 	// a dead same-height sibling re-proposed at a committed height).
 	pendingJustifyBlocks      map[ViewNumber]types.Hash
 	equivocationTracker       map[ValidatorIndex]types.Hash
+	// First verified signature per voter behind the trackers, kept so
+	// equivocation evidence carries both signed messages (RPC n42_equivocations).
+	equivocationSigs          map[ValidatorIndex][]byte
+	commitEquivocationSigs    map[ValidatorIndex][]byte
+	// Last view whose TC advanced this node (n42_tc_formed_total counts once per view).
+	tcCountedView ViewNumber
+	tcCounted     bool
 	voteStats                 voteIntakeStats
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
 
@@ -468,6 +480,8 @@ func NewConsensusEngineWithEpochManager(
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
 		equivocationTracker:       make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
+		equivocationSigs:          make(map[ValidatorIndex][]byte),
+		commitEquivocationSigs:    make(map[ValidatorIndex][]byte),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
 		certCache:                 newVerifiedCertCache(verifiedCertCacheSize),
@@ -511,6 +525,8 @@ func WithRecoveredState(
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
 		equivocationTracker:       make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
+		equivocationSigs:          make(map[ValidatorIndex][]byte),
+		commitEquivocationSigs:    make(map[ValidatorIndex][]byte),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
 		certCache:                 newVerifiedCertCache(verifiedCertCacheSize),
@@ -1144,6 +1160,8 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	}
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.commitEquivocationTracker = make(map[ValidatorIndex]types.Hash)
+	e.equivocationSigs = make(map[ValidatorIndex][]byte)
+	e.commitEquivocationSigs = make(map[ValidatorIndex][]byte)
 	e.prepareVoteBuf = e.prepareVoteBuf[:0]
 	e.commitVoteBuf = e.commitVoteBuf[:0]
 	// Retain verified observations above the new view. Timeout payloads are

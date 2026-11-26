@@ -23,6 +23,7 @@ import (
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/blspool"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -49,6 +50,12 @@ type ConsensusAPI struct {
 // NewConsensusAPI builds the consensus evidence API service.
 func NewConsensusAPI(api *API) *ConsensusAPI {
 	return &ConsensusAPI{api: api}
+}
+
+// Equivocations implements n42_equivocations (profile-1 E15): the total number
+// of equivocations detected and the retained standalone-verifiable evidence.
+func (c *ConsensusAPI) Equivocations(ctx context.Context) hotstuff.EquivocationReport {
+	return hotstuff.DefaultEquivocationStore.Report()
 }
 
 // ConsensusEvidenceResult is the explorer-facing view of a block's consensus
