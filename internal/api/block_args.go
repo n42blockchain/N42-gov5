@@ -35,6 +35,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -42,6 +43,11 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 	fields := RPCMarshalHeader(block.Header(), cfg)
 	if blockHashOverride != nil {
 		fields["hash"] = avmtypes.FromastHash(*blockHashOverride)
+	}
+	// "size" is the encoded size of the whole block (header and body), as on
+	// Ethereum; RPCMarshalHeader can only report the header's.
+	if size, ok := rpcBlockSize(block); ok {
+		fields["size"] = hexutil.Uint64(size)
 	}
 
 	if inclTx {
@@ -237,5 +243,30 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 		result["requestsHash"] = avmtypes.FromastHash(requestsHash)
 	}
 
+	// Amsterdam and N42 header elements 22-24, when the header carries them.
+	if header.BlockAccessListHash != nil {
+		result["blockAccessListHash"] = avmtypes.FromastHash(*header.BlockAccessListHash)
+	}
+	if header.SlotNumber != nil {
+		result["slotNumber"] = hexutil.Uint64(*header.SlotNumber)
+	}
+	if header.MobileRegistryRoot != nil {
+		result["mobileRegistryRoot"] = avmtypes.FromastHash(*header.MobileRegistryRoot)
+	}
+
 	return result
+}
+
+// rpcBlockSize returns the length of the block's wire encoding
+// (block.Block.EncodeRLP: header and full body).
+func rpcBlockSize(b block.IBlock) (uint64, bool) {
+	blk, ok := b.(*block.Block)
+	if !ok || blk == nil {
+		return 0, false
+	}
+	enc, err := rlp.EncodeToBytes(blk)
+	if err != nil {
+		return 0, false
+	}
+	return uint64(len(enc)), true
 }
