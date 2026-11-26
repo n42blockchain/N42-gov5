@@ -1487,7 +1487,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// not, so a stale seal would be rejected by
 			// checkQMDBLeaderSealParent with nothing left to rebuild — the
 			// view is lost. One marker read keeps the fast path honest.
-			stale, staleTime := false, false
+			stale, staleTime, stalePool := false, false, false
 			if bc, ok := w.chain.(*internal.BlockChain); ok && !bc.AppliedHeadIs(parentHash) {
 				stale = true
 			}
@@ -1507,7 +1507,14 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 					// late parent) moved the proposal to a later slot, so
 					// rebuild below.
 					staleTime = !p1HasTarget || st.block.Time() != p1Target
-					if !staleTime {
+					// A parked block's contents are the pool as it was when
+					// the parent arrived, up to a whole slot before this
+					// slot starts: every transaction that arrived since is
+					// missing, and a leader that follows its own kind built
+					// near-empty blocks (gate 6c: 10 txs over 19 proposals).
+					// Rebuild at the slot start instead.
+					stalePool = !staleTime && profile1SpecPoolStale(st.createdAt, p1TargetMs)
+					if !staleTime && !stalePool {
 						if err := w.waitUntilMs(p1TargetMs); err != nil {
 							return err
 						}
@@ -1515,7 +1522,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				} else if err := w.pace(num, parentHash); err != nil {
 					return err
 				}
-				if !staleTime {
+				if !staleTime && !stalePool {
 					if contentionDiagEnabled {
 						st.paceDur = time.Since(st.paceEnterAt)
 						st.specHitAt = time.Now()
@@ -1534,7 +1541,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				}
 			}
 			specStatus = "miss"
-			if staleTime {
+			if stalePool {
+				specReason = "stale-pool"
+				log.Info("miner: speculative build discarded, pool snapshot predates the slot",
+					"parent", parentHash.Hex()[:12], "txs", len(st.block.Transactions()),
+					"leadMs", int64(p1TargetMs)-st.createdAt.UnixMilli())
+			} else if staleTime {
 				specReason = "stale-timestamp"
 				log.Info("miner: speculative build discarded, stamped for another slot",
 					"parent", parentHash.Hex()[:12], "headerTime", st.block.Time(), "slotTime", p1Target)

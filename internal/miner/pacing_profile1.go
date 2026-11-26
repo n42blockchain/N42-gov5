@@ -172,3 +172,20 @@ func (w *worker) waitUntilUnix(t uint64) error {
 		return w.ctx.Err()
 	}
 }
+
+// profile1SpecMaxLeadMs bounds how long before its slot start a parked
+// speculative block may have been built and still be handed over. Its
+// contents are the pool as it was at build time; past this lead the
+// transactions that arrived meanwhile outweigh the build time a rebuild at
+// the slot start costs at profile-1 load.
+const profile1SpecMaxLeadMs = 500
+
+// profile1SpecPoolStale reports whether a speculative block parked at
+// parkedAt is too old to be handed over at the slot starting at slotStartMs
+// (unix milliseconds). A zero parkedAt is stale.
+func profile1SpecPoolStale(parkedAt time.Time, slotStartMs uint64) bool {
+	if parkedAt.IsZero() {
+		return true
+	}
+	return int64(slotStartMs)-parkedAt.UnixMilli() > profile1SpecMaxLeadMs
+}
