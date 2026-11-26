@@ -221,7 +221,10 @@ func (s *Service) observeCommittedExecution(hash types.Hash, countMetric bool) (
 	if countMetric {
 		metricCommittedUnexecuted.Inc()
 	}
-	log.Error("hotstuff: committed block not executed locally",
+	// Benign during catch-up: the commit can arrive before the block, which
+	// is then imported. The metric counts every occurrence; a persistent
+	// streak is acted on by the caller's production gate.
+	log.Warn("hotstuff: committed block not executed locally",
 		"hash", hash, "number", number, "failures", failures)
 	return false, failures, number
 }
