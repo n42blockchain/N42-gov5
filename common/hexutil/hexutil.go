@@ -182,7 +182,17 @@ func EncodeBig(bigint *big.Int) string {
 	if nbits == 0 {
 		return "0x0"
 	}
-	return fmt.Sprintf("%#x", bigint)
+	// Same text as fmt.Sprintf("%#x", bigint) ("-0x.." when negative)
+	// without fmt's reflection: every quantity of every RPC object goes
+	// through here.
+	buf := make([]byte, 0, 3+(nbits+3)/4)
+	abs := bigint
+	if bigint.Sign() < 0 {
+		buf = append(buf, '-')
+		abs = new(big.Int).Neg(bigint)
+	}
+	buf = append(buf, '0', 'x')
+	return string(abs.Append(buf, 16))
 }
 
 func has0xPrefix(input string) bool {
