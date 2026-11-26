@@ -1789,6 +1789,11 @@ func (n *Node) startHotStuffDecideFollower() error {
 	if err != nil {
 		return err
 	}
+	if n.sync != nil {
+		// A follower that is behind (restart, or a join from a snapshot)
+		// range-syncs up to the blocks its verified Decides name.
+		f.SetCatchUp(n.sync.CatchUpToHash)
+	}
 	if err := f.Start(); err != nil {
 		return err
 	}

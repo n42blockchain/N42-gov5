@@ -33,6 +33,12 @@ type DecideFollower struct {
 	set      *ValidatorSet
 	identity H2V4ChainIdentity
 
+	// catchUp, when set, asks the sync layer to range-fetch up to a
+	// committed block the follower does not hold (a node that joined or
+	// restarted behind the chain); without it the follower only waits for
+	// the gossip to deliver the gap, which it never does.
+	catchUp func(types.Hash)
+
 	mu      sync.Mutex
 	pending map[types.Hash]decidePending
 
@@ -54,13 +60,19 @@ type DecideFollowerP2P interface {
 type decidePending struct {
 	view  ViewNumber
 	since time.Time
+	asked time.Time // last catch-up request for this block
 }
 
 const (
 	decideFollowerRetry      = 200 * time.Millisecond
 	decideFollowerPendingTTL = 2 * time.Minute
 	decideFollowerMaxPending = 256
+	decideFollowerAskEvery   = 5 * time.Second
 )
+
+// SetCatchUp installs the sync layer's catch-up for committed blocks the
+// follower does not hold (sync.Service.CatchUpToHash). Call before Start.
+func (f *DecideFollower) SetCatchUp(catchUp func(types.Hash)) { f.catchUp = catchUp }
 
 // NewDecideFollower builds the follower for a profile-1 chain; it fails when
 // the chain is not profile 1 (the only chain with a fixed, engine-free
@@ -160,13 +172,20 @@ func (f *DecideFollower) commit(view ViewNumber, hash types.Hash) {
 		log.Error("hotstuff: CONFLICTING COMMIT on a follower -- verified CommitQC names a block that does not extend the committed chain; canonical rows were NOT rewritten",
 			"view", view, "hash", hash, "height", ce.Height, "committed", ce.Committed)
 	default:
-		if _, ok := f.pending[hash]; !ok {
+		now := time.Now()
+		p, ok := f.pending[hash]
+		if !ok {
 			if len(f.pending) >= decideFollowerMaxPending {
 				f.dropOldestLocked()
 			}
-			f.pending[hash] = decidePending{view: view, since: time.Now()}
+			p = decidePending{view: view, since: now}
 			log.Debug("hotstuff: follower commit deferred", "view", view, "hash", hash, "err", err)
 		}
+		if f.catchUp != nil && now.Sub(p.asked) >= decideFollowerAskEvery {
+			p.asked = now
+			go f.catchUp(hash)
+		}
+		f.pending[hash] = p
 	}
 }
 

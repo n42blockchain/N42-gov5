@@ -133,3 +133,43 @@ func TestDecideFollowerRequiresProfile1(t *testing.T) {
 		t.Fatal("follower built outside profile 1")
 	}
 }
+
+// A verified Decide whose block the follower does not hold asks the sync
+// layer to catch up to it, again after decideFollowerAskEvery, and not for a
+// block it commits at once.
+func TestDecideFollowerAsksCatchUpForMissingBlocks(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	identity := H2V4ChainIdentity{ChainID: 94, GenesisHash: repeatedHash(0x11)}
+	b1, b2 := repeatedHash(0x01), repeatedHash(0x02)
+	chain := &followerChain{missing: map[types.Hash]bool{b2: true}}
+	f, err := NewDecideFollower(newFollowerTestEngine(t, setup), chain, noopFollowerP2P{}, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := make(chan types.Hash, 4)
+	f.SetCatchUp(func(h types.Hash) { asked <- h })
+	if err := f.HandleMessage(followerDecideGossip(t, setup, identity, 2, b1, []int{0, 1, 2})); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.HandleMessage(followerDecideGossip(t, setup, identity, 3, b2, []int{0, 1, 2})); err != nil {
+		t.Fatal(err)
+	}
+	if h := <-asked; h != b2 {
+		t.Fatalf("catch-up asked for %x, want the missing block", h)
+	}
+	f.retryPending() // within decideFollowerAskEvery: no second request
+	f.mu.Lock()
+	p := f.pending[b2]
+	p.asked = p.asked.Add(-decideFollowerAskEvery)
+	f.pending[b2] = p
+	f.mu.Unlock()
+	f.retryPending()
+	if h := <-asked; h != b2 {
+		t.Fatalf("second catch-up asked for %x", h)
+	}
+	select {
+	case h := <-asked:
+		t.Fatalf("unexpected catch-up request %x", h)
+	default:
+	}
+}
