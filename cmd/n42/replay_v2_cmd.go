@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -27,6 +28,8 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto/bls"
+	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/internal/replay"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -77,6 +80,8 @@ var replayV2Command = &cli.Command{
 		&cli.IntFlag{Name: "bls-pool-size", Usage: "Total mobile-voter pool size", Value: 200000},
 		&cli.IntFlag{Name: "bls-committee", Usage: "Per-block committee size (ETH sync-committee reference)", Value: 512},
 		&cli.Uint64Flag{Name: "bls-ramp-blocks", Usage: "Blocks over which the active pool ramps from one committee up to pool-size", Value: 1000000},
+		&cli.StringFlag{Name: "p1-genesis", Usage: "Profile-1 genesis JSON (n42Profile 1): re-derive every replayed block to the mixed production standard, profile 1, on this genesis; implies --tree qmdb and the committee evidence of its committeePool"},
+		&cli.StringFlag{Name: "p1-validator-keys", Usage: "JSON array of hex BLS secret keys of the p1 genesis's hotstuff.validators, in list order (header seals and CommitQCs)"},
 		&cli.IntFlag{Name: "pprof.port", Usage: "If >0, serve net/http/pprof on this port for profiling", Value: 0},
 	},
 	Action: runReplayV2,
@@ -103,7 +108,13 @@ func runReplayV2(cliCtx *cli.Context) error {
 	if cfg.ChainConfig == nil {
 		return fmt.Errorf("unknown replay target chain %q", chainName)
 	}
-	if err := validateReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); err != nil {
+	if path := cliCtx.String("p1-genesis"); path != "" {
+		g, keys, err := loadReplayProfile1(path, cliCtx.String("p1-validator-keys"))
+		if err != nil {
+			return err
+		}
+		cfg.Profile1Genesis, cfg.Profile1Keys = g, keys
+	} else if err := validateReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); err != nil {
 		return fmt.Errorf("validate replay target network binding: %w", err)
 	}
 
@@ -192,7 +203,10 @@ func runReplayV2(cliCtx *cli.Context) error {
 	if exportErr := engine.RunPostExport(ctx); exportErr != nil {
 		return fmt.Errorf("post-export: %w", exportErr)
 	}
-	if bindErr := persistReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); bindErr != nil {
+	if cfg.Profile1Genesis != nil {
+		// A profile-1 target is not a named network preset; its genesis is
+		// the --p1-genesis file.
+	} else if bindErr := persistReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); bindErr != nil {
 		return fmt.Errorf("persist replay target network binding: %w", bindErr)
 	}
 
@@ -243,4 +257,53 @@ func persistReplayTargetNetworkBinding(targetPath, chainName string, chainCfg *p
 		return err
 	}
 	return node.PersistDataDirNetworkBinding(cfg, chainCfg, *genesisHash)
+}
+
+// loadReplayProfile1 reads the profile-1 genesis and the validators' BLS
+// secret keys for replay-v2 --p1-genesis.
+func loadReplayProfile1(genesisPath, keysPath string) (*conf.Genesis, []blscommon.SecretKey, error) {
+	g, err := loadReplayProfile1Genesis(genesisPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if keysPath == "" {
+		return nil, nil, errors.New("--p1-genesis needs --p1-validator-keys")
+	}
+	raw, err := os.ReadFile(keysPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--p1-validator-keys: %w", err)
+	}
+	var hexKeys []string
+	if err := json.Unmarshal(raw, &hexKeys); err != nil {
+		return nil, nil, fmt.Errorf("--p1-validator-keys %s: %w", keysPath, err)
+	}
+	keys := make([]blscommon.SecretKey, 0, len(hexKeys))
+	for i, h := range hexKeys {
+		b, err := hex.DecodeString(strings.TrimPrefix(h, "0x"))
+		if err != nil {
+			return nil, nil, fmt.Errorf("--p1-validator-keys: key %d: %w", i, err)
+		}
+		sk, err := bls.SecretKeyFromBytes(b)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--p1-validator-keys: key %d: %w", i, err)
+		}
+		keys = append(keys, sk)
+	}
+	return g, keys, nil
+}
+
+// loadReplayProfile1Genesis reads a profile-1 genesis JSON.
+func loadReplayProfile1Genesis(path string) (*conf.Genesis, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("--p1-genesis: %w", err)
+	}
+	g := new(conf.Genesis)
+	if err := json.Unmarshal(raw, g); err != nil {
+		return nil, fmt.Errorf("--p1-genesis %s: %w", path, err)
+	}
+	if g.Config == nil || !g.Config.IsProfile1() {
+		return nil, fmt.Errorf("--p1-genesis %s: not a profile-1 genesis", path)
+	}
+	return g, nil
 }
