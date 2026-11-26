@@ -354,7 +354,24 @@ func (b *Block) TxHash() types.Hash {
 
 func (b *Block) WithSeal(header IHeader) *Block {
 	b.header = CopyHeader(header.(*Header))
+	b.size = atomic.Value{}
 	return b
+}
+
+// EncodedSize returns the length of the block's RLP encoding (EncodeRLP),
+// computed once and cached like geth's Block.Size: eth_getBlockBy* reports it
+// on every call and re-encoding a 1k-transaction block each time is waste.
+func (b *Block) EncodedSize() (uint64, error) {
+	if size, ok := b.size.Load().(uint64); ok {
+		return size, nil
+	}
+	enc, err := rlp.EncodeToBytes(b)
+	if err != nil {
+		return 0, err
+	}
+	size := uint64(len(enc))
+	b.size.Store(size)
+	return size, nil
 }
 
 func (b *Block) Transaction(hash types.Hash) *transaction.Transaction {
@@ -386,6 +403,7 @@ func (b *Block) FromProtoMessage(message proto.Message) error {
 
 	b.header = &header
 	b.body = &body
+	b.size = atomic.Value{}
 	b.ReceiveAt = time.Now()
 	return nil
 }
