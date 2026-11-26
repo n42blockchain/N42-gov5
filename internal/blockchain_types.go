@@ -268,7 +268,7 @@ type BlockChain struct {
 
 	procInterrupt int32
 	futureBlocks  *lru.Cache[types.Hash, *block.Block]
-	receiptCache  *lru.Cache[types.Hash, []*block.Receipt]
+	receiptCache  *receiptsCache
 	blockCache    *lru.Cache[types.Hash, *block.Block]
 	// executedHints: under deferred execution, the result the leader's build
 	// computed for a block it sealed, taken by that block's write

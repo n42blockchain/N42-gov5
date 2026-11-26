@@ -125,7 +125,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 
 	blockCache, _ := lru.New[types.Hash, *block.Block](blockCacheLimit)
 	futureBlocks, _ := lru.New[types.Hash, *block.Block](maxFutureBlocks)
-	receiptsCache, _ := lru.New[types.Hash, []*block.Receipt](receiptsCacheLimit)
+	receiptsCache := newReceiptsCache(receiptsCacheLimit, receiptsCacheBudget)
 	tdCache, _ := lru.New[types.Hash, *uint256.Int](tdCacheLimit)
 	numberCache, _ := lru.New[types.Hash, uint64](numberCacheLimit)
 	headerCache, _ := lru.New[types.Hash, *block.Header](headerCacheLimit)
