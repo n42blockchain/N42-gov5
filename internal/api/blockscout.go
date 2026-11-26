@@ -340,6 +340,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 	}
 	baseFee := headerBaseFee.ToBig()
 
+	prewarmRPCSenders(txs)
 	result := make([]*BlockReceipt, len(receipts))
 	for i, receipt := range receipts {
 		tx := txs[i]

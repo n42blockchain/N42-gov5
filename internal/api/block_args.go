@@ -104,6 +104,7 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 				if bf := block.Header().BaseFee64(); bf != nil {
 					baseFee = bf.ToBig()
 				}
+				prewarmRPCSenders(txs)
 				for i, tx := range txs {
 					transactions[i] = newRPCTransaction(tx, bh, num, uint64(i), baseFee)
 				}
