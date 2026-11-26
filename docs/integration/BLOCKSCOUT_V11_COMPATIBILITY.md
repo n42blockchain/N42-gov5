@@ -226,7 +226,44 @@ offending `namespace_method` names listed when one goes missing.
 
 ---
 
-## 6. References
+## 6. Catch-up performance on heavy blocks (2026-11-26)
+
+Measured on a copy of the profile-1 S1 scale datadir (3.1k blocks x 1.2k tx),
+node GOMAXPROCS 8, with a client replaying Blockscout master's catch-up call
+mix and defaults (`/data/blockchain/gov5-work/explorer/loadgen`). Base = main
+939fc557, fix = branch `perf/explorer-sync`. Two ranges, numbers agree within 5%.
+
+| Call (Blockscout batch x concurrency) | base | fix |
+|---|---|---|
+| eth_getBlockByNumber full (10 x 10), cold senders | 38-39 ms/call, 255-262 blocks/s | 21 ms/call, 470-479 blocks/s |
+| eth_getBlockReceipts (1 x 10) | 33 ms/call, 297-307 blocks/s (fails with gzip request) | 23 ms/call, 429-441 blocks/s |
+| eth_getTransactionReceipt (250 x 10) | 6.5 ms/call, **1.3 blocks/s** | 0.058 ms/call, 140-142 blocks/s |
+| debug_traceBlockByNumber callTracer (10 x 4) | 26-29 ms/block (fails with gzip request; no txHash) | 12 ms/block, 331-334 blocks/s |
+| debug_traceTransaction callTracer, whole block | 1.36 s/block | 0.87 s/block |
+| trace_replayBlockTransactions (10 x 4) | 42 ms/block | 24 ms/block |
+| eth_getBalance at height (100 x 10) | 0.042-0.047 ms/call | 0.028-0.035 ms/call |
+
+Fixes: receipts cache + cached-block tx lookup (the per-tx receipt path decoded
+the whole block per call), gzip request bodies, concurrent batch calls
+(`N42_RPC_BATCH_CONCURRENCY`, default 8), `txHash` in block traces, `logs: []`
+in block receipts, full-block gasPrice from the header base fee, cached block
+size, parallel sender recovery, no-fmt big hex, responses written without a
+second JSON encode.
+
+**Indexer settings for gov5 blocks** (defaults are tuned for small Ethereum blocks):
+
+- `INDEXER_MASSIVE_BLOCK_THRESHOLD=20000` — default 1000 marks every 1.2k-tx
+  block "massive"; massive blocks are indexed one at a time by a separate fetcher.
+- `ETHEREUM_JSONRPC_RECEIPTS_BY_BLOCK=true`, `ETHEREUM_JSONRPC_MAX_RECEIPTS_BY_BLOCK=20000`
+  — one eth_getBlockReceipts per block instead of 1.2k receipt calls (the default
+  max of 1000 sends 1.2k-tx blocks back to the per-transaction path).
+- `ETHEREUM_JSONRPC_GETH_TRACE_BY_BLOCK=true` — the default per-transaction
+  debug_traceTransaction replays the block prefix for every transaction
+  (O(n^2): 0.87 s vs 12 ms per block). Or use `ETHEREUM_JSONRPC_VARIANT=erigon`.
+
+---
+
+## 7. References
 
 - Blockscout node requirements: <https://docs.blockscout.com/setup/requirements/node-tracing-json-rpc-requirements>
 - Blockscout v11 release: <https://www.blog.blockscout.com/new-release-blockscout-v11-0-0/>
