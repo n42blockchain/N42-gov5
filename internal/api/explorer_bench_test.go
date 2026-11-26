@@ -29,6 +29,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -410,5 +411,34 @@ func BenchmarkExplorerHTTPBlockBatch(b *testing.B) {
 		srv.ServeHTTP(w, req)
 		require.Equal(b, http.StatusOK, w.Code)
 		b.SetBytes(int64(w.Body.Len()))
+	}
+}
+
+// TestExplorerConcurrentReceiptsOnColdBlock: concurrent per-transaction
+// receipt calls on a block nobody has read all succeed (race detector run).
+func TestExplorerConcurrentReceiptsOnColdBlock(t *testing.T) {
+	fx := explorerGetFixture(t)
+	a := explorerColdAPI(t, fx)
+	txAPI := NewTransactionAPI(a, new(AddrLocker))
+	txs := fx.Blocks[1].Transactions()
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for w := 0; w < 16; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := w; i < len(txs); i += 97 {
+				res, err := txAPI.GetTransactionReceipt(context.Background(), avmtypes.FromastHash(txs[i].Hash()))
+				if err != nil || res == nil || res["transactionIndex"] != hexutil.Uint64(i) {
+					errs <- fmt.Errorf("tx %d: %v %v", i, err, res["transactionIndex"])
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }

@@ -1,7 +1,10 @@
 package internal
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -49,5 +52,37 @@ func TestReceiptsCacheBudget(t *testing.T) {
 	nilCache.add(h(5), receiptsOfLen(1))
 	if _, ok := nilCache.get(h(5)); ok {
 		t.Fatal("nil cache must miss")
+	}
+}
+
+// TestReceiptsCacheLoadSharesConcurrentMisses: concurrent loads of one block
+// run the loader once and all get its result.
+func TestReceiptsCacheLoadSharesConcurrentMisses(t *testing.T) {
+	c := newReceiptsCache(4, 100)
+	var calls atomic.Int32
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	got := make([]block.Receipts, 8)
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], _ = c.load(types.Hash{9}, func() (block.Receipts, error) {
+				calls.Add(1)
+				<-release
+				return receiptsOfLen(3), nil
+			})
+		}(i)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("loader ran %d times, want 1", n)
+	}
+	for i, r := range got {
+		if len(r) != 3 {
+			t.Fatalf("caller %d got %d receipts", i, len(r))
+		}
 	}
 }

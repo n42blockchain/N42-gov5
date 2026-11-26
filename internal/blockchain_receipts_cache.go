@@ -27,6 +27,7 @@ import (
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru/v2"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -45,6 +46,7 @@ type receiptsCache struct {
 	lru    *lru.Cache[types.Hash, block.Receipts]
 	total  int
 	budget int
+	flight singleflight.Group
 }
 
 func newReceiptsCache(entries, budget int) *receiptsCache {
@@ -81,6 +83,16 @@ func (c *receiptsCache) add(hash types.Hash, receipts block.Receipts) {
 			break
 		}
 	}
+}
+
+// load runs fn once for concurrent callers asking for the same block.
+func (c *receiptsCache) load(hash types.Hash, fn func() (block.Receipts, error)) (block.Receipts, error) {
+	if c == nil {
+		return fn()
+	}
+	v, err, _ := c.flight.Do(string(hash[:]), func() (interface{}, error) { return fn() })
+	receipts, _ := v.(block.Receipts)
+	return receipts, err
 }
 
 func (c *receiptsCache) purge() {

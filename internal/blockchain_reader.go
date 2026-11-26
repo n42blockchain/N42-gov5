@@ -349,27 +349,34 @@ func (bc *BlockChain) GetReceipts(blockHash types.Hash) (block.Receipts, error) 
 	if receipts, ok := bc.receiptCache.get(blockHash); ok {
 		return receipts, nil
 	}
-	// The block the RPC caller just read is usually in blockCache: deriving
-	// the receipt metadata from it skips a second body decode.
-	var blk *block.Block
-	if bc.blockCache != nil {
-		blk, _ = bc.blockCache.Get(blockHash)
-	}
-	if blk == nil {
-		if blk = rawdb.ReadBlock(rtx, blockHash, *number); blk == nil {
-			return nil, nil
+	load := func() (block.Receipts, error) {
+		// The block the RPC caller just read is usually in blockCache:
+		// deriving the receipt metadata from it skips a second body decode.
+		var blk *block.Block
+		if bc.blockCache != nil {
+			blk, _ = bc.blockCache.Get(blockHash)
 		}
-	}
-	receipts := rawdb.ReadReceipts(rtx, blk, nil)
-	if receipts == nil {
-		return nil, nil
+		if blk == nil {
+			if blk = rawdb.ReadBlock(rtx, blockHash, *number); blk == nil {
+				return nil, nil
+			}
+		}
+		return rawdb.ReadReceipts(rtx, blk, nil), nil
 	}
 	// An empty canonical row (a just-applied HotStuff block before
-	// CommitToCanonical) is served but not cached.
-	if canonicalHash == blockHash {
-		bc.receiptCache.add(blockHash, receipts)
+	// CommitToCanonical) is served but neither cached nor shared.
+	if canonicalHash != blockHash {
+		return load()
 	}
-	return receipts, nil
+	// Concurrent misses for one block (an explorer batch of per-transaction
+	// receipt calls) decode it once.
+	return bc.receiptCache.load(blockHash, func() (block.Receipts, error) {
+		receipts, err := load()
+		if err == nil && receipts != nil {
+			bc.receiptCache.add(blockHash, receipts)
+		}
+		return receipts, err
+	})
 }
 
 // GetLogs retrieves all logs for a block by hash.
