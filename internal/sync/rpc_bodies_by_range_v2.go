@@ -75,7 +75,7 @@ func (s *Service) bodiesByRangeV2Handler(_ context.Context, pid peer.ID, raw []b
 		return
 	}
 	end := v11.ServeRangeV2(chainRangeSource{s}, req, func(b []byte) bool { return writeV11(stream, b) })
-	log.Debug("bodies-by-range/2: served", "peer", shortPeer(pid), "start", req.Start, "count", req.Count,
+	log.Info("bodies-by-range/2: served", "peer", shortPeer(pid), "start", req.Start, "count", req.Count,
 		"headersOnly", req.HeadersOnly(), "next", end.Next, "bytes", end.ServedBytes, "reason", end.Reason)
 }
 

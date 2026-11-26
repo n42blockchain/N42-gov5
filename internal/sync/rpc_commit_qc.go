@@ -52,7 +52,7 @@ func (s *Service) commitQCHandler(ctx context.Context, pid peer.ID, raw []byte, 
 		return
 	}
 	writeV11(stream, syncwire.AppendChunk(nil, syncwire.CodeSuccess, nil, payload))
-	log.Debug("commit_qc: served", "peer", shortPeer(pid), "number", req.Number, "bytes", len(payload))
+	log.Info("commit_qc: served", "peer", shortPeer(pid), "number", req.Number, "bytes", len(payload))
 }
 
 // RequestCommitQC asks pid for the commit QC anchoring (number, hash).

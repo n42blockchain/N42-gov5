@@ -45,7 +45,7 @@ func (s *Service) qmdbStatusHandler(ctx context.Context, pid peer.ID, raw []byte
 		st = srv.Status(src.EarliestBody())
 	}
 	writeV11(stream, syncwire.AppendChunk(nil, syncwire.CodeSuccess, nil, st.Encode()))
-	log.Debug("qmdb_status: served", "peer", shortPeer(pid), "pivot", st.PivotHi, "flags", st.Flags)
+	log.Info("qmdb_status: served", "peer", shortPeer(pid), "pivot", st.PivotHi, "flags", st.Flags)
 }
 
 func (s *Service) qmdbManifestHandler(_ context.Context, pid peer.ID, raw []byte, stream network.Stream) {
@@ -64,7 +64,7 @@ func (s *Service) qmdbManifestHandler(_ context.Context, pid peer.ID, raw []byte
 		return
 	}
 	writeV11(stream, syncwire.AppendChunk(nil, syncwire.CodeSuccess, nil, payload))
-	log.Debug("qmdb_manifest: served", "peer", shortPeer(pid), "first", req.FirstTwig, "count", req.Count)
+	log.Info("qmdb_manifest: served", "peer", shortPeer(pid), "first", req.FirstTwig, "count", req.Count)
 }
 
 func (s *Service) qmdbTwigsHandler(_ context.Context, pid peer.ID, raw []byte, stream network.Stream) {
@@ -78,7 +78,7 @@ func (s *Service) qmdbTwigsHandler(_ context.Context, pid peer.ID, raw []byte, s
 		snap = srv.Lookup(req.PivotHash)
 	}
 	v11.ServeTwigs(snap, req, func(b []byte) bool { return writeV11(stream, b) })
-	log.Debug("qmdb_twigs: served", "peer", shortPeer(pid), "first", req.FirstTwig, "count", req.TwigCount)
+	log.Info("qmdb_twigs: served", "peer", shortPeer(pid), "first", req.FirstTwig, "count", req.TwigCount)
 }
 
 func (s *Service) codeByHashHandler(ctx context.Context, pid peer.ID, raw []byte, stream network.Stream) {
@@ -100,5 +100,5 @@ func (s *Service) codeByHashHandler(ctx context.Context, pid peer.ID, raw []byte
 		return code
 	}
 	v11.ServeCode(get, hashes, func(b []byte) bool { return writeV11(stream, b) })
-	log.Debug("code_by_hash: served", "peer", shortPeer(pid), "hashes", len(hashes))
+	log.Info("code_by_hash: served", "peer", shortPeer(pid), "hashes", len(hashes))
 }
