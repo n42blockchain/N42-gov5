@@ -280,18 +280,19 @@ func loadReplayProfile1(genesisPath, keysPath string) (*conf.Genesis, []blscommo
 		return nil, nil, fmt.Errorf("--p1-validator-keys: %w", err)
 	}
 	var hexKeys []string
-	if err := json.Unmarshal(raw, &hexKeys); err != nil {
-		return nil, nil, fmt.Errorf("--p1-validator-keys %s: %w", keysPath, err)
+	if json.Unmarshal(raw, &hexKeys) != nil {
+		return nil, nil, fmt.Errorf("--p1-validator-keys %s: not a JSON list of hex keys", keysPath)
 	}
 	keys := make([]blscommon.SecretKey, 0, len(hexKeys))
 	for i, h := range hexKeys {
-		b, err := hex.DecodeString(strings.TrimPrefix(h, "0x"))
-		if err != nil {
-			return nil, nil, fmt.Errorf("--p1-validator-keys: key %d: %w", i, err)
+		// Errors never quote key material.
+		b, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(h), "0x"))
+		if err != nil || len(b) != 32 {
+			return nil, nil, fmt.Errorf("--p1-validator-keys: key %d is not 32 bytes of hex", i)
 		}
 		sk, err := bls.SecretKeyFromBytes(b)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--p1-validator-keys: key %d: %w", i, err)
+			return nil, nil, fmt.Errorf("--p1-validator-keys: key %d is not a valid BLS secret key", i)
 		}
 		keys = append(keys, sk)
 	}

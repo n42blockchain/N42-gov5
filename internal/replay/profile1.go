@@ -280,7 +280,7 @@ func applyCommitteePoolConfig(cfg *ConfigV2) error {
 	pool := cfg.ChainConfig.HotStuff.CommitteePool
 	seed, err := hexutil.Decode(pool.SeedHex)
 	if err != nil || len(seed) != 32 {
-		return fmt.Errorf("committeePool.seedHex is not 32 bytes of hex: %q", pool.SeedHex)
+		return errors.New("committeePool.seedHex is not 32 bytes of hex") // never quote the seed
 	}
 	var s [32]byte
 	copy(s[:], seed)
