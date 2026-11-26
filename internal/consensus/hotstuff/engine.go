@@ -161,6 +161,7 @@ type ConsensusEngine struct {
 	// a dead same-height sibling re-proposed at a committed height).
 	pendingJustifyBlocks      map[ViewNumber]types.Hash
 	equivocationTracker       map[ValidatorIndex]types.Hash
+	voteStats                 voteIntakeStats
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
 
 	// twoPhaseVote (chainspec hotstuff.twoPhaseVoteGate) moves the execution
@@ -1115,6 +1116,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 			e.pacemaker.ObserveCommitLatency(latency)
 		}
 	}
+	e.logVoteIntake()
 	e.roundState.AdvanceView(newView)
 	e.pacemaker.ResetForView(newView, e.roundState.ConsecutiveTimeouts())
 	e.voteCollector = nil
