@@ -339,6 +339,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	const maxForkBacktrack = 32
 	countCap := uint64(maxRequestBlocks)
 	lookahead := 0
+	askedCommitQC := false
 	peers = s.orderCatchUpPeers(peers, start)
 	for attempt := 0; attempt <= maxForkBacktrack; {
 		if start > target {
@@ -376,6 +377,21 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 				start = next
 				countCap = uint64(maxRequestBlocks)
 				continue
+			}
+			// v1.1: a tail no fetched header anchors is anchored by
+			// commit_qc/1 (sync standard §5.2), once per round.
+			if !askedCommitQC && syncanchor.Current() == syncanchor.Enforce && s.anchors.tailLen() > 0 {
+				askedCommitQC = true
+				if s.anchorTailViaCommitQC(peers, authorized) > 0 {
+					if cur := currentBlockNumber(s.cfg.chain); cur != nil && cur.Uint64() < target {
+						start = cur.Uint64() + 1
+						if authorized {
+							start = cur.Uint64()
+						}
+						countCap = uint64(maxRequestBlocks)
+						continue
+					}
+				}
 			}
 			return
 		}

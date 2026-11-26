@@ -161,7 +161,7 @@ func TestRangeV2ClientFaults(t *testing.T) {
 		t.Fatalf("lying END: %v", err)
 	}
 	// Four chunks for a count of three.
-	extra := append(append(append(append(chunk(1), chunk(2)...), chunk(3)...), chunk(4)...))
+	extra := append(append(append(chunk(1), chunk(2)...), chunk(3)...), chunk(4)...)
 	if _, err := readRangeV2(bytes.NewReader(extra), req); !isFault(err) {
 		t.Fatalf("extra chunk: %v", err)
 	}

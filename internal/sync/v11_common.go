@@ -205,6 +205,7 @@ type v11Entry struct {
 func (s *Service) v11Handlers() []v11Entry {
 	return []v11Entry{
 		{syncwire.ProtocolBodiesByRangeV2, syncwire.RangeRequestLen, v11RangeQuota, s.bodiesByRangeV2Handler},
+		{syncwire.ProtocolCommitQC, syncwire.CommitQCRequestLen, v11SmallQuota, s.commitQCHandler},
 	}
 }
 
