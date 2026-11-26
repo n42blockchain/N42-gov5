@@ -280,6 +280,13 @@ func ProcessExecutionBlockStart(parentBeaconRoot *types.Hash, chainConfig *param
 //
 // Must be called BEFORE transaction execution, after ProcessBeaconBlockRoot.
 func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header) error {
+	return ProcessPragueBlockStartWithWriter(chainConfig, ibs, header, state.NewNoopWriter())
+}
+
+// ProcessPragueBlockStartWithWriter is ProcessPragueBlockStart finalizing its
+// writes through writer, for callers that persist state through the
+// finalize journal (replay).
+func ProcessPragueBlockStartWithWriter(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, writer state.StateWriter) error {
 	if chainConfig == nil || ibs == nil || header == nil {
 		return nil
 	}
@@ -300,10 +307,10 @@ func ProcessPragueBlockStart(chainConfig *params.ChainConfig, ibs *state.IntraBl
 	}
 	if rules.IsGlamsterdam {
 		historySystemCall(registry.historyStorage, chainConfig, ibs, header)
-		return ibs.FinalizeTx(rules, state.NewNoopWriter())
+		return ibs.FinalizeTx(rules, writer)
 	}
 	vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
-	return ibs.FinalizeTx(rules, state.NewNoopWriter())
+	return ibs.FinalizeTx(rules, writer)
 }
 
 // historySystemCall makes the EIP-2935 system call the way geth's
@@ -347,6 +354,10 @@ func historySystemCall(contract types.Address, chainConfig *params.ChainConfig, 
 // EIP-7002 (withdrawal requests) and EIP-7251 (consolidation requests) system
 // contracts MUST have code deployed at their addresses; otherwise the block is invalid.
 func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
+	return processPragueSystemCalls(chainConfig, ibs, header, engine, state.NewNoopWriter())
+}
+
+func processPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine, noop state.StateWriter) ([]hexutil.Bytes, error) {
 	if chainConfig == nil || ibs == nil || header == nil {
 		return nil, nil
 	}
@@ -360,7 +371,6 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 	}
 	registry := resolvePragueSystemContractRegistry(chainConfig, rules, header.Time)
 
-	noop := state.NewNoopWriter()
 	requests := make([]hexutil.Bytes, 0, 2)
 	for _, systemCall := range registry.executionRequests {
 		if ibs.GetCodeSize(systemCall.contract) == 0 {
@@ -381,6 +391,12 @@ func ProcessPragueSystemCalls(chainConfig *params.ChainConfig, ibs *state.IntraB
 // ProcessExecutionBlockEnd applies shared end-of-block execution hooks and
 // returns any execution requests emitted by the active fork.
 func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) ([]hexutil.Bytes, error) {
+	return ProcessExecutionBlockEndWithWriter(receipts, chainConfig, ibs, header, engine, state.NewNoopWriter())
+}
+
+// ProcessExecutionBlockEndWithWriter is ProcessExecutionBlockEnd finalizing
+// the system calls' writes through writer (replay).
+func ProcessExecutionBlockEndWithWriter(receipts block.Receipts, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine, writer state.StateWriter) ([]hexutil.Bytes, error) {
 	if chainConfig == nil || ibs == nil || header == nil {
 		return nil, nil
 	}
@@ -397,7 +413,7 @@ func ProcessExecutionBlockEnd(receipts block.Receipts, chainConfig *params.Chain
 	if err != nil {
 		return nil, err
 	}
-	pragueRequests, err := ProcessPragueSystemCalls(chainConfig, ibs, header, engine)
+	pragueRequests, err := processPragueSystemCalls(chainConfig, ibs, header, engine, writer)
 	if err != nil {
 		return nil, err
 	}
