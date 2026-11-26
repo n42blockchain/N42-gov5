@@ -58,7 +58,7 @@ func TestService_HandleBroadcast_DecideTriggersH2V4Publish(t *testing.T) {
 
 // TestService_HandleBroadcast_TimeoutNoQuorumGateSkipsReadiness covers the
 // MsgTimeout branch's quorumSize<=1 fast path (timeoutPublishPeerTarget
-// returns 0, so no WithReadiness wait is installed and the publish proceeds
+// returns 0, so no subscriber wait is installed and the publish proceeds
 // immediately over the real mocknet transport).
 func TestService_HandleBroadcast_TimeoutNoQuorumGateSkipsReadiness(t *testing.T) {
 	setup := newTestSetup(t, 1)
