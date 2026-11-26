@@ -34,7 +34,7 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 		defer tx.Rollback()
 
 		// Load the block
-		b, senders, err := rawdb.ReadBlockWithSenders(tx, blockHash, blockNumber)
+		b, _, err := rawdb.ReadBlockWithSenders(tx, blockHash, blockNumber)
 		if err != nil {
 			return nil, fmt.Errorf("deferred: read block %d: %w", blockNumber, err)
 		}
@@ -44,8 +44,7 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 
 		// The block's gas figure is the header rule's (HeaderGasUsed), which
 		// from Amsterdam is not the receipts' cumulative gas.
-		receipts := rawdb.ReadReceipts(tx, b, senders)
-		totalGasUsed, err := executedBlockGas(tx, blockHash, b.GasUsed(), receipts)
+		totalGasUsed, err := executedBlockGas(tx, blockHash, b.GasUsed(), b.Time())
 		if err != nil {
 			return nil, fmt.Errorf("deferred: read executed result %d: %w", blockNumber, err)
 		}
@@ -70,21 +69,19 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 }
 
 // executedBlockGas is the gas figure of an executed block under the header
-// rule (internal.HeaderGasUsed). Under deferred execution the header does not
-// carry it; it is stored with the block's executed result. Without a stored
-// result the block's own header figure applies when the header is not
-// deferred, else the receipts' cumulative gas (the pre-Amsterdam figure).
-func executedBlockGas(db kv.Getter, blockHash types.Hash, headerGas uint64, receipts []*block.Receipt) (uint64, error) {
+// rule (internal.HeaderGasUsed). Under deferred execution (block.DeferredAt,
+// the predicate checkDeferredHeader's chains use) the header carries the
+// parent's figure, so this block's is only the stored executed result; without
+// one an error is returned rather than a wrong number. Otherwise the header
+// figure applies.
+func executedBlockGas(db kv.Getter, blockHash types.Hash, headerGas uint64, headerTime uint64) (uint64, error) {
 	if r, ok, err := rawdb.ReadExecutedResult(db, blockHash); err != nil {
 		return 0, err
 	} else if ok {
 		return r.GasUsed, nil
 	}
-	if n := len(receipts); n > 0 && receipts[n-1] != nil {
-		if headerGas != 0 {
-			return headerGas, nil
-		}
-		return receipts[n-1].CumulativeGasUsed, nil
+	if block.DeferredAt(headerTime) {
+		return 0, fmt.Errorf("deferred header carries the parent's gas used and block %x has no stored executed result", blockHash[:8])
 	}
 	return headerGas, nil
 }
