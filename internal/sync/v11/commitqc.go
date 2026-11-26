@@ -112,8 +112,10 @@ func ServeCommitQC(src CommitQCSource, req syncwire.CommitQCRequest) ([]byte, by
 	}
 	if !highest {
 		// A header carries its leader's last commit QC, so embedded QCs grow
-		// along the chain: the first that reaches target is the lowest.
-		for n := target + 1; n <= head && n <= target+CommitQCScanLimit; n++ {
+		// along the chain: the first that reaches target is the lowest. The
+		// scan may read canonical headers above the committed head: the QC
+		// they carry names a committed block and verifies on its own.
+		for n := target + 1; n <= target+CommitQCScanLimit; n++ {
 			h := src.CanonicalHeader(n)
 			if h == nil {
 				break
