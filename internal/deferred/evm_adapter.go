@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -41,12 +42,12 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 			return nil, fmt.Errorf("deferred: block %d not found", blockNumber)
 		}
 
-		// Read receipts to get gas used
+		// The block's gas figure is the header rule's (HeaderGasUsed), which
+		// from Amsterdam is not the receipts' cumulative gas.
 		receipts := rawdb.ReadReceipts(tx, b, senders)
-
-		var totalGasUsed uint64
-		if len(receipts) > 0 {
-			totalGasUsed = receipts[len(receipts)-1].CumulativeGasUsed
+		totalGasUsed, err := executedBlockGas(tx, blockHash, b.GasUsed(), receipts)
+		if err != nil {
+			return nil, fmt.Errorf("deferred: read executed result %d: %w", blockNumber, err)
 		}
 
 		// Get state root from the block header
@@ -68,6 +69,26 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 	}
 }
 
+// executedBlockGas is the gas figure of an executed block under the header
+// rule (internal.HeaderGasUsed). Under deferred execution the header does not
+// carry it; it is stored with the block's executed result. Without a stored
+// result the block's own header figure applies when the header is not
+// deferred, else the receipts' cumulative gas (the pre-Amsterdam figure).
+func executedBlockGas(db kv.Getter, blockHash types.Hash, headerGas uint64, receipts []*block.Receipt) (uint64, error) {
+	if r, ok, err := rawdb.ReadExecutedResult(db, blockHash); err != nil {
+		return 0, err
+	} else if ok {
+		return r.GasUsed, nil
+	}
+	if n := len(receipts); n > 0 && receipts[n-1] != nil {
+		if headerGas != 0 {
+			return headerGas, nil
+		}
+		return receipts[n-1].CumulativeGasUsed, nil
+	}
+	return headerGas, nil
+}
+
 // NewCommitFunc creates a CommitFunc that logs the commit.
 // In a full deferred execution setup, this would persist the execution
 // result and update the canonical chain head.
@@ -81,4 +102,3 @@ func NewCommitFunc() CommitFunc {
 		return nil
 	}
 }
-
