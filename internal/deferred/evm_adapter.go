@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -33,7 +34,7 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 		defer tx.Rollback()
 
 		// Load the block
-		b, senders, err := rawdb.ReadBlockWithSenders(tx, blockHash, blockNumber)
+		b, _, err := rawdb.ReadBlockWithSenders(tx, blockHash, blockNumber)
 		if err != nil {
 			return nil, fmt.Errorf("deferred: read block %d: %w", blockNumber, err)
 		}
@@ -41,12 +42,11 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 			return nil, fmt.Errorf("deferred: block %d not found", blockNumber)
 		}
 
-		// Read receipts to get gas used
-		receipts := rawdb.ReadReceipts(tx, b, senders)
-
-		var totalGasUsed uint64
-		if len(receipts) > 0 {
-			totalGasUsed = receipts[len(receipts)-1].CumulativeGasUsed
+		// The block's gas figure is the header rule's (HeaderGasUsed), which
+		// from Amsterdam is not the receipts' cumulative gas.
+		totalGasUsed, err := executedBlockGas(tx, blockHash, b.GasUsed(), b.Time())
+		if err != nil {
+			return nil, fmt.Errorf("deferred: read executed result %d: %w", blockNumber, err)
 		}
 
 		// Get state root from the block header
@@ -68,6 +68,24 @@ func NewEVMExecuteFunc(db kv.RwDB, bc common.IBlockChain) ExecuteFunc {
 	}
 }
 
+// executedBlockGas is the gas figure of an executed block under the header
+// rule (internal.HeaderGasUsed). Under deferred execution (block.DeferredAt,
+// the predicate checkDeferredHeader's chains use) the header carries the
+// parent's figure, so this block's is only the stored executed result; without
+// one an error is returned rather than a wrong number. Otherwise the header
+// figure applies.
+func executedBlockGas(db kv.Getter, blockHash types.Hash, headerGas uint64, headerTime uint64) (uint64, error) {
+	if r, ok, err := rawdb.ReadExecutedResult(db, blockHash); err != nil {
+		return 0, err
+	} else if ok {
+		return r.GasUsed, nil
+	}
+	if block.DeferredAt(headerTime) {
+		return 0, fmt.Errorf("deferred header carries the parent's gas used and block %x has no stored executed result", blockHash[:8])
+	}
+	return headerGas, nil
+}
+
 // NewCommitFunc creates a CommitFunc that logs the commit.
 // In a full deferred execution setup, this would persist the execution
 // result and update the canonical chain head.
@@ -81,4 +99,3 @@ func NewCommitFunc() CommitFunc {
 		return nil
 	}
 }
-
