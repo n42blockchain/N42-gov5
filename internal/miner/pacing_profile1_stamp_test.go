@@ -88,7 +88,7 @@ func TestSpeculativeHitProfile1DropsStaleTimestamp(t *testing.T) {
 		w.minerConf.BlockIntervalMs = iv * 1000
 		blk := block.NewBlock(&block.Header{ParentHash: parentHash, Number: uint256.NewInt(1), Time: blockTime}, nil)
 		w.specMu.Lock()
-		w.specTask, w.specParent = &task{block: blk}, parentHash
+		w.specTask, w.specParent = &task{block: blk, createdAt: time.UnixMilli(int64(blockTime) * 1000)}, parentHash
 		w.specMu.Unlock()
 		return w, blk
 	}
@@ -126,5 +126,97 @@ func TestSpeculativeHitProfile1DropsStaleTimestamp(t *testing.T) {
 			t.Fatal("speculative block stamped for an earlier slot was handed to the sealer")
 		}
 	default:
+	}
+}
+
+// Gate 6c: a gov5 leader that follows a gov5 leader parks its speculative
+// build the moment the parent arrives, a whole slot before its own slot
+// starts. The parked block holds the pool as it was then -- the parent's own
+// transactions, trimmed as stale, and little else -- and was handed over at
+// the slot start: 10 transactions over 19 proposals. A block parked that far
+// ahead is rebuilt at the slot start from the pool as it is then.
+func TestSpeculativeHitProfile1RebuildsStalePool(t *testing.T) {
+	const iv = uint64(1)
+	for attempt := 0; ; attempt++ {
+		f := leadNewQMDBFixture(t)
+		parent := f.Chain.CurrentBlock()
+		parentHash := parent.Hash()
+		g := f.Chain.GetHeaderByNumber(uint256.NewInt(0)).(*block.Header).Time
+		pool := &mnTStubTxsPool{}
+		w := leadWorker(t, f, pool)
+		cfg := *w.chainConfig
+		cfg.N42Profile = params.N42Profile1
+		w.chainConfig = &cfg
+		w.minerConf.BlockIntervalMs = iv * 1000
+
+		// The speculative build runs the moment the parent arrives, against a
+		// pool holding nothing it can still include. HotStuff's Prepare
+		// stamps it with the slot it targets; the stub engine keeps the
+		// miner's timestamp, so pass that slot.
+		now := time.Now()
+		slot := params.Profile1SlotTime(g, iv, parent.Time(), now)
+		if err := w.commitWork(new(atomic.Int32), false, int64(slot), parentHash, true, now); err != nil {
+			t.Fatalf("speculative build: %v", err)
+		}
+		w.specMu.Lock()
+		parked := w.specTask
+		w.specMu.Unlock()
+		if parked == nil {
+			t.Fatal("speculative build was not parked")
+		}
+		if n := len(parked.block.Transactions()); n != 0 {
+			t.Fatalf("parked block holds %d transactions, want 0", n)
+		}
+		// It was parked a whole slot ahead of its start; the pool filled
+		// meanwhile.
+		parked.createdAt = parked.createdAt.Add(-8 * time.Second)
+		pool.pending = mnTByAddr(f.Senders[0], f.mnTSignedTransfer(t, 0, f.Senders[1], uint256.NewInt(1_000)))
+
+		if parked.block.Time() != params.Profile1SlotTime(g, iv, parent.Time(), time.Now()) {
+			// A second boundary fell in between; the parked block would be
+			// dropped for its stamp, not its pool. Try again.
+			if attempt == 3 {
+				t.Fatal("could not line the parked stamp up with the slot")
+			}
+			continue
+		}
+		if err := w.commitWork(nil, false, time.Now().Unix(), parentHash, false, time.Now()); err != nil {
+			t.Fatalf("slot-start build: %v", err)
+		}
+		var tk *task
+		select {
+		case tk = <-w.taskCh:
+		default:
+			t.Fatal("commitWork did not send a task")
+		}
+		if tk.block == parked.block {
+			t.Fatal("speculative block parked a slot ahead was handed to the sealer")
+		}
+		if got := len(tk.block.Transactions()); got != 1 {
+			t.Fatalf("slot-start block holds %d transactions, want 1", got)
+		}
+		if uint64(time.Now().Unix()) < tk.block.Time() {
+			t.Fatalf("handed over before the slot start %d", tk.block.Time())
+		}
+		return
+	}
+}
+
+func TestProfile1SpecPoolStale(t *testing.T) {
+	start := time.UnixMilli(1_000_000)
+	for _, c := range []struct {
+		parked time.Time
+		want   bool
+	}{
+		{time.Time{}, true},
+		{start, false},
+		{start.Add(-profile1SpecMaxLeadMs * time.Millisecond), false},
+		{start.Add(-(profile1SpecMaxLeadMs + 1) * time.Millisecond), true},
+		{start.Add(-8 * time.Second), true},
+		{start.Add(time.Second), false},
+	} {
+		if got := profile1SpecPoolStale(c.parked, uint64(start.UnixMilli())); got != c.want {
+			t.Errorf("parked %v: stale %v, want %v", c.parked, got, c.want)
+		}
 	}
 }
