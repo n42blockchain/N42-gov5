@@ -181,12 +181,20 @@ func isProtocolNotSupported(err error) bool {
 	return strings.Contains(msg, "protocols not supported") || strings.Contains(msg, "protocol not supported")
 }
 
-// hostOf returns the libp2p host of a p2p provider, if it exposes one.
-func hostOf(p interface{}) host.Host {
-	if hp, ok := p.(interface{ Host() host.Host }); ok {
-		return hp.Host()
+// hostOf returns the libp2p host of a p2p provider, if it exposes one. A
+// provider whose Host panics (a test double embedding a nil interface) has
+// none.
+func hostOf(p interface{}) (h host.Host) {
+	hp, ok := p.(interface{ Host() host.Host })
+	if !ok {
+		return nil
 	}
-	return nil
+	defer func() {
+		if recover() != nil {
+			h = nil
+		}
+	}()
+	return hp.Host()
 }
 
 func v11CodeErr(c syncwire.Chunk) error {
@@ -206,6 +214,10 @@ func (s *Service) v11Handlers() []v11Entry {
 	return []v11Entry{
 		{syncwire.ProtocolBodiesByRangeV2, syncwire.RangeRequestLen, v11RangeQuota, s.bodiesByRangeV2Handler},
 		{syncwire.ProtocolCommitQC, syncwire.CommitQCRequestLen, v11SmallQuota, s.commitQCHandler},
+		{syncwire.ProtocolQMDBStatus, 0, v11SmallQuota, s.qmdbStatusHandler},
+		{syncwire.ProtocolQMDBManifest, syncwire.ManifestRequestLen, v11StateQuota, s.qmdbManifestHandler},
+		{syncwire.ProtocolQMDBTwigs, syncwire.TwigsRequestLen, v11StateQuota, s.qmdbTwigsHandler},
+		{syncwire.ProtocolCodeByHash, syncwire.MaxCodeRequest, v11StateQuota, s.codeByHashHandler},
 	}
 }
 
