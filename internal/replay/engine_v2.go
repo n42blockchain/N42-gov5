@@ -32,6 +32,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/bmt"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
@@ -84,6 +85,12 @@ type EngineV2 struct {
 	witnessReader *WitnessStateReader          // records per-block state access
 	leafJournal   *LeafJournal                 // per-block leaf changes for tree building
 	resealer      *BLSResealer                 // BLS mobile-voter re-seal (nil = disabled)
+
+	// Profile-1 re-derivation (cfg.Profile1Genesis): the sealer, the CommitQC
+	// of the last replayed block and the source time of the last source block.
+	p1        *P1Sealer
+	p1LastQC  *hotstuff.QuorumCertificate
+	p1SrcTime uint64
 
 	// lastRegistryRoot is the most recent source MobileRegistryRoot seen, the
 	// value a target header carries when the target config puts the root in
@@ -168,11 +175,28 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 		logger.Info("leaf journal enabled", "path", cfg.LeafJournal)
 	}
 
+	if cfg.Profile1Genesis != nil {
+		if err := applyProfile1Config(&cfg); err != nil {
+			return nil, err
+		}
+		block.DeferredExecutionTime = 1 // deferred from block 0 (A10), as NewBlockChain sets it
+		block.UseEthereumTxRoot = true  // Ethereum transactions trie (A12)
+		block.TxRootBlake3Time = 0
+		e.cfg = cfg
+		logger.Info("profile-1 re-derivation enabled",
+			"chainId", cfg.ChainConfig.ChainID, "validators", len(cfg.Profile1Keys),
+			"gasLimit", cfg.ChainConfig.HotStuff.GasLimit, "blockIntervalMs", cfg.ChainConfig.HotStuff.BlockIntervalMs)
+	} else if err := applyCommitteePoolConfig(&cfg); err != nil {
+		return nil, fmt.Errorf("replay-v2: %w", err)
+	} else {
+		e.cfg = cfg
+	}
+
 	// Build the BLS mobile-voter re-sealer if enabled (derives the key pool).
 	if cfg.BLSReseal {
 		t0 := time.Now()
 		rs, err := NewBLSResealer(BLSResealConfig{
-			Seed:          cfg.BLSSeed,
+			Seed:          e.cfg.BLSSeed,
 			PoolSize:      cfg.BLSPoolSize,
 			CommitteeSize: cfg.BLSCommitteeSize,
 			RampBlocks:    cfg.BLSRampBlocks,
@@ -538,9 +562,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		if useQMDB {
 			resumeTable = modules.QMDBMeta
 		}
+		if e.profile1() {
+			// A profile-1 target numbers its blocks from its own genesis,
+			// whatever source block the run starts at.
+			newBlockNum = 1
+		}
 		if headData, _ := dstTx.GetOne(resumeTable, []byte("replay_chain_head")); len(headData) >= 8 {
 			head := binary.BigEndian.Uint64(headData)
-			if head > 0 && head >= from {
+			if head > 0 && (head >= from || e.profile1()) {
 				newBlockNum = head + 1
 			}
 		}
@@ -571,13 +600,16 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		} else {
 			treeEmpty = tree == nil || tree.Root() == jmt.EmptyHash
 		}
-		if from <= 1 && (treeEmpty || !e.cfg.EnableJMT) {
+		if (from <= 1 || e.profile1()) && (treeEmpty || !e.cfg.EnableJMT) && (newBlockNum == 1 || !e.profile1()) {
 			chainName := e.cfg.ChainName
 			if chainName == "" {
 				chainName = "mainnet_v2"
 			}
 			genesis := internal.GenesisByChainName(chainName)
-			if genesis != nil {
+			if e.profile1() {
+				genesis = e.cfg.Profile1Genesis
+			}
+			if genesis != nil && !e.profile1() {
 				// Extract APoS signers from source genesis Extra → inject into genesis.Miners.
 				// buildConsensusExtraData will produce the correct Extra for snapshot init.
 				if err := e.srcDB.View(ctx, func(srcTx kv.Tx) error {
@@ -604,7 +636,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}); err != nil {
 					e.log.Warn("failed to read source genesis signers", "err", err)
 				}
-
+			}
+			if genesis != nil {
 				gb := &internal.GenesisBlock{GenesisConfig: genesis}
 				if _, _, err := gb.Write(dstTx); err != nil {
 					return fmt.Errorf("write genesis: %w", err)
@@ -761,6 +794,17 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			}
 		}
 
+		if e.profile1() {
+			if !useQMDB || qmdbRC == nil {
+				return fmt.Errorf("replay profile 1: QMDB root computer unavailable")
+			}
+			if err := e.p1Init(dstTx); err != nil {
+				return err
+			}
+			// Gap fill compares source times; target times are slot times.
+			prevTime = e.p1SrcTime
+		}
+
 		// Set MPT StateReader once per batch (dstTx is constant within batch).
 		if useMPT && mptRC != nil {
 			if rc, ok := mptRC.(*commitment.MPTRootComputer); ok {
@@ -782,6 +826,27 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 
 				srcHeader := srcBlk.Header().(*block.Header)
 				srcTime := srcHeader.Time
+
+				if e.profile1() {
+					if e.cfg.FillGaps && prevTime > 0 {
+						for _, gapTime := range CalcGapBlockTimesCapped(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance, e.cfg.GapMaxBlocks) {
+							gb, err := e.p1Block(dstTx, histAgg, qmdbRC, newBlockNum, parentHash, nil, gapTime)
+							if err != nil {
+								return err
+							}
+							parentHash = gb.Hash()
+							newBlockNum++
+						}
+					}
+					nb, err := e.p1Block(dstTx, histAgg, qmdbRC, newBlockNum, parentHash, srcBlk, srcTime)
+					if err != nil {
+						return err
+					}
+					parentHash = nb.Hash()
+					prevTime, e.p1SrcTime = srcTime, srcTime
+					newBlockNum++
+					continue
+				}
 
 				// Gap filling: insert empty blocks for timeline gaps.
 				if e.cfg.FillGaps && prevTime > 0 {
@@ -1208,6 +1273,12 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						}(),
 						"elapsed", elapsed.Round(time.Second),
 					)
+				}
+			}
+
+			if e.profile1() {
+				if err := e.p1Flush(dstTx); err != nil {
+					return err
 				}
 			}
 
