@@ -774,6 +774,7 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 		// block-write cost picture alongside "blockwrite phases".
 		tObserve := time.Now()
 		applied, _, number := s.observeCommittedExecution(output.Hash, true)
+		updateMetricsCommittedNumber(number)
 		// The committed hash is an anchor for the sync importer (S1): a
 		// held, unexecuted catch-up tail below it may now be executed.
 		if a, ok := s.blockFetcher.(interface{ NoteCommitAnchor(types.Hash, uint64) }); ok {
@@ -929,6 +930,11 @@ func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 			"view", output.View, "validator", output.Validator,
 			"hash1", output.Hash1, "hash2", output.Hash2)
 		updateMetricsEquivocation()
+		if DefaultEquivocationStore.RecordOutput(output) {
+			if werr := DefaultEquivocationStore.LastWriteError(); werr != nil {
+				log.Error("failed to append equivocation evidence log", "err", werr)
+			}
+		}
 		// Persist evidence for future slashing.
 		if s.db != nil {
 			if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {

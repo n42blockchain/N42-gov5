@@ -155,6 +155,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 
 	bc.currentBlock.Store(current)
 	headBlockGauge.Set(currentNumber.Uint64())
+	n42HeadNumberGauge.Set(currentNumber.Uint64())
 	headGasUsedGauge.Set(current.GasUsed())
 	headGasLimitGauge.Set(current.GasLimit())
 	headTransactionsGauge.Set(uint64(len(current.Transactions())))
@@ -1016,6 +1017,7 @@ func (bc *BlockChain) alignCanonicalToAppliedOnStartup() {
 			return werr
 		}
 		bc.currentBlock.Store(blk)
+		n42HeadNumberGauge.Set(blk.Number64().Uint64())
 		return nil
 	}); err != nil {
 		log.Error("align canonical to applied failed", "err", err)
@@ -1622,6 +1624,7 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	}
 	if committedBlk != nil {
 		bc.currentBlock.Store(committedBlk)
+		n42HeadNumberGauge.Set(committedBlk.Number64().Uint64())
 	}
 	// lock: waiting for MDBX's single writer. body: the closure. The remainder
 	// (total-lock-body) is mdbx_txn_commit -- writing and fsyncing the pages the

@@ -89,6 +89,8 @@ var (
 
 var (
 	headBlockGauge        = prometheus.GetOrCreateCounter("chain_head_block", true)
+	// n42_head_number is the profile-1 J2 common metric: the canonical head block number.
+	n42HeadNumberGauge = prometheus.GetOrCreateCounter("n42_head_number", true)
 	headGasUsedGauge      = prometheus.GetOrCreateCounter("chain_head_gas_used", true)
 	headGasLimitGauge     = prometheus.GetOrCreateCounter("chain_head_gas_limit", true)
 	headTransactionsGauge = prometheus.GetOrCreateCounter("chain_head_transactions", true)

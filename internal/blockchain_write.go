@@ -823,6 +823,7 @@ func (bc *BlockChain) writeHeadBlock(tx kv.RwTx, blk block.IBlock) error {
 	}
 	bc.currentBlock.Store(concreteBlock)
 	headBlockGauge.Set(blockNumber.Uint64())
+	n42HeadNumberGauge.Set(blockNumber.Uint64())
 	headGasUsedGauge.Set(concreteBlock.GasUsed())
 	headGasLimitGauge.Set(concreteBlock.GasLimit())
 	headTransactionsGauge.Set(uint64(len(concreteBlock.Transactions())))

@@ -392,6 +392,7 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 
 	e.roundState.UpdateLockedQC(&nv.TimeoutCert.HighQC)
 	e.roundState.UpdateHighestTC(&nv.TimeoutCert)
+	e.countTCAdvance(nv.TimeoutCert.View)
 
 	log.Info("received NewView, advancing", "oldView", view, "newView", nv.View)
 
@@ -500,6 +501,7 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 
 	e.roundState.UpdateLockedQC(&tc.HighQC)
 	e.roundState.UpdateHighestTC(tc)
+	e.countTCAdvance(tc.View)
 
 	// Only the legitimate next-view leader announces the NewView; every other
 	// node advances LOCALLY on its own quorum and the TC travels via the
@@ -542,4 +544,14 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 	}
 	actualView := e.roundState.CurrentView()
 	return e.emit(EngineOutput{Type: OutputViewChanged, View: actualView})
+}
+
+// countTCAdvance bumps n42_tc_formed_total once per TC view: a TC formed
+// locally or accepted via NewView that advances the view.
+func (e *ConsensusEngine) countTCAdvance(tcView ViewNumber) {
+	if e.tcCounted && e.tcCountedView >= tcView {
+		return
+	}
+	e.tcCounted, e.tcCountedView = true, tcView
+	metricN42TCFormed.Inc()
 }

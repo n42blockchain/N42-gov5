@@ -25,6 +25,14 @@ var (
 	metricTimeouts            = prometheus.GetOrCreateCounter("hotstuff_timeouts", false)
 	metricEquivocations       = prometheus.GetOrCreateCounter("hotstuff_equivocations", false)
 	metricCommittedUnexecuted = prometheus.GetOrCreateCounter("hotstuff_committed_unexecuted_total", false)
+	// Profile-1 J2 common minimum metric set (n42_* names shared by every client).
+	// The hotstuff_* series above stay for existing dashboards.
+	metricN42CommittedView   = prometheus.GetOrCreateCounter("n42_committed_view", true)
+	metricN42CommittedNumber = prometheus.GetOrCreateCounter("n42_committed_number", true)
+	metricN42ViewTimeouts    = prometheus.GetOrCreateCounter("n42_view_timeouts_total", false)
+	metricN42TCFormed        = prometheus.GetOrCreateCounter("n42_tc_formed_total", false)
+	metricN42Equivocations   = prometheus.GetOrCreateCounter("n42_equivocations_total", false)
+
 	mxOutputDrops             = prometheus.GetOrCreateCounter("hotstuff_output_drops", false)
 
 	// Set at startup when the recovered consensus state names a committed block
@@ -76,6 +84,15 @@ var (
 func updateMetricsBlockCommitted(view ViewNumber) {
 	metricCurrentView.Set(view)
 	metricBlocksCommitted.Inc()
+	metricN42CommittedView.Set(view)
+}
+
+// updateMetricsCommittedNumber records the block number of the latest
+// committed block (0 = unknown, left unchanged).
+func updateMetricsCommittedNumber(number uint64) {
+	if number > 0 {
+		metricN42CommittedNumber.Set(number)
+	}
 }
 
 func updateMetricsViewChanged(view ViewNumber) {
@@ -85,10 +102,12 @@ func updateMetricsViewChanged(view ViewNumber) {
 
 func updateMetricsTimeout() {
 	metricTimeouts.Inc()
+	metricN42ViewTimeouts.Inc()
 }
 
 func updateMetricsEquivocation() {
 	metricEquivocations.Inc()
+	metricN42Equivocations.Inc()
 }
 
 // updateMetricsViewTiming records the per-stage latencies of a committed view.
