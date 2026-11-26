@@ -278,6 +278,44 @@ func TestViewAfterTCActivationView(t *testing.T) {
 	}
 }
 
+// TestViewAfterTCSequenceVectors runs the SYNC §10.4 view-sequence vectors
+// S6 (rule switched off) and S8 (activation view A = 100) through the
+// engine: n = 7, T = 8, E = 0. Each step is TC(x) -> view, leader(view).
+func TestViewAfterTCSequenceVectors(t *testing.T) {
+	type step struct{ tc, view, leader uint64 }
+	for _, v := range []struct {
+		name   string
+		rotate bool
+		from   ViewNumber
+		steps  []step
+	}{
+		{"S6 switch off", false, 0, []step{
+			{8, 9, 1}, {9, 10, 1}, {10, 11, 1}, {11, 12, 1},
+			{12, 13, 1}, {13, 14, 1}, {14, 15, 1}, {15, 16, 2},
+		}},
+		{"S8 activation A=100", true, 100, []step{
+			{99, 100, 5}, // below the activation view: classic
+			{100, 104, 6},
+		}},
+	} {
+		t.Run(v.name, func(t *testing.T) {
+			setup := newTestSetup(t, 7)
+			e, _ := newTestEngine(t, setup, 0)
+			e.leaderTenure = 8
+			e.SetRotateOnTimeout(v.rotate, v.from)
+			for _, s := range v.steps {
+				got := e.viewAfterTC(ViewNumber(s.tc))
+				if uint64(got) != s.view {
+					t.Fatalf("TC(%d) -> %d, want %d", s.tc, got, s.view)
+				}
+				if l := e.LeaderForView(got, setup.vs); uint64(l) != s.leader {
+					t.Fatalf("TC(%d) -> %d: leader %d, want L%d", s.tc, got, l, s.leader)
+				}
+			}
+		})
+	}
+}
+
 func TestRotateOnTimeoutSettingResolution(t *testing.T) {
 	ten := uint64(10)
 	t.Setenv("N42_HOTSTUFF_ROTATE_ON_TIMEOUT", "")
