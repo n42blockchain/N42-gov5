@@ -81,3 +81,37 @@ func TestDeferredVoteRefusesWrongParent(t *testing.T) {
 		t.Fatalf("voted for a checked block that does not extend the JustifyQC block")
 	}
 }
+
+// After a cold restart of the whole validator set no block is imported
+// live: the committed head marked imported on recovery is what lets a
+// follower vote for the first proposal justified by its QC.
+func TestDeferredVoteOnCommittedHeadMarkedOnRecovery(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		setup := newTestSetup(t, 4)
+		follower, outputCh := newTestEngine(t, setup, 0)
+		head, headParent := types.Hash{0xB0}, types.Hash{0xAF}
+		blockHash := types.Hash{0xBB}
+		if marked {
+			follower.MarkImportedOnRecovery(head, headParent)
+		}
+		justify := GenesisQC()
+		justify.BlockHash = head
+		proposal := &Proposal{
+			View: 1, BlockHash: blockHash, JustifyQC: justify, Proposer: 1,
+			Signature: setup.keys[1].Sign(SigningMessage(1, blockHash)).Marshal(),
+		}
+		if err := follower.ProcessEvent(ConsensusEvent{Type: EventMessage, Msg: ConsensusMsg{Type: MsgProposal, Payload: proposal}}); err != nil {
+			t.Fatalf("proposal: %v", err)
+		}
+		if err := follower.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: blockHash, ParentHash: head}); err != nil {
+			t.Fatalf("checked: %v", err)
+		}
+		want := 0
+		if marked {
+			want = 1
+		}
+		if votes := countOutputs(drainOutputs(outputCh), OutputSendToValidator, MsgVote); votes != want {
+			t.Fatalf("head marked on recovery=%v: %d votes, want %d", marked, votes, want)
+		}
+	}
+}
