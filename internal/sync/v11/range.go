@@ -9,9 +9,12 @@ import (
 	"io"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/sync/syncwire"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/rlp"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 // RangeSource is what the bodies_by_range/2 server reads.
@@ -204,4 +207,45 @@ func ReadRangeV2(r io.Reader, req syncwire.RangeRequest, beforeChunk func()) (*R
 			return nil, &syncwire.CodeError{Code: c.Code, Msg: string(c.Payload)}
 		}
 	}
+}
+
+// TxRangeSource reads a RangeSource from one database transaction: the
+// canonical chain up to the stored committed head.
+type TxRangeSource struct {
+	Tx      kv.Tx
+	Genesis types.Hash
+}
+
+func (s TxRangeSource) CommittedHead() uint64 {
+	h := rawdb.ReadHotStuffCommittedHead(s.Tx)
+	if h == (types.Hash{}) {
+		return 0
+	}
+	if n := rawdb.ReadHeaderNumber(s.Tx, h); n != nil {
+		return *n
+	}
+	return 0
+}
+
+func (s TxRangeSource) EarliestBody() uint64 {
+	n, _ := rawdb.ReadEarliestBlock(s.Tx)
+	return n
+}
+
+func (s TxRangeSource) BlockAt(n uint64) block.IBlock {
+	h, _ := rawdb.ReadCanonicalHash(s.Tx, n)
+	if h == (types.Hash{}) {
+		return nil
+	}
+	if b := rawdb.ReadBlock(s.Tx, h, n); b != nil {
+		return b
+	}
+	return nil
+}
+
+func (s TxRangeSource) HeaderAt(n uint64) *block.Header { return rawdb.ReadHeaderByNumber(s.Tx, n) }
+
+func (s TxRangeSource) Digest() (d [4]byte) {
+	copy(d[:], s.Genesis[:4])
+	return d
 }
