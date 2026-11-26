@@ -105,6 +105,8 @@ func TestP1SealedChainPassesFollowerChecks(t *testing.T) {
 	srcTimes := []uint64{p1tGenesisT + 3, p1tGenesisT + 6, p1tGenesisT + 9, p1tGenesisT + 400, p1tGenesisT + 401, p1tGenesisT + 409, p1tGenesisT + 9000}
 	parent := genesis
 	var times []uint64
+	var blocks []*block.Block
+	var ces []*rawdb.ConsensusEvidence
 	var parentCE *rawdb.ConsensusEvidence
 	registry := types.Hash{}
 	for i, st := range srcTimes {
@@ -142,6 +144,7 @@ func TestP1SealedChainPassesFollowerChecks(t *testing.T) {
 		}
 		parent, parentCE = h, ce
 		times = append(times, h.Time-p1tGenesisT)
+		blocks, ces = append(blocks, blk), append(ces, ce)
 	}
 
 	// Slot offsets: the dense 3 s source blocks take consecutive slots (8,
@@ -152,6 +155,20 @@ func TestP1SealedChainPassesFollowerChecks(t *testing.T) {
 			t.Fatalf("slot offsets %v, want %v", times, want)
 		}
 	}
+	// A second auditor over a shared pool, resumed mid-chain, accepts the
+	// rest of the chain (the parallel audit path).
+	ap, err := NewP1AuditPool(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid := NewP1AuditorWithPool(cfg, genesis, ap)
+	mid.Resume(blocks[1].Header().(*block.Header), blocks[2].Header().(*block.Header))
+	for i := 3; i < len(blocks); i++ {
+		if err := mid.CheckBlock(blocks[i], ces[i]); err != nil {
+			t.Fatalf("resumed audit, block %d: %v", i+1, err)
+		}
+	}
+
 	// The continuation state names the head.
 	st := ContinuationState(sealer.parentQC)
 	if st.View != parent.Number.Uint64()+1 || st.LastCommittedQC.BlockHash != parent.Hash() {

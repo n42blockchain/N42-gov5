@@ -139,24 +139,24 @@ type P1Auditor struct {
 	committee *blspool.CommitteeScratch
 }
 
-// NewP1Auditor builds the auditor from the profile-1 chain config and the
-// target genesis header. The committee pool is derived from
-// committeePool.seedHex twice: public keys only for the signature check,
-// and as the live node's pool for the byte-identity check.
-func NewP1Auditor(cfg *params.ChainConfig, genesis *block.Header) (*P1Auditor, error) {
+// P1AuditPool is the committee pool material an auditor checks against,
+// derived once and shared by concurrent auditors.
+type P1AuditPool struct {
+	pool *blspool.Pool         // the live committee pool (byte identity)
+	pubs []blscommon.PublicKey // pool public keys only (signature check)
+}
+
+// NewP1AuditPool derives the committee pool of a profile-1 config from
+// committeePool.seedHex twice: public keys only for the signature check, and
+// as the live node's pool for the byte-identity check.
+func NewP1AuditPool(cfg *params.ChainConfig) (*P1AuditPool, error) {
 	if !cfg.IsProfile1() || cfg.HotStuff == nil || cfg.HotStuff.CommitteePool == nil {
 		return nil, errors.New("audit: not a profile-1 config with a committee pool")
 	}
-	// The block-format globals a profile-1 node sets in NewBlockChain:
-	// Ethereum transactions trie (A12), deferred execution from block 0
-	// (A10).
-	block.UseEthereumTxRoot = true
-	block.TxRootBlake3Time = 0
-	block.DeferredExecutionTime = 1
 	pc := cfg.HotStuff.CommitteePool
 	seedB, err := hexutil.Decode(pc.SeedHex)
 	if err != nil || len(seedB) != 32 {
-		return nil, fmt.Errorf("audit: committeePool.seedHex: %v", err)
+		return nil, errors.New("audit: committeePool.seedHex is not 32 bytes of hex")
 	}
 	var seed [32]byte
 	copy(seed[:], seedB)
@@ -168,13 +168,44 @@ func NewP1Auditor(cfg *params.ChainConfig, genesis *block.Header) (*P1Auditor, e
 	if err != nil {
 		return nil, err
 	}
+	return &P1AuditPool{pool: pool, pubs: pubs}, nil
+}
+
+// NewP1Auditor builds an auditor from the profile-1 chain config and the
+// target genesis header, with its own committee pool.
+func NewP1Auditor(cfg *params.ChainConfig, genesis *block.Header) (*P1Auditor, error) {
+	ap, err := NewP1AuditPool(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewP1AuditorWithPool(cfg, genesis, ap), nil
+}
+
+// NewP1AuditorWithPool builds an auditor over a shared committee pool.
+// Auditors over one pool may run concurrently, each on its own block range
+// (Resume seeds a range's preceding headers).
+func NewP1AuditorWithPool(cfg *params.ChainConfig, genesis *block.Header, ap *P1AuditPool) *P1Auditor {
+	// The block-format globals a profile-1 node sets in NewBlockChain:
+	// Ethereum transactions trie (A12), deferred execution from block 0
+	// (A10).
+	block.UseEthereumTxRoot = true
+	block.TxRootBlake3Time = 0
+	block.DeferredExecutionTime = 1
 	hs := hotstuff.New(cfg.HotStuff, cfg)
-	hs.SetCommitteeEvidence(pool, nil)
+	hs.SetCommitteeEvidence(ap.pool, nil)
 	return &P1Auditor{
-		cfg: cfg, hs: hs, pool: pool, pubs: pubs, poolCfg: pc,
+		cfg: cfg, hs: hs, pool: ap.pool, pubs: ap.pubs, poolCfg: cfg.HotStuff.CommitteePool,
 		window:    &p1Window{cfg: cfg, genesis: genesis, byHash: map[types.Hash]*block.Header{}},
 		committee: blspool.NewCommitteeScratch(),
-	}, nil
+	}
+}
+
+// Resume seeds the auditor with already audited headers preceding the
+// first block it will check, oldest first.
+func (a *P1Auditor) Resume(prev ...*block.Header) {
+	for _, h := range prev {
+		a.window.add(h)
+	}
 }
 
 // CheckBlock audits blk, whose stored committee evidence is ce. Blocks must
