@@ -75,6 +75,11 @@ func sendBodiesByRange(ctx context.Context, chain common.IBlockChain, p2pProvide
 		Step:             req.Step,
 	}, topic, pid)
 	if err != nil {
+		if isProtocolNotSupported(err) {
+			// The peer refuses /1 too (§5.0): catch-up skips it for range
+			// requests while the mark lasts. Not a fault, so no score.
+			v11MarkUnsupported(pid, rangeV1Protocol(p2pProvider))
+		}
 		return nil, err
 	}
 	defer closeStream(stream)

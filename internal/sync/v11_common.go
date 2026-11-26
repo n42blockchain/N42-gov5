@@ -20,6 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
+	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/sync/syncwire"
 	"github.com/n42blockchain/N42/log"
 )
@@ -135,20 +136,40 @@ func v11MarkUnsupported(pid peer.ID, proto string) {
 	v11Unsupported.until[string(pid)+proto] = time.Now().Add(time.Hour)
 }
 
-// peerSpeaks reports whether pid listed proto in identify and has not
-// refused it in the last hour.
-func peerSpeaks(h host.Host, pid peer.ID, proto string) bool {
-	if h == nil {
-		return false
-	}
+// v11Refused reports whether pid's multistream refused proto in the last hour.
+func v11Refused(pid peer.ID, proto string) bool {
 	v11Unsupported.mu.Lock()
 	until, marked := v11Unsupported.until[string(pid)+proto]
 	v11Unsupported.mu.Unlock()
-	if marked && time.Now().Before(until) {
+	return marked && time.Now().Before(until)
+}
+
+// peerSpeaks reports whether pid listed proto in identify and has not
+// refused it in the last hour.
+func peerSpeaks(h host.Host, pid peer.ID, proto string) bool {
+	if h == nil || v11Refused(pid, proto) {
 		return false
 	}
 	got, err := h.Peerstore().SupportsProtocols(pid, protocol.ID(proto))
 	return err == nil && len(got) > 0
+}
+
+// rangeV1Protocol is the full bodies_by_range/1 protocol id on p's encoding.
+func rangeV1Protocol(p p2p.EncodingProvider) string {
+	return p2p.RPCBodiesDataTopicV1 + p.Encoding().ProtocolSuffix()
+}
+
+// peerRefusesRange reports whether pid cannot serve range requests at all:
+// its multistream refused bodies_by_range/1 in the last hour and it does not
+// speak /2. Not a fault (§3.5): catch-up only skips it while the mark lasts.
+func peerRefusesRange(h host.Host, p p2p.EncodingProvider, pid peer.ID) bool {
+	return v11Refused(pid, rangeV1Protocol(p)) && !peerSpeaks(h, pid, syncwire.ProtocolBodiesByRangeV2)
+}
+
+// peerListsRange reports whether pid lists bodies_by_range/2 or /1 in
+// identify (§5.0 capability discovery); peer selection prefers such peers.
+func peerListsRange(h host.Host, p p2p.EncodingProvider, pid peer.ID) bool {
+	return peerSpeaks(h, pid, syncwire.ProtocolBodiesByRangeV2) || peerSpeaks(h, pid, rangeV1Protocol(p))
 }
 
 // openV11 opens a stream for proto, writes the framed request and closes

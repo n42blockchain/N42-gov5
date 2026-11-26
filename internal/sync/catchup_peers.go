@@ -200,6 +200,7 @@ type catchUpCandidate struct {
 	tier      int
 	failures  int
 	backedOff bool
+	listed    bool // identify lists bodies_by_range/2 or /1
 }
 
 // orderCatchUpPeers orders peers for a round starting at start and caps the
@@ -211,9 +212,13 @@ func (s *Service) orderCatchUpPeers(peers []peer.ID, start uint64) []peer.ID {
 	self := currentBlockNumber(s.cfg.chain)
 	backed := s.catchUpBackedHeight(self, len(peers))
 	now := time.Now()
+	h := hostOf(s.cfg.p2p)
 	cands := make([]catchUpCandidate, 0, len(peers))
 	for _, pid := range peers {
-		c := catchUpCandidate{pid: pid, tier: 2}
+		if peerRefusesRange(h, s.cfg.p2p, pid) {
+			continue // refused both range protocols recently (§5.0): skipped, not scored
+		}
+		c := catchUpCandidate{pid: pid, tier: 2, listed: peerListsRange(h, s.cfg.p2p, pid)}
 		if h := s.cfg.p2p.Peers().PeerHeight(pid); h != nil {
 			c.claim, c.known = h.Uint64(), true
 			if c.claim >= start {
@@ -233,6 +238,9 @@ func (s *Service) orderCatchUpPeers(peers []peer.ID, start uint64) []peer.ID {
 		a, b := cands[i], cands[j]
 		if a.backedOff != b.backedOff {
 			return !a.backedOff
+		}
+		if a.listed != b.listed {
+			return a.listed // identify lists a range protocol (§5.0)
 		}
 		if a.tier != b.tier {
 			return a.tier < b.tier
@@ -283,6 +291,11 @@ func (s *Service) catchUpPenalise(pid peer.ID) {
 // failures only back the peer off for catch-up.
 func (s *Service) noteCatchUpRequestFailed(pid peer.ID, err error, withinClaim bool) {
 	if synclegacy.PeerSelect.On() {
+		return
+	}
+	if isProtocolNotSupported(err) {
+		// Not speaking the protocol is legitimate (§3.5): no back-off and no
+		// score; sendBodiesByRange marked the peer, and catch-up skips it.
 		return
 	}
 	timedOut := errors.Is(err, context.DeadlineExceeded)
