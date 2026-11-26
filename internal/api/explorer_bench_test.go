@@ -14,7 +14,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -385,4 +388,27 @@ func TestExplorerFullBlockTxsMatchTxByHash(t *testing.T) {
 	// base fee 7 + tip 2 = 9, under the fee cap of 20.
 	first, _ := json.Marshal(txs[0])
 	require.Contains(t, string(first), `"gasPrice":"0x9"`)
+}
+
+// BenchmarkExplorerHTTPBlockBatch: one Blockscout catch-up request (a batch
+// of eth_getBlockByNumber(n, true) for every fixture block) through the real
+// JSON-RPC HTTP server, block cache warm. One iteration = one batch.
+func BenchmarkExplorerHTTPBlockBatch(b *testing.B) {
+	fx := explorerGetFixture(b)
+	srv := jsonrpc.NewServer()
+	require.NoError(b, srv.RegisterName("eth", NewBlockChainAPI(explorerWarmAPI(fx))))
+	var reqs []string
+	for i := range fx.Blocks {
+		reqs = append(reqs, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["0x%x",true]}`, i, fx.Blocks[i].Number64().Uint64()))
+	}
+	body := "[" + strings.Join(reqs, ",") + "]"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		require.Equal(b, http.StatusOK, w.Code)
+		b.SetBytes(int64(w.Body.Len()))
+	}
 }

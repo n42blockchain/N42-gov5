@@ -147,3 +147,55 @@ func TestServeHTTP_BatchSerialWhenConcurrencyOne(t *testing.T) {
 		t.Fatalf("body %s", w.Body.String())
 	}
 }
+
+// TestAppendResponsesMatchesEncoder: the direct response writer produces the
+// same bytes as json.Encoder for every message it accepts, and declines the
+// ones it cannot reproduce exactly.
+func TestAppendResponsesMatchesEncoder(t *testing.T) {
+	results := []interface{}{
+		nil, 0, "plain", "<html> & \u2028 \"quoted\" é", map[string]interface{}{"b": []int{1, 2}, "a": "x<y"},
+		[]interface{}{map[string]string{"hash": "0xabc"}, nil, true}, json.RawMessage(`{"k":  [1, 2]}`),
+	}
+	ids := []string{`1`, `-7`, `123456789012`, `"abc"`, `"a-b_c.d:e"`, `"0x1f"`}
+	encode := func(v interface{}) string {
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(v); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	var batch []*jsonrpcMessage
+	for _, id := range ids {
+		for _, r := range results {
+			m := (&jsonrpcMessage{ID: json.RawMessage(id)}).response(r)
+			got, ok := appendResponses(nil, m)
+			if !ok {
+				t.Fatalf("id %s result %v: declined", id, r)
+			}
+			if want := encode(m); string(got) != want {
+				t.Fatalf("id %s result %v:\n got %q\nwant %q", id, r, got, want)
+			}
+			batch = append(batch, m)
+		}
+	}
+	got, ok := appendResponses(nil, batch)
+	if !ok || string(got) != encode(batch) {
+		t.Fatalf("batch mismatch (ok=%v)", ok)
+	}
+
+	declined := []interface{}{
+		(&jsonrpcMessage{ID: json.RawMessage(`1`)}).errorResponse(fmt.Errorf("boom")),
+		&jsonrpcMessage{Version: vsn, ID: json.RawMessage(`1`), Result: json.RawMessage(`{ "spaced" : 1 }`)},
+		(&jsonrpcMessage{ID: json.RawMessage(`"a b"`)}).response(1),
+		(&jsonrpcMessage{ID: json.RawMessage(`"<x>"`)}).response(1),
+		(&jsonrpcMessage{ID: json.RawMessage(`1.5`)}).response(1),
+		&jsonrpcMessage{Version: vsn, Method: "eth_subscription", Params: json.RawMessage(`{}`)},
+		[]*jsonrpcMessage{(&jsonrpcMessage{ID: json.RawMessage(`1`)}).response(1), (&jsonrpcMessage{ID: json.RawMessage(`2`)}).errorResponse(fmt.Errorf("x"))},
+		"not a message",
+	}
+	for i, v := range declined {
+		if _, ok := appendResponses(nil, v); ok {
+			t.Fatalf("declined[%d] was accepted", i)
+		}
+	}
+}
