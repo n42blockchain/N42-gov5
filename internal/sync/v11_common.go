@@ -9,6 +9,7 @@ package sync
 
 import (
 	"context"
+	"os"
 	"runtime/debug"
 	"strings"
 	gosync "sync"
@@ -221,8 +222,28 @@ func (s *Service) v11Handlers() []v11Entry {
 	}
 }
 
+// rangeServingEnabled reports whether this node serves range sync
+// (/rpc/bodies_by_range/1 and /2) and commit_qc/1. N42_SYNC_RANGE_SERVE=off
+// leaves those protocols unregistered, so peers must sync from another
+// client; it exists for mixed-client server tests and is on by default.
+func rangeServingEnabled() bool {
+	return os.Getenv("N42_SYNC_RANGE_SERVE") != "off"
+}
+
+// rangeServingProtocol reports whether proto is switched off by
+// N42_SYNC_RANGE_SERVE.
+func rangeServingProtocol(proto string) bool {
+	return proto == syncwire.ProtocolBodiesByRangeV2 || proto == syncwire.ProtocolCommitQC
+}
+
 func (s *Service) registerV11Handlers() {
+	if !rangeServingEnabled() {
+		log.Warn("sync: range serving disabled (N42_SYNC_RANGE_SERVE=off): bodies_by_range/1, /2 and commit_qc/1 are not served")
+	}
 	for _, e := range s.v11Handlers() {
+		if !rangeServingEnabled() && rangeServingProtocol(e.proto) {
+			continue
+		}
 		s.registerV11(e.proto, e.maxReq, e.quota, e.h)
 	}
 }

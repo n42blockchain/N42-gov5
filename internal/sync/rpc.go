@@ -28,7 +28,9 @@ func (s *Service) registerRPCHandlers() {
 	s.registerRPC(p2p.RPCStatusTopicV1, s.statusRPCHandler)
 	s.registerRPC(p2p.RPCGoodByeTopicV1, s.goodbyeRPCHandler)
 	s.registerRPC(p2p.RPCPingTopicV1, s.pingHandler)
-	s.registerRPC(p2p.RPCBodiesDataTopicV1, s.bodiesByRangeRPCHandler)
+	if rangeServingEnabled() {
+		s.registerRPC(p2p.RPCBodiesDataTopicV1, s.bodiesByRangeRPCHandler)
+	}
 
 	// Blob sidecar protocol handlers.
 	s.registerRPC(p2p.RPCBlobSidecarsByRangeTopicV1, s.blobSidecarsByRangeRPCHandler)
