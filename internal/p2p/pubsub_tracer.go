@@ -1,6 +1,8 @@
 package p2p
 
 import (
+	"sync/atomic"
+
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -18,7 +20,7 @@ type gossipTracer struct {
 }
 
 func (g gossipTracer) AddPeer(_ peer.ID, _ protocol.ID) {}
-func (g gossipTracer) RemovePeer(_ peer.ID)              {}
+func (g gossipTracer) RemovePeer(_ peer.ID)             {}
 
 // OnNewOutboundStream / OnClosedOutboundStream are required by
 // pubsub.RawTracer as of go-libp2p-pubsub v0.16.0. No metric is recorded —
@@ -75,7 +77,18 @@ func (g gossipTracer) UndeliverableMessage(msg *pubsub.Message) {
 		return
 	}
 	pubsubMessageUndeliverable.WithLabelValues(*msg.Topic).Inc()
+	// The library drops the message for a subscriber whose queue is full and
+	// says so only in its own Info log. Surface it: a dropped consensus
+	// message is a missing vote or timeout.
+	if n := undeliverableMessages.Add(1); n <= 5 || n%1000 == 0 {
+		log.Warn("Gossip message dropped: a local subscriber's queue is full",
+			"topic", *msg.Topic, "dropped", n)
+	}
 }
+
+// undeliverableMessages counts UndeliverableMessage events process-wide, to
+// throttle the warning above.
+var undeliverableMessages atomic.Uint64
 
 func (g gossipTracer) ThrottlePeer(p peer.ID) {
 	agent := agentFromPid(p, g.host.Peerstore())

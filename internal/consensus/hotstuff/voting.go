@@ -38,18 +38,23 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 	receivedAt := mt.arrive
 	tLocked := time.Now()
 	view := e.roundState.CurrentView()
+	st := e.voteIntake(view)
+	st.received++
 
 	if vote.View != view {
+		st.viewMismatch++
 		return &ViewMismatchError{Current: view, Received: vote.View}
 	}
 
 	if !e.isLeader(e.myIndex, view, e.validatorSet()) {
+		st.notLeader++
 		return nil
 	}
 
 	// Validate voter index is within the known validator set.
 	vs := e.validatorSet()
 	if _, err := vs.GetPublicKey(vote.Voter); err != nil {
+		st.badVoter++
 		return err
 	}
 
@@ -84,9 +89,11 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 
 	// Check collector exists and block hash matches.
 	if e.voteCollector == nil {
+		st.noCollector++
 		return nil
 	}
 	if vote.BlockHash != e.voteCollector.BlockHash() {
+		st.hashMismatch++
 		// A first-seen vote whose hash differs from the collector's is dropped
 		// here (it never enters the QC), but must still be recorded — once
 		// verified — so a LATER collector-hash vote from the same voter is
@@ -124,6 +131,7 @@ func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
 	}
 
 	// Buffer vote for batch verification.
+	st.buffered++
 	e.prepareVoteBuf = append(e.prepareVoteBuf, pendingVote{
 		voter:    vote.Voter,
 		sigBytes: vote.Signature,

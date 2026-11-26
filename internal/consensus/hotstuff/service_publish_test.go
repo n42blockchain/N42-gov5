@@ -13,6 +13,8 @@ func TestTimeoutPublishPeerTarget(t *testing.T) {
 		{name: "single validator", quorum: 1, want: 0},
 		{name: "four validators", quorum: 3, want: 2},
 		{name: "seven validators", quorum: 5, want: 4},
+		{name: "twenty validators", quorum: 14, want: 13},
+		{name: "hundred validators", quorum: 67, want: 66},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

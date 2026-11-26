@@ -156,3 +156,20 @@ func (a *hotstuffP2PAdapter) ConnectedPeers() []peer.ID {
 	}
 	return h.Network().Peers()
 }
+
+// The p2p service and this adapter both provide HotStuff's subscriber-gated
+// timeout publish.
+var (
+	_ hotstuff.SubscribedPublisher = (*p2p.Service)(nil)
+	_ hotstuff.SubscribedPublisher = (*hotstuffP2PAdapter)(nil)
+)
+
+// PublishToTopicWhenSubscribed forwards to the wrapped service's subscriber-
+// gated publish (HotStuff timeouts use it; see p2p.Service). A wrapped P2P
+// without it publishes immediately.
+func (a *hotstuffP2PAdapter) PublishToTopicWhenSubscribed(ctx context.Context, topic string, data []byte, minSubscribers int, maxWait time.Duration) error {
+	if sp, ok := a.P2P.(hotstuff.SubscribedPublisher); ok {
+		return sp.PublishToTopicWhenSubscribed(ctx, topic, data, minSubscribers, maxWait)
+	}
+	return a.PublishToTopic(ctx, topic, data)
+}
