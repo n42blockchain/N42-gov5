@@ -183,6 +183,9 @@ type Service struct {
 	// anchors is the S1 anchor book: authenticated hashes, the parent-link
 	// skeleton and the held unanchored tail (anchor_book.go).
 	anchors anchorBook
+	// commitQCAnchorOverride replaces the commit_qc/1 network exchange
+	// (request + strict QC verification) in tests; nil in production.
+	commitQCAnchorOverride commitQCAnchorFn
 	// catchUpBook remembers per-peer catch-up failures, back-off and latency.
 	catchUpBook catchUpPeerBook
 	// syncModes is the S5 Live/Range mode machine and rangeEnd the highest

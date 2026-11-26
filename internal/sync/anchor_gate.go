@@ -360,20 +360,46 @@ func (s *Service) releaseAnchoredTail(authorized bool) int {
 	return imported
 }
 
+// appliedAuthedTop returns the highest height h >= self such that every
+// height in self+1..h holds an authenticated skeleton block the chain has
+// already executed. The canonical head trails the executed blocks (the
+// canonical row moves only with a CommitQC, which for the newest blocks sits
+// in the held tail), so catch-up measures its progress from this frontier,
+// not from the canonical head.
+func (s *Service) appliedAuthedTop(self uint64) uint64 {
+	byNum := s.anchors.authedLinksAbove(self, maxRequestBlocks)
+	top := self
+	for n := self + 1; ; n++ {
+		applied := false
+		for _, h := range byNum[n] {
+			if s.blockApplied(h, n) {
+				applied = true
+				break
+			}
+		}
+		if !applied {
+			return top
+		}
+		top = n
+	}
+}
+
 // anchorNextStart tells an enforcing catch-up round where to fetch next when
-// the last range left blocks unexecuted: re-fetch from self+1 when the link
-// skeleton already authenticates that height (bodies were evicted), or look
-// ahead above the highest fetched block when it is still below target.
+// the last range left blocks unexecuted: re-fetch above the executed frontier
+// when the link skeleton already authenticates that height (bodies were
+// evicted), or look ahead above the highest fetched block when it is still
+// below target.
 func (s *Service) anchorNextStart(target uint64, authorized bool) (uint64, bool) {
 	if syncanchor.Current() != syncanchor.Enforce || s.anchorVerifier() == nil {
 		return 0, false
 	}
 	s.releaseAnchoredTail(authorized)
-	self := currentBlockNumberOrZero(s.cfg.chain)
-	if s.anchors.authedLinkAt(self + 1) {
+	applied := s.appliedAuthedTop(currentBlockNumberOrZero(s.cfg.chain))
+	if s.anchors.authedLinkAt(applied + 1) {
 		// The skeleton authenticates the next height but its body is not
-		// held (evicted, or the tail holds another branch): re-fetch.
-		return self + 1, true
+		// executed (evicted, or the tail holds another branch): re-fetch.
+		// Executed blocks above the canonical head are not re-fetched.
+		return applied + 1, true
 	}
 	s.anchors.mu.Lock()
 	top, held := s.anchors.skelTop, len(s.anchors.tail)
@@ -381,7 +407,7 @@ func (s *Service) anchorNextStart(target uint64, authorized bool) (uint64, bool)
 	if held == 0 {
 		return 0, false // nothing waits for an anchor
 	}
-	if top > self && top < target {
+	if top > applied && top < target {
 		return top + 1, true
 	}
 	return 0, false

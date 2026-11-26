@@ -18,6 +18,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/sync/syncwire"
 	"github.com/n42blockchain/N42/internal/sync/v11"
@@ -82,9 +84,8 @@ func VerifyCommitQCWith(v syncanchor.Verifier, qc *hotstuff.QuorumCertificate) s
 // the top of the held tail, and releases the tail it authenticates. It
 // returns the number of blocks imported.
 func (s *Service) anchorTailViaCommitQC(peers []peer.ID, authorized bool) int {
-	v := s.anchorVerifier()
-	h := hostOf(s.cfg.p2p)
-	if v == nil || h == nil {
+	ask := s.commitQCAnchorer()
+	if ask == nil {
 		return 0
 	}
 	s.anchors.mu.Lock()
@@ -96,8 +97,38 @@ func (s *Service) anchorTailViaCommitQC(peers []peer.ID, authorized bool) int {
 	s.anchors.mu.Unlock()
 	req := syncwire.CommitQCRequest{Number: top.Number64().Uint64(), Hash: top.Hash()}
 	for _, pid := range peers {
-		if !peerSpeaks(h, pid, syncwire.ProtocolCommitQC) {
+		headers, anchor, ok := ask(pid, req)
+		if !ok || len(headers) == 0 {
 			continue
+		}
+		s.anchors.recordHeaderLinks(headers)
+		s.anchors.noteAnchor(anchor)
+		log.Info("commit_qc: anchored the held tail", "peer", shortPeer(pid), "tailTop", req.Number,
+			"qcBlock", headers[0].Number.Uint64())
+		return s.releaseAnchoredTail(authorized)
+	}
+	return 0
+}
+
+// commitQCAnchorFn asks one peer for the commit QC anchoring req. ok means
+// the QC verified strictly; headers run from the QC's block down to req and
+// anchor is the hash the QC names.
+type commitQCAnchorFn func(pid peer.ID, req syncwire.CommitQCRequest) (headers []*block.Header, anchor types.Hash, ok bool)
+
+// commitQCAnchorer returns the commit_qc/1 exchange, or nil when this node
+// has no QC verifier or no libp2p host.
+func (s *Service) commitQCAnchorer() commitQCAnchorFn {
+	if s.commitQCAnchorOverride != nil {
+		return s.commitQCAnchorOverride
+	}
+	v := s.anchorVerifier()
+	h := hostOf(s.cfg.p2p)
+	if v == nil || h == nil {
+		return nil
+	}
+	return func(pid peer.ID, req syncwire.CommitQCRequest) ([]*block.Header, types.Hash, bool) {
+		if !peerSpeaks(h, pid, syncwire.ProtocolCommitQC) {
+			return nil, types.Hash{}, false
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, ttfbTimeout)
 		rep, err := RequestCommitQC(ctx, h, pid, req)
@@ -107,25 +138,20 @@ func (s *Service) anchorTailViaCommitQC(peers []peer.ID, authorized bool) int {
 				s.noteCatchUpInvalid(pid)
 			}
 			log.Debug("commit_qc: request failed", "peer", shortPeer(pid), "number", req.Number, "err", err)
-			continue
+			return nil, types.Hash{}, false
 		}
 		if len(rep.Headers) == 0 {
-			continue // the anchor is further than 256 headers away
+			return nil, types.Hash{}, false // the anchor is further than 256 headers away
 		}
-		r := VerifyCommitQCWith(v, rep.QC)
-		switch r.Verdict {
+		switch VerifyCommitQCWith(v, rep.QC).Verdict {
 		case syncanchor.Verified:
 		case syncanchor.BadQC:
 			s.noteCatchUpInvalid(pid)
-			continue
+			return nil, types.Hash{}, false
 		default:
-			continue
+			return nil, types.Hash{}, false
 		}
-		s.anchors.recordHeaderLinks(rep.Headers)
-		s.anchors.noteAnchor(rep.QC.BlockHash)
-		log.Info("commit_qc: anchored the held tail", "peer", shortPeer(pid), "tailTop", req.Number,
-			"qcBlock", rep.Headers[0].Number.Uint64(), "qcView", rep.QC.View)
-		return s.releaseAnchoredTail(authorized)
+		log.Debug("commit_qc: verified", "peer", shortPeer(pid), "number", req.Number, "qcView", rep.QC.View)
+		return rep.Headers, rep.QC.BlockHash, true
 	}
-	return 0
 }

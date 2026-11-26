@@ -73,6 +73,10 @@ type harnessChain struct {
 	// counts executions per block hash (double-import detection).
 	insertDelay time.Duration
 	perHash     map[comtypes.Hash]int
+	// canonLag keeps CurrentBlock (the canonical head) that many blocks
+	// below the applied head, as when the canonical row waits for the
+	// CommitQC carried by a later, still unanchored block.
+	canonLag int
 }
 
 func newHarnessChain(history ...block.IBlock) *harnessChain {
@@ -87,7 +91,22 @@ func newHarnessChain(history ...block.IBlock) *harnessChain {
 func (c *harnessChain) CurrentBlock() block.IBlock {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.head
+	cur := c.head
+	for i := 0; i < c.canonLag; i++ {
+		parent, ok := c.known[cur.ParentHash()]
+		if !ok {
+			break
+		}
+		cur = parent
+	}
+	return cur
+}
+
+// appliedNumber is the applied head's number (ignores canonLag).
+func (c *harnessChain) appliedNumber() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.head.Number64().Uint64()
 }
 
 func (c *harnessChain) headNumber() uint64 { return c.CurrentBlock().Number64().Uint64() }
@@ -174,11 +193,12 @@ func (c *harnessChain) InsertChainAuthorized(blocks []block.IBlock) (int, error)
 type harnessMode int
 
 const (
-	harnessHonest    harnessMode = iota // serve the stored prefix of the range
-	harnessEmpty                        // answer with nothing
-	harnessMalformed                    // answer with a block outside the range
-	harnessRefuse                       // answer with an error code ("server busy")
-	harnessHang                         // open the stream and send nothing until hangFor
+	harnessHonest     harnessMode = iota // serve the stored prefix of the range
+	harnessEmpty                         // answer with nothing
+	harnessMalformed                     // answer with a block outside the range
+	harnessRefuse                        // answer with an error code ("server busy")
+	harnessHang                          // open the stream and send nothing until hangFor
+	harnessNoProtocol                    // multistream refuses the range protocol
 )
 
 // harnessPeer is one fake remote.
@@ -268,6 +288,9 @@ func (n *harnessNet) send(msg interface{}, pid peer.ID) (network.Stream, error) 
 		serve = append(serve, b)
 	}
 	p.mu.Unlock()
+	if p.mode == harnessNoProtocol {
+		return nil, fmt.Errorf("failed to negotiate protocol: protocols not supported: [/rpc/bodies_by_range/1/ssz_snappy]")
+	}
 	client, server := newFakeStreamPair(pid, n.fp.self)
 	genesis := n.chain.GenesisBlock().Hash()
 	go func() {

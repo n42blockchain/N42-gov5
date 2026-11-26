@@ -209,6 +209,23 @@ func (b *anchorBook) authedLinkAt(number uint64) bool {
 	return false
 }
 
+// authedLinksAbove returns the authenticated skeleton hashes at numbers
+// from+1..from+limit, grouped by number (one pass over the skeleton).
+func (b *anchorBook) authedLinksAbove(from, limit uint64) map[uint64][]types.Hash {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make(map[uint64][]types.Hash)
+	for h, l := range b.links {
+		if l.number <= from || l.number-from > limit {
+			continue
+		}
+		if _, ok := b.auth[h]; ok {
+			out[l.number] = append(out[l.number], h)
+		}
+	}
+	return out
+}
+
 // highestAuthLocked returns the index of the highest authenticated block of
 // chain (ascending, linked), or -1. Authentication is downward-closed along
 // a linked chain, so everything at or below the index is authenticated.

@@ -339,6 +339,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	const maxForkBacktrack = 32
 	countCap := uint64(maxRequestBlocks)
 	lookahead := 0
+	var lastLookahead uint64
 	askedCommitQC := false
 	peers = s.orderCatchUpPeers(peers, start)
 	for attempt := 0; attempt <= maxForkBacktrack; {
@@ -370,8 +371,11 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 			// the next QC, or re-fetch bodies the tail bound evicted once
 			// their hashes were anchored, instead of stalling until the next
 			// tick.
-			if next, ok := s.anchorNextStart(target, authorized); ok && lookahead < maxAnchorLookahead {
+			// The same start twice in a row made no progress: stop fetching
+			// and ask commit_qc/1 instead of re-requesting the same blocks.
+			if next, ok := s.anchorNextStart(target, authorized); ok && lookahead < maxAnchorLookahead && next != lastLookahead {
 				lookahead++
+				lastLookahead = next
 				log.Info("hotstuff catch-up: fetching further for an anchor",
 					"from", next, "target", target, "lookahead", lookahead)
 				start = next
@@ -383,10 +387,14 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 			if !askedCommitQC && syncanchor.Current() == syncanchor.Enforce && s.anchors.tailLen() > 0 {
 				askedCommitQC = true
 				if s.anchorTailViaCommitQC(peers, authorized) > 0 {
-					if cur := currentBlockNumber(s.cfg.chain); cur != nil && cur.Uint64() < target {
-						start = cur.Uint64() + 1
-						if authorized {
-							start = cur.Uint64()
+					// Continue from the executed frontier: the released
+					// blocks are executed but the canonical head may not
+					// have reached them yet.
+					cur := currentBlockNumberOrZero(s.cfg.chain)
+					if reached := s.appliedAuthedTop(cur); reached < target {
+						start = reached + 1
+						if authorized && reached == cur {
+							start = cur
 						}
 						countCap = uint64(maxRequestBlocks)
 						continue
@@ -415,9 +423,16 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 	heldOnly := false // S1 enforce: a range arrived but nothing in it was anchored yet
 	var reached uint64
 	rejected := 0
+	h := hostOf(s.cfg.p2p)
 	for i, pid := range peers {
 		if progressed && !s.catchUpCanExtend([]peer.ID{pid}, reached, highest) {
 			continue // this peer claims nothing above what is already imported
+		}
+		if peerRefusesRange(h, s.cfg.p2p, pid) {
+			// Its multistream refused /1 and it does not speak /2 (a client
+			// with range serving off): asking again only repeats the refusal.
+			rejected++
+			continue
 		}
 		timeout, withinClaim := s.catchUpPeerRequest(pid, req, highest)
 		ctx, cancel := context.WithTimeout(s.ctx, timeout)
