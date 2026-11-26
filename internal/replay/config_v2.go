@@ -10,6 +10,8 @@ package replay
 
 import (
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/conf"
+	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -79,6 +81,14 @@ type ConfigV2 struct {
 	BLSPoolSize      int
 	BLSCommitteeSize int
 	BLSRampBlocks    uint64
+
+	// Profile1Genesis, when set, re-derives every replayed block to the mixed
+	// production standard, profile 1 (profile1.go): the target genesis and
+	// chain config come from it (n42Profile 1), the committee evidence from
+	// its hotstuff.committeePool, and Profile1Keys are the BLS secret keys of
+	// its hotstuff.validators in list order (header seals and CommitQCs).
+	Profile1Genesis *conf.Genesis
+	Profile1Keys    []blscommon.SecretKey
 }
 
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.
