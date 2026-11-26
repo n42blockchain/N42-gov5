@@ -169,6 +169,7 @@ type TraceCallConfig struct {
 
 // txTraceResult is the result of a single transaction trace.
 type txTraceResult struct {
+	TxHash common.Hash `json:"txHash"`           // Transaction hash, as geth >= 1.13 (Blockscout keys block traces by it)
 	Result interface{} `json:"result,omitempty"` // Trace results produced by the tracer
 	Error  string      `json:"error,omitempty"`  // Trace failure produced by the tracer
 }
@@ -250,7 +251,7 @@ func (api *API) traceBlock(ctx context.Context, block *types.Block, config *Trac
 		if err != nil {
 			return nil, err
 		}
-		results[i] = &txTraceResult{Result: res}
+		results[i] = &txTraceResult{TxHash: txctx.TxHash, Result: res}
 		statedb.FinalizeTx(api.backend.ChainConfig().RulesWithTimestamp(blockNumber.Uint64(), block.Time()), state.NewNoopWriter())
 	}
 	return results, nil
