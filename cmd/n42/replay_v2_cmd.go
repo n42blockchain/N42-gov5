@@ -30,6 +30,7 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
+	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/internal/replay"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -210,8 +211,12 @@ func runReplayV2(cliCtx *cli.Context) error {
 		return fmt.Errorf("post-export: %w", exportErr)
 	}
 	if cfg.Profile1Genesis != nil {
-		// A profile-1 target is not a named network preset; its genesis is
-		// the --p1-genesis file.
+		// A profile-1 target is a private chain (its genesis is the
+		// --p1-genesis file): bind it as "n42 init --chain private" does, so
+		// a node opens it with --chain private --profile n42.
+		if bindErr := persistReplayProfile1Binding(cfg.TargetPath, cfg.Profile1Genesis); bindErr != nil {
+			return fmt.Errorf("persist replay target network binding: %w", bindErr)
+		}
 	} else if bindErr := persistReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); bindErr != nil {
 		return fmt.Errorf("persist replay target network binding: %w", bindErr)
 	}
@@ -263,6 +268,22 @@ func persistReplayTargetNetworkBinding(targetPath, chainName string, chainCfg *p
 		return err
 	}
 	return node.PersistDataDirNetworkBinding(cfg, chainCfg, *genesisHash)
+}
+
+// persistReplayProfile1Binding writes the datadir network binding of a
+// profile-1 replay target: chain private, profile n42, the genesis's chain
+// config and hash.
+func persistReplayProfile1Binding(targetPath string, g *conf.Genesis) error {
+	gb, _, err := (&internalcore.GenesisBlock{GenesisConfig: g}).ToBlock()
+	if err != nil {
+		return err
+	}
+	cfg := DefaultConfig
+	cfg.NodeCfg.DataDir = targetPath
+	cfg.NodeCfg.Chain = "private"
+	cfg.NodeCfg.Profile = string(params.ExecutionProfileN42)
+	cfg.ChainCfg = g.Config
+	return node.PersistDataDirNetworkBinding(&cfg, g.Config, gb.Hash())
 }
 
 // loadReplayProfile1 reads the profile-1 genesis and the validators' BLS
