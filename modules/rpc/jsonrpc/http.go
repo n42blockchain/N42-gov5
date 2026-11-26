@@ -25,6 +25,7 @@ package jsonrpc
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -175,9 +177,31 @@ type httpServerConn struct {
 }
 
 func newHTTPServerConn(r *http.Request, w http.ResponseWriter) ServerCodec {
-	body := io.LimitReader(r.Body, maxRequestContentLength)
-	conn := &httpServerConn{Reader: body, Writer: w, r: r}
+	return newHTTPServerConnBody(r, w, r.Body)
+}
+
+// newHTTPServerConnBody serves the request from body, which may be a
+// decompressing reader over r.Body. The limit applies to the decoded bytes.
+func newHTTPServerConnBody(r *http.Request, w http.ResponseWriter, body io.Reader) ServerCodec {
+	conn := &httpServerConn{Reader: io.LimitReader(body, maxRequestContentLength), Writer: w, r: r}
 	return NewCodec(conn)
+}
+
+// gzipRequestBody returns a reader over the decoded request body when the
+// client sent "Content-Encoding: gzip". Blockscout (Tesla compression
+// middleware) compresses its trace_*, debug_* and eth_getBlockReceipts
+// requests by default.
+func gzipRequestBody(r *http.Request) (io.ReadCloser, bool, error) {
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))) {
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, true, err
+		}
+		return zr, true, nil
+	default:
+		return nil, false, nil
+	}
 }
 
 func (t *httpServerConn) Close() error { return nil }
@@ -208,8 +232,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, "Origin", origin)
 	}
 
+	var body io.Reader = r.Body
+	if zr, gz, err := gzipRequestBody(r); gz {
+		if err != nil {
+			http.Error(w, "invalid gzip request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer zr.Close()
+		body = zr
+	}
 	w.Header().Set("content-type", contentType)
-	codec := newHTTPServerConn(r, w)
+	codec := newHTTPServerConnBody(r, w, body)
 	defer codec.close()
 	s.serveSingleRequest(ctx, codec)
 }
