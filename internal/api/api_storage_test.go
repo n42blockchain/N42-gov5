@@ -59,6 +59,9 @@ func setupStorageTestAPI(t *testing.T) *BlockChainAPI {
 			Alloc: conf.GenesisAlloc{
 				contract: {
 					Balance: "0x0",
+					// A contract has nonce 1 (EIP-161); nonce 0 with storage is an empty
+					// account that genesis validation rejects.
+					Nonce: 1,
 					// Storage entries for testing.
 					Storage: map[types.Hash]types.Hash{
 						types.HexToHash("0x01"): types.HexToHash("0x000000000000000000000000000000000000000000000000000000000000000a"),
