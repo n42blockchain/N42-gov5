@@ -147,6 +147,12 @@ func NewP1Auditor(cfg *params.ChainConfig, genesis *block.Header) (*P1Auditor, e
 	if !cfg.IsProfile1() || cfg.HotStuff == nil || cfg.HotStuff.CommitteePool == nil {
 		return nil, errors.New("audit: not a profile-1 config with a committee pool")
 	}
+	// The block-format globals a profile-1 node sets in NewBlockChain:
+	// Ethereum transactions trie (A12), deferred execution from block 0
+	// (A10).
+	block.UseEthereumTxRoot = true
+	block.TxRootBlake3Time = 0
+	block.DeferredExecutionTime = 1
 	pc := cfg.HotStuff.CommitteePool
 	seedB, err := hexutil.Decode(pc.SeedHex)
 	if err != nil || len(seedB) != 32 {
