@@ -277,20 +277,13 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 			}
 		}
 	}
-	if dbErr := s.api.Database().View(ctx, func(t kv.Tx) error {
-		if tx != nil {
-			return nil
-		}
-		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
-		if err != nil {
-			return err
+	if tx == nil {
+		if tx, blockHash, blockNumber, index, err = s.api.readCanonicalTransaction(ctx, avmtypes.ToastHash(hash)); err != nil {
+			return nil, err
 		}
 		if tx == nil {
-			log.Tracef("rawdb.ReadTransactionByHash, txhash = %v not found\n", hash)
+			log.Tracef("readCanonicalTransaction, txhash = %v not found\n", hash)
 		}
-		return nil
-	}); dbErr != nil {
-		return nil, dbErr
 	}
 	// Cold tier: a tx aged out of the MDBX TxLookup table is resolved via the
 	// txlookup RecSplit segment index → block → (tx, index). Same self-verifying
@@ -414,10 +407,7 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 			return newRPCTransaction(lookup.tx, lookup.blockHash, lookup.blockNumber, lookup.index, headerBaseFee.ToBig()), nil
 		}
 	}
-	if err := s.api.Database().View(ctx, func(t kv.Tx) error {
-		tx, blockHash, blockNumber, index, err = rawdb.ReadTransactionByHash(t, avmtypes.ToastHash(hash))
-		return err
-	}); err != nil {
+	if tx, blockHash, blockNumber, index, err = s.api.readCanonicalTransaction(ctx, avmtypes.ToastHash(hash)); err != nil {
 		return nil, err
 	}
 
@@ -556,4 +546,50 @@ func toHexSlice(b [][]byte) []string {
 		r[i] = hexutil.Encode(b[i])
 	}
 	return r
+}
+
+// readCanonicalTransaction resolves a mined transaction the way
+// rawdb.ReadTransactionByHash does (TxLookup -> canonical hash -> body), but
+// takes the body from the BlockChain block cache. An explorer asks for every
+// transaction of a block in turn; decoding the whole body per call made one
+// block's receipts cost O(n^2) transaction decodes.
+func (api *API) readCanonicalTransaction(ctx context.Context, hash types.Hash) (*transaction.Transaction, types.Hash, uint64, uint64, error) {
+	var (
+		number    *uint64
+		blockHash types.Hash
+	)
+	if err := api.Database().View(ctx, func(t kv.Tx) error {
+		var err error
+		if number, err = rawdb.ReadTxLookupEntry(t, hash); err != nil || number == nil {
+			return err
+		}
+		blockHash, err = rawdb.ReadCanonicalHash(t, *number)
+		return err
+	}); err != nil {
+		return nil, types.Hash{}, 0, 0, err
+	}
+	if number == nil || blockHash == (types.Hash{}) {
+		return nil, types.Hash{}, 0, 0, nil
+	}
+	if bc := api.BlockChain(); bc != nil {
+		if blk := bc.GetBlock(blockHash, *number); blk != nil {
+			for i, tx := range blk.Transactions() {
+				if tx.Hash() == hash {
+					return tx, blockHash, *number, uint64(i), nil
+				}
+			}
+		}
+	}
+	// Not in the assembled block (or no chain): the direct body read.
+	var (
+		tx                 *transaction.Transaction
+		bh                 types.Hash
+		blockNumber, index uint64
+	)
+	err := api.Database().View(ctx, func(t kv.Tx) error {
+		var err error
+		tx, bh, blockNumber, index, err = rawdb.ReadTransactionByHash(t, hash)
+		return err
+	})
+	return tx, bh, blockNumber, index, err
 }
