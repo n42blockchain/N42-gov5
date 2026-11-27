@@ -52,9 +52,18 @@ func TestCatchUpHeldTailAsksCommitQCOnceWithoutRefetch(t *testing.T) {
 	if len(asked) != 1 || asked[0].Number != 146 || asked[0].Hash != all[146].Hash() {
 		t.Fatalf("commit_qc requests = %+v, want exactly one for the tail top 146", asked)
 	}
+	// The requests (catchUpWindowBlocks windows) cover 1..146 once each:
+	// no block is asked for twice.
 	ranges := append(p1.askedRanges(), p2.askedRanges()...)
-	if len(ranges) != 1 || ranges[0] != [2]uint64{1, 146} {
-		t.Fatalf("range requests = %v, want exactly [1 146]", ranges)
+	next := uint64(1)
+	for _, r := range ranges {
+		if r[0] != next || r[1] < r[0] {
+			t.Fatalf("range requests = %v, want consecutive windows from 1 with no block asked twice", ranges)
+		}
+		next = r[1] + 1
+	}
+	if next != 147 {
+		t.Fatalf("range requests = %v, want them to end at 146", ranges)
 	}
 	if got := net.chain.appliedNumber(); got != 146 {
 		t.Fatalf("applied head = %d, want 146", got)

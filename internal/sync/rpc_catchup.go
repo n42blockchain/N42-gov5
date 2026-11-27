@@ -289,7 +289,38 @@ func (s *Service) enqueueCatchUpNow(target uint64) {
 	}
 }
 
+// catchUpTo runs catch-up rounds towards target while they make progress.
+// A round fetches at most catchUpWindowBlocks per request (plus anchor
+// look-ahead windows), so a long gap takes several rounds; each one is the
+// round the next tick would run, started at once instead of 8 s later.
 func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
+	defer s.dropCatchUpPrefetch()
+	var from uint64
+	for {
+		before := currentBlockNumberOrZero(s.cfg.chain)
+		s.catchUpWindowCut = 0
+		s.catchUpRound(target, peers, from)
+		after := currentBlockNumberOrZero(s.cfg.chain)
+		// Only a round whose last response was a full window, imported,
+		// ending below target continues; a round that ended for any other
+		// reason (peers stored no more, failures, a held tail) ends as before.
+		// The continuation starts right above that window: it extends the
+		// block just imported from the same peer, so it needs neither the
+		// fork-recovery start one block lower nor branch-switch authority,
+		// and it matches the window prefetched meanwhile.
+		from = s.catchUpWindowCut
+		if from == 0 || after <= before && from <= after+1 || from > target || s.ctx.Err() != nil {
+			return
+		}
+		if peers = s.catchUpPeerSet(); len(peers) == 0 {
+			return
+		}
+	}
+}
+
+// catchUpRound is one catch-up round towards target. from > 0 continues a
+// round cut at the window cap: the round starts at from, without authority.
+func (s *Service) catchUpRound(target uint64, peers []peer.ID, from uint64) {
 	// S1 enforce: a held tail that a later anchor (Decide, commit target)
 	// authenticated is executed first, before anything new is fetched.
 	if syncanchor.Current() == syncanchor.Enforce {
@@ -316,7 +347,9 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	// consensus start height lack the magic and keep the head+1 path, since
 	// re-inserting one trips VerifyHeader -> BAD BLOCK. Re-inserting our own
 	// canonical head (the no-fork case) is a harmless already-known skip.
-	if self.Uint64() > 0 && headIsConsensusBlock(s.cfg.chain) {
+	if from > 0 {
+		start = from
+	} else if self.Uint64() > 0 && headIsConsensusBlock(s.cfg.chain) {
 		start = self.Uint64()
 		authorized = true
 	}
@@ -337,8 +370,9 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	// re-sending the identical failing range on every tick. Bounded by
 	// log2(maxRequestBlocks) extra rounds, and not counted as a backtrack.
 	const maxForkBacktrack = 32
-	countCap := uint64(maxRequestBlocks)
+	countCap := catchUpWindowBlocks()
 	lookahead := 0
+	lookaheadHead := currentBlockNumberOrZero(s.cfg.chain)
 	var lastLookahead uint64
 	askedCommitQC := false
 	peers = s.orderCatchUpPeers(peers, start)
@@ -358,7 +392,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 		}
 		log.Info("hotstuff catch-up: requesting range",
 			"from", start, "to", end, "target", target, "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
-		done, allRejected := s.catchUpRange(req, peers, authorized, start, end)
+		done, allRejected := s.catchUpRangeTo(req, peers, authorized, start, end, target)
 		if allRejected && count > 1 {
 			countCap = count / 2
 			log.Info("hotstuff catch-up: every peer rejected the range, shrinking",
@@ -373,13 +407,19 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 			// tick.
 			// The same start twice in a row made no progress: stop fetching
 			// and ask commit_qc/1 instead of re-requesting the same blocks.
+			// The look-ahead budget bounds rounds that make no progress; one
+			// that keeps moving the head keeps going (windowed requests need
+			// one look-ahead per window).
+			if head := currentBlockNumberOrZero(s.cfg.chain); head > lookaheadHead {
+				lookahead, lookaheadHead = 0, head
+			}
 			if next, ok := s.anchorNextStart(target, authorized); ok && lookahead < maxAnchorLookahead && next != lastLookahead {
 				lookahead++
 				lastLookahead = next
 				log.Info("hotstuff catch-up: fetching further for an anchor",
 					"from", next, "target", target, "lookahead", lookahead)
 				start = next
-				countCap = uint64(maxRequestBlocks)
+				countCap = catchUpWindowBlocks()
 				continue
 			}
 			// v1.1: a tail no fetched header anchors is anchored by
@@ -396,7 +436,7 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 						if authorized && reached == cur {
 							start = cur
 						}
-						countCap = uint64(maxRequestBlocks)
+						countCap = catchUpWindowBlocks()
 						continue
 					}
 				}
@@ -418,6 +458,13 @@ func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 // reports that no peer returned a single block (every request errored or came
 // back empty), which a smaller range may fix.
 func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest uint64) (done, allRejected bool) {
+	return s.catchUpRangeTo(req, peers, authorized, start, highest, highest)
+}
+
+// catchUpRangeTo is catchUpRange with the round's target: while a response
+// is imported, the next window above it (up to target) is prefetched from
+// the same peer (catchup_prefetch.go).
+func (s *Service) catchUpRangeTo(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest, target uint64) (done, allRejected bool) {
 	sawUnknownAncestor := false
 	progressed := false
 	heldOnly := false // S1 enforce: a range arrived but nothing in it was anchored yet
@@ -437,7 +484,7 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 		timeout, withinClaim := s.catchUpPeerRequest(pid, req, highest)
 		ctx, cancel := context.WithTimeout(s.ctx, timeout)
 		tReq := time.Now()
-		fetched, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
+		fetched, err := s.catchUpFetch(ctx, pid, req)
 		cancel()
 		if err != nil {
 			rejected++
@@ -491,7 +538,20 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 				}
 			}
 		}
+		// A full window below target: fetch the next one while this one
+		// executes. The round's last response decides whether it stopped
+		// at the window cap (catchUpTo).
+		s.catchUpWindowCut = 0
+		var cutNext uint64
+		if last := fetched[len(fetched)-1]; last != nil && uint64(len(fetched)) == req.Count && last.Number64().Uint64() < target &&
+			last.Hash() == blocks[len(blocks)-1].Hash() {
+			cutNext = last.Number64().Uint64() + 1
+			s.startCatchUpPrefetch(pid, cutNext, target)
+		}
 		blocks, imported, ierr := s.insertCatchUpBlocks(s.ctx, blocks, authorized)
+		if ierr == nil && imported == len(blocks) {
+			s.catchUpWindowCut = cutNext
+		}
 		if len(blocks) == 0 {
 			s.noteCatchUpInvalid(pid)
 			log.Debug("hotstuff catch-up: dropped known bad range", "peer", pid.String()[:12])

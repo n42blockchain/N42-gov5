@@ -110,6 +110,12 @@ func (s *Service) SetBlockImportNotifier(n BlockImportNotifier) {
 type Service struct {
 	// statusKick: a catchUpOnStatus kicker is running (rpc_status.go).
 	statusKick atomic.Bool
+	// catchUpPrefetch: the window fetched ahead of the import (catchup_prefetch.go).
+	catchUpPrefetch catchUpPrefetcher
+	// catchUpWindowCut: the height above the full window below its target
+	// that the current catch-up round's last response imported, 0 if none
+	// (owner goroutine only, rpc_catchup.go).
+	catchUpWindowCut uint64
 
 	// deferredPending: pushed blocks whose deferred-execution check must run
 	// again once their parent is applied (keyed by parent hash).
