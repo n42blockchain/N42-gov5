@@ -3536,6 +3536,17 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	// as "undo record is ahead of this tree" followed by a disk reload whose
 	// root matched no header in the undo window. Peel before unwinding.
 	bc.PeelDanglingQMDBAppends()
+	// Plain forward import (the incoming block extends the applied head, the
+	// common case of every catch-up and follower import): decide it in a
+	// read-only transaction. The write transaction below would change nothing
+	// on this path, but under the default durable sync mode each one still
+	// costs a write-lock round and a commit with fsync (~2.5 ms a block on a
+	// from-genesis catch-up). The answer is the one unwindForReimportTx
+	// would give at its top, read from the same committed state.
+	if fwd, ferr := bc.forwardImportNoop(n, parentHash); ferr == nil && fwd {
+		bc.qmdbRootComputer.CommitFlushed()
+		return nil
+	}
 	mutated := false
 	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
 	// The speculative computer is NOT voided here any more (359e1f89 did,
@@ -3596,30 +3607,54 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	return err
 }
 
+// forwardImportNoop reports, from a read-only transaction, whether
+// unwindForReimportTx would return at its top without touching anything for
+// block n on parentHash (see appliedHeadForUnwind).
+func (bc *BlockChain) forwardImportNoop(n uint64, parentHash types.Hash) (noop bool, err error) {
+	err = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		_, _, noop, err = appliedHeadForUnwind(tx, n, parentHash)
+		return err
+	})
+	return noop, err
+}
+
+// appliedHeadForUnwind reads the applied head (the QMDB applied marker, or
+// the stored head on fresh replay data) and reports whether block n on
+// parentHash needs no unwind: it extends the applied head (plain forward
+// import), its parent's state is not applied yet (ValidateBody / the future
+// queue handle it), or nothing is stored.
+func appliedHeadForUnwind(tx kv.Getter, n uint64, parentHash types.Hash) (appliedNum uint64, appliedHash types.Hash, noop bool, err error) {
+	appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil {
+		return 0, types.Hash{}, false, err
+	}
+	if !ok {
+		// Fresh replay data: the applied chain is the stored head.
+		hn := rawdb.ReadCurrentBlockNumber(tx)
+		if hn == nil {
+			return 0, types.Hash{}, true, nil
+		}
+		appliedNum = *hn
+		ch, cerr := rawdb.ReadCanonicalHash(tx, appliedNum)
+		if cerr != nil {
+			return 0, types.Hash{}, false, cerr
+		}
+		appliedHash = ch
+	}
+	if appliedNum == n-1 && appliedHash == parentHash {
+		return appliedNum, appliedHash, true, nil // plain forward import — the incoming block extends the applied head
+	}
+	if appliedNum < n-1 {
+		return appliedNum, appliedHash, true, nil // parent's state not applied yet — ValidateBody/future-queue handles it
+	}
+	return appliedNum, appliedHash, false, nil
+}
+
 func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, authorizedSwitch bool, mutated *bool) error {
 	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
-		if err != nil {
+		appliedNum, appliedHash, noop, err := appliedHeadForUnwind(tx, n, parentHash)
+		if err != nil || noop {
 			return err
-		}
-		if !ok {
-			// Fresh replay data: the applied chain is the stored head.
-			hn := rawdb.ReadCurrentBlockNumber(tx)
-			if hn == nil {
-				return nil
-			}
-			appliedNum = *hn
-			ch, cerr := rawdb.ReadCanonicalHash(tx, appliedNum)
-			if cerr != nil {
-				return cerr
-			}
-			appliedHash = ch
-		}
-		if appliedNum == n-1 && appliedHash == parentHash {
-			return nil // plain forward import — the incoming block extends the applied head
-		}
-		if appliedNum < n-1 {
-			return nil // parent's state not applied yet — ValidateBody/future-queue handles it
 		}
 		// Committed-BLOCK floor (HotStuff-2: only the 2-chain-committed block is
 		// final): a block ON the committed chain must never be reverted.
