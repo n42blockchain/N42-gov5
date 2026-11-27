@@ -141,6 +141,8 @@ func (s *Service) sendRPCStatusRequest(ctx context.Context, id peer.ID) error {
 	s.cfg.p2p.Peers().Scorers().PeerStatusScorer().SetPeerStatus(id, msg, err)
 	if s.cfg.p2p.Peers().IsBad(id) {
 		s.disconnectBadPeer(s.ctx, id)
+	} else if err == nil {
+		s.catchUpOnStatus(msg)
 	}
 	return err
 }
@@ -221,7 +223,25 @@ func (s *Service) statusRPCHandler(ctx context.Context, msg interface{}, stream 
 		return err
 	}
 	closeStream(stream)
+	s.catchUpOnStatus(m)
 	return nil
+}
+
+// catchUpOnStatus starts a catch-up as soon as a validated status shows a
+// peer ahead of the local head, instead of leaving it to the next 8 s
+// catchUpTick. A restarted or wiped node otherwise idles for up to one full
+// interval after its peers connect (observed: 8 s of a 25 s from-genesis
+// catch-up). The target and every rule after it are the tick's own: this
+// only moves the moment the tick's check runs.
+func (s *Service) catchUpOnStatus(m *sync_pb.Status) {
+	if s.cfg.blockImportNotifier == nil || m == nil {
+		return
+	}
+	self := currentBlockNumber(s.cfg.chain)
+	if self == nil || utils.ConvertH256ToUint256Int(m.CurrentHeight).Cmp(self) <= 0 {
+		return
+	}
+	go s.catchUpTick()
 }
 
 func (s *Service) respondWithStatus(_ context.Context, stream network.Stream) error {
