@@ -74,21 +74,87 @@ func (e *ConsensusEngine) observeProposal(p *Proposal, pk common.PublicKey, sign
 	return true
 }
 
+// lateProposalWindow is how many views back a proposal first seen after its
+// view closed is kept for a conflict (AM34 item 6 requires at least 3).
+const lateProposalWindow = lateVoteWindow
+
 // checkStaleProposal handles a proposal for a view the node has already left:
 // it is never acted on, but if it conflicts with the recorded first proposal
 // of that view and its signature verifies under the same leader's key it is
 // recorded as equivocation.
+//
+// When the view has no recorded proposal (both proposals of a pair arrived
+// after the view closed), the first stale one is kept unverified for
+// lateProposalWindow views; signatures are checked only when a second one
+// conflicts with it (E15, AM34 item 6).
 func (e *ConsensusEngine) checkStaleProposal(p *Proposal) {
-	if p == nil || e.proposalSeen == nil {
+	if p == nil {
 		return
 	}
-	rec, ok := e.proposalSeen[p.View]
-	if !ok || rec.proposer != p.Proposer || rec.blockHash == p.BlockHash {
+	if rec, ok := e.proposalSeen[p.View]; ok {
+		if rec.proposer != p.Proposer || rec.blockHash == p.BlockHash {
+			return
+		}
+		signed := e.proposalSigningMessage(p.View, p.BlockHash)
+		if !VerifyBLSSignature(p.Signature, rec.pk, signed) {
+			return
+		}
+		e.observeProposal(p, rec.pk, signed)
+		return
+	}
+	e.checkLateProposal(p)
+}
+
+// checkLateProposal is checkStaleProposal for a view with no recorded proposal.
+func (e *ConsensusEngine) checkLateProposal(p *Proposal) {
+	current := e.roundState.CurrentView()
+	if p.View >= current || current-p.View > lateProposalWindow {
+		return
+	}
+	vs := e.validatorSetForView(p.View)
+	if e.p1Set != nil {
+		vs = e.p1Set
+	}
+	if vs == nil {
+		vs = e.validatorSet()
+	}
+	if p.Proposer != e.LeaderForView(p.View, vs) {
+		return
+	}
+	pk, err := vs.GetPublicKey(p.Proposer)
+	if err != nil {
+		return
+	}
+	keep := func() {
+		if e.lateProposals == nil {
+			e.lateProposals = make(map[ViewNumber]*Proposal)
+		}
+		for v := range e.lateProposals {
+			if current-v > lateProposalWindow {
+				delete(e.lateProposals, v)
+			}
+		}
+		e.lateProposals[p.View] = &Proposal{View: p.View, BlockHash: p.BlockHash,
+			Proposer: p.Proposer, Signature: append([]byte(nil), p.Signature...)}
+	}
+	first, seen := e.lateProposals[p.View]
+	if !seen {
+		keep()
+		return
+	}
+	if first.BlockHash == p.BlockHash {
+		return
+	}
+	firstSigned := e.proposalSigningMessage(first.View, first.BlockHash)
+	if !VerifyBLSSignature(first.Signature, pk, firstSigned) {
+		keep() // a forged first: the slot goes to this one
 		return
 	}
 	signed := e.proposalSigningMessage(p.View, p.BlockHash)
-	if !VerifyBLSSignature(p.Signature, rec.pk, signed) {
+	if !VerifyBLSSignature(p.Signature, pk, signed) {
 		return
 	}
-	e.observeProposal(p, rec.pk, signed)
+	delete(e.lateProposals, p.View)
+	e.observeProposal(first, pk, firstSigned) // records the first
+	e.observeProposal(p, pk, signed)          // the pair: evidence
 }

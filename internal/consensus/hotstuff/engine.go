@@ -182,6 +182,9 @@ type ConsensusEngine struct {
 	// bounded to the last proposalEquivocationWindow views (FIFO order).
 	proposalSeen      map[ViewNumber]*proposalRecord
 	proposalSeenOrder []ViewNumber
+	// Proposals first seen after their view closed, unverified, for the
+	// last lateProposalWindow views (proposal_equivocation.go).
+	lateProposals map[ViewNumber]*Proposal
 
 	// twoPhaseVote (chainspec hotstuff.twoPhaseVoteGate) moves the execution
 	// guarantee from Round 1 to Round 2 — the order-then-execute shape every
