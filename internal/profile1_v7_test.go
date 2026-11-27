@@ -289,10 +289,11 @@ func TestProfile1VectorV7(t *testing.T) {
 	addAfter("profile-1 standard genesis", p1)
 	addAfter("V1 genesis_8s (T = 1)", []at{{0, p8.LeaderTenure, p8.EpochLength, true}, {57, p8.LeaderTenure, p8.EpochLength, true}, {10800, p8.LeaderTenure, p8.EpochLength, true}})
 	addAfter("AM32", []at{{96, 8, 50, true}, {98, 8, 50, true}, {100, 8, 50, true}, {101, 8, 50, true}, {103, 8, 50, true}, {98, 8, 100, true}, {101, 8, 100, true}})
-	addAfter("edge", []at{{0, 8, 10, true}, {1, 8, 10, true}, {math.MaxUint64, 8, 0, true}, {math.MaxUint64 - 8, 8, 0, true}, {math.MaxUint64 - 1, 1, 0, true}})
+	addAfter("edge", []at{{0, 8, 10, true}, {1, 8, 10, true}, {math.MaxUint64 - 8, 8, 0, true}, {math.MaxUint64 - 1, 1, 0, true}})
 	for _, r := range out.ViewAfter {
-		// x = 2^64-1 has no next view; gov5 returns x + 1 wrapped to 0.
-		if r.Result <= r.TCView && r.TCView != math.MaxUint64 {
+		// AM34: a TC for view 2^64-1 is invalid, so view_after_tc is not
+		// defined there and the set carries no such row.
+		if r.Result <= r.TCView {
 			t.Fatalf("view_after_tc(%d) = %d does not move forward", r.TCView, r.Result)
 		}
 	}
