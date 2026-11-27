@@ -290,7 +290,18 @@ func TestProfile1ForbiddenEnv(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("forbidden = %v, want %v", got, want)
 	}
-	if got := Profile1ForbiddenEnv([]string{"N42_SYNC_ANCHOR=enforce", "N42_MINER_FILL_GAS=1"}); len(got) != 0 {
+	if got := Profile1ForbiddenEnv([]string{"N42_SYNC_ANCHOR=enforce", "N42_MINER_FILL_GAS=1", "N42_MDBX_SYNC=durable"}); len(got) != 0 {
 		t.Fatalf("permitted settings refused: %v", got)
+	}
+}
+
+// AM35: a commit vote certifies a durable block, so profile 1 refuses the
+// chaindata fsync opt-out (and any spelling other than the default).
+func TestProfile1RefusesMDBXSafeNoSync(t *testing.T) {
+	for _, v := range []string{"safe-nosync", "SAFE-NOSYNC", "", "nosync"} {
+		got := Profile1ForbiddenEnv([]string{"N42_MDBX_SYNC=" + v})
+		if !reflect.DeepEqual(got, []string{"N42_MDBX_SYNC"}) {
+			t.Fatalf("N42_MDBX_SYNC=%q: forbidden = %v, want refused", v, got)
+		}
 	}
 }

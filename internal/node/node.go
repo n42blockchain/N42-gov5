@@ -3858,6 +3858,10 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 //	              or power loss rolls the DB back to the last checkpoint,
 //	              losing recent commits but not integrity. A validator that
 //	              loses blocks this way re-syncs them from its peers.
+//
+// A profile-1 chain refuses the variable unless it reads "durable"
+// (params.Profile1ForbiddenEnv, AM35): its commit votes certify durably
+// written blocks, so the opt-out never reaches this function there.
 func mdbxSyncModeOr(opts mdbx.MdbxOpts, logger log2.Logger) mdbx.MdbxOpts {
 	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("N42_MDBX_SYNC"))); v {
 	case "", "durable":

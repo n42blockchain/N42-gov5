@@ -48,6 +48,11 @@ var profile1ForbiddenEnvPrefixes = []string{
 // prescribes anyway.
 var profile1EnvAllowedValue = map[string]string{
 	"N42_SYNC_ANCHOR": "enforce", // anchored ranges are enforced (standard §3)
+	// AM35: a commit vote certifies a durably written block, and the vote
+	// gate trusts every chaindata commit to be fsynced in order (a durable
+	// child implies durable ancestors). safe-nosync would break both, so
+	// only the default spelled out is accepted.
+	"N42_MDBX_SYNC": "durable",
 }
 
 // Profile1ForbiddenEnv returns, sorted, the names in environ ("KEY=VALUE"
