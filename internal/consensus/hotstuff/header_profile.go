@@ -211,7 +211,7 @@ func (h *HotStuff) checkProfile1QC(chain consensus.ChainHeaderReader, header, pa
 		return fmt.Errorf("%w: %v", ErrProfile1QC, err)
 	}
 	msg := H2V4CommitSigningMessage(identity, qc.View, qc.BlockHash, types.Hash{})
-	if err := verifyAggregateSignature(qc, vs, msg, "CommitQC"); err != nil {
+	if err := h.verifyProfile1QCSig(qc, vs, msg); err != nil {
 		return fmt.Errorf("%w: %v", ErrProfile1QC, err)
 	}
 

@@ -45,6 +45,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/contracts/deposit"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -539,4 +540,19 @@ func (bc *BlockChain) EarliestBlock() uint64 {
 		earliest = a
 	}
 	return earliest
+}
+
+// headerPrewarmEngine is the optional engine side of PrewarmHeaders.
+type headerPrewarmEngine interface {
+	PrewarmHeaders(chain consensus.ChainHeaderReader, headers []block.IHeader)
+}
+
+// PrewarmHeaders lets the consensus engine run the signature checks of a
+// batch of headers ahead of a one-block-at-a-time import (catch-up), so
+// VerifyHeader finds them cached. It decides nothing; engines without the
+// hook ignore it.
+func (bc *BlockChain) PrewarmHeaders(headers []block.IHeader) {
+	if p, ok := bc.engine.(headerPrewarmEngine); ok {
+		p.PrewarmHeaders(bc, headers)
+	}
 }
