@@ -376,8 +376,9 @@ func TestRotateOnTimeoutDeadTenureLeader(t *testing.T) {
 			if first.view != 16 {
 				t.Fatalf("off: first post-stall commit view %d, want 16", first.view)
 			}
-			// 8 timeouts with doubling: 1+2+4+8+10*4 = 55 s at base 1 s / max 10 s.
-			if gap < 40*rotSimBase {
+			// 8 timeouts, doubling once per g = 3 (AM33, n = 7):
+			// 1+1+1+2+2+2+4+4 = 17 s at base 1 s / max 10 s.
+			if gap < 15*rotSimBase {
 				t.Fatalf("off: stall %v, expected the old per-view backoff stall", gap)
 			}
 		}

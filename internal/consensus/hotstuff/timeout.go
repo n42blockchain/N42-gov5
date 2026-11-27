@@ -38,7 +38,7 @@ func (e *ConsensusEngine) onTimeout() error {
 	if e.roundState.Phase() == PhaseTimedOut {
 		// Already timed out: re-broadcast timeout for late arrivals.
 		log.Warn("view timed out (repeat, re-broadcasting)", "view", view)
-		e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
+		e.resetPacemaker(view)
 
 		message := e.timeoutSigningMessage(view)
 		signature := e.secretKey.Sign(message)
@@ -98,7 +98,7 @@ func (e *ConsensusEngine) onTimeout() error {
 	}
 
 	e.roundState.Timeout()
-	e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
+	e.resetPacemaker(view)
 
 	// Keep importedBlocks/pendingTxRoots across the timeout: a block we imported
 	// we still have, and the new-view leader re-proposes it. Wiping here caused
@@ -309,7 +309,7 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 	// This is a timeout-driven catch-up, not a proposal view: enter timed-out
 	// phase immediately and help the target view form its strong TC.
 	e.roundState.Timeout()
-	e.pacemaker.ResetForView(targetView, e.roundState.ConsecutiveTimeouts())
+	e.resetPacemaker(targetView)
 	e.timeoutCollector = NewTimeoutCollector(targetView, e.validatorSet().Len())
 
 	for _, observed := range targetTimeouts {

@@ -2,8 +2,9 @@
 // This file is part of the N42 library.
 //
 // Pacemaker drives HotStuff view timeouts with exponential backoff.
-// Implements the Jolteon-style formula
-// min(effective_base * 2^consecutive_timeouts, max_timeout).
+// Implements the Jolteon-style formula with the AM33 backoff group:
+// min(effective_base * 2^floor(consecutive_timeouts / g), max_timeout),
+// g = min(f+1, 3), f = floor((n-1)/3) for a committee of n.
 // In adaptive mode the effective base tracks max(configured_base,
 // 2 * p95 commit latency), preventing premature timeouts while
 // retaining responsiveness under healthy network conditions.
@@ -19,7 +20,8 @@ import (
 
 // Pacemaker manages view timeouts with exponential backoff (Jolteon-style).
 //
-// Timeout formula: min(effective_base * 2^consecutive_timeouts, max_timeout)
+// Timeout formula: min(effective_base * 2^floor(consecutive_timeouts / g), max_timeout)
+// with g = BackoffGroupSize(n) (AM33). Until SetCommitteeSize is called g = 1.
 //
 // Adaptive mode: when commit latencies are observed, the effective base timeout
 // adapts to max(configured_base, 2 × p95_latency). This prevents premature timeouts
@@ -39,6 +41,26 @@ type Pacemaker struct {
 	// Adaptive timeout: ring buffer of recent commit latencies.
 	recentLatencies []time.Duration
 	latencyCursor   uint64
+
+	// committeeSize is the validator-set size n the backoff group is
+	// derived from (AM33); 0 = unset (group 1).
+	committeeSize int
+}
+
+// BackoffGroupSize is AM33's group g = min(f+1, 3), f = floor((n-1)/3): the
+// timeout doubles once per g consecutive timeouts. n <= 0 gives 1.
+func BackoffGroupSize(n int) uint32 {
+	if n <= 0 {
+		return 1
+	}
+	return uint32(min((n-1)/3+1, 3))
+}
+
+// SetCommitteeSize sets the committee size n the backoff group uses.
+func (p *Pacemaker) SetCommitteeSize(n int) {
+	p.mu.Lock()
+	p.committeeSize = n
+	p.mu.Unlock()
 }
 
 const (
@@ -105,13 +127,14 @@ func (p *Pacemaker) effectiveBaseTimeout() time.Duration {
 }
 
 // TimeoutDuration returns the timeout duration for the given number of consecutive timeouts.
-// Uses exponential backoff: effective_base * 2^consecutive_timeouts, capped at max_timeout.
+// Uses exponential backoff (AM33): effective_base * 2^floor(consecutive_timeouts / g),
+// capped at max_timeout, g = BackoffGroupSize(committee size).
 func (p *Pacemaker) TimeoutDuration(consecutiveTimeouts uint32) time.Duration {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	base := p.effectiveBaseTimeout()
-	exp := consecutiveTimeouts
+	exp := consecutiveTimeouts / BackoffGroupSize(p.committeeSize)
 	if exp > maxBackoffExponent {
 		exp = maxBackoffExponent
 	}

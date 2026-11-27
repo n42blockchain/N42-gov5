@@ -494,7 +494,26 @@ func NewConsensusEngineWithEpochManager(
 	// committed view is reported under its real view number.
 	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
+	e.syncPacemakerCommittee()
 	return e
+}
+
+// syncPacemakerCommittee hands the current validator-set size to the
+// pacemaker, whose backoff group (AM33) derives from it.
+func (e *ConsensusEngine) syncPacemakerCommittee() {
+	if e.epochManager == nil {
+		return
+	}
+	if vs := e.epochManager.CurrentValidatorSet(); vs != nil {
+		e.pacemaker.SetCommitteeSize(int(vs.Len()))
+	}
+}
+
+// resetPacemaker restarts the view timer for view with the current
+// consecutive-timeout count and committee size.
+func (e *ConsensusEngine) resetPacemaker(view ViewNumber) {
+	e.syncPacemakerCommittee()
+	e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
 }
 
 // WithRecoveredState creates an engine with recovered state from a persisted snapshot.
@@ -537,6 +556,7 @@ func WithRecoveredState(
 	}
 	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
+	e.syncPacemakerCommittee()
 	return e
 }
 
@@ -593,7 +613,7 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
-	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+	e.resetPacemaker(view)
 	e.viewTiming = newViewTiming(view)
 	// Align the epoch counter with the recovered view. A mid-chain restart with
 	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far
@@ -1138,7 +1158,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	}
 	e.logVoteIntake()
 	e.roundState.AdvanceView(newView)
-	e.pacemaker.ResetForView(newView, e.roundState.ConsecutiveTimeouts())
+	e.resetPacemaker(newView)
 	e.voteCollector = nil
 	e.commitCollector = nil
 	e.timeoutCollector = nil
