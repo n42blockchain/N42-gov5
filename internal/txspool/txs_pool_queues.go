@@ -144,7 +144,10 @@ func (pool *TxsPool) promoteExecutables(accounts []types.Address) []*transaction
 				pool.all.Remove(tx.Hash())
 			}
 		}
-		pool.priced.Removed(len(caps))
+		// Every transaction dropped from `all` above is a stale entry in the
+		// priced heaps; count them all, not only the caps, or included txs
+		// leaving the queue are never reheaped out of the priced list.
+		pool.priced.Removed(len(forwards) + len(drops) + len(caps))
 		queuedGauge.Add(-(len(forwards) + len(drops) + len(caps)))
 		if pool.locals.contains(addr) {
 			localGauge.Add(-(len(forwards) + len(drops) + len(caps)))
@@ -318,9 +321,12 @@ func (pool *TxsPool) truncateQueue() {
 // executable/pending queue and any subsequent transactions that become unexecutable
 // are moved back into the future queue.
 //
-// Note: transactions are not marked as removed in the priced list because re-heaping
-// is always explicitly triggered by SetBaseFee and it would be unnecessary and wasteful
-// to trigger a re-heap in this function.
+// Transactions dropped here are marked as removed in the priced list. Upstream
+// geth skips that because its reset always reheaps via SetBaseFee, but here
+// SetBaseFee only reheaps when the base fee changes; on a flat base fee every
+// included transaction stayed referenced by the priced heaps forever (~700
+// bytes per gossiped tx of live heap on a validator whose blocks mostly come
+// from other proposers).
 func (pool *TxsPool) demoteUnexecutables() {
 	// One read transaction for every pending account's nonce and balance.
 	// Round 28/29 measured the per-account getters -- two transactions each,
@@ -345,6 +351,7 @@ func (pool *TxsPool) demoteUnexecutables() {
 		for _, tx := range drops {
 			pool.all.Remove(tx.Hash())
 		}
+		pool.priced.Removed(len(olds) + len(drops))
 		for _, tx := range invalids {
 			pool.enqueueTx(tx.Hash(), tx, false, false)
 		}
