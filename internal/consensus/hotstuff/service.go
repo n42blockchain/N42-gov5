@@ -356,6 +356,7 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 		haveApplied bool
 		parentNum   uint64
 		haveParent  bool
+		minerCan    bool
 	)
 	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
 		// Read the SAME marker checkQMDBLeaderSealParent rejects against, so
@@ -363,9 +364,28 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 		if n, h, ok, rerr := rawdb.ReadQMDBApplied(tx); rerr == nil && ok {
 			appliedNum, appliedHash, haveApplied = n, types.Hash(h), true
 		}
-		if hdr, rerr := rawdb.ReadHeaderByHash(tx, parentHash); rerr == nil && hdr != nil && hdr.Number != nil {
-			parentNum, haveParent = hdr.Number.Uint64(), true
+		hdr, rerr := rawdb.ReadHeaderByHash(tx, parentHash)
+		if rerr != nil || hdr == nil || hdr.Number == nil {
+			return nil
 		}
+		parentNum, haveParent = hdr.Number.Uint64(), true
+		if !haveApplied || appliedNum < parentNum {
+			return nil
+		}
+		// The applied head is not behind the parent. The miner's align
+		// handles it when the parent is on the applied lineage (it unwinds
+		// the descendants) or is a sibling it can import itself: body stored
+		// and the parent's own parent on the applied lineage, so one
+		// authorized import switches the branch. Compared by hash at the
+		// parent's height, never by height alone: a deeper sibling branch,
+		// or a parent whose body is missing, the miner cannot recover — it
+		// neither fetches nor walks back — and needs the re-apply below.
+		if onAppliedLineage(tx, parentHash, parentNum, appliedNum, appliedHash) {
+			minerCan = true
+			return nil
+		}
+		minerCan = parentNum > 0 && len(rawdb.ReadStorageBodyRAW(tx, parentHash, parentNum)) > 0 &&
+			onAppliedLineage(tx, hdr.ParentHash, parentNum-1, appliedNum, appliedHash)
 		return nil
 	}); err != nil {
 		return true // never block production on a failed diagnostic read
@@ -375,11 +395,9 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 	if !haveApplied || appliedHash == parentHash {
 		return true
 	}
-	// Only "applied trails the lock" is ours. A higher applied head on a
-	// sibling branch is an ordinary branch switch, which the miner's own align
-	// phase owns — it can unwind, which is what that case needs. Replaying
-	// forward is the thing it cannot do, and the thing this path supplies.
-	if haveParent && appliedNum >= parentNum {
+	// "Applied trails the lock" is always ours (replaying forward is what the
+	// miner cannot do). An ordinary one-deep branch switch is the miner's.
+	if minerCan {
 		return true
 	}
 	log.Warn("hotstuff: consensus parent is not the applied head; re-applying before producing",
@@ -1756,25 +1774,37 @@ func (s *Service) appliedOnRecovery(hash types.Hash, canonicalFallback bool) (ty
 			applied = true
 			return nil
 		}
-		if *number > an {
-			return nil // above the applied head: not executed here
-		}
-		cur, curN := types.Hash(ah), an
-		for curN > *number && an-curN < 256 {
-			h := rawdb.ReadHeader(tx, cur, curN)
-			if h == nil || h.Number == nil || h.Number.Uint64() != curN || h.Hash() != cur {
-				return nil
-			}
-			cur, curN = h.ParentHash, curN-1
-		}
-		if curN == *number {
-			applied = cur == hash
-		} else {
+		if *number+appliedLineageWindow <= an {
 			applied = canonicalFallback // deeper than the walk window
+			return nil
 		}
+		applied = onAppliedLineage(tx, hash, *number, an, types.Hash(ah))
 		return nil
 	})
 	return parent, applied
+}
+
+// appliedLineageWindow bounds onAppliedLineage's walk, like the recent undo
+// window BlockChain.HasAppliedBlock walks.
+const appliedLineageWindow = 256
+
+// onAppliedLineage reports whether block hash at number lies on the lineage
+// of the applied marker (appliedNum, appliedHash): the marker's ancestor at
+// that height has that hash. Compared by hash, never by height. False above
+// the marker or deeper than appliedLineageWindow below it.
+func onAppliedLineage(tx kv.Tx, hash types.Hash, number, appliedNum uint64, appliedHash types.Hash) bool {
+	if number > appliedNum {
+		return false
+	}
+	cur, curN := appliedHash, appliedNum
+	for curN > number && appliedNum-curN < appliedLineageWindow {
+		h := rawdb.ReadHeader(tx, cur, curN)
+		if h == nil || h.Number == nil || h.Number.Uint64() != curN || h.Hash() != cur {
+			return false
+		}
+		cur, curN = h.ParentHash, curN-1
+	}
+	return curN == number && cur == hash
 }
 
 // persistedStateStatus classifies the recovered consensus state against the
