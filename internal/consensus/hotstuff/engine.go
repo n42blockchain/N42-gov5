@@ -151,6 +151,14 @@ type ConsensusEngine struct {
 	// has not been reported durable yet. A profile-1 commit vote waits until
 	// the block leaves this set. Entries are evicted with importedFIFO.
 	notDurable map[types.Hash]bool
+	// persistedLock (AM35 lock pitfall, profile 1): the highest lock this
+	// node may write to disk. A lock names a block that, after a whole-set
+	// crash, every restarted member's timeouts carry as their high QC and
+	// the next leader must extend; persisting a lock on a block this node
+	// does not hold durably can therefore restart the set locked on a block
+	// nobody can serve. snapshotState writes this instead of the in-memory
+	// lock; the in-memory lock still governs every vote.
+	persistedLock QuorumCertificate
 	// checkedBlocks: under deferred execution, blocks the service verified
 	// without executing them (the header carries this node's result of the
 	// parent; the transactions are includable). Such a block is voted for
@@ -304,7 +312,7 @@ func (e *ConsensusEngine) snapshotState() *ConsensusState {
 	state := &ConsensusState{
 		View:                e.roundState.CurrentView(),
 		ConsecutiveTimeouts: e.roundState.ConsecutiveTimeouts(),
-		LockedQC:            e.roundState.LockedQC().Clone(),
+		LockedQC:            e.persistableLock(),
 		LastCommittedQC:     e.roundState.LastCommittedQC().Clone(),
 		LastVotedView:       votedView,
 		LastVotedHash:       votedHash,
@@ -315,6 +323,43 @@ func (e *ConsensusEngine) snapshotState() *ConsensusState {
 		state.VoteEpoch = e.snapshotVoteEpoch()
 	}
 	return state
+}
+
+// persistableLock is the lock snapshotState may write. Outside profile 1 it
+// is the in-memory lock. On profile 1 (AM35) it is the in-memory lock only
+// when this node holds the locked block durably (imported through a durable
+// notice) or it is the genesis QC; otherwise it is the highest lock that
+// qualified earlier, and never below the last committed QC (a commit QC
+// certifies q durable holders).
+//
+// Safety does not depend on the lock left out. HotStuff-2's commit safety
+// rests on the members that sent a commit vote for the committed block
+// keeping a lock at least that high, and journalCommitVote writes the full
+// in-memory lock with every commit vote (whose block is durable here by
+// the AM35 gate). A lower persisted lock only makes a restarted member
+// accept more proposals by the view rule, never conflicting ones a commit
+// voter's lock excludes; the merge on disk never lowers a stored lock.
+// Caller must hold e.mu.
+func (e *ConsensusEngine) persistableLock() QuorumCertificate {
+	lock := e.roundState.LockedQC()
+	if !e.profile1() {
+		return lock.Clone()
+	}
+	// The committed QC always qualifies, so the persisted lock never falls
+	// below the committed block.
+	e.raisePersistedLock(e.roundState.LastCommittedQC())
+	if h := lock.BlockHash; lock.View == 0 || (e.importedBlocks[h] && !e.notDurable[h]) {
+		e.raisePersistedLock(lock)
+	}
+	return e.persistedLock.Clone()
+}
+
+// raisePersistedLock records qc as written (or writable) to disk if it is
+// higher than the current persisted lock. Caller must hold e.mu.
+func (e *ConsensusEngine) raisePersistedLock(qc *QuorumCertificate) {
+	if qc != nil && qc.View > e.persistedLock.View {
+		e.persistedLock = qc.Clone()
+	}
 }
 
 // SnapshotState returns the persistable consensus state under the engine lock,
@@ -372,6 +417,10 @@ func (e *ConsensusEngine) journalCommitVote(view ViewNumber, hash types.Hash) er
 		return nil
 	}
 	st := e.snapshotState()
+	// The lock this commit vote rests on is written in full, never clamped:
+	// it is the one commit safety depends on (see persistableLock).
+	st.LockedQC = e.roundState.LockedQC().Clone()
+	e.raisePersistedLock(&st.LockedQC)
 	st.LastCommitVotedView, st.LastCommitVotedHash = view, hash
 	// S18: same as journalPrepareVote above; jcvAt is the absolute start
 	// time (unix ms) of this call -- on the leader this IS the self-
@@ -626,6 +675,7 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
+	e.persistedLock = lockedQC.Clone() // it came from disk
 	// AM33: c is restored from the snapshot, but the first view timer after a
 	// restart is base_eff; later arms use timeout(c).
 	e.syncPacemakerCommittee()
