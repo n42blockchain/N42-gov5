@@ -77,3 +77,36 @@ func TestEngineSetsPacemakerCommittee(t *testing.T) {
 		t.Fatalf("n=7: c=3 gives %v, want 2x %v", b, a)
 	}
 }
+
+// TestSyncInfoTCJumpKeepsConsecutiveTimeouts: adopting a TC from SyncInfo
+// moves the view but does not reset the consecutive-timeout count (AM33);
+// a QC-based jump still does.
+func TestSyncInfoTCJumpKeepsConsecutiveTimeouts(t *testing.T) {
+	setup := newTestSetup(t, 7)
+	engine, _ := newTestEngine(t, setup, 0)
+	engine.roundState.Timeout()
+	engine.roundState.Timeout()
+	if got := engine.ConsecutiveTimeouts(); got != 2 {
+		t.Fatalf("setup: %d timeouts", got)
+	}
+	tc := buildTestTC(t, setup, 20, 0)
+	netTimeout := &TimeoutMessage{
+		View:      21,
+		HighQC:    GenesisQC(),
+		Sender:    1,
+		Signature: setup.keys[1].Sign(TimeoutSigningMessage(21)).Marshal(),
+		HighTC:    tc,
+	}
+	if err := engine.ProcessEvent(ConsensusEvent{
+		Type: EventMessage,
+		Msg:  ConsensusMsg{Type: MsgTimeout, Payload: netTimeout},
+	}); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if got := engine.CurrentView(); got != 21 {
+		t.Fatalf("view %d, want 21 (TC jump)", got)
+	}
+	if got := engine.ConsecutiveTimeouts(); got != 2 {
+		t.Fatalf("TC jump changed consecutive timeouts to %d, want 2 kept", got)
+	}
+}

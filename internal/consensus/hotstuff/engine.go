@@ -1560,7 +1560,8 @@ func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 
 	e.roundState.UpdateHighestTC(tc)
 	e.roundState.UpdateLockedQC(&tc.HighQC)
-	e.roundState.ResetConsecutiveTimeouts()
+	// AM33: a TC, including one adopted from SyncInfo, never resets the
+	// consecutive-timeout count; only a commit or a QC-based jump does.
 
 	if err := e.advanceToView(targetView); err != nil {
 		return err
