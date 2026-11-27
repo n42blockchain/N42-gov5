@@ -61,12 +61,15 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 		s.blockSubscriber,
 		digest,
 	)
-	s.subscribe(
-		p2p.BlobSidecarTopicFormat,
-		s.noopValidator,
-		s.blobSidecarSubscriber,
-		digest,
-	)
+	// Not on Profile 1: blob_sidecar is outside the G2 topic list (AM34).
+	if p2p.IsGossipTopic(p2p.BlobSidecarTopicFormat) {
+		s.subscribe(
+			p2p.BlobSidecarTopicFormat,
+			s.noopValidator,
+			s.blobSidecarSubscriber,
+			digest,
+		)
+	}
 	if s.cfg.txGossipEnabled {
 		// Log success only when the subscription actually took: subscribe()
 		// returns nil on failure (validator registration, scoring params,

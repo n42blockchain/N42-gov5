@@ -175,6 +175,9 @@ type ConsensusEngine struct {
 	tcCounted     bool
 	voteStats                 voteIntakeStats
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
+	// Commit votes of the last views this node led, for conflicting commit
+	// votes that arrive after the view closed (late_commit_votes.go).
+	closedCommitViews []*closedCommitView
 	// First verified proposal per view for proposal equivocation detection,
 	// bounded to the last proposalEquivocationWindow views (FIFO order).
 	proposalSeen      map[ViewNumber]*proposalRecord
@@ -1106,6 +1109,9 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	if newView <= e.roundState.CurrentView() {
 		return nil
 	}
+	// Keep the closing view's commit votes (if this node led it) before the
+	// trackers are reset and before an epoch boundary changes the set.
+	e.closeCommitView()
 
 	// S19 (6co): the view this node (possibly as leader) is about to leave is
 	// ending, one way or another. If it proposed a block that never reached
@@ -1365,6 +1371,11 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg, mt msgTiming) error {
 				e.checkStaleProposal(p)
 			}
 		}
+		if msg.Type == MsgCommitVote {
+			if cv, ok := msg.Payload.(*CommitVote); ok && cv != nil {
+				e.checkLateCommitVote(cv)
+			}
+		}
 		return nil
 	}
 
@@ -1531,7 +1542,7 @@ func extractHighTCFromMessage(msg *ConsensusMsg) *TimeoutCertificate {
 // views never violates the voting rule.
 func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 	tc := extractHighTCFromMessage(msg)
-	if tc == nil || tc.View == 0 {
+	if tc == nil || tc.View == 0 || !certViewValid(tc.View) {
 		return nil
 	}
 

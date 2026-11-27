@@ -457,6 +457,9 @@ func (tc *TimeoutCollector) buildTC(
 	}, nil
 }
 
+// errCertViewOverflow is the AM34 refusal of a certificate for MaxCertView.
+const errCertViewOverflow = "view 2^64-1 is not certifiable (AM34)"
+
 // VerifyQC verifies a QuorumCertificate (Round 1 prepare) against the validator set.
 func VerifyQC(qc *QuorumCertificate, vs *ValidatorSet) error {
 	msg := SigningMessage(qc.View, qc.BlockHash)
@@ -486,6 +489,9 @@ func VerifyTC(tc *TimeoutCertificate, vs *ValidatorSet) error {
 }
 
 func verifyTCAgainstMessage(tc *TimeoutCertificate, vs *ValidatorSet, msg []byte) error {
+	if !certViewValid(tc.View) {
+		return &InvalidTCError{View: tc.View, Reason: errCertViewOverflow}
+	}
 	quorumSize := vs.QuorumSize()
 
 	if int(vs.Len()) != len(tc.Signers) {
@@ -530,6 +536,9 @@ func verifyTCAgainstMessage(tc *TimeoutCertificate, vs *ValidatorSet, msg []byte
 
 // verifyAggregateSignature is a shared helper for verifying QC aggregate signatures.
 func verifyAggregateSignature(qc *QuorumCertificate, vs *ValidatorSet, message []byte, certKind string) error {
+	if !certViewValid(qc.View) {
+		return &InvalidQCError{View: qc.View, Reason: errCertViewOverflow}
+	}
 	quorumSize := vs.QuorumSize()
 
 	if int(vs.Len()) != len(qc.Signers) {
