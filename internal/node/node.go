@@ -3814,7 +3814,8 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		WriteMergeThreshold(4 * 8192).
 		Path(dbPath).Label(kv.ChainDB).
 		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
-		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+		MapSize(mdbxMapSizeOr(8 * datasize.TB)).
+		GrowthStep(chaindataGrowthStep(dbPath))
 	if gb := mdbxDirtyGB(); gb > 0 {
 		chainOpts = chainOpts.DirtySpace(gb * uint64(datasize.GB))
 	}
@@ -3914,6 +3915,38 @@ func mdbxDirtyGB() uint64 {
 		}
 	}
 	return 0
+}
+
+// Chaindata growth step bounds (see chaindataGrowthStep).
+const (
+	minChaindataGrowth = 128 * datasize.MB
+	maxChaindataGrowth = mdbx.DefaultGrowthStep // 2 GiB
+)
+
+// chaindataGrowthStep is the MDBX growth step for the chaindata at dir: an
+// eighth of the existing data file, clamped to [128 MiB, 2 GiB], or
+// N42_MDBX_GROWTH_MB. The fixed 2 GiB step made a fresh or small datadir
+// look up to 2 GiB larger than its data (MDBX allocates the file a step at a
+// time): 2.0 GiB for 470 MiB of data after a 609-block catch-up. The step is
+// geometry only, chosen at every open; the on-disk format is unchanged, and
+// a large database keeps the 2 GiB step.
+func chaindataGrowthStep(dir string) datasize.ByteSize {
+	if v := os.Getenv("N42_MDBX_GROWTH_MB"); v != "" {
+		if mb, err := strconv.ParseUint(v, 10, 64); err == nil && mb > 0 {
+			return datasize.ByteSize(mb) * datasize.MB
+		}
+	}
+	var size datasize.ByteSize
+	if st, err := os.Stat(filepath.Join(dir, "mdbx.dat")); err == nil && st.Size() > 0 {
+		size = datasize.ByteSize(st.Size())
+	}
+	return growthStepFor(size)
+}
+
+func growthStepFor(size datasize.ByteSize) datasize.ByteSize {
+	step := size / 8
+	step -= step % datasize.MB
+	return min(max(step, minChaindataGrowth), maxChaindataGrowth)
 }
 
 // mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.
