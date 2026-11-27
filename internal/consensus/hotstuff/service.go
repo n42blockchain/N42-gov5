@@ -1299,6 +1299,15 @@ func (s *Service) subscribeMessages() {
 	enc := s.p2p.Encoding()
 	topic := s.gossipTopic + enc.ProtocolSuffix()
 
+	// AM36 (profile 1): validate, then forward. The validator must be in
+	// place before the subscription delivers anything.
+	late, unregister := s.registerConsensusTopicValidator(topic, enc)
+	if unregister != nil {
+		defer unregister()
+		s.wg.Add(1)
+		go s.lateGossipLoop(late)
+	}
+
 	sub, err := s.p2p.SubscribeToTopic(topic, pubsub.WithBufferSize(consensusSubscriptionBuffer))
 	if err != nil {
 		log.Error("hotstuff: failed to subscribe to gossip topic", "err", err)
@@ -1323,14 +1332,19 @@ func (s *Service) subscribeMessages() {
 		if msgCount <= 5 || msgCount%100 == 0 {
 			log.Info("hotstuff: received gossip message", "count", msgCount, "bytes", len(msg.Data))
 		}
-		// S17: t_rx, the earliest point these bytes are in this process --
-		// right after sub.Next() returns, before processGossipMessage's own
-		// decode. No topic validator is registered for this topic anywhere
-		// in this package (confirmed by grep, matching 6ch), so sub.Next()
-		// returning IS the earliest observable point on the gossip path.
+		// S17: t_rx, taken right after sub.Next() returns. On profile 1 the
+		// topic validator (gossip_validator.go) has already decoded the
+		// message before pubsub delivered it, so t_rx follows that decode
+		// there; elsewhere no validator is registered and sub.Next()
+		// returning is the earliest observable point on the gossip path.
 		var tRx time.Time
 		if contentionDiagEnabled {
 			tRx = time.Now()
+		}
+		if dg, ok := msg.ValidatorData.(*decodedGossip); ok && dg != nil && dg.msg != nil {
+			// Decoded and field-checked by the validator: do not decode again.
+			s.processConsensusMsg(dg.msg, msg.ReceivedFrom, tRx, tRx, "gossip")
+			continue
 		}
 		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom, tRx, "gossip")
 	}
@@ -1370,7 +1384,16 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 		s.noteDecodeFailure("consensus", via, err)
 		return
 	}
+	s.processConsensusMsg(consensusMsg, from, rxAt, tArrive, via)
+}
 
+// processConsensusMsg hands one decoded consensus message to the engine. It
+// is processGossipMessage after the decode, shared with the gossip path whose
+// topic validator decoded the message already (gossip_validator.go).
+func (s *Service) processConsensusMsg(consensusMsg *ConsensusMsg, from peer.ID, rxAt, tArrive time.Time, via string) {
+	if contentionDiagEnabled && tArrive.IsZero() {
+		tArrive = time.Now()
+	}
 	ce := s.engine.Engine()
 	if ce == nil {
 		return

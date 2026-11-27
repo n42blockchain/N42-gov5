@@ -95,18 +95,37 @@ func NewDecideFollower(h *HotStuff, chain DecideFollowerChain, p2p DecideFollowe
 
 // Start subscribes to the H2-v4 Decide topic and runs the commit loop.
 func (f *DecideFollower) Start() error {
+	// AM36: validate, then forward. Registered before the subscription so
+	// nothing is relayed undecoded.
+	unregister, err := registerTopicValidator(f.p2p, h2V4GossipTopic, f.decideTopicValidator())
+	if err != nil {
+		return fmt.Errorf("hotstuff decide follower: register validator for %s: %w", h2V4GossipTopic, err)
+	}
 	sub, err := f.p2p.SubscribeToTopic(h2V4GossipTopic)
 	if err != nil {
+		if unregister != nil {
+			unregister()
+		}
 		return fmt.Errorf("hotstuff decide follower: subscribe %s: %w", h2V4GossipTopic, err)
 	}
 	f.wg.Add(2)
 	go func() {
 		defer f.wg.Done()
 		defer sub.Cancel()
+		if unregister != nil {
+			defer unregister()
+		}
 		for {
 			msg, err := sub.Next(f.ctx)
 			if err != nil {
 				return // context cancelled or subscription closed
+			}
+			if env, ok := msg.ValidatorData.(*H2V4Envelope); ok && env != nil {
+				// Decoded by the topic validator: verify and commit only.
+				if err := f.handleEnvelope(env); err != nil {
+					log.Debug("hotstuff decide follower: message refused", "err", err)
+				}
+				continue
 			}
 			if err := f.HandleMessage(msg.Data); err != nil {
 				log.Debug("hotstuff decide follower: message refused", "err", err)
@@ -144,6 +163,11 @@ func (f *DecideFollower) HandleMessage(data []byte) error {
 	if err != nil {
 		return err
 	}
+	return f.handleEnvelope(env)
+}
+
+// handleEnvelope verifies a decoded H2-v4 Decide and commits its block.
+func (f *DecideFollower) handleEnvelope(env *H2V4Envelope) error {
 	decide, err := VerifyH2V4Decide(env, f.set)
 	if err != nil {
 		return err

@@ -15,6 +15,11 @@ import (
 
 const h2V4MaxWireSize = 8192
 
+// errH2V4IdentityMismatch: the envelope is well formed but names another
+// chain. The Decide topic validator ignores such a message instead of
+// penalising its sender.
+var errH2V4IdentityMismatch = errors.New("H2-v4 chain identity mismatch")
+
 type H2V4Envelope struct {
 	Identity    H2V4ChainIdentity
 	ChangesHash types.Hash
@@ -56,7 +61,7 @@ func DecodeH2V4Envelope(data []byte, expected H2V4ChainIdentity) (*H2V4Envelope,
 	identity := H2V4ChainIdentity{ChainID: binary.LittleEndian.Uint64(data[7:15])}
 	copy(identity.GenesisHash[:], data[15:47])
 	if identity != expected {
-		return nil, errors.New("H2-v4 chain identity mismatch")
+		return nil, errH2V4IdentityMismatch
 	}
 	var changesHash types.Hash
 	copy(changesHash[:], data[47:79])

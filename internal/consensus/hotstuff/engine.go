@@ -12,6 +12,7 @@ package hotstuff
 import (
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -211,6 +212,14 @@ type ConsensusEngine struct {
 	// every other chain): it switches on the profile-1 vote gates and
 	// certificate strictness (engine_profile1.go). Set once before Start.
 	p1Set *ValidatorSet
+	// p1SetHint mirrors p1Set for readers that do not hold e.mu (the gossip
+	// topic validator, gossip_validator.go).
+	p1SetHint atomic.Pointer[ValidatorSet]
+	// viewHint mirrors roundState's current view for readers that do not
+	// hold e.mu (the gossip topic validator). It only ever lags the real
+	// view, never leads it, so a message it calls stale is stale. Zero means
+	// unknown.
+	viewHint atomic.Uint64
 	// certCache remembers certificates (QC / TC) that verified, so the
 	// copies carried by many timeouts, votes and NewViews cost one pairing
 	// check, not one each (AM22(b), cert_cache.go). Nil caches nothing.
@@ -554,6 +563,7 @@ func NewConsensusEngineWithEpochManager(
 	// Seed the first view's timing from the round state so the very first
 	// committed view is reported under its real view number.
 	e.viewTiming = newViewTiming(e.roundState.CurrentView())
+	e.viewHint.Store(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	e.syncPacemakerCommittee()
 	return e
@@ -617,6 +627,7 @@ func WithRecoveredState(
 		certCache:                 newVerifiedCertCache(verifiedCertCacheSize),
 	}
 	e.viewTiming = newViewTiming(e.roundState.CurrentView())
+	e.viewHint.Store(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	e.syncPacemakerCommittee()
 	return e
@@ -675,6 +686,7 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
+	e.viewHint.Store(e.roundState.CurrentView())
 	e.persistedLock = lockedQC.Clone() // it came from disk
 	// AM33: c is restored from the snapshot, but the first view timer after a
 	// restart is base_eff; later arms use timeout(c).
@@ -1242,6 +1254,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	}
 	e.logVoteIntake()
 	e.roundState.AdvanceView(newView)
+	e.viewHint.Store(e.roundState.CurrentView())
 	e.resetPacemaker(newView)
 	e.voteCollector = nil
 	e.commitCollector = nil
