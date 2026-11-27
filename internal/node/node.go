@@ -358,6 +358,16 @@ func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
 // key whose validator set is known without a consensus engine (profile 1)
 // gets a nil signer and a working verifier: verify-only. The validator set is
 // read fresh on every verification so epoch rotations are honoured.
+// cohortPublisher is the gossip layer the cohort relay uses: none when the
+// cohort topics are not gossip topics (Profile 1, G2/AM34), so the relay
+// neither subscribes to nor publishes on them.
+func cohortPublisher(pub p2p.P2P) mobileverify.PacketPublisher {
+	if pub == nil || !p2p.IsGossipTopic(p2p.MobileCohortIndexTopicFormat) {
+		return nil
+	}
+	return pub
+}
+
 func (n *Node) buildCohortAuth() (mobileverify.CohortSigner, mobileverify.CohortVerifier, error) {
 	if _, ok := resolveHotStuffEngine(n.engine); !ok {
 		return nil, nil, nil
@@ -2735,7 +2745,7 @@ func (n *Node) startMobileVerify() error {
 		}
 		log.Warn("mobileverify: cohort reporter authentication disabled", "err", authErr)
 	}
-	cohortRelay := mobileverify.NewCohortRelayWithAuth(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortRevealTopic, cohortCertTopic, cohortSign, cohortVerify)
+	cohortRelay := mobileverify.NewCohortRelayWithAuth(n.mobileCohort, cohortPublisher(n.p2p), n.mobileRegistry, cohortIndexTopic, cohortRevealTopic, cohortCertTopic, cohortSign, cohortVerify)
 	if n.p2p != nil {
 		if err := cohortRelay.Start(); err != nil {
 			log.Error("mobileverify: cohort relay failed to start", "err", err)

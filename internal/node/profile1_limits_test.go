@@ -61,3 +61,20 @@ func TestApplyProfile1Limits(t *testing.T) {
 	require.False(t, p2p.IsGossipTopic(p2p.ZKProofTopicFormat))
 	require.True(t, p2p.IsGossipTopic(p2p.HotStuffConsensusTopicFormat))
 }
+
+// fakeCohortP2P satisfies p2p.P2P; cohortPublisher never calls it.
+type fakeCohortP2P struct{ p2p.P2P }
+
+// G2/AM34: on Profile 1 the cohort relay gets no gossip layer, so it neither
+// subscribes to nor publishes on the cohort topics; other chains keep it.
+func TestCohortPublisherProfile1(t *testing.T) {
+	t.Cleanup(func() { p2p.ConfigureProfile1Topics(false) })
+	pub := fakeCohortP2P{}
+	require.Nil(t, cohortPublisher(nil))
+	require.NotNil(t, cohortPublisher(pub))
+	p2p.ConfigureProfile1Topics(true)
+	require.Nil(t, cohortPublisher(pub))
+	require.False(t, p2p.IsGossipTopic(p2p.MobileCohortRevealTopicFormat))
+	require.True(t, p2p.IsGossipTopic(p2p.MobilePacketTopicFormat))
+	require.True(t, p2p.IsGossipTopic(p2p.MobileRegistrationTopicFormat))
+}
