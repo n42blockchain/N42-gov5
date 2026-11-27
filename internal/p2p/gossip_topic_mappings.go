@@ -85,7 +85,8 @@ func RegisterGossipTopic(topic string) {
 	globalGossipRegistry.topics[topic] = struct{}{}
 }
 
-// IsGossipTopic reports whether topic is one this node recognises.
+// IsGossipTopic reports whether topic is one this node recognises. On a
+// Profile-1 chain topics outside G2 are not recognised (ConfigureProfile1Topics).
 func IsGossipTopic(topic string) bool {
 	InitGossipTopics()
 
@@ -93,7 +94,7 @@ func IsGossipTopic(topic string) bool {
 	defer globalGossipRegistry.mu.RUnlock()
 
 	_, ok := globalGossipRegistry.topics[topic]
-	return ok
+	return ok && topicAllowed(topic)
 }
 
 // AllTopics returns all registered gossip topic names.
@@ -105,7 +106,9 @@ func AllTopics() []string {
 
 	topics := make([]string, 0, len(globalGossipRegistry.topics))
 	for k := range globalGossipRegistry.topics {
-		topics = append(topics, k)
+		if topicAllowed(k) {
+			topics = append(topics, k)
+		}
 	}
 	return topics
 }
