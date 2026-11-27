@@ -20,6 +20,11 @@ func lateCommitLeader(t *testing.T) (setup *testSetup, e *ConsensusEngine, out c
 	e, out = newTestEngine(t, setup, int(leader))
 	e.commitCollector = NewVoteCollector(view, lateHashA, setup.vs.Len())
 	q := setup.vs.QuorumSize()
+	// The quorum's verified R1 votes, as flushPrepareVotes records them.
+	for i := 0; i < q; i++ {
+		e.equivocationTracker[ValidatorIndex(i)] = lateHashA
+		e.equivocationSigs[ValidatorIndex(i)] = setup.keys[i].Sign(e.voteSigningMessage(view, lateHashA)).Marshal()
+	}
 	voted := 0
 	for i := 0; i < len(setup.keys) && voted < q; i++ {
 		if err := e.ProcessEvent(lateCommitEvent(e, setup, view, ValidatorIndex(i), lateHashA)); err != nil {
@@ -60,7 +65,7 @@ func commitEvidence(t *testing.T, out chan EngineOutput) []EngineOutput {
 	return ev
 }
 
-func assertCommitPair(t *testing.T, setup *testSetup, o EngineOutput, voter ValidatorIndex) {
+func assertVotePair(t *testing.T, setup *testSetup, o EngineOutput, voter ValidatorIndex) {
 	t.Helper()
 	if o.Validator != voter || o.View != 1 || o.Hash1 == o.Hash2 {
 		t.Fatalf("evidence %+v, want voter %d view 1 two hashes", o, voter)
@@ -84,7 +89,7 @@ func TestLateCommitVoteConflictsWithQuorumVote(t *testing.T) {
 	if len(ev) != 1 {
 		t.Fatalf("got %d evidence outputs, want 1", len(ev))
 	}
-	assertCommitPair(t, setup, ev[0], 0)
+	assertVotePair(t, setup, ev[0], 0)
 	// Further copies are not re-reported.
 	_ = e.ProcessEvent(lateCommitEvent(e, setup, 1, 0, lateHashB))
 	if ev := commitEvidence(t, out); len(ev) != 0 {
@@ -106,7 +111,7 @@ func TestLateCommitVoteOutsideQuorumBothOrders(t *testing.T) {
 		if len(ev) != 1 {
 			t.Fatalf("order %x: got %d evidence outputs, want 1", order[0][:1], len(ev))
 		}
-		assertCommitPair(t, setup, ev[0], outside)
+		assertVotePair(t, setup, ev[0], outside)
 	}
 }
 
@@ -126,7 +131,7 @@ func TestLateCommitVoteForgedFirstIsReplaced(t *testing.T) {
 	if len(ev) != 1 {
 		t.Fatalf("got %d evidence outputs, want 1", len(ev))
 	}
-	assertCommitPair(t, setup, ev[0], outside)
+	assertVotePair(t, setup, ev[0], outside)
 }
 
 // A badly signed conflicting late vote is not evidence.
@@ -144,15 +149,15 @@ func TestLateCommitVoteBadSecondSignature(t *testing.T) {
 // dropped as before.
 func TestLateCommitVoteWindowAndLeader(t *testing.T) {
 	setup, e, out, _ := lateCommitLeader(t)
-	if err := e.advanceToView(2 + lateCommitWindow); err != nil {
+	if err := e.advanceToView(2 + lateVoteWindow); err != nil {
 		t.Fatal(err)
 	}
 	_ = e.ProcessEvent(lateCommitEvent(e, setup, 1, 0, lateHashB))
 	if ev := commitEvidence(t, out); len(ev) != 0 {
 		t.Fatal("vote beyond the window produced evidence")
 	}
-	if len(e.closedCommitViews) > lateCommitWindow+1 {
-		t.Fatalf("%d closed views kept", len(e.closedCommitViews))
+	if len(e.closedLedViews) > lateVoteWindow+1 {
+		t.Fatalf("%d closed views kept", len(e.closedLedViews))
 	}
 
 	// A follower of view 1 keeps nothing for it.
@@ -161,12 +166,75 @@ func TestLateCommitVoteWindowAndLeader(t *testing.T) {
 	if err := f.advanceToView(2); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.closedCommitViews) != 0 {
+	if len(f.closedLedViews) != 0 {
 		t.Fatal("follower kept a closed view")
 	}
 	_ = f.ProcessEvent(lateCommitEvent(f, setup, 1, 0, lateHashA))
 	_ = f.ProcessEvent(lateCommitEvent(f, setup, 1, 0, lateHashB))
 	if ev := commitEvidence(t, fout); len(ev) != 0 {
 		t.Fatal("follower produced commit-vote evidence")
+	}
+}
+
+func lateR1Event(e *ConsensusEngine, setup *testSetup, view ViewNumber, voter ValidatorIndex, hash types.Hash) ConsensusEvent {
+	sig := setup.keys[voter].Sign(e.voteSigningMessage(view, hash))
+	return ConsensusEvent{Type: EventMessage, Msg: ConsensusMsg{Type: MsgVote,
+		Payload: &Vote{View: view, Voter: voter, BlockHash: hash, Signature: sig.Marshal()}}}
+}
+
+func r1Evidence(t *testing.T, out chan EngineOutput) []EngineOutput {
+	t.Helper()
+	var ev []EngineOutput
+	for _, o := range drainOutputs(out) {
+		if o.Type == OutputEquivocationDetected {
+			if o.EvidenceKind != EvidenceKindVote {
+				t.Fatalf("evidence kind %v, want R1 vote", o.EvidenceKind)
+			}
+			ev = append(ev, o)
+		}
+	}
+	return ev
+}
+
+// AM34 item 6: a late R1 vote conflicting with the voter's verified R1 vote of
+// a view this node led is proven once; an honest repeat is not evidence.
+func TestLateR1VoteConflictsWithRecordedVote(t *testing.T) {
+	setup, e, out, _ := lateCommitLeader(t)
+	_ = e.ProcessEvent(lateR1Event(e, setup, 1, 0, lateHashA))
+	if ev := r1Evidence(t, out); len(ev) != 0 {
+		t.Fatal("honest late R1 vote produced evidence")
+	}
+	_ = e.ProcessEvent(lateR1Event(e, setup, 1, 0, lateHashB))
+	ev := r1Evidence(t, out)
+	if len(ev) != 1 {
+		t.Fatalf("got %d evidence outputs, want 1", len(ev))
+	}
+	assertVotePair(t, setup, ev[0], 0)
+	_ = e.ProcessEvent(lateR1Event(e, setup, 1, 0, lateHashB))
+	if ev := r1Evidence(t, out); len(ev) != 0 {
+		t.Fatal("R1 equivocation re-reported")
+	}
+}
+
+// Both R1 votes of a member outside the quorum arrive late, in either order;
+// a late commit vote does not pair with a late R1 vote of the same hash set.
+func TestLateR1VoteOutsideQuorumBothOrders(t *testing.T) {
+	for _, order := range [][2]types.Hash{{lateHashA, lateHashB}, {lateHashB, lateHashA}} {
+		setup, e, out, outside := lateCommitLeader(t)
+		_ = e.ProcessEvent(lateR1Event(e, setup, 1, outside, order[0]))
+		_ = e.ProcessEvent(lateCommitEvent(e, setup, 1, outside, order[1]))
+		if ev := drainOutputs(out); len(ev) != 0 {
+			for _, o := range ev {
+				if o.Type == OutputEquivocationDetected {
+					t.Fatal("R1 and commit votes paired across rounds")
+				}
+			}
+		}
+		_ = e.ProcessEvent(lateR1Event(e, setup, 1, outside, order[1]))
+		ev := r1Evidence(t, out)
+		if len(ev) != 1 {
+			t.Fatalf("got %d evidence outputs, want 1", len(ev))
+		}
+		assertVotePair(t, setup, ev[0], outside)
 	}
 }
