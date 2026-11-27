@@ -1701,26 +1701,80 @@ func (s *Service) recoverState() error {
 		state.LastCommitVotedView, state.LastCommitVotedHash)
 
 	if s.reportPersistedStateDivergence(state) == persistedStateConsistent {
-		// The committed block is canonical and applied here, so it counts as
+		// The committed block is canonical here; if it is also applied (on
+		// the applied-marker lineage — canonical alone is not execution: a
+		// commit canonicalizes a block it has not executed) it counts as
 		// imported: a proposal justified by its QC (every proposal after a
 		// cold restart of the whole validator set, when nothing newer is
 		// imported) can be voted on. Without this the deferred vote waits
 		// for an import of the justify block that never comes, and a fleet
 		// restarted together from its committed head never commits again.
-		hash := state.LastCommittedQC.BlockHash
-		var parent types.Hash
-		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
-			if n := rawdb.ReadHeaderNumber(tx, hash); n != nil {
-				if h := rawdb.ReadHeader(tx, hash, *n); h != nil {
-					parent = h.ParentHash
-				}
-			}
-			return nil
-		})
-		ce.MarkImportedOnRecovery(hash, parent)
+		if parent, ok := s.appliedOnRecovery(state.LastCommittedQC.BlockHash, true); ok {
+			ce.MarkImportedOnRecovery(state.LastCommittedQC.BlockHash, parent)
+		}
+	}
+	// The same holds one step up: a whole set restarted locked on a block
+	// above the committed head (a durable lock, see persistableLock) gets
+	// proposals justified by that lock, and nothing re-imports a block that
+	// is already applied. Matched by hash on the applied lineage, never by
+	// height.
+	if lock := state.LockedQC.BlockHash; lock != (types.Hash{}) && lock != state.LastCommittedQC.BlockHash {
+		if parent, ok := s.appliedOnRecovery(lock, false); ok {
+			ce.MarkImportedOnRecovery(lock, parent)
+		}
 	}
 
 	return nil
+}
+
+// appliedOnRecovery reports whether the block hash is executed locally: it
+// lies on the lineage of the QMDB applied marker (compared by hash at every
+// height, like BlockChain.HasAppliedBlock), and returns its parent. Without
+// a marker (non-QMDB chains) a stored header counts. A block deeper than the
+// recent window below the marker is decided by canonicalFallback: the caller
+// passes true only for a block it already found canonical.
+func (s *Service) appliedOnRecovery(hash types.Hash, canonicalFallback bool) (types.Hash, bool) {
+	var (
+		parent  types.Hash
+		applied bool
+	)
+	_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+		number := rawdb.ReadHeaderNumber(tx, hash)
+		if number == nil {
+			return nil
+		}
+		hdr := rawdb.ReadHeader(tx, hash, *number)
+		if hdr == nil {
+			return nil
+		}
+		parent = hdr.ParentHash
+		an, ah, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return nil
+		}
+		if !ok {
+			applied = true
+			return nil
+		}
+		if *number > an {
+			return nil // above the applied head: not executed here
+		}
+		cur, curN := types.Hash(ah), an
+		for curN > *number && an-curN < 256 {
+			h := rawdb.ReadHeader(tx, cur, curN)
+			if h == nil || h.Number == nil || h.Number.Uint64() != curN || h.Hash() != cur {
+				return nil
+			}
+			cur, curN = h.ParentHash, curN-1
+		}
+		if curN == *number {
+			applied = cur == hash
+		} else {
+			applied = canonicalFallback // deeper than the walk window
+		}
+		return nil
+	})
+	return parent, applied
 }
 
 // persistedStateStatus classifies the recovered consensus state against the
