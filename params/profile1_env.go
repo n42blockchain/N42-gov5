@@ -36,6 +36,9 @@ var profile1ForbiddenEnv = []string{
 	"N42_HOTSTUFF_ROTATE_ON_TIMEOUT", // rotate-on-timeout (A22)
 	"N42_DEFERRED_EXECUTION_TIME",    // deferred execution activation (A10)
 	"N42_TXROOT_BLAKE3_TIME",         // BLAKE3 transactions root (A12)
+	// AM35: the leader's write would wait for its commit-vote journal while
+	// that vote waits for the write, paying the journal timeout every block.
+	"N42_LEADER_WRITE_AFTER_JOURNAL",
 }
 
 // profile1ForbiddenEnvPrefixes refuse every variable with the prefix.
