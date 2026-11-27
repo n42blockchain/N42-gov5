@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
+	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/syncanchor"
 	"github.com/n42blockchain/N42/params"
@@ -39,9 +40,12 @@ func TestApplyProfile1Limits(t *testing.T) {
 	gossip, chunk := encoder.MaxGossipSize, encoder.MaxBlockChunkSize
 	t.Cleanup(func() { encoder.MaxGossipSize, encoder.MaxBlockChunkSize = gossip, chunk })
 
+	t.Cleanup(func() { p2p.ConfigureProfile1Topics(false) })
+
 	applyProfile1Limits(&params.ChainConfig{ChainID: big.NewInt(1)})
 	require.Equal(t, gossip, encoder.MaxGossipSize)
 	require.Equal(t, chunk, encoder.MaxBlockChunkSize)
+	require.True(t, p2p.IsGossipTopic(p2p.BlobSidecarTopicFormat), "legacy chain keeps blob_sidecar")
 
 	// The anchor pin is process-wide and cannot be undone; no other test of
 	// this package depends on the anchor mode.
@@ -52,4 +56,8 @@ func TestApplyProfile1Limits(t *testing.T) {
 	require.Equal(t, uint64(64<<20), encoder.MaxBlockChunkSize)
 	require.Equal(t, uint64(64<<20), encoder.MaxWireMessageSize())
 	require.Equal(t, syncanchor.Enforce, syncanchor.Current())
+	// G2/AM34: only the G2 topics on Profile 1.
+	require.False(t, p2p.IsGossipTopic(p2p.BlobSidecarTopicFormat))
+	require.False(t, p2p.IsGossipTopic(p2p.ZKProofTopicFormat))
+	require.True(t, p2p.IsGossipTopic(p2p.HotStuffConsensusTopicFormat))
 }
