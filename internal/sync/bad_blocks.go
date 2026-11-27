@@ -57,6 +57,8 @@ func (s *Service) insertCatchUpBlocks(ctx context.Context, blocks []block.IBlock
 	// reconfigurations. Verify/execute of a single sequential block is equivalent
 	// to the batch; only the ordering relative to engine advancement changes.
 	notifier := s.cfg.blockImportNotifier
+	stopPrewarm := s.prewarmCatchUpHeaders(blocks)
+	defer stopPrewarm()
 	total := 0
 	for i := range blocks {
 		var (
@@ -85,4 +87,32 @@ func (s *Service) insertCatchUpBlocks(ctx context.Context, blocks []block.IBlock
 		}
 	}
 	return blocks, total, nil
+}
+
+// headerPrewarmer is implemented by a chain whose consensus engine can run
+// header signature checks ahead of the one-block-at-a-time import.
+type headerPrewarmer interface {
+	PrewarmHeaders(headers []block.IHeader)
+}
+
+// prewarmCatchUpHeaders starts the header signature checks of a catch-up
+// batch in the background, ahead of the per-block insert loop below (whose
+// VerifyHeader then finds them cached instead of running two BLS pairings
+// a block in series with execution). The returned function waits for the
+// prewarm, so a batch never outlives its import.
+func (s *Service) prewarmCatchUpHeaders(blocks []block.IBlock) (wait func()) {
+	p, ok := s.cfg.chain.(headerPrewarmer)
+	if !ok || len(blocks) < 2 {
+		return func() {}
+	}
+	headers := make([]block.IHeader, 0, len(blocks))
+	for _, b := range blocks {
+		headers = append(headers, b.Header())
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.PrewarmHeaders(headers)
+	}()
+	return func() { <-done }
 }
