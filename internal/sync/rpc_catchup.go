@@ -543,7 +543,10 @@ func (s *Service) catchUpRangeTo(req *sync_pb.BodiesByRangeRequest, peers []peer
 		// at the window cap (catchUpTo).
 		s.catchUpWindowCut = 0
 		var cutNext uint64
-		if last := fetched[len(fetched)-1]; last != nil && uint64(len(fetched)) == req.Count && last.Number64().Uint64() < target &&
+		// Only a request of a whole window counts: one the shrink-on-reject
+		// path cut down was sized to what the peer stores, not to the window.
+		if last := fetched[len(fetched)-1]; last != nil && uint64(len(fetched)) == req.Count &&
+			req.Count >= catchUpWindowBlocks() && last.Number64().Uint64() < target &&
 			last.Hash() == blocks[len(blocks)-1].Hash() {
 			cutNext = last.Number64().Uint64() + 1
 			s.startCatchUpPrefetch(pid, cutNext, target)
