@@ -619,7 +619,10 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
-	e.resetPacemaker(view)
+	// AM33: c is restored from the snapshot, but the first view timer after a
+	// restart is base_eff; later arms use timeout(c).
+	e.syncPacemakerCommittee()
+	e.pacemaker.ResetForView(view, 0)
 	e.viewTiming = newViewTiming(view)
 	// Align the epoch counter with the recovered view. A mid-chain restart with
 	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far

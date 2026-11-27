@@ -110,3 +110,23 @@ func TestSyncInfoTCJumpKeepsConsecutiveTimeouts(t *testing.T) {
 		t.Fatalf("TC jump changed consecutive timeouts to %d, want 2 kept", got)
 	}
 }
+
+// TestRestoreStateArmsBaseTimerKeepsCounter: after a restart c comes back from
+// the snapshot, the first view timer is base_eff, and later arms use
+// timeout(c) (AM33 clarification (a)).
+func TestRestoreStateArmsBaseTimerKeepsCounter(t *testing.T) {
+	setup := newTestSetup(t, 4) // n = 4: g = 2; base 1 s, max 10 s
+	engine, _ := newTestEngine(t, setup, 0)
+	engine.RestoreState(ViewNumber(9), QuorumCertificate{}, QuorumCertificate{}, 4)
+
+	if got := engine.ConsecutiveTimeouts(); got != 4 {
+		t.Fatalf("restored c = %d, want 4", got)
+	}
+	if left := time.Until(engine.pacemaker.Deadline()); left > 1100*time.Millisecond || left <= 0 {
+		t.Fatalf("first timer after restart %v, want base_eff 1s (not timeout(4) = 4s)", left)
+	}
+	engine.resetPacemaker(ViewNumber(10))
+	if left := time.Until(engine.pacemaker.Deadline()); left < 3900*time.Millisecond {
+		t.Fatalf("later arm %v, want timeout(c=4) = 4s", left)
+	}
+}
