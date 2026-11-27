@@ -224,8 +224,21 @@ func LeaderForViewWithTenure(view ViewNumber, vs *ValidatorSet, tenure uint64) V
 	return ValidatorIndex((view / max(tenure, 1)) % uint64(vs.Len()))
 }
 
+// MaxCertView is the last view, 2^64-1. Under AM34 a QC or TC for it is
+// invalid: no client signs, accepts or advances past it, and the view after
+// a TC for it is undefined (a wrapped successor would be view 0).
+const MaxCertView ViewNumber = ^ViewNumber(0)
+
+// certViewValid reports whether a QC/TC may be formed for view (AM34).
+func certViewValid(view ViewNumber) bool { return view != MaxCertView }
+
 // ViewAfterTimeout is the view a validator enters once it holds a timeout
 // certificate for tcView (rotate-on-timeout rule, consensus-visible).
+//
+// It is defined only for tcView < MaxCertView (AM34). For MaxCertView it
+// returns MaxCertView instead of wrapping to 0, so it never moves a caller
+// backwards; such a TC is rejected by verification and by every engine
+// caller before this is reached.
 //
 // The leader schedule itself stays the pure grid (view / tenure) % n; the
 // rule moves the view instead. Without rotation (rotate=false), or with a
@@ -244,8 +257,11 @@ func LeaderForViewWithTenure(view ViewNumber, vs *ValidatorSet, tenure uint64) V
 // first boundary above tcView. The boundary view is then entered normally;
 // if its grid leader is the one that timed out, one more timeout moves on.
 func ViewAfterTimeout(tcView ViewNumber, tenure, epochLength uint64, rotate bool) ViewNumber {
+	if !certViewValid(tcView) {
+		return MaxCertView
+	}
 	next := tcView + 1
-	if !rotate || tenure <= 1 || next == 0 {
+	if !rotate || tenure <= 1 {
 		return next
 	}
 	window := tcView/tenure + 1

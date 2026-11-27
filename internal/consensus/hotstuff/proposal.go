@@ -20,6 +20,10 @@ import (
 // onBlockReady is called when this node (as leader) has a block ready to propose.
 func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Hash) error {
 	view := e.roundState.CurrentView()
+	if !certViewValid(view) {
+		log.Error("hotstuff: view 2^64-1 reached, not proposing (AM34)", "block", blockHash.Hex()[:12])
+		return nil
+	}
 
 	if !e.isLeader(e.myIndex, view, e.validatorSet()) {
 		// The build was triggered for an earlier view we led; by seal time the
@@ -207,6 +211,9 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 
 	if proposal.View != view {
 		return &ViewMismatchError{Current: view, Received: proposal.View}
+	}
+	if !certViewValid(view) {
+		return &InvalidQCError{View: view, Reason: errCertViewOverflow}
 	}
 
 	expectedLeader := e.LeaderForView(view, e.validatorSet())

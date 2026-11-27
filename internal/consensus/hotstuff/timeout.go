@@ -34,6 +34,11 @@ func (e *ConsensusEngine) onTimeout() error {
 	if !e.pacemaker.IsTimedOut() {
 		return nil
 	}
+	// AM34: no timeout is signed for the last view; a TC for it is invalid.
+	if !certViewValid(view) {
+		log.Error("hotstuff: view 2^64-1 reached, not signing a timeout (AM34)")
+		return nil
+	}
 
 	if e.roundState.Phase() == PhaseTimedOut {
 		// Already timed out: re-broadcast timeout for late arrivals.
@@ -155,6 +160,10 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 // verified signatures. own marks this node's own signature.
 func (e *ConsensusEngine) processTimeoutWith(timeout *TimeoutMessage, own bool) error {
 	view := e.roundState.CurrentView()
+
+	if !certViewValid(timeout.View) {
+		return &InvalidTCError{View: timeout.View, Reason: errCertViewOverflow}
+	}
 
 	if timeout.View < view {
 		return nil
@@ -370,6 +379,10 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 	nvMsg := e.newViewSigningMessage(nv.View)
 	if !VerifyBLSSignature(nv.Signature, pk, nvMsg) {
 		return &InvalidSignatureError{View: nv.View, ValidatorIndex: nv.Leader}
+	}
+
+	if !certViewValid(nv.TimeoutCert.View) {
+		return &InvalidTCError{View: nv.TimeoutCert.View, Reason: errCertViewOverflow}
 	}
 
 	// The TC must be for the view this NewView succeeds: nv.view - 1, or,

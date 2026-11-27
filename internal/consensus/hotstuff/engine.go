@@ -1511,7 +1511,7 @@ func extractHighTCFromMessage(msg *ConsensusMsg) *TimeoutCertificate {
 // views never violates the voting rule.
 func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 	tc := extractHighTCFromMessage(msg)
-	if tc == nil || tc.View == 0 {
+	if tc == nil || tc.View == 0 || !certViewValid(tc.View) {
 		return nil
 	}
 
