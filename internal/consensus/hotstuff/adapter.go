@@ -110,6 +110,9 @@ type HotStuff struct {
 
 	// Caches
 	signatures *lru.ARCCache
+	// p1QCs holds profile-1 header CommitQC signatures already verified
+	// (header_prewarm.go); nil disables it.
+	p1QCs *lru.ARCCache
 
 	// Core consensus engine (nil until Start() is called with validator set)
 	engine       *ConsensusEngine
@@ -166,6 +169,7 @@ func New(config *params.HotStuffConfig, chainConfig *params.ChainConfig) *HotStu
 	// NewARC only fails for invalid capacities. This adapter uses a fixed
 	// positive constant, so there is no meaningful runtime recovery path here.
 	signatures, _ := lru.NewARC(inmemorySignatures)
+	p1QCs, _ := lru.NewARC(inmemoryP1QCs)
 
 	conf := config
 	if conf == nil {
@@ -181,6 +185,7 @@ func New(config *params.HotStuffConfig, chainConfig *params.ChainConfig) *HotStu
 		ctx:         ctx,
 		cancel:      cancel,
 		signatures:  signatures,
+		p1QCs:       p1QCs,
 		outputCh:    make(chan EngineOutput, 1024),
 	}
 }
