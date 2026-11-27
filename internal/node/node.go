@@ -2596,6 +2596,10 @@ func (n *Node) startMobileVerify() error {
 		topic += n.p2p.Encoding().ProtocolSuffix()
 	}
 	svc := mobileverify.NewPacketService(cache, n.p2p, topic)
+	if n.config.ChainCfg.IsProfile1() {
+		// AM36: forward a packet only after it decodes and self-certifies.
+		svc.EnableGossipValidation()
+	}
 	svc.SetHeadNumber(func() uint64 {
 		if head := n.blockChain.CurrentBlock(); head != nil && head.Number64() != nil {
 			return head.Number64().Uint64()
@@ -2760,6 +2764,10 @@ func (n *Node) startMobileVerify() error {
 		regTopic += n.p2p.Encoding().ProtocolSuffix()
 	}
 	regSvc := mobileverify.NewRegistrationService(n.mobileRegistry, n.p2p, regTopic)
+	if n.config.ChainCfg.IsProfile1() {
+		// AM36: forward an announcement only after it decodes.
+		regSvc.EnableGossipValidation()
+	}
 	if n.p2p != nil {
 		if err := regSvc.Start(); err != nil {
 			log.Error("mobileverify: registration replication failed to start", "err", err)

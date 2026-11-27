@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common/block"
@@ -41,6 +42,10 @@ type PacketService struct {
 	// packet carries a self-hashing header, but anyone can manufacture one with
 	// MaxUint64 as its number and otherwise evict the rolling cache.
 	headNumber func() uint64
+	// validate registers the packet topic validator at Start (profile 1,
+	// AM36): a packet is forwarded only after it decodes and self-certifies.
+	validate   bool
+	unregister func()
 
 	// Swarm distribution (design §5b target form): optional, via SetSeeder.
 	seeder Seeder
@@ -54,6 +59,10 @@ type PacketService struct {
 // SetHeadNumber wires the local canonical/applied head used to reject packets
 // far outside the node's current chain window. Call before Start.
 func (s *PacketService) SetHeadNumber(fn func() uint64) { s.headNumber = fn }
+
+// EnableGossipValidation makes Start register a pubsub validator on the
+// packet topic (profile 1, AM36). Call before Start.
+func (s *PacketService) EnableGossipValidation() { s.validate = true }
 
 // NewPacketService creates the service. topic is the fully-qualified
 // gossip topic (fork-digest formatted, encoding suffix included by the
@@ -88,13 +97,21 @@ func (s *PacketService) Start() error {
 	if s.p2p == nil {
 		return errors.New("mobileverify: no p2p publisher wired")
 	}
+	if s.validate {
+		unregister, err := registerTopicValidator(s.p2p, s.topic, s.topicValidator)
+		if err != nil {
+			return fmt.Errorf("mobileverify: register validator for %s: %w", s.topic, err)
+		}
+		s.unregister = unregister
+	}
 	sub, err := s.p2p.SubscribeToTopic(s.topic)
 	if err != nil {
+		s.dropValidator()
 		return fmt.Errorf("mobileverify: subscribe %s: %w", s.topic, err)
 	}
 	s.wg.Add(1)
 	go s.receiveLoop(sub)
-	log.Info("mobileverify: packet service started", "topic", s.topic)
+	log.Info("mobileverify: packet service started", "topic", s.topic, "validated", s.unregister != nil)
 	return nil
 }
 
@@ -102,6 +119,39 @@ func (s *PacketService) Start() error {
 func (s *PacketService) Stop() {
 	s.cancel()
 	s.wg.Wait()
+	s.dropValidator()
+}
+
+func (s *PacketService) dropValidator() {
+	if s.unregister != nil {
+		s.unregister()
+		s.unregister = nil
+	}
+}
+
+// validatedPacket is what the packet topic validator leaves in
+// pubsub.Message.ValidatorData for the receive loop.
+type validatedPacket struct {
+	hash   types.Hash
+	number uint64
+}
+
+// topicValidator is the packet topic's pubsub validator (AM36):
+//   - Reject: the packet does not decode, its header does not decode or has
+//     no number, or the header does not hash to the packet's BlockHash;
+//   - Ignore: a well-formed packet outside the local head window (stale, or
+//     too far ahead to judge yet);
+//   - Accept: everything else; this node's own packets once they decode.
+func (s *PacketService) topicValidator(_ context.Context, _ peer.ID, m *pubsub.Message) pubsub.ValidationResult {
+	hash, number, _, err := ValidatePacketBytes(m.Data)
+	if err != nil {
+		return pubsub.ValidationReject
+	}
+	if !m.Local && !s.acceptPeerNumber(number) {
+		return pubsub.ValidationIgnore
+	}
+	m.ValidatorData = &validatedPacket{hash: hash, number: number}
+	return pubsub.ValidationAccept
 }
 
 // Get serves an encoded packet from the cache (the HTTP/RPC endpoints
@@ -127,6 +177,13 @@ func (s *PacketService) receiveLoop(sub *pubsub.Subscription) {
 			log.Debug("mobileverify: gossip receive error", "err", err)
 			continue
 		}
+		if vp, ok := msg.ValidatorData.(*validatedPacket); ok && vp != nil {
+			// Decoded, self-certified and window-checked by the validator.
+			if s.cache.PutPeer(vp.hash, vp.number, msg.Data) {
+				s.seedAsync(vp.hash, msg.Data)
+			}
+			continue
+		}
 		if hash, number, encoded, err := ValidatePacketBytes(msg.Data); err != nil {
 			log.Debug("mobileverify: dropping invalid packet", "err", err)
 		} else {
@@ -139,6 +196,30 @@ func (s *PacketService) receiveLoop(sub *pubsub.Subscription) {
 			}
 		}
 	}
+}
+
+// pubsubValidatorRegistrar is the optional P2P surface that registers topic
+// validators (p2p.Service provides it; test doubles usually do not).
+type pubsubValidatorRegistrar interface {
+	PubSub() *pubsub.PubSub
+}
+
+// registerTopicValidator registers val for topic when p exposes the pubsub
+// router and returns the matching unregister function (nil when nothing was
+// registered).
+func registerTopicValidator(p any, topic string, val pubsub.ValidatorEx) (func(), error) {
+	r, ok := p.(pubsubValidatorRegistrar)
+	if !ok {
+		return nil, nil
+	}
+	ps := r.PubSub()
+	if ps == nil {
+		return nil, nil
+	}
+	if err := ps.RegisterTopicValidator(topic, val); err != nil {
+		return nil, err
+	}
+	return func() { _ = ps.UnregisterTopicValidator(topic) }, nil
 }
 
 func (s *PacketService) acceptPeerNumber(number uint64) bool {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
@@ -25,10 +26,28 @@ type RegistrationService struct {
 	reg   *Registry
 	p2p   PacketPublisher // same interface PacketService uses
 	topic string
+	// validate registers the registration topic validator at Start
+	// (profile 1, AM36).
+	validate   bool
+	unregister func()
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// EnableGossipValidation makes Start register a pubsub validator on the
+// registration topic (profile 1, AM36). Call before Start.
+func (s *RegistrationService) EnableGossipValidation() { s.validate = true }
+
+// registrationTopicValidator is the registration topic's pubsub validator
+// (AM36): Reject an announcement that is not pubkey(48) || pop(96), Accept
+// the rest. The PoP is verified by AdoptPending in the receive loop.
+func registrationTopicValidator(_ context.Context, _ peer.ID, m *pubsub.Message) pubsub.ValidationResult {
+	if _, _, err := decodeRegistration(m.Data); err != nil {
+		return pubsub.ValidationReject
+	}
+	return pubsub.ValidationAccept
 }
 
 // encodeRegistration is pubkey(48) || pop(96) = 144 bytes.
@@ -72,13 +91,21 @@ func (s *RegistrationService) Start() error {
 	if s.p2p == nil {
 		return errors.New("mobileverify: no p2p for registration replication")
 	}
+	if s.validate {
+		unregister, err := registerTopicValidator(s.p2p, s.topic, registrationTopicValidator)
+		if err != nil {
+			return err
+		}
+		s.unregister = unregister
+	}
 	sub, err := s.p2p.SubscribeToTopic(s.topic)
 	if err != nil {
+		s.dropValidator()
 		return err
 	}
 	s.wg.Add(1)
 	go s.receiveLoop(sub)
-	log.Info("mobileverify: registration replication started", "topic", s.topic)
+	log.Info("mobileverify: registration replication started", "topic", s.topic, "validated", s.unregister != nil)
 	return nil
 }
 
@@ -86,6 +113,14 @@ func (s *RegistrationService) Start() error {
 func (s *RegistrationService) Stop() {
 	s.cancel()
 	s.wg.Wait()
+	s.dropValidator()
+}
+
+func (s *RegistrationService) dropValidator() {
+	if s.unregister != nil {
+		s.unregister()
+		s.unregister = nil
+	}
 }
 
 func (s *RegistrationService) receiveLoop(sub *pubsub.Subscription) {
