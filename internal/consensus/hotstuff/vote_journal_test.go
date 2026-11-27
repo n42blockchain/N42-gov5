@@ -560,6 +560,30 @@ func TestReportPersistedStateDivergence(t *testing.T) {
 		}
 	})
 
+	// A stored committed block ABOVE the canonical head has no canonical row
+	// to disagree with: not a divergence (whose advice is a consensus-state
+	// reset), and not imported on recovery either.
+	t.Run("ahead of canonical", func(t *testing.T) {
+		db := memdb.NewTestDB(t)
+		head := writeCanonicalHeader(t, db, 100, 0xAA)
+		ahead := &block.Header{
+			Number:     uint256.NewInt(101),
+			Difficulty: uint256.NewInt(1),
+			Root:       types.Hash{0xCC},
+			Extra:      []byte{0xCC},
+		}
+		if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+			rawdb.WriteHeader(tx, ahead)
+			return rawdb.WriteHeadHeaderHash(tx, head)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		st := &ConsensusState{LastCommittedQC: QuorumCertificate{View: 10, BlockHash: ahead.Hash()}}
+		if got := newSvc(db).reportPersistedStateDivergence(st); got != persistedStateAhead {
+			t.Fatalf("got status %d, want ahead-of-canonical", got)
+		}
+	})
+
 	t.Run("genesis qc is not checkable", func(t *testing.T) {
 		db := memdb.NewTestDB(t)
 		st := &ConsensusState{LastCommittedQC: GenesisQC()}

@@ -39,6 +39,10 @@ var profile1ForbiddenEnv = []string{
 	// AM35: the leader's write would wait for its commit-vote journal while
 	// that vote waits for the write, paying the journal timeout every block.
 	"N42_LEADER_WRITE_AFTER_JOURNAL",
+	// AM35: the Proposal would leave before the leader's own write, so a
+	// PrepareQC, the leader's lock and its self commit vote could name a
+	// block that is durable nowhere.
+	"N42_PROPOSE_BEFORE_WRITE",
 }
 
 // profile1ForbiddenEnvPrefixes refuse every variable with the prefix.

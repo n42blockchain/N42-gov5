@@ -297,6 +297,14 @@ func TestProfile1ForbiddenEnv(t *testing.T) {
 
 // AM35: a commit vote certifies a durable block, so profile 1 refuses the
 // chaindata fsync opt-out (and any spelling other than the default).
+// AM35: the Proposal must not precede the leader's durable write.
+func TestProfile1RefusesProposeBeforeWrite(t *testing.T) {
+	got := Profile1ForbiddenEnv([]string{"N42_PROPOSE_BEFORE_WRITE=1", "N42_PUSH_BEFORE_WRITE=1"})
+	if !reflect.DeepEqual(got, []string{"N42_PROPOSE_BEFORE_WRITE"}) {
+		t.Fatalf("forbidden = %v, want only N42_PROPOSE_BEFORE_WRITE", got)
+	}
+}
+
 func TestProfile1RefusesMDBXSafeNoSync(t *testing.T) {
 	for _, v := range []string{"safe-nosync", "SAFE-NOSYNC", "", "nosync"} {
 		got := Profile1ForbiddenEnv([]string{"N42_MDBX_SYNC=" + v})

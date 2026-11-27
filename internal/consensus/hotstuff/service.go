@@ -356,6 +356,7 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 		haveApplied bool
 		parentNum   uint64
 		haveParent  bool
+		minerCan    bool
 	)
 	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
 		// Read the SAME marker checkQMDBLeaderSealParent rejects against, so
@@ -363,9 +364,28 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 		if n, h, ok, rerr := rawdb.ReadQMDBApplied(tx); rerr == nil && ok {
 			appliedNum, appliedHash, haveApplied = n, types.Hash(h), true
 		}
-		if hdr, rerr := rawdb.ReadHeaderByHash(tx, parentHash); rerr == nil && hdr != nil && hdr.Number != nil {
-			parentNum, haveParent = hdr.Number.Uint64(), true
+		hdr, rerr := rawdb.ReadHeaderByHash(tx, parentHash)
+		if rerr != nil || hdr == nil || hdr.Number == nil {
+			return nil
 		}
+		parentNum, haveParent = hdr.Number.Uint64(), true
+		if !haveApplied || appliedNum < parentNum {
+			return nil
+		}
+		// The applied head is not behind the parent. The miner's align
+		// handles it when the parent is on the applied lineage (it unwinds
+		// the descendants) or is a sibling it can import itself: body stored
+		// and the parent's own parent on the applied lineage, so one
+		// authorized import switches the branch. Compared by hash at the
+		// parent's height, never by height alone: a deeper sibling branch,
+		// or a parent whose body is missing, the miner cannot recover — it
+		// neither fetches nor walks back — and needs the re-apply below.
+		if onAppliedLineage(tx, parentHash, parentNum, appliedNum, appliedHash) {
+			minerCan = true
+			return nil
+		}
+		minerCan = parentNum > 0 && len(rawdb.ReadStorageBodyRAW(tx, parentHash, parentNum)) > 0 &&
+			onAppliedLineage(tx, hdr.ParentHash, parentNum-1, appliedNum, appliedHash)
 		return nil
 	}); err != nil {
 		return true // never block production on a failed diagnostic read
@@ -375,11 +395,9 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 	if !haveApplied || appliedHash == parentHash {
 		return true
 	}
-	// Only "applied trails the lock" is ours. A higher applied head on a
-	// sibling branch is an ordinary branch switch, which the miner's own align
-	// phase owns — it can unwind, which is what that case needs. Replaying
-	// forward is the thing it cannot do, and the thing this path supplies.
-	if haveParent && appliedNum >= parentNum {
+	// "Applied trails the lock" is always ours (replaying forward is what the
+	// miner cannot do). An ordinary one-deep branch switch is the miner's.
+	if minerCan {
 		return true
 	}
 	log.Warn("hotstuff: consensus parent is not the applied head; re-applying before producing",
@@ -1701,26 +1719,92 @@ func (s *Service) recoverState() error {
 		state.LastCommitVotedView, state.LastCommitVotedHash)
 
 	if s.reportPersistedStateDivergence(state) == persistedStateConsistent {
-		// The committed block is canonical and applied here, so it counts as
+		// The committed block is canonical here; if it is also applied (on
+		// the applied-marker lineage — canonical alone is not execution: a
+		// commit canonicalizes a block it has not executed) it counts as
 		// imported: a proposal justified by its QC (every proposal after a
 		// cold restart of the whole validator set, when nothing newer is
 		// imported) can be voted on. Without this the deferred vote waits
 		// for an import of the justify block that never comes, and a fleet
 		// restarted together from its committed head never commits again.
-		hash := state.LastCommittedQC.BlockHash
-		var parent types.Hash
-		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
-			if n := rawdb.ReadHeaderNumber(tx, hash); n != nil {
-				if h := rawdb.ReadHeader(tx, hash, *n); h != nil {
-					parent = h.ParentHash
-				}
-			}
-			return nil
-		})
-		ce.MarkImportedOnRecovery(hash, parent)
+		if parent, ok := s.appliedOnRecovery(state.LastCommittedQC.BlockHash, true); ok {
+			ce.MarkImportedOnRecovery(state.LastCommittedQC.BlockHash, parent)
+		}
+	}
+	// The same holds one step up: a whole set restarted locked on a block
+	// above the committed head (a durable lock, see persistableLock) gets
+	// proposals justified by that lock, and nothing re-imports a block that
+	// is already applied. Matched by hash on the applied lineage, never by
+	// height.
+	if lock := state.LockedQC.BlockHash; lock != (types.Hash{}) && lock != state.LastCommittedQC.BlockHash {
+		if parent, ok := s.appliedOnRecovery(lock, false); ok {
+			ce.MarkImportedOnRecovery(lock, parent)
+		}
 	}
 
 	return nil
+}
+
+// appliedOnRecovery reports whether the block hash is executed locally: it
+// lies on the lineage of the QMDB applied marker (compared by hash at every
+// height, like BlockChain.HasAppliedBlock), and returns its parent. Without
+// a marker (non-QMDB chains) a stored header counts. A block deeper than the
+// recent window below the marker is decided by canonicalFallback: the caller
+// passes true only for a block it already found canonical.
+func (s *Service) appliedOnRecovery(hash types.Hash, canonicalFallback bool) (types.Hash, bool) {
+	var (
+		parent  types.Hash
+		applied bool
+	)
+	_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+		number := rawdb.ReadHeaderNumber(tx, hash)
+		if number == nil {
+			return nil
+		}
+		hdr := rawdb.ReadHeader(tx, hash, *number)
+		if hdr == nil {
+			return nil
+		}
+		parent = hdr.ParentHash
+		an, ah, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return nil
+		}
+		if !ok {
+			applied = true
+			return nil
+		}
+		if *number+appliedLineageWindow <= an {
+			applied = canonicalFallback // deeper than the walk window
+			return nil
+		}
+		applied = onAppliedLineage(tx, hash, *number, an, types.Hash(ah))
+		return nil
+	})
+	return parent, applied
+}
+
+// appliedLineageWindow bounds onAppliedLineage's walk, like the recent undo
+// window BlockChain.HasAppliedBlock walks.
+const appliedLineageWindow = 256
+
+// onAppliedLineage reports whether block hash at number lies on the lineage
+// of the applied marker (appliedNum, appliedHash): the marker's ancestor at
+// that height has that hash. Compared by hash, never by height. False above
+// the marker or deeper than appliedLineageWindow below it.
+func onAppliedLineage(tx kv.Tx, hash types.Hash, number, appliedNum uint64, appliedHash types.Hash) bool {
+	if number > appliedNum {
+		return false
+	}
+	cur, curN := appliedHash, appliedNum
+	for curN > number && appliedNum-curN < appliedLineageWindow {
+		h := rawdb.ReadHeader(tx, cur, curN)
+		if h == nil || h.Number == nil || h.Number.Uint64() != curN || h.Hash() != cur {
+			return false
+		}
+		cur, curN = h.ParentHash, curN-1
+	}
+	return curN == number && cur == hash
 }
 
 // persistedStateStatus classifies the recovered consensus state against the
@@ -1732,6 +1816,7 @@ const (
 	persistedStateConsistent                               // committed QC block is canonical locally
 	persistedStateBlockUnknown                             // committed QC names a block we do not have yet
 	persistedStateDiverged                                 // committed QC names a block that is NOT canonical here
+	persistedStateAhead                                    // committed QC names a stored block above the canonical head
 )
 
 // reportPersistedStateDivergence checks the recovered consensus state against
@@ -1786,6 +1871,18 @@ func (s *Service) reportPersistedStateDivergence(state *ConsensusState) persiste
 		log.Warn("hotstuff: persisted committed QC names a block this node does not have",
 			"blockHash", hash, "qcView", state.LastCommittedQC.View, "localHead", canonHeight)
 		return persistedStateBlockUnknown
+	case canonical == (types.Hash{}) && number > canonHeight:
+		// Stored but above the canonical head, so no canonical row exists at
+		// its height to disagree with: the commit ran (or was persisted, see
+		// the OutputBlockCommitted fallback) before this node could
+		// canonicalize it, or startup trimmed canonical back to the applied
+		// marker. Not a divergence — a different block at that height would
+		// be — and the reset advice below would throw away a valid lock. The
+		// commit canonicalizes once the block applies or a later header QC
+		// carries it.
+		log.Warn("hotstuff: persisted committed QC names a block above the canonical head",
+			"blockHash", hash, "height", number, "qcView", state.LastCommittedQC.View, "localHead", canonHeight)
+		return persistedStateAhead
 	case canonical != hash:
 		log.Error("hotstuff: PERSISTED CONSENSUS STATE HAS DIVERGED FROM THE APPLIED CHAIN — "+
 			"the last committed QC names a block that is not canonical locally. Consensus will "+
