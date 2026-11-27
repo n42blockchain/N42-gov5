@@ -1816,6 +1816,7 @@ const (
 	persistedStateConsistent                               // committed QC block is canonical locally
 	persistedStateBlockUnknown                             // committed QC names a block we do not have yet
 	persistedStateDiverged                                 // committed QC names a block that is NOT canonical here
+	persistedStateAhead                                    // committed QC names a stored block above the canonical head
 )
 
 // reportPersistedStateDivergence checks the recovered consensus state against
@@ -1870,6 +1871,18 @@ func (s *Service) reportPersistedStateDivergence(state *ConsensusState) persiste
 		log.Warn("hotstuff: persisted committed QC names a block this node does not have",
 			"blockHash", hash, "qcView", state.LastCommittedQC.View, "localHead", canonHeight)
 		return persistedStateBlockUnknown
+	case canonical == (types.Hash{}) && number > canonHeight:
+		// Stored but above the canonical head, so no canonical row exists at
+		// its height to disagree with: the commit ran (or was persisted, see
+		// the OutputBlockCommitted fallback) before this node could
+		// canonicalize it, or startup trimmed canonical back to the applied
+		// marker. Not a divergence — a different block at that height would
+		// be — and the reset advice below would throw away a valid lock. The
+		// commit canonicalizes once the block applies or a later header QC
+		// carries it.
+		log.Warn("hotstuff: persisted committed QC names a block above the canonical head",
+			"blockHash", hash, "height", number, "qcView", state.LastCommittedQC.View, "localHead", canonHeight)
+		return persistedStateAhead
 	case canonical != hash:
 		log.Error("hotstuff: PERSISTED CONSENSUS STATE HAS DIVERGED FROM THE APPLIED CHAIN — "+
 			"the last committed QC names a block that is not canonical locally. Consensus will "+
