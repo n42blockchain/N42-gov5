@@ -27,6 +27,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -101,12 +102,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 	}
 	// Process calls on a goroutine because they may block indefinitely:
 	h.startCallProc(func(cp *callProc) {
-		answers := make([]*jsonrpcMessage, 0, len(msgs))
-		for _, msg := range calls {
-			if answer := h.handleCallMsg(cp, msg); answer != nil {
-				answers = append(answers, answer)
-			}
-		}
+		answers := h.runBatchCalls(cp, calls)
 		h.addSubscriptions(cp.notifiers)
 		if len(answers) > 0 {
 			h.conn.writeJSON(cp.ctx, answers)
@@ -115,6 +111,69 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 			n.activate()
 		}
 	})
+}
+
+// batchConcurrency bounds how many calls of one batch run at once
+// (Erigon's --rpc.batch.concurrency). Indexers such as Blockscout send
+// batches of 10-500 independent reads; serving them one after another left
+// all but one core idle per connection. 1 restores the serial (geth) order.
+var batchConcurrency = func() int {
+	if v, err := strconv.Atoi(os.Getenv("N42_RPC_BATCH_CONCURRENCY")); err == nil && v > 0 {
+		return v
+	}
+	return 8
+}()
+
+// runBatchCalls answers the calls of a batch in request order. Without
+// subscription calls (whose notifiers live on the shared callProc) they run
+// concurrently, at most batchConcurrency at a time, each on its own
+// callProc so per-call span contexts do not interleave.
+func (h *handler) runBatchCalls(cp *callProc, calls []*jsonrpcMessage) []*jsonrpcMessage {
+	answers := make([]*jsonrpcMessage, 0, len(calls))
+	limit := batchConcurrency
+	if limit > len(calls) {
+		limit = len(calls)
+	}
+	if limit <= 1 || batchHasSubscription(calls) {
+		for _, msg := range calls {
+			if answer := h.handleCallMsg(cp, msg); answer != nil {
+				answers = append(answers, answer)
+			}
+		}
+		return answers
+	}
+	results := make([]*jsonrpcMessage, len(calls))
+	next := make(chan int, len(calls))
+	for i := range calls {
+		next <- i
+	}
+	close(next)
+	var wg sync.WaitGroup
+	for w := 0; w < limit; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				results[i] = h.handleCallMsg(&callProc{ctx: cp.ctx}, calls[i])
+			}
+		}()
+	}
+	wg.Wait()
+	for _, answer := range results {
+		if answer != nil {
+			answers = append(answers, answer)
+		}
+	}
+	return answers
+}
+
+func batchHasSubscription(calls []*jsonrpcMessage) bool {
+	for _, msg := range calls {
+		if msg.isSubscribe() || msg.isUnsubscribe() {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *handler) handleMsg(msg *jsonrpcMessage) {

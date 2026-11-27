@@ -340,6 +340,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 	}
 	baseFee := headerBaseFee.ToBig()
 
+	prewarmRPCSenders(txs)
 	result := make([]*BlockReceipt, len(receipts))
 	for i, receipt := range receipts {
 		tx := txs[i]
@@ -371,7 +372,8 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 			br.ContractAddress = addr
 		}
 
-		if receipt.Logs != nil {
+		// geth serves "logs": [] for a receipt without logs, never null.
+		if len(receipt.Logs) > 0 {
 			br.Logs = avmtypes.FromastLogs(receipt.Logs)
 		} else {
 			br.Logs = []*avmtypes.Log{}

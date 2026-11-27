@@ -35,7 +35,6 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
-	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -91,17 +90,30 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 				hash := tx.Hash()
 				return avmtypes.FromastHash(hash), nil
 			}
-			if fullTx {
-				formatTx = func(tx *transaction.Transaction) (interface{}, error) {
-					hash := tx.Hash()
-					return newRPCTransactionFromBlockHash(block, hash, cfg, blockHashOverride), nil
-				}
-			}
 			transactions = make([]interface{}, len(txs))
-			var err error
-			for i, tx := range txs {
-				if transactions[i], err = formatTx(tx); err != nil {
-					return nil, err
+			if fullTx {
+				// One block hash and one base fee for the whole block, and the
+				// position from the loop: per transaction, looking the hash up
+				// again was O(n^2) and recomputed the block hash from a header
+				// copy each time.
+				bh := rpcBlockHash(block, cfg)
+				if blockHashOverride != nil {
+					bh = *blockHashOverride
+				}
+				baseFee := new(big.Int)
+				if bf := block.Header().BaseFee64(); bf != nil {
+					baseFee = bf.ToBig()
+				}
+				prewarmRPCSenders(txs)
+				for i, tx := range txs {
+					transactions[i] = newRPCTransaction(tx, bh, num, uint64(i), baseFee)
+				}
+			} else {
+				var err error
+				for i, tx := range txs {
+					if transactions[i], err = formatTx(tx); err != nil {
+						return nil, err
+					}
 				}
 			}
 		}
@@ -169,7 +181,11 @@ func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64, cfg *params.C
 	if blockHashOverride != nil {
 		blockHash = *blockHashOverride
 	}
-	return newRPCTransaction(txs[index], blockHash, uint256ToUint64OrZero(b.Number64()), index, big.NewInt(baseFee))
+	baseFee := new(big.Int)
+	if bf := b.Header().BaseFee64(); bf != nil {
+		baseFee = bf.ToBig()
+	}
+	return newRPCTransaction(txs[index], blockHash, uint256ToUint64OrZero(b.Number64()), index, baseFee)
 }
 
 // RPCMarshalHeader converts the given header to the RPC output .
@@ -264,9 +280,9 @@ func rpcBlockSize(b block.IBlock) (uint64, bool) {
 	if !ok || blk == nil {
 		return 0, false
 	}
-	enc, err := rlp.EncodeToBytes(blk)
+	size, err := blk.EncodedSize()
 	if err != nil {
 		return 0, false
 	}
-	return uint64(len(enc)), true
+	return size, true
 }

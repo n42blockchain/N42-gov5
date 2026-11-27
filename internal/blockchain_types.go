@@ -88,9 +88,9 @@ var (
 // =============================================================================
 
 var (
-	headBlockGauge        = prometheus.GetOrCreateCounter("chain_head_block", true)
+	headBlockGauge = prometheus.GetOrCreateCounter("chain_head_block", true)
 	// n42_head_number is the profile-1 J2 common metric: the canonical head block number.
-	n42HeadNumberGauge = prometheus.GetOrCreateCounter("n42_head_number", true)
+	n42HeadNumberGauge    = prometheus.GetOrCreateCounter("n42_head_number", true)
 	headGasUsedGauge      = prometheus.GetOrCreateCounter("chain_head_gas_used", true)
 	headGasLimitGauge     = prometheus.GetOrCreateCounter("chain_head_gas_limit", true)
 	headTransactionsGauge = prometheus.GetOrCreateCounter("chain_head_transactions", true)
@@ -268,7 +268,7 @@ type BlockChain struct {
 
 	procInterrupt int32
 	futureBlocks  *lru.Cache[types.Hash, *block.Block]
-	receiptCache  *lru.Cache[types.Hash, []*block.Receipt]
+	receiptCache  *receiptsCache
 	blockCache    *blockLRU
 	// executedHints: under deferred execution, the result the leader's build
 	// computed for a block it sealed, taken by that block's write

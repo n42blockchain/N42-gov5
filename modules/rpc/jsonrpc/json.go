@@ -61,6 +61,11 @@ type jsonrpcMessage struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 	Error   *jsonError      `json:"error,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
+
+	// resultMarshaled: Result is encoding/json.Marshal output, which is
+	// already compact and HTML-escaped exactly as json.Encoder would write
+	// it, so writeJSON may copy it instead of re-validating it.
+	resultMarshaled bool
 }
 
 func (msg *jsonrpcMessage) isNotification() bool {
@@ -109,7 +114,7 @@ func (msg *jsonrpcMessage) response(result interface{}) *jsonrpcMessage {
 		// TODO: wrap with 'internal server error'
 		return msg.errorResponse(err)
 	}
-	return &jsonrpcMessage{Version: vsn, ID: msg.ID, Result: enc}
+	return &jsonrpcMessage{Version: vsn, ID: msg.ID, Result: enc, resultMarshaled: true}
 }
 
 func errorMessage(err error) *jsonrpcMessage {
@@ -171,6 +176,9 @@ type jsonCodec struct {
 	encMu   sync.Mutex
 	encode  func(v interface{}) error
 	conn    deadlineCloser
+	// raw, when set, is the stream encode writes to (NewCodec): plain
+	// responses are written to it directly (see appendResponses).
+	raw io.Writer
 }
 
 func NewFuncCodec(conn deadlineCloser, encode, decode func(v interface{}) error) ServerCodec {
@@ -190,7 +198,75 @@ func NewCodec(conn Conn) ServerCodec {
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
 	dec.UseNumber()
-	return NewFuncCodec(conn, enc.Encode, dec.Decode)
+	codec := NewFuncCodec(conn, enc.Encode, dec.Decode).(*jsonCodec)
+	codec.raw = conn
+	return codec
+}
+
+// appendResponses appends the exact bytes json.Encoder.Encode writes for v
+// when v is a response message or a batch of them whose results came from
+// json.Marshal, and reports whether it could. Encoding such a message with
+// encoding/json re-scans and re-compacts the whole RawMessage result, which
+// for a block or trace batch is megabytes of work per call.
+func appendResponses(buf []byte, v interface{}) ([]byte, bool) {
+	switch m := v.(type) {
+	case *jsonrpcMessage:
+		buf, ok := appendResponse(buf, m)
+		return append(buf, '\n'), ok
+	case []*jsonrpcMessage:
+		buf = append(buf, '[')
+		for i, msg := range m {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			var ok bool
+			if buf, ok = appendResponse(buf, msg); !ok {
+				return buf, false
+			}
+		}
+		return append(buf, ']', '\n'), true
+	}
+	return buf, false
+}
+
+func appendResponse(buf []byte, m *jsonrpcMessage) ([]byte, bool) {
+	if m == nil || !m.resultMarshaled || m.Version != vsn || m.Method != "" || m.Params != nil ||
+		m.Error != nil || len(m.Result) == 0 || !plainJSONID(m.ID) {
+		return buf, false
+	}
+	buf = append(buf, `{"jsonrpc":"2.0"`...)
+	if len(m.ID) > 0 {
+		buf = append(buf, `,"id":`...)
+		buf = append(buf, m.ID...)
+	}
+	buf = append(buf, `,"result":`...)
+	buf = append(buf, m.Result...)
+	return append(buf, '}'), true
+}
+
+// plainJSONID reports whether a request id is a JSON number or a string of
+// characters that json.Encoder writes back unchanged (no escapes, no space).
+func plainJSONID(id json.RawMessage) bool {
+	if len(id) == 0 {
+		return true
+	}
+	if id[0] == '"' {
+		if len(id) < 2 || id[len(id)-1] != '"' {
+			return false
+		}
+		for _, c := range id[1 : len(id)-1] {
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' || c == '_' || c == '.' || c == ':') {
+				return false
+			}
+		}
+		return true
+	}
+	for i, c := range id {
+		if !(c >= '0' && c <= '9' || i == 0 && c == '-') {
+			return false
+		}
+	}
+	return !(len(id) == 1 && id[0] == '-')
 }
 
 func (c *jsonCodec) remoteAddr() string {
@@ -225,6 +301,12 @@ func (c *jsonCodec) writeJSON(ctx context.Context, v interface{}) error {
 		deadline = time.Now().Add(defaultWriteTimeout)
 	}
 	c.conn.SetWriteDeadline(deadline)
+	if c.raw != nil {
+		if buf, ok := appendResponses(nil, v); ok {
+			_, err := c.raw.Write(buf)
+			return err
+		}
+	}
 	return c.encode(v)
 }
 
