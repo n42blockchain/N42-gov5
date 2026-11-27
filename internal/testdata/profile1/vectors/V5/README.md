@@ -117,3 +117,10 @@ Asserted by gov5: neither address nor its storage is in any block's write set; s
 Control: the same genesis without the two accounts and the same blocks give the same account and storage writes (but the EIP-2935 parent-hash slot),
 receiptsRoot, gasUsed, requests and requestsHash; only stateRoot differs, by the two static accounts.
 Sensitivity: the same blocks executed with the config made non-native write slot 0 of both addresses and change stateRoot.
+
+## E2 review (2026-11-27)
+
+No byte change. Checked against the E2 request: B13 (state gas above regular gas, gasUsed = max) is blocks 1, 3 and 7;
+AM25 (one withdrawal and one consolidation request, the next block carrying their hash) is blocks 7 and 8. The B4 pair
+of consecutive blocks with EQUAL timestamps (AM12) is not added: AM27 refuses equal timestamps, and V5 carries that
+refusal (`timestamp equal to parent`).
