@@ -19,9 +19,11 @@ const pubsubSubscriptionRequestLimit = 200
 
 // CanSubscribe returns true if the topic is of interest and we could subscribe to it.
 func (s *Service) CanSubscribe(topic string) bool {
-	// Allow messaging relay topics: /n42/msg/shard/{N}
+	// Allow messaging relay topics: /n42/msg/shard/{N}. They are not G2
+	// topics, so a Profile-1 chain neither subscribes to them nor accepts
+	// them from peers (AM34 item 4).
 	if strings.HasPrefix(topic, "/n42/msg/") {
-		return true
+		return !profile1Topics.Load()
 	}
 
 	parts := strings.Split(topic, "/")

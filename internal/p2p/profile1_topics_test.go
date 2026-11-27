@@ -52,6 +52,10 @@ func TestProfile1TopicsExcludeNonG2(t *testing.T) {
 				t.Errorf("profile1=%v: AllTopics contains %s = %v", p1, topic, inAll)
 			}
 		}
+		msgShard := fmt.Sprintf(GossipMessageFormat, 0)
+		if got := service.CanSubscribe(msgShard); got == p1 {
+			t.Errorf("profile1=%v: CanSubscribe(%s) = %v", p1, msgShard, got)
+		}
 		for _, topic := range g2Topics {
 			if !IsGossipTopic(topic) || !service.CanSubscribe(wireTopic(topic)) {
 				t.Errorf("profile1=%v: G2 topic %s not usable", p1, topic)

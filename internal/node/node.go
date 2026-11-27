@@ -2874,7 +2874,13 @@ func (n *Node) startDistributedRuntime() {
 		n.messagingService.Start()
 
 		// Wire P2P relay if enabled and P2P layer is available.
-		if n.config.MessagingCfg.P2PRelayEnabled && n.p2p != nil {
+		relayOnProfile1 := n.config.MessagingCfg.P2PRelayEnabled && n.config.ChainCfg.IsProfile1()
+		if relayOnProfile1 {
+			// The /n42/msg/shard topics are not G2 topics: a Profile-1 node
+			// does not subscribe to them (AM34 item 4), so it cannot relay.
+			log.Warn("Messaging P2P relay is not available on a Profile-1 chain; running local-only")
+		}
+		if n.config.MessagingCfg.P2PRelayEnabled && n.p2p != nil && !relayOnProfile1 {
 			relay := dmessaging.NewRelay(&n.config.MessagingCfg, n.messagingService, n.p2p, nil)
 			if err := relay.Start(); err != nil {
 				log.Error("Failed to start messaging relay", "err", err)
