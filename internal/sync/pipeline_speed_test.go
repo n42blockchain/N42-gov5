@@ -25,6 +25,9 @@ func TestPipelineCatchUpSpeedVsSerial(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing harness")
 	}
+	// The serial side as described above: whole ranges, no window prefetch
+	// (with its windows the serial path overlaps the fetch too).
+	t.Cleanup(setCatchUpWindowForTest(maxRequestBlocks))
 	const (
 		stopped = 100
 		top     = 700
