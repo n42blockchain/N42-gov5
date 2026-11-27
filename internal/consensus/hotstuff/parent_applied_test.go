@@ -157,6 +157,7 @@ func TestLeaderProducesOnceTheParentIsTheAppliedHead(t *testing.T) {
 func TestSiblingBranchIsLeftToTheMinerAlign(t *testing.T) {
 	f := newParentAppliedFixture(t)
 	f.setApplied(t, 14527898, f.sibling)
+	f.storeBody(t, f.locked, 14527898) // the miner imports the sibling itself
 
 	f.svc.triggerBlockProduction(1244, f.locked)
 
@@ -166,6 +167,86 @@ func TestSiblingBranchIsLeftToTheMinerAlign(t *testing.T) {
 	}
 	if len(f.fetcher.fetched) != 0 {
 		t.Fatalf("re-apply requested for %x on an ordinary branch switch", f.fetcher.fetched)
+	}
+}
+
+func (f *parentAppliedFixture) storeBody(t *testing.T, hash types.Hash, number uint64) {
+	t.Helper()
+	if err := f.svc.db.Update(context.Background(), func(tx kv.RwTx) error {
+		return rawdb.WriteBodyForStorage(tx, hash, number, &block.BodyForStorage{BaseTxId: 1})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A same-height sibling whose body this node lacks: the miner fails on
+// "consensus parent not in local db" and never fetches, so the gate must
+// (the old height-only check let it through every view).
+func TestSiblingWithoutBodyIsReapplied(t *testing.T) {
+	f := newParentAppliedFixture(t)
+	f.setApplied(t, 14527898, f.sibling)
+
+	f.svc.triggerBlockProduction(1248, f.locked)
+
+	if len(f.producer.parents) != 0 {
+		t.Fatal("produced on a sibling parent whose body is not stored")
+	}
+	if len(f.fetcher.fetched) != 1 || f.fetcher.fetched[0] != f.locked {
+		t.Fatalf("re-apply requests = %x, want [%x]", f.fetcher.fetched, f.locked)
+	}
+}
+
+// The applied head is ABOVE the parent's height on a different branch (the
+// parent's own parent is not applied either): one authorized import in the
+// miner cannot switch it, so the gate re-applies through the walk-back.
+func TestDeeperSiblingBranchIsReapplied(t *testing.T) {
+	f := newParentAppliedFixture(t)
+	db := f.svc.db
+	sibChild := &block.Header{ParentHash: f.sibling, Number: uint256.NewInt(14527899), Difficulty: uint256.NewInt(0)}
+	// A parent at 14527899 on a branch forked below the committed block.
+	otherBase := &block.Header{Number: uint256.NewInt(14527898), Difficulty: uint256.NewInt(7), Extra: []byte{7}}
+	parent := &block.Header{ParentHash: otherBase.Hash(), Number: uint256.NewInt(14527899), Difficulty: uint256.NewInt(0)}
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		rawdb.WriteHeader(tx, sibChild)
+		rawdb.WriteHeader(tx, otherBase)
+		rawdb.WriteHeader(tx, parent)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.storeBody(t, parent.Hash(), 14527899)
+	f.setApplied(t, 14527899, sibChild.Hash())
+
+	f.svc.triggerBlockProduction(1249, parent.Hash())
+
+	if len(f.producer.parents) != 0 {
+		t.Fatal("produced on a parent two branches away from the applied head")
+	}
+	if len(f.fetcher.fetched) != 1 || f.fetcher.fetched[0] != parent.Hash() {
+		t.Fatalf("re-apply requests = %x, want [%x]", f.fetcher.fetched, parent.Hash())
+	}
+}
+
+// The parent is an ancestor of the applied head: the miner unwinds the
+// descendants, no re-apply.
+func TestAppliedDescendantIsLeftToTheMinerAlign(t *testing.T) {
+	f := newParentAppliedFixture(t)
+	child := &block.Header{ParentHash: f.locked, Number: uint256.NewInt(14527899), Difficulty: uint256.NewInt(0)}
+	if err := f.svc.db.Update(context.Background(), func(tx kv.RwTx) error {
+		rawdb.WriteHeader(tx, child)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.setApplied(t, 14527899, child.Hash())
+
+	f.svc.triggerBlockProduction(1250, f.locked)
+
+	if len(f.producer.parents) != 1 || f.producer.parents[0] != f.locked {
+		t.Fatalf("block production parents = %x, want [%x]", f.producer.parents, f.locked)
+	}
+	if len(f.fetcher.fetched) != 0 {
+		t.Fatalf("re-apply requested for %x although the parent is on the applied lineage", f.fetcher.fetched)
 	}
 }
 
