@@ -10,6 +10,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
@@ -59,5 +60,30 @@ func TestCatchUpOnStatusNoKick(t *testing.T) {
 	}
 	if chain2.headNumber() != 10 || p2.askedCount() != 0 {
 		t.Fatalf("no notifier: head %d, asked %d; want 10 and 0", chain2.headNumber(), p2.askedCount())
+	}
+}
+
+// An outbound status completes before the peer is marked connected: the
+// kick keeps checking until the peer becomes a candidate.
+func TestCatchUpOnStatusWaitsForConnectedPeer(t *testing.T) {
+	all := harnessBase(40)
+	chain := newHarnessChain(all[:1]...)
+	net := newHarnessNet(t, chain)
+	net.svc.cfg.blockImportNotifier = &recordingNotifier{}
+	p := net.addPeer(40, harnessHonest, all...)
+	net.fp.peerStatus.SetConnectionState(p.id, peers.PeerConnecting)
+
+	net.svc.catchUpOnStatus(statusAt(40))
+	time.Sleep(3 * statusKickEvery / 2)
+	if chain.headNumber() != 0 {
+		t.Fatalf("head moved to %d before the peer connected", chain.headNumber())
+	}
+	net.fp.peerStatus.SetConnectionState(p.id, peers.PeerConnected)
+	deadline := time.Now().Add(5 * time.Second)
+	for chain.headNumber() != 40 {
+		if time.Now().After(deadline) {
+			t.Fatalf("head = %d after the peer connected, want 40", chain.headNumber())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

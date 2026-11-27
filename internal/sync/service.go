@@ -108,6 +108,9 @@ func (s *Service) SetBlockImportNotifier(n BlockImportNotifier) {
 // Service is responsible for handling all runtime p2p related operations as the
 // main entry point for network messages.
 type Service struct {
+	// statusKick: a catchUpOnStatus kicker is running (rpc_status.go).
+	statusKick atomic.Bool
+
 	// deferredPending: pushed blocks whose deferred-execution check must run
 	// again once their parent is applied (keyed by parent hash).
 	deferredMu       sync.Mutex

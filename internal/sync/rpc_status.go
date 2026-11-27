@@ -233,16 +233,50 @@ func (s *Service) statusRPCHandler(ctx context.Context, msg interface{}, stream 
 // interval after its peers connect (observed: 8 s of a 25 s from-genesis
 // catch-up). The target and every rule after it are the tick's own: this
 // only moves the moment the tick's check runs.
+//
+// An outbound status completes before the connection handler marks the peer
+// connected, and the tick only asks connected peers, so the check is retried
+// briefly (statusKickTries x statusKickEvery) until a catch-up moves the head
+// or the head reaches the advertised height. One kicker runs at a time.
 func (s *Service) catchUpOnStatus(m *sync_pb.Status) {
 	if s.cfg.blockImportNotifier == nil || m == nil {
 		return
 	}
 	self := currentBlockNumber(s.cfg.chain)
-	if self == nil || utils.ConvertH256ToUint256Int(m.CurrentHeight).Cmp(self) <= 0 {
+	advertised := utils.ConvertH256ToUint256Int(m.CurrentHeight)
+	if self == nil || advertised.Cmp(self) <= 0 {
 		return
 	}
-	go s.catchUpTick()
+	if !s.statusKick.CompareAndSwap(false, true) {
+		return
+	}
+	target := advertised.Uint64()
+	go func() {
+		defer s.statusKick.Store(false)
+		for i := 0; i < statusKickTries; i++ {
+			before := currentBlockNumberOrZero(s.cfg.chain)
+			if before >= target {
+				return
+			}
+			s.catchUpTick()
+			if currentBlockNumberOrZero(s.cfg.chain) > before {
+				return
+			}
+			select {
+			case <-time.After(statusKickEvery):
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
 }
+
+// statusKickTries x statusKickEvery bounds how long catchUpOnStatus waits
+// for the peer to become a catch-up candidate.
+const (
+	statusKickTries = 8
+	statusKickEvery = 250 * time.Millisecond
+)
 
 func (s *Service) respondWithStatus(_ context.Context, stream network.Stream) error {
 	resp := &sync_pb.Status{
