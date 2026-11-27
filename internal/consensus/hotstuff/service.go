@@ -531,6 +531,12 @@ type Service struct {
 	// Protected by pendingMu.
 	notifiedImports map[types.Hash]struct{}
 	notifiedFIFO    []types.Hash
+	// notifiedEarly (AM35, profile 1): hashes in notifiedImports that the
+	// engine learned only from the EARLY executed notice, before the block's
+	// write was durable. The first post-persist NotifyBlockImported for such
+	// a hash still reaches the engine, as the durable notice the commit vote
+	// waits for. Evicted with notifiedFIFO. Protected by pendingMu.
+	notifiedEarly map[types.Hash]struct{}
 
 	// pendingCommits are committed blocks whose CommitToCanonical was deferred
 	// because the block hadn't arrived yet. Retried when that block imports —
@@ -593,6 +599,7 @@ func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpc
 		persistInterval:   10,
 		pendingExecutions: make(map[types.Hash]struct{}),
 		notifiedImports:   make(map[types.Hash]struct{}),
+		notifiedEarly:     make(map[types.Hash]struct{}),
 		productionRetry:   make(chan struct{}, 1),
 	}
 }
@@ -2051,18 +2058,38 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	// the vote path.
 	s.pendingMu.Lock()
 	alreadyNotified := false
+	durableUpgrade := false
 	if _, ok := s.notifiedImports[hash]; ok {
 		alreadyNotified = true
+		if _, early := s.notifiedEarly[hash]; early {
+			delete(s.notifiedEarly, hash)
+			durableUpgrade = true
+		}
 	} else {
 		s.notifiedImports[hash] = struct{}{}
 		s.notifiedFIFO = append(s.notifiedFIFO, hash)
-		if len(s.notifiedFIFO) > maxNotifiedImports {
-			oldest := s.notifiedFIFO[0]
-			s.notifiedFIFO = s.notifiedFIFO[1:]
-			delete(s.notifiedImports, oldest)
-		}
+		s.evictNotifiedLocked()
 	}
 	s.pendingMu.Unlock()
+
+	// AM35 (profile 1): the early executed notice already told the engine
+	// this block executed; this call, past the applied-state probe on
+	// committed chaindata, is the durable notice. Deliver only that — the
+	// header-QC canonicalization and reconfig steps below already ran on the
+	// early notice.
+	if durableUpgrade {
+		if ce := s.engine.Engine(); ce != nil {
+			if err := ce.ProcessEvent(ConsensusEvent{
+				Type:       EventBlockImported,
+				Hash:       hash,
+				TxRootHash: txHash,
+				ParentHash: parentHash,
+			}); err != nil {
+				log.Debug("hotstuff: EventBlockImported (durable) processing failed", "hash", hash, "err", err)
+			}
+		}
+		return
+	}
 
 	// Notify the engine once per hash (dedup above). Do NOT gate on
 	// pendingExecutions, which advanceToView clears every view. With import-gated
@@ -2123,7 +2150,15 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 // a crash between the vote and the persist costs this node a re-import on
 // restart and nothing else — HotStuff quorum safety never depended on a
 // voter's local durability (it tolerates f arbitrary faults).
+//
+// Profile 1 (AM35): liveness does. A commit QC must name a block that at
+// least q members hold durably, or a whole-set crash can leave a committed
+// block nobody can serve. There this notice is marked PrePersist: it still
+// releases the prepare vote (R1), but the commit vote (R2) waits for the
+// post-persist NotifyBlockImported, which the dedup lets through once more
+// for exactly that purpose (notifiedEarly).
 func (s *Service) NotifyBlockExecuted(hash, txHash, parentHash types.Hash, number uint64, extra []byte) {
+	durableCommitVote := s.durableCommitVote()
 	s.pendingMu.Lock()
 	if _, ok := s.notifiedImports[hash]; ok {
 		s.pendingMu.Unlock()
@@ -2131,11 +2166,13 @@ func (s *Service) NotifyBlockExecuted(hash, txHash, parentHash types.Hash, numbe
 	}
 	s.notifiedImports[hash] = struct{}{}
 	s.notifiedFIFO = append(s.notifiedFIFO, hash)
-	if len(s.notifiedFIFO) > maxNotifiedImports {
-		oldest := s.notifiedFIFO[0]
-		s.notifiedFIFO = s.notifiedFIFO[1:]
-		delete(s.notifiedImports, oldest)
+	if durableCommitVote {
+		if s.notifiedEarly == nil {
+			s.notifiedEarly = make(map[types.Hash]struct{})
+		}
+		s.notifiedEarly[hash] = struct{}{}
 	}
+	s.evictNotifiedLocked()
 	s.pendingMu.Unlock()
 
 	s.maybeCommitFromHeaderQC(extra)
@@ -2150,9 +2187,27 @@ func (s *Service) NotifyBlockExecuted(hash, txHash, parentHash types.Hash, numbe
 			Hash:       hash,
 			TxRootHash: txHash,
 			ParentHash: parentHash,
+			PrePersist: true,
 		}); err != nil {
 			log.Debug("hotstuff: EventBlockImported (early) processing failed", "hash", hash, "err", err)
 		}
+	}
+}
+
+// durableCommitVote reports whether this chain runs AM35: on profile 1 a
+// commit vote waits for the block's durable write, so the early executed
+// notice must be followed by the post-persist one.
+func (s *Service) durableCommitVote() bool {
+	return s.engine != nil && s.engine.chainConfig.IsProfile1()
+}
+
+// evictNotifiedLocked bounds the notify dedup set. Caller holds pendingMu.
+func (s *Service) evictNotifiedLocked() {
+	for len(s.notifiedFIFO) > maxNotifiedImports {
+		oldest := s.notifiedFIFO[0]
+		s.notifiedFIFO = s.notifiedFIFO[1:]
+		delete(s.notifiedImports, oldest)
+		delete(s.notifiedEarly, oldest)
 	}
 }
 

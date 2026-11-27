@@ -239,7 +239,9 @@ func (bc *BlockChain) SetSenderHintSource(s SenderHintSource) {
 
 // SetExecutedHook attaches the early-vote notification: fired the moment a
 // block's execution and state validation succeed during import, before the
-// block is persisted, so consensus voting can overlap the MDBX commit.
+// block is persisted, so consensus voting can overlap the MDBX commit. On a
+// profile-1 chain only the prepare vote may follow it; the commit vote waits
+// for the post-persist import notice (AM35).
 func (bc *BlockChain) SetExecutedHook(h func(hash, txHash, parentHash types.Hash, number uint64, extra []byte)) {
 	bc.executedHook = h
 	log.Info("Executed hook attached; consensus votes will not wait for block persistence")

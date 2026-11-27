@@ -439,6 +439,25 @@ func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
 	return ok && parent != (types.Hash{}) && e.importedBlocks[parent]
 }
 
+// commitVoteAttested is the Round-2 gate: whether this node may send its
+// commit vote for blockHash. Outside profile 1 that is the block's import
+// (the early executed notice counts) or the deferred-execution attestation.
+//
+// Profile 1 (AM35): the block must be imported AND its write durable — the
+// early executed notice alone is not enough. Durability of the block covers
+// its ancestors: a block is executed and written only on top of its applied
+// parent (insertChain future-queues an unknown ancestor; the leader seal
+// checks the applied marker), every block's write is one chaindata MDBX
+// transaction holding block, state and applied marker, and profile 1 refuses
+// N42_MDBX_SYNC, so each commit is fsynced in order and a durable child
+// implies durable ancestors.
+func (e *ConsensusEngine) commitVoteAttested(blockHash types.Hash) bool {
+	if e.profile1() {
+		return e.importedBlocks[blockHash] && !e.notDurable[blockHash]
+	}
+	return e.importedBlocks[blockHash] || e.deferredAttested(blockHash)
+}
+
 // castHeldCommitVoteIfAttested fires a parked Round-2 vote once its block is
 // attested (imported, or checked with the parent imported). gate names which
 // caller/condition is releasing it -- "own-import" | "parent-import" |
@@ -448,7 +467,7 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gat
 	if !e.twoPhaseVote || e.pendingCommitQC == nil || e.pendingCommitQC.BlockHash != blockHash {
 		return
 	}
-	if !e.importedBlocks[blockHash] && !e.deferredAttested(blockHash) {
+	if !e.commitVoteAttested(blockHash) {
 		return
 	}
 	held := e.pendingCommitQC
@@ -590,7 +609,8 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 	// it until the block is imported locally, so a CommitQC still proves
 	// 2f+1 validators EXECUTED the block. onBlockImported re-enters this
 	// function with the held message once the import lands.
-	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] && !e.deferredAttested(pqc.BlockHash) {
+	// Profile 1 (AM35) also requires the block's write to be durable.
+	if e.twoPhaseVote && !e.commitVoteAttested(pqc.BlockHash) {
 		held := *pqc
 		e.pendingCommitQC = &held
 		if contentionDiagEnabled {
@@ -712,9 +732,20 @@ func (e *ConsensusEngine) hintNextBuild(view ViewNumber, blockHash types.Hash) {
 // new import is always recorded (a stuck round re-imports the SAME hash, which
 // occupies one slot, so the recent-block window is never starved).
 func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
+	e.rememberImportedAt(h, parent, false)
+}
+
+// rememberImportedAt is rememberImported with the notice's durability.
+// prePersist marks a block first learned from the early executed notice as
+// not yet durable (AM35); a later durable notice for it clears the mark. A
+// block already imported is never marked again: a durable notice is final.
+func (e *ConsensusEngine) rememberImportedAt(h types.Hash, parent types.Hash, prePersist bool) {
 	if e.importedBlocks[h] {
 		if parent != (types.Hash{}) {
 			e.importedParents[h] = parent // backfill if the first notify lacked it
+		}
+		if !prePersist {
+			delete(e.notDurable, h)
 		}
 		return
 	}
@@ -723,8 +754,12 @@ func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
 		e.importedFIFO = e.importedFIFO[1:]
 		delete(e.importedBlocks, oldest)
 		delete(e.importedParents, oldest)
+		delete(e.notDurable, oldest)
 	}
 	e.importedBlocks[h] = true
+	if prePersist {
+		e.notDurable[h] = true
+	}
 	if parent != (types.Hash{}) {
 		e.importedParents[h] = parent
 	}
@@ -761,9 +796,17 @@ func (e *ConsensusEngine) extendsJustify(view ViewNumber, blockHash types.Hash) 
 	return true
 }
 
-// onBlockImported handles the BlockImported event and verifies DA commitment.
+// onBlockImported handles a durable BlockImported event and verifies the DA
+// commitment.
 func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot types.Hash, parentHash types.Hash) error {
-	e.rememberImported(blockHash, parentHash)
+	return e.onBlockImportedAt(blockHash, actualTxRoot, parentHash, false)
+}
+
+// onBlockImportedAt is onBlockImported with the notice's durability:
+// prePersist is set by the early executed notice, which may release the
+// prepare vote but, on profile 1, never the commit vote (AM35).
+func (e *ConsensusEngine) onBlockImportedAt(blockHash types.Hash, actualTxRoot types.Hash, parentHash types.Hash, prePersist bool) error {
+	e.rememberImportedAt(blockHash, parentHash, prePersist)
 
 	// Baby Raptr DA verification: compare the proposal's TxRootHash with
 	// the actual transaction root computed during block import.
