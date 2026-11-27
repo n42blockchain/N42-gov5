@@ -146,6 +146,11 @@ type ConsensusEngine struct {
 	importedBlocks  map[types.Hash]bool
 	importedParents map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
 	importedFIFO    []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
+	// notDurable (AM35): imported blocks known only through the EARLY
+	// execution notice (EventBlockImported with PrePersist set), whose write
+	// has not been reported durable yet. A profile-1 commit vote waits until
+	// the block leaves this set. Entries are evicted with importedFIFO.
+	notDurable map[types.Hash]bool
 	// checkedBlocks: under deferred execution, blocks the service verified
 	// without executing them (the header carries this node's result of the
 	// parent; the transactions are includable). Such a block is voted for
@@ -483,6 +488,7 @@ func NewConsensusEngineWithEpochManager(
 		pacemaker:                 NewPacemaker(baseTimeoutMs, maxTimeoutMs),
 		outputCh:                  outputCh,
 		importedBlocks:            make(map[types.Hash]bool),
+		notDurable:                make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
 		checkedBlocks:             make(map[types.Hash]bool),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
@@ -547,6 +553,7 @@ func WithRecoveredState(
 		pacemaker:                 NewPacemaker(baseTimeoutMs, maxTimeoutMs),
 		outputCh:                  outputCh,
 		importedBlocks:            make(map[types.Hash]bool),
+		notDurable:                make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
 		checkedBlocks:             make(map[types.Hash]bool),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
@@ -841,7 +848,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	case EventBlockReady:
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
-		return e.onBlockImported(event.Hash, event.TxRootHash, event.ParentHash)
+		return e.onBlockImportedAt(event.Hash, event.TxRootHash, event.ParentHash, event.PrePersist)
 	case EventBlockChecked:
 		return e.onBlockChecked(event.Hash, event.ParentHash)
 	case EventBlockRejected:
@@ -887,6 +894,12 @@ type ConsensusEvent struct {
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
 	ParentHash types.Hash // EventBlockImported / EventBlockChecked / EventBlockHeaderKnown: the block's parent (extends-check; zero = unknown, check skipped)
 	Number     uint64     // EventBlockHeaderKnown: the block's own height, for logging only (extendsJustify never reads it)
+	// PrePersist (AM35), EventBlockImported only: the block executed and
+	// validated but its write is not yet durable (the blockchain's early
+	// executed hook). The zero value means the notice follows a durable
+	// write. A profile-1 commit vote waits for a durable notice; the prepare
+	// vote does not.
+	PrePersist bool
 	// ReceivedAt is S14's diagnostic arrival stamp for an EventMessage: the
 	// first line of the network handler (processGossipMessage), before
 	// decode. Zero unless N42_CONTENTION_DIAG=1; every downstream contention
