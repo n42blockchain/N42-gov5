@@ -32,7 +32,8 @@ func wireTopic(format string) string {
 func TestProfile1TopicsExcludeNonG2(t *testing.T) {
 	t.Cleanup(func() { ConfigureProfile1Topics(false) })
 	service := &Service{}
-	excluded := []string{BlobSidecarTopicFormat, ZKProofTopicFormat}
+	excluded := []string{BlobSidecarTopicFormat, ZKProofTopicFormat,
+		MobileCohortIndexTopicFormat, MobileCohortRevealTopicFormat, MobileCohortCertTopicFormat}
 
 	for _, p1 := range []bool{false, true} {
 		ConfigureProfile1Topics(p1)

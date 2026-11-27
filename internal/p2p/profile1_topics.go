@@ -14,10 +14,15 @@ var profile1Topics atomic.Bool
 // neither subscribed to nor accepted from peers on Profile 1:
 //   - blob_sidecar: Profile 1 carries no blobs (B9);
 //   - zk_proof: no service joins it and it has no scoring branch, so it must
-//     not be advertised.
+//     not be advertised;
+//   - mobileverify_cohort_{index,reveal,cert}: not G2 even with a cohort mode
+//     switched on (a Profile-1 cohort mode needs its own amendment).
 var profile1ExcludedTopics = map[string]struct{}{
-	BlobSidecarTopicFormat: {},
-	ZKProofTopicFormat:     {},
+	BlobSidecarTopicFormat:        {},
+	ZKProofTopicFormat:            {},
+	MobileCohortIndexTopicFormat:  {},
+	MobileCohortRevealTopicFormat: {},
+	MobileCohortCertTopicFormat:   {},
 }
 
 // ConfigureProfile1Topics restricts (enabled) or restores (disabled) the
