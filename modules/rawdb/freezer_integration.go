@@ -116,6 +116,12 @@ func CleanupFrozenData(tx kv.RwTx, start, count uint64) error {
 			return fmt.Errorf("freeze cleanup: delete receipts %d: %w", number, err)
 		}
 
+		// Delete legacy per-tx log rows (no longer written; logs live in the
+		// receipt blob). Reclaims space on old datadirs.
+		if err := deleteLogsByBlockNum(tx, number); err != nil {
+			return fmt.Errorf("freeze cleanup: delete logs %d: %w", number, err)
+		}
+
 		// Note: We keep HeaderCanonical, HeaderNumber, BlockTx, TxLookup, and Senders
 		// in the hot DB — they're small and needed for chain navigation.
 	}
