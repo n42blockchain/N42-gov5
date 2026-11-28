@@ -99,6 +99,10 @@ type pipeRun struct {
 	// runsSinceProgress counts runs whose insert reported blocks taken
 	// since the head last advanced.
 	runsSinceProgress int
+	// execTop / execHash is the highest block this run executed (observe /
+	// off); the canonical head may trail it (see resetCursor).
+	execTop  uint64
+	execHash types.Hash
 }
 
 // usePipeline decides whether a catch-up to target runs the pipeline: the
@@ -194,22 +198,32 @@ func (r *pipeRun) end() {
 }
 
 // resetCursor places the cursor above the held S1 tail when it extends the
-// applied head, else above the head.
+// executed frontier, else above the frontier. In enforce mode the frontier
+// is the highest executed, authenticated block (appliedAuthedFrontier): the
+// canonical head trails it while the CommitQC of the newest executed blocks
+// sits in the held tail, and a cursor at the canonical head would re-fetch
+// the executed blocks and the tail forever. In observe / off it is the
+// highest block this run executed, while still applied.
 func (r *pipeRun) resetCursor() {
 	head := r.s.cfg.chain.CurrentBlock()
 	r.cursor, r.prevHash = head.Number64().Uint64()+1, head.Hash()
 	if r.mode != syncanchor.Enforce {
+		if r.execTop >= r.cursor && r.s.blockApplied(r.execHash, r.execTop) {
+			r.cursor, r.prevHash = r.execTop+1, r.execHash
+		}
 		return
 	}
+	top, topHash := r.s.appliedAuthedFrontier(head.Number64().Uint64(), head.Hash())
+	r.cursor, r.prevHash = top+1, topHash
 	b := &r.s.anchors
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.tail) == 0 {
 		return
 	}
-	first, top := b.tail[0], b.tail[len(b.tail)-1]
-	if first.ParentHash() == head.Hash() && first.Number64().Uint64() == r.cursor {
-		r.cursor, r.prevHash = top.Number64().Uint64()+1, top.Hash()
+	first, last := b.tail[0], b.tail[len(b.tail)-1]
+	if first.ParentHash() == r.prevHash && first.Number64().Uint64() == r.cursor {
+		r.cursor, r.prevHash = last.Number64().Uint64()+1, last.Hash()
 	}
 }
 
@@ -528,6 +542,12 @@ func (r *pipeRun) importRun(run []pipeBlock) string {
 		r.runsSinceProgress++ // reset below if the head moved
 	}
 	r.noteHeadLocked()
+	if n := len(exec); n > 0 {
+		last := exec[n-1]
+		if num := last.Number64().Uint64(); num > r.execTop && r.s.blockApplied(last.Hash(), num) {
+			r.execTop, r.execHash = num, last.Hash()
+		}
+	}
 	// The cursor follows the executed head, or the top of the held S1 tail.
 	r.resetCursor()
 	r.buf.dropBelow(r.cursor)

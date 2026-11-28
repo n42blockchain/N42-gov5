@@ -367,18 +367,25 @@ func (s *Service) releaseAnchoredTail(authorized bool) int {
 // in the held tail), so catch-up measures its progress from this frontier,
 // not from the canonical head.
 func (s *Service) appliedAuthedTop(self uint64) uint64 {
+	top, _ := s.appliedAuthedFrontier(self, types.Hash{})
+	return top
+}
+
+// appliedAuthedFrontier is appliedAuthedTop that also returns the hash of the
+// frontier block (selfHash when the frontier is self).
+func (s *Service) appliedAuthedFrontier(self uint64, selfHash types.Hash) (uint64, types.Hash) {
 	byNum := s.anchors.authedLinksAbove(self, maxRequestBlocks)
-	top := self
+	top, topHash := self, selfHash
 	for n := self + 1; ; n++ {
 		applied := false
 		for _, h := range byNum[n] {
 			if s.blockApplied(h, n) {
-				applied = true
+				applied, topHash = true, h
 				break
 			}
 		}
 		if !applied {
-			return top
+			return top, topHash
 		}
 		top = n
 	}
