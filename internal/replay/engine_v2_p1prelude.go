@@ -11,11 +11,16 @@
 // the genesis-alloc variant gave them.
 //
 // The transfers are deterministic: sorted by address, nonces 0..n-1, type-2
-// dynamic-fee transactions with a zero tip (no coinbase credit), a gas limit
+// dynamic-fee transactions with a one-wei tip, a gas limit
 // covering the intrinsic cost plus the EIP-8037 new-account state gas, and
 // a fee cap of twice the genesis base fee. Blocks are packed up to the gas
 // target (gasLimit / elasticity) by summed gas limits, so the derived base
 // fee never rises during the prelude and the fee cap holds.
+//
+// The tip is one wei, not zero: a zero tip touches an empty coinbase without
+// crediting it, so every transfer would delete it again (EIP-161), and each
+// deletion drops the whole replay read cache (CachedStateWriter), which made
+// a prelude block take seconds.
 
 package replay
 
@@ -86,6 +91,9 @@ func P1PreludeGasPerTx() uint64 {
 	return intrinsic + vm2.NewAccountStateGas
 }
 
+// p1PreludeTip is the priority fee of a prelude transfer (wei).
+const p1PreludeTip = 1
+
 // p1PreludeDefaultBaseFee stands in for a genesis without a base fee.
 const p1PreludeDefaultBaseFee = 1_000_000_000
 
@@ -138,7 +146,7 @@ func BuildP1PreludeTxs(chainID *big.Int, key *ecdsa.PrivateKey, transfers []P1Pr
 		tx, err := transaction.SignTx(transaction.NewTx(&transaction.DynamicFeeTx{
 			ChainID:   cid.Clone(),
 			Nonce:     uint64(i),
-			GasTipCap: new(uint256.Int),
+			GasTipCap: uint256.NewInt(p1PreludeTip),
 			GasFeeCap: maxFee.Clone(),
 			Gas:       gasPerTx,
 			To:        &to,

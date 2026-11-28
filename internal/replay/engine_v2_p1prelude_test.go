@@ -95,6 +95,8 @@ func TestBuildP1PreludeTxsDeterministic(t *testing.T) {
 		require.Equal(t, tr[i].To, *a[i].To())
 		require.Equal(t, tr[i].Wei.Dec(), a[i].Value().Dec())
 		require.Equal(t, gas, a[i].Gas())
+		require.Equal(t, uint64(1), a[i].GasTipCap().Uint64())
+		require.Equal(t, fee.Uint64(), a[i].GasFeeCap().Uint64())
 		require.Equal(t, uint8(transaction.DynamicFeeTxType), a[i].Type())
 		from, err := transaction.Sender(signer, a[i])
 		require.NoError(t, err)
@@ -156,6 +158,7 @@ func TestP1PreludeBlockExecutes(t *testing.T) {
 	gas, fee := P1PreludeGasPerTx(), P1PreludeMaxFee(baseFee)
 	bal := P1PreludeFunderBalance(tr, gas, fee)
 
+	coinbase := types.Address{0xcb}
 	db := memdb.NewTestDB(t)
 	genesis := &internal.GenesisBlock{GenesisConfig: &conf.Genesis{
 		Config: cfg, GasLimit: gasLimit, Difficulty: uint256.NewInt(0), Timestamp: 1, BaseFee: baseFee,
@@ -173,7 +176,7 @@ func TestP1PreludeBlockExecutes(t *testing.T) {
 	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
 		ibs := state.New(state.NewPlainStateReader(tx))
 		for bn, btxs := range blocks {
-			header := &block.Header{Number: uint256.NewInt(uint64(bn + 1)), GasLimit: gasLimit, Time: uint64(bn + 2),
+			header := &block.Header{Coinbase: coinbase, Number: uint256.NewInt(uint64(bn + 1)), GasLimit: gasLimit, Time: uint64(bn + 2),
 				BaseFee: baseFee, Difficulty: uint256.NewInt(0)}
 			gp := new(common.GasPool).AddGas(gasLimit)
 			var cum uint64
@@ -190,6 +193,8 @@ func TestP1PreludeBlockExecutes(t *testing.T) {
 			require.Equal(t, x.Wei.Dec(), ibs.GetBalance(x.To).Dec(), "balance of %s", x.To.Hex())
 		}
 		require.Equal(t, uint64(len(tr)), ibs.GetNonce(funder))
+		// The tip keeps the (initially empty) coinbase non-empty.
+		require.False(t, ibs.Empty(coinbase))
 		return nil
 	}))
 }
