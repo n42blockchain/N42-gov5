@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -57,7 +58,20 @@ func main() {
 	prefundOut := flag.String("prefund-out", "", "write the per-address pre-fund table (public data) here")
 	var extraAlloc stringList
 	flag.Var(&extraAlloc, "extra-alloc", "alloc delta of a replay-v2 --p1-repair-out pass (public data); its credits are added to the genesis alloc; repeatable, deltas add up")
+	var preludeDelta stringList
+	flag.Var(&preludeDelta, "prelude-delta", "alloc delta (public data) delivered by prelude transfers instead of genesis entries: the genesis gets one funder account holding the summed deltas plus a gas budget; repeatable; needs --prelude-funder-key")
+	preludeKey := flag.String("prelude-funder-key", "", "secret secp256k1 key file (64 hex) of the prelude funder; only its address enters the genesis")
+	newPreludeKey := flag.String("new-prelude-funder-key", "", "generate a prelude funder key into this file (mode 0600, refuses to overwrite), print its address and exit")
 	flag.Parse()
+	if *newPreludeKey != "" {
+		addr, err := newFunderKey(*newPreludeKey)
+		must(err)
+		fmt.Println("prelude funder", addr.Hex())
+		return
+	}
+	if (len(preludeDelta) == 0) != (*preludeKey == "") {
+		must(errors.New("--prelude-delta and --prelude-funder-key go together"))
+	}
 	secret := *seedFile != "" || *secretsFile != ""
 
 	raw, err := os.ReadFile(*std)
@@ -151,6 +165,12 @@ func main() {
 		must(err)
 		must(addAllocDelta(alloc, d))
 		fmt.Printf("extra alloc %s: %d addresses, %d precreated, %s wei\n", path, len(d.Entries), countPrecreates(d), d.Total().Dec())
+	}
+	if len(preludeDelta) > 0 {
+		funder, bal, n, err := preludeFunder(preludeDelta, *preludeKey, sg.BaseFee)
+		must(err)
+		must(addBalance(alloc, funder, bal))
+		fmt.Printf("prelude funder %s: %d transfers, balance %s wei\n", funder.Hex(), n, bal)
 	}
 	am := map[string]map[string]any{}
 	for a, acc := range alloc {
@@ -297,16 +317,9 @@ func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 // creating the accounts it does not hold yet.
 func addAllocDelta(alloc conf.GenesisAlloc, d *replay.P1AllocDelta) error {
 	for a, e := range d.Entries {
-		acc := alloc[a]
-		bal := new(big.Int)
-		if strings.TrimSpace(acc.Balance) != "" {
-			var ok bool
-			if bal, ok = new(big.Int).SetString(strings.TrimSpace(acc.Balance), 0); !ok {
-				return fmt.Errorf("alloc %s: balance %q", a.Hex(), acc.Balance)
-			}
+		if err := addBalance(alloc, a, e.Wei.ToBig()); err != nil {
+			return err
 		}
-		acc.Balance = bal.Add(bal, e.Wei.ToBig()).String()
-		alloc[a] = acc
 	}
 	return nil
 }
@@ -319,4 +332,68 @@ func countPrecreates(d *replay.P1AllocDelta) int {
 		}
 	}
 	return n
+}
+
+// newFunderKey writes a fresh secp256k1 key to path (mode 0600, never over
+// an existing file) and returns its address. The key is never printed.
+func newFunderKey(path string) (types.Address, error) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		return types.Address{}, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return types.Address{}, err
+	}
+	if _, err := f.WriteString(hex.EncodeToString(crypto.FromECDSA(key))); err != nil {
+		f.Close()
+		os.Remove(path)
+		return types.Address{}, err
+	}
+	if err := f.Close(); err != nil {
+		return types.Address{}, err
+	}
+	return crypto.PubkeyToAddress(key.PublicKey), nil
+}
+
+// preludeFunder returns the prelude funder's address and genesis balance
+// (summed deltas plus the gas budget of replay.P1PreludeFunderBalance) and
+// the number of transfers. Errors never quote key material.
+func preludeFunder(deltaPaths []string, keyPath string, genesisBaseFee *uint256.Int) (types.Address, *big.Int, int, error) {
+	key, err := crypto.LoadECDSA(keyPath)
+	if err != nil {
+		return types.Address{}, nil, 0, fmt.Errorf("--prelude-funder-key %s: not a 64-hex secp256k1 key", keyPath)
+	}
+	deltas := make([]*replay.P1AllocDelta, 0, len(deltaPaths))
+	for _, p := range deltaPaths {
+		d, err := replay.ReadP1AllocDelta(p)
+		if err != nil {
+			return types.Address{}, nil, 0, err
+		}
+		deltas = append(deltas, d)
+	}
+	funder := crypto.PubkeyToAddress(key.PublicKey)
+	transfers := replay.P1PreludeTransfers(deltas...)
+	for _, t := range transfers {
+		if t.To == funder {
+			return types.Address{}, nil, 0, fmt.Errorf("prelude funder %s is a delta address", funder.Hex())
+		}
+	}
+	bal := replay.P1PreludeFunderBalance(transfers, replay.P1PreludeGasPerTx(), replay.P1PreludeMaxFee(genesisBaseFee))
+	return funder, bal.ToBig(), len(transfers), nil
+}
+
+// addBalance credits amount to a in alloc, creating the account.
+func addBalance(alloc conf.GenesisAlloc, a types.Address, amount *big.Int) error {
+	acc := alloc[a]
+	bal := new(big.Int)
+	if strings.TrimSpace(acc.Balance) != "" {
+		var ok bool
+		if bal, ok = new(big.Int).SetString(strings.TrimSpace(acc.Balance), 0); !ok {
+			return fmt.Errorf("alloc %s: balance %q", a.Hex(), acc.Balance)
+		}
+	}
+	acc.Balance = bal.Add(bal, amount).String()
+	alloc[a] = acc
+	return nil
 }
