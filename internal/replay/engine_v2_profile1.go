@@ -129,6 +129,10 @@ func (e *EngineV2) p1Block(dstTx kv.RwTx, histAgg *state.HistoryAggregator, qmdb
 	}
 	var srcHeader *block.Header
 	var txs []*transaction.Transaction
+	prelude := src == nil && e.p1PreludeBlock != nil
+	if prelude {
+		txs = e.p1PreludeBlock
+	}
 	if src != nil {
 		srcHeader = src.Header().(*block.Header)
 		txs = src.Transactions()
@@ -181,6 +185,18 @@ func (e *EngineV2) p1Block(dstTx kv.RwTx, histAgg *state.HistoryAggregator, qmdb
 		return nil, fmt.Errorf("block %d start (EIP-2935): %w", number, err)
 	}
 	applied, receipts, _, gasFigure := e.replayTxs(ibs, w, txs, types.Hash{}, h, dstTx)
+	if prelude {
+		// Every prelude transfer must apply and succeed, or the delta
+		// addresses would not hold their credits.
+		if len(applied) != len(txs) {
+			return nil, fmt.Errorf("replay profile 1: prelude block %d: %d of %d transfers applied", number, len(applied), len(txs))
+		}
+		for i, r := range receipts {
+			if r.Status != block.ReceiptStatusSuccessful {
+				return nil, fmt.Errorf("replay profile 1: prelude block %d: transfer %d (nonce %d) failed", number, i, txs[i].Nonce())
+			}
+		}
+	}
 	requests, err := internal.ProcessExecutionBlockEndWithWriter(receipts, cfg, ibs, h, nil, w)
 	if err != nil {
 		return nil, fmt.Errorf("block %d end (requests): %w", number, err)

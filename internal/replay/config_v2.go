@@ -9,6 +9,8 @@
 package replay
 
 import (
+	"crypto/ecdsa"
+
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
@@ -103,6 +105,12 @@ type ConfigV2 struct {
 	// injection before the transaction and the summed credits are written
 	// to this file as an alloc delta for replay-p1-genesis --extra-alloc.
 	Profile1RepairOut string
+	// Profile1PreludeDeltas and Profile1PreludeKey, when the key is set, put
+	// prelude blocks between the genesis and the first source block
+	// (engine_v2_p1prelude.go): signed transfers from the funder key credit
+	// every delta address with its summed delta. The key is secret.
+	Profile1PreludeDeltas []*P1AllocDelta
+	Profile1PreludeKey    *ecdsa.PrivateKey
 }
 
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.

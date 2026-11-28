@@ -101,6 +101,10 @@ type EngineV2 struct {
 	// p1Repair accumulates the genesis alloc delta of a repair pass (nil
 	// when cfg.Profile1RepairOut is empty).
 	p1Repair *P1AllocDelta
+	// p1PreludeBlock holds the funder transfers of the prelude block being
+	// built (engine_v2_p1prelude.go); nil outside the prelude.
+	p1PreludeBlock   []*transaction.Transaction
+	p1PreludeChecked bool
 
 	// lastRegistryRoot is the most recent source MobileRegistryRoot seen, the
 	// value a target header carries when the target config puts the root in
@@ -827,11 +831,21 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			}
 			// Gap fill compares source times; target times are slot times.
 			prevTime = e.p1SrcTime
+			genesisHeader := rawdb.ReadHeaderByNumber(dstTx, 0)
+			if genesisHeader == nil {
+				return fmt.Errorf("replay profile 1: target has no genesis header")
+			}
 			if newBlockNum == 1 {
 				// readParentInfo ran before the genesis was written.
 				if parentHash, err = rawdb.ReadCanonicalHash(dstTx, 0); err != nil {
 					return err
 				}
+				// A fresh target: the prelude blocks come first.
+				if parentHash, newBlockNum, err = e.p1Prelude(dstTx, histAgg, qmdbRC, genesisHeader.BaseFee, parentHash); err != nil {
+					return err
+				}
+			} else if err := e.p1PreludeCheckResume(dstTx, genesisHeader.BaseFee); err != nil {
+				return err
 			}
 		}
 
@@ -1590,9 +1604,14 @@ func (e *EngineV2) replayTxs(
 
 	vmCfg := vm2.Config{}
 
-	p1 := e.profile1()
+	// Prelude transfers are not source transactions: no outcome
+	// diagnostics, no repair, no source counters.
+	prelude := e.p1PreludeBlock != nil
+	p1 := e.profile1() && !prelude
 	for i, tx := range txs {
-		e.stats.TxTotal.Add(1)
+		if !prelude {
+			e.stats.TxTotal.Add(1)
+		}
 
 		var pre p1TxState
 		if p1 {
@@ -1681,7 +1700,9 @@ func (e *EngineV2) replayTxs(
 		}
 		replayed = append(replayed, tx)
 		receipts = append(receipts, receipt)
-		e.stats.TxReplayed.Add(1)
+		if !prelude {
+			e.stats.TxReplayed.Add(1)
+		}
 	}
 	return replayed, receipts, usedGas, internal.HeaderGasUsed(e.txRulesConfig(), srcHeader, gp, usedGas)
 }
