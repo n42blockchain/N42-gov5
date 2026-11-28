@@ -40,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal"
+	"github.com/n42blockchain/N42/internal/replay"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -54,6 +55,8 @@ func main() {
 	source := flag.String("source", "", "source chain datadir (read-only): pre-fund the summed body rewards")
 	sourceTo := flag.Uint64("source-to", 0, "last source block for the reward pre-fund")
 	prefundOut := flag.String("prefund-out", "", "write the per-address pre-fund table (public data) here")
+	var extraAlloc stringList
+	flag.Var(&extraAlloc, "extra-alloc", "alloc delta of a replay-v2 --p1-repair-out pass (public data); its credits are added to the genesis alloc; repeatable, deltas add up")
 	flag.Parse()
 	secret := *seedFile != "" || *secretsFile != ""
 
@@ -142,6 +145,12 @@ func main() {
 			enc, _ := json.MarshalIndent(rows, "", "  ")
 			must(os.WriteFile(*prefundOut, enc, 0o644))
 		}
+	}
+	for _, path := range extraAlloc {
+		d, err := replay.ReadP1AllocDelta(path)
+		must(err)
+		must(addAllocDelta(alloc, d))
+		fmt.Printf("extra alloc %s: %d addresses, %d precreated, %s wei\n", path, len(d.Entries), countPrecreates(d), d.Total().Dec())
 	}
 	am := map[string]map[string]any{}
 	for a, acc := range alloc {
@@ -276,4 +285,38 @@ func must(err error) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string     { return strings.Join(*l, ",") }
+func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
+
+// addAllocDelta adds the credits of a repair-pass alloc delta to alloc,
+// creating the accounts it does not hold yet.
+func addAllocDelta(alloc conf.GenesisAlloc, d *replay.P1AllocDelta) error {
+	for a, e := range d.Entries {
+		acc := alloc[a]
+		bal := new(big.Int)
+		if strings.TrimSpace(acc.Balance) != "" {
+			var ok bool
+			if bal, ok = new(big.Int).SetString(strings.TrimSpace(acc.Balance), 0); !ok {
+				return fmt.Errorf("alloc %s: balance %q", a.Hex(), acc.Balance)
+			}
+		}
+		acc.Balance = bal.Add(bal, e.Wei.ToBig()).String()
+		alloc[a] = acc
+	}
+	return nil
+}
+
+func countPrecreates(d *replay.P1AllocDelta) int {
+	n := 0
+	for _, e := range d.Entries {
+		if e.Precreate {
+			n++
+		}
+	}
+	return n
 }
