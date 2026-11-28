@@ -12,7 +12,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -151,7 +150,7 @@ func main() {
 		d, err := replay.ReadP1AllocDelta(path)
 		must(err)
 		must(addAllocDelta(alloc, d))
-		fmt.Printf("extra alloc %s: %d addresses, %d precreated, %d predeployed, %s wei\n", path, len(d.Entries), countPrecreates(d), d.Predeploys(), d.Total().Dec())
+		fmt.Printf("extra alloc %s: %d addresses, %d precreated, %s wei\n", path, len(d.Entries), countPrecreates(d), d.Total().Dec())
 	}
 	am := map[string]map[string]any{}
 	for a, acc := range alloc {
@@ -294,10 +293,8 @@ type stringList []string
 func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
-// addAllocDelta adds a repair-pass alloc delta to alloc, creating the
-// accounts it does not hold yet: balance credits add up; a predeployed
-// contract sets code, storage and nonce, and must agree with what alloc (or
-// an earlier delta) already holds for that account.
+// addAllocDelta adds the credits of a repair-pass alloc delta to alloc,
+// creating the accounts it does not hold yet.
 func addAllocDelta(alloc conf.GenesisAlloc, d *replay.P1AllocDelta) error {
 	for a, e := range d.Entries {
 		acc := alloc[a]
@@ -309,28 +306,6 @@ func addAllocDelta(alloc conf.GenesisAlloc, d *replay.P1AllocDelta) error {
 			}
 		}
 		acc.Balance = bal.Add(bal, e.Wei.ToBig()).String()
-		if e.Predeploy {
-			if len(acc.Code) > 0 && !bytes.Equal(acc.Code, e.Code) {
-				return fmt.Errorf("alloc %s: predeploy code differs from the alloc's", a.Hex())
-			}
-			if acc.Nonce != 0 && acc.Nonce != e.Nonce {
-				return fmt.Errorf("alloc %s: predeploy nonce %d, alloc has %d", a.Hex(), e.Nonce, acc.Nonce)
-			}
-			acc.Code, acc.Nonce = append([]byte(nil), e.Code...), e.Nonce
-			if len(e.Storage) > 0 {
-				st := make(map[types.Hash]types.Hash, len(acc.Storage)+len(e.Storage))
-				for k, v := range acc.Storage {
-					st[k] = v
-				}
-				for k, v := range e.Storage {
-					if old, ok := st[k]; ok && old != v {
-						return fmt.Errorf("alloc %s: predeploy slot %s differs from the alloc's", a.Hex(), k.Hex())
-					}
-					st[k] = v
-				}
-				acc.Storage = st
-			}
-		}
 		alloc[a] = acc
 	}
 	return nil
