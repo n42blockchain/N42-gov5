@@ -101,6 +101,15 @@ type EngineV2 struct {
 	// p1Repair accumulates the genesis alloc delta of a repair pass (nil
 	// when cfg.Profile1RepairOut is empty).
 	p1Repair *P1AllocDelta
+	// Repair v2 (engine_v2_p1repair2.go): the source read transaction, the
+	// source block being replayed and its lazily read state changes.
+	p1SrcTx  kv.Tx
+	p1SrcNum uint64
+	p1SrcBlk *block.Block
+	p1SrcFx  *p1SrcBlock
+	// p1RepairErr is the first source-read failure of repair v2; the block
+	// loop stops on it.
+	p1RepairErr error
 
 	// lastRegistryRoot is the most recent source MobileRegistryRoot seen, the
 	// value a target header carries when the target config puts the root in
@@ -872,7 +881,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					if len(srcBlk.Transactions()) > 0 {
 						e.p1SrcReceipts = rawdb.ReadRawReceipts(srcTx, num)
 					}
+					e.p1SrcTx, e.p1SrcNum, e.p1SrcBlk = srcTx, num, srcBlk
 					nb, err := e.p1Block(dstTx, histAgg, qmdbRC, newBlockNum, parentHash, srcBlk, srcTime)
+					e.p1SrcTx, e.p1SrcBlk, e.p1SrcFx = nil, nil, nil
 					if err != nil {
 						return err
 					}
@@ -1600,6 +1611,11 @@ func (e *EngineV2) replayTxs(
 			if e.p1Repair != nil && pre.shortGas {
 				e.p1RepairPrecreate(ibs, *tx.To(), srcHeader.Number.Uint64())
 				pre.shortGas = false
+			}
+			if e.p1Repair != nil && e.p1SrcTx != nil && pre.nonceOK && e.p1SrcOK(i) {
+				if err := e.p1RepairV2(ibs, tx, i, srcBlkHash, srcHeader, gp, blockHashFunc); err != nil {
+					e.p1RepairErr = err
+				}
 			}
 		}
 		ibs.Prepare(tx.Hash(), srcBlkHash, i)

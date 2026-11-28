@@ -181,6 +181,9 @@ func (e *EngineV2) p1Block(dstTx kv.RwTx, histAgg *state.HistoryAggregator, qmdb
 		return nil, fmt.Errorf("block %d start (EIP-2935): %w", number, err)
 	}
 	applied, receipts, _, gasFigure := e.replayTxs(ibs, w, txs, types.Hash{}, h, dstTx)
+	if err := e.p1RepairErr; err != nil {
+		return nil, fmt.Errorf("block %d: %w", number, err)
+	}
 	requests, err := internal.ProcessExecutionBlockEndWithWriter(receipts, cfg, ibs, h, nil, w)
 	if err != nil {
 		return nil, fmt.Errorf("block %d end (requests): %w", number, err)
