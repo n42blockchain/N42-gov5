@@ -243,30 +243,18 @@ func compareBlock(tx kv.Tx, store *ancientera.Store, n uint64) error {
 		return fmt.Errorf("receipts bytes mismatch")
 	}
 
-	// Logs: every source row under the block prefix must match, in order.
-	logCur, err := tx.Cursor(modules.Log)
+	// Logs: era rows must match the logs derived from the source receipt blob.
+	srcLogs, err := ancientera.LogsFromReceiptBlob(srcRc)
 	if err != nil {
-		return err
+		return fmt.Errorf("derive logs from source receipts: %w", err)
 	}
-	defer logCur.Close()
-	li := 0
-	for k, v, cerr := logCur.Seek(numKey); k != nil; k, v, cerr = logCur.Next() {
-		if cerr != nil {
-			return cerr
-		}
-		if binary.BigEndian.Uint64(k[:8]) != n {
-			break
-		}
-		if li >= len(rec.Logs) {
-			return fmt.Errorf("era logs short: source has more than %d", li)
-		}
-		if rec.Logs[li].TxID != binary.BigEndian.Uint32(k[8:12]) || !bytes.Equal(rec.Logs[li].Data, v) {
+	if len(srcLogs) != len(rec.Logs) {
+		return fmt.Errorf("era logs count %d vs source %d", len(rec.Logs), len(srcLogs))
+	}
+	for li := range srcLogs {
+		if rec.Logs[li].TxID != srcLogs[li].TxID || !bytes.Equal(rec.Logs[li].Data, srcLogs[li].Data) {
 			return fmt.Errorf("log %d mismatch", li)
 		}
-		li++
-	}
-	if li != len(rec.Logs) {
-		return fmt.Errorf("era logs long: %d vs source %d", len(rec.Logs), li)
 	}
 
 	// Aux class.

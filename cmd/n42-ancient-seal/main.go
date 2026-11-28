@@ -278,12 +278,6 @@ func sealOneEra(ctx context.Context, tx kv.Tx, eraDir string, era, span uint64, 
 		return err
 	}
 	defer txCur.Close()
-	logCur, err := tx.Cursor(modules.Log)
-	if err != nil {
-		abort()
-		return err
-	}
-	defer logCur.Close()
 	storcsCur, err := tx.Cursor(modules.StorageChangeSet)
 	if err != nil {
 		abort()
@@ -386,19 +380,12 @@ func sealOneEra(ctx context.Context, tx kv.Tx, eraDir string, era, span uint64, 
 		} else if rc != nil {
 			execEntry[ancientera.TblReceipts] = rc
 		}
-		var logs []ancientera.LogRec
-		for k, v, err := logCur.Seek(numKey); k != nil; k, v, err = logCur.Next() {
-			if err != nil {
-				abort()
-				return err
-			}
-			if binary.BigEndian.Uint64(k[:8]) != n {
-				break
-			}
-			logs = append(logs, ancientera.LogRec{
-				TxID: binary.BigEndian.Uint32(k[8:12]),
-				Data: append([]byte(nil), v...),
-			})
+		// Per-tx logs are derived from the receipt blob (the per-tx log table
+		// is no longer written); the era format is unchanged.
+		logs, err := ancientera.LogsFromReceiptBlob(execEntry[ancientera.TblReceipts])
+		if err != nil {
+			abort()
+			return fmt.Errorf("block %d: %w", n, err)
 		}
 		if len(logs) > 0 {
 			execEntry[ancientera.TblLogs] = ancientera.EncodeLogs(logs)
