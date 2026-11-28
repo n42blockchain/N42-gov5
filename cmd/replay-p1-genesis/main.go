@@ -61,6 +61,8 @@ func main() {
 	var preludeDelta stringList
 	flag.Var(&preludeDelta, "prelude-delta", "alloc delta (public data) delivered by prelude transfers instead of genesis entries: the genesis gets one funder account holding the summed deltas plus a gas budget; repeatable; needs --prelude-funder-key")
 	preludeKey := flag.String("prelude-funder-key", "", "secret secp256k1 key file (64 hex) of the prelude funder; only its address enters the genesis")
+	preludeThreshold := flag.String("prelude-threshold", "0", "N (decimal, 1 N = 1e18 wei); 0 = off. Balance-only alloc accounts below it move out of the genesis to prelude transfers (zero balances are deleted); needs --prelude-funder-key and --prelude-moved-out")
+	movedOut := flag.String("prelude-moved-out", "", "write the moved accounts as a delta file (public data) here; pass it to replay-v2 as one more --p1-prelude file")
 	newPreludeKey := flag.String("new-prelude-funder-key", "", "generate a prelude funder key into this file (mode 0600, refuses to overwrite), print its address and exit")
 	flag.Parse()
 	if *newPreludeKey != "" {
@@ -69,7 +71,19 @@ func main() {
 		fmt.Println("prelude funder", addr.Hex())
 		return
 	}
-	if (len(preludeDelta) == 0) != (*preludeKey == "") {
+	threshold, err := parseThresholdWei(*preludeThreshold)
+	must(err)
+	if threshold.Sign() > 0 {
+		if *preludeKey == "" || *movedOut == "" {
+			must(errors.New("--prelude-threshold needs --prelude-funder-key and --prelude-moved-out"))
+		}
+	} else if *movedOut != "" {
+		must(errors.New("--prelude-moved-out needs --prelude-threshold"))
+	}
+	if len(preludeDelta) == 0 && threshold.Sign() == 0 && *preludeKey != "" {
+		must(errors.New("--prelude-delta and --prelude-funder-key go together"))
+	}
+	if len(preludeDelta) > 0 && *preludeKey == "" {
 		must(errors.New("--prelude-delta and --prelude-funder-key go together"))
 	}
 	secret := *seedFile != "" || *secretsFile != ""
@@ -165,6 +179,14 @@ func main() {
 		must(err)
 		must(addAllocDelta(alloc, d))
 		fmt.Printf("extra alloc %s: %d addresses, %d precreated, %s wei\n", path, len(d.Entries), countPrecreates(d), d.Total().Dec())
+	}
+	if threshold.Sign() > 0 {
+		moved, zeros, kept, err := splitBalanceOnly(alloc, threshold)
+		must(err)
+		must(replay.WriteP1AllocDelta(*movedOut, moved))
+		preludeDelta = append(preludeDelta, *movedOut)
+		fmt.Printf("prelude threshold %s wei: %d balance-only accounts moved (%s wei), %d zero-balance accounts deleted, %d kept\n",
+			threshold, len(moved.Entries), moved.Total().Dec(), zeros, kept)
 	}
 	if len(preludeDelta) > 0 {
 		funder, bal, n, err := preludeFunder(preludeDelta, *preludeKey, sg.BaseFee)
@@ -332,6 +354,54 @@ func countPrecreates(d *replay.P1AllocDelta) int {
 		}
 	}
 	return n
+}
+
+// parseThresholdWei converts a decimal N value (1 N = 1e18 wei) to wei.
+func parseThresholdWei(v string) (*big.Int, error) {
+	r, ok := new(big.Rat).SetString(strings.TrimSpace(v))
+	if !ok || r.Sign() < 0 {
+		return nil, fmt.Errorf("--prelude-threshold %q: not a non-negative decimal", v)
+	}
+	r.Mul(r, new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)))
+	return new(big.Int).Div(r.Num(), r.Denom()), nil
+}
+
+// splitBalanceOnly removes the balance-only accounts (no code, no storage,
+// no nonce) below threshold from alloc: zero balances are deleted, the
+// others are returned as a delta (balance as wei, first block 0). Accounts
+// with code, storage or a nonce and balance-only accounts at or above the
+// threshold stay. It returns the delta, the number of deleted zero-balance
+// accounts and the number of balance-only accounts kept.
+func splitBalanceOnly(alloc conf.GenesisAlloc, threshold *big.Int) (*replay.P1AllocDelta, int, int, error) {
+	moved := replay.NewP1AllocDelta()
+	zeros, kept := 0, 0
+	for a, acc := range alloc {
+		if len(acc.Code) > 0 || len(acc.Storage) > 0 || acc.Nonce != 0 {
+			continue
+		}
+		bal := new(big.Int)
+		if strings.TrimSpace(acc.Balance) != "" {
+			var ok bool
+			if bal, ok = new(big.Int).SetString(strings.TrimSpace(acc.Balance), 0); !ok {
+				return nil, 0, 0, fmt.Errorf("alloc %s: balance %q", a.Hex(), acc.Balance)
+			}
+		}
+		switch {
+		case bal.Sign() == 0:
+			delete(alloc, a)
+			zeros++
+		case bal.Cmp(threshold) < 0:
+			w, overflow := uint256.FromBig(bal)
+			if overflow {
+				return nil, 0, 0, fmt.Errorf("alloc %s: balance overflows 256 bits", a.Hex())
+			}
+			moved.Entries[a] = &replay.P1DeltaEntry{Address: a, Wei: *w}
+			delete(alloc, a)
+		default:
+			kept++
+		}
+	}
+	return moved, zeros, kept, nil
 }
 
 // newFunderKey writes a fresh secp256k1 key to path (mode 0600, never over

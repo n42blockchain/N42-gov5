@@ -95,3 +95,78 @@ func TestPreludeFunder(t *testing.T) {
 		t.Errorf("alloc balance %s", got)
 	}
 }
+
+func TestSplitBalanceOnly(t *testing.T) {
+	thr, err := parseThresholdWei("100")
+	if err != nil || thr.String() != "100000000000000000000" {
+		t.Fatalf("threshold %v %v", thr, err)
+	}
+	if v, _ := parseThresholdWei("0.5"); v.String() != "500000000000000000" {
+		t.Errorf("0.5 N = %s", v)
+	}
+	big100 := "100000000000000000000"
+	alloc := conf.GenesisAlloc{
+		{0x01}: {Balance: "5"},                                       // moved
+		{0x02}: {Balance: big100},                                    // kept (== threshold)
+		{0x03}: {Balance: "0"},                                       // deleted
+		{0x04}: {Balance: ""},                                        // deleted
+		{0x05}: {Balance: "1", Nonce: 1},                             // kept: nonce
+		{0x06}: {Balance: "1", Code: []byte{0x60}},                   // kept: code
+		{0x07}: {Balance: "1", Storage: map[types.Hash]types.Hash{{1}: {2}}}, // kept: storage
+		{0x08}: {Balance: "0", Nonce: 1},                             // kept: nonce, zero
+		{0x09}: {Balance: "0x10"},                                    // moved (hex)
+	}
+	moved, zeros, kept, err := splitBalanceOnly(alloc, thr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zeros != 2 || kept != 1 || len(moved.Entries) != 2 {
+		t.Fatalf("zeros %d kept %d moved %d", zeros, kept, len(moved.Entries))
+	}
+	if moved.Entries[types.Address{0x01}].Wei.Uint64() != 5 || moved.Entries[types.Address{0x09}].Wei.Uint64() != 16 {
+		t.Error("moved amounts")
+	}
+	if len(alloc) != 5 {
+		t.Errorf("alloc %d, want 5 left", len(alloc))
+	}
+	for _, a := range []byte{0x02, 0x05, 0x06, 0x07, 0x08} {
+		if _, ok := alloc[types.Address{a}]; !ok {
+			t.Errorf("account %x removed", a)
+		}
+	}
+
+	// The funder budget covers the moved accounts too.
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "funder.key")
+	if _, err := newFunderKey(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	mp := filepath.Join(dir, "moved.json")
+	if err := replay.WriteP1AllocDelta(mp, moved); err != nil {
+		t.Fatal(err)
+	}
+	d1 := replay.NewP1AllocDelta()
+	d1.AddPrecreate(types.Address{0x01}, 1) // also in the moved file: summed
+	d1.AddPrecreate(types.Address{0x0a}, 1)
+	p1 := filepath.Join(dir, "d1.json")
+	if err := replay.WriteP1AllocDelta(p1, d1); err != nil {
+		t.Fatal(err)
+	}
+	baseFee := uint256.NewInt(1e9)
+	_, bal, n, err := preludeFunder([]string{p1, mp}, keyPath, baseFee)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("transfers %d, want 3 (0x01 summed)", n)
+	}
+	want := replay.P1PreludeFunderBalance(replay.P1PreludeTransfers(d1, moved), replay.P1PreludeGasPerTx(), replay.P1PreludeMaxFee(baseFee))
+	if bal.String() != want.Dec() {
+		t.Errorf("balance %s, want %s", bal, want.Dec())
+	}
+	// Order of the files does not matter.
+	_, bal2, _, _ := preludeFunder([]string{mp, p1}, keyPath, baseFee)
+	if bal2.Cmp(bal) != 0 {
+		t.Error("file order changes the budget")
+	}
+}
