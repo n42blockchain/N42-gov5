@@ -41,3 +41,33 @@ func TestAddAllocDelta(t *testing.T) {
 		t.Error("bad balance: want an error")
 	}
 }
+
+func TestAddAllocDeltaPredeploy(t *testing.T) {
+	c := types.HexToAddress("0xc0")
+	slot := types.HexToHash("0x01")
+	d := replay.NewP1AllocDelta()
+	d.AddPrecreate(c, 3)
+	d.AddPredeploy(c, []byte{0x60, 0x00}, map[types.Hash]types.Hash{slot: types.HexToHash("0x2a")}, 1, 4)
+	alloc := conf.GenesisAlloc{}
+	if err := addAllocDelta(alloc, d); err != nil {
+		t.Fatal(err)
+	}
+	got := alloc[c]
+	if got.Balance != "1" || got.Nonce != 1 || len(got.Code) != 2 || got.Storage[slot] != types.HexToHash("0x2a") {
+		t.Fatalf("predeploy = %+v", got)
+	}
+	// The same delta again: identical code/storage/nonce agree, credits add.
+	if err := addAllocDelta(alloc, d); err != nil || alloc[c].Balance != "2" {
+		t.Fatalf("second delta: %v, balance %s", err, alloc[c].Balance)
+	}
+	other := replay.NewP1AllocDelta()
+	other.AddPredeploy(c, []byte{0x60, 0x01}, nil, 1, 4)
+	if err := addAllocDelta(alloc, other); err == nil {
+		t.Fatal("conflicting code: want an error")
+	}
+	other = replay.NewP1AllocDelta()
+	other.AddPredeploy(c, []byte{0x60, 0x00}, map[types.Hash]types.Hash{slot: types.HexToHash("0x2b")}, 1, 4)
+	if err := addAllocDelta(alloc, other); err == nil {
+		t.Fatal("conflicting slot: want an error")
+	}
+}
