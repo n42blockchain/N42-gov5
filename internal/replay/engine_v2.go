@@ -91,6 +91,13 @@ type EngineV2 struct {
 	p1        *P1Sealer
 	p1LastQC  *hotstuff.QuorumCertificate
 	p1SrcTime uint64
+	// Profile-1 outcome diagnostics (engine_v2_p1diag.go): the source
+	// receipts of the block being replayed, the senders that lost a
+	// transaction, and the recipients of transfers that halted on the
+	// new-account state gas.
+	p1SrcReceipts block.Receipts
+	p1Dropped     map[types.Address]struct{}
+	p1Unfunded    map[types.Address]struct{}
 
 	// lastRegistryRoot is the most recent source MobileRegistryRoot seen, the
 	// value a target header carries when the target config puts the root in
@@ -160,6 +167,9 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 		stats:  NewStats(),
 		log:    logger,
 		topups: make(map[types.Address]*uint256.Int),
+
+		p1Dropped:  make(map[types.Address]struct{}),
+		p1Unfunded: make(map[types.Address]struct{}),
 	}
 
 	// Open leaf journal if configured.
@@ -843,6 +853,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							parentHash = gb.Hash()
 							newBlockNum++
 						}
+					}
+					e.p1SrcReceipts = nil
+					if len(srcBlk.Transactions()) > 0 {
+						e.p1SrcReceipts = rawdb.ReadRawReceipts(srcTx, num)
 					}
 					nb, err := e.p1Block(dstTx, histAgg, qmdbRC, newBlockNum, parentHash, srcBlk, srcTime)
 					if err != nil {
@@ -1562,9 +1576,14 @@ func (e *EngineV2) replayTxs(
 
 	vmCfg := vm2.Config{}
 
+	p1 := e.profile1()
 	for i, tx := range txs {
 		e.stats.TxTotal.Add(1)
 
+		var pre p1TxState
+		if p1 {
+			pre = e.p1PreTx(ibs, tx)
+		}
 		ibs.Prepare(tx.Hash(), srcBlkHash, i)
 		receipt, _, err := internal.ApplyTransaction(
 			e.txRulesConfig(), blockHashFunc, nil, &srcHeader.Coinbase,
@@ -1627,7 +1646,13 @@ func (e *EngineV2) replayTxs(
 					"err", err,
 				)
 			}
+			if p1 {
+				e.p1PostTx(i, tx, pre, nil, err)
+			}
 			continue
+		}
+		if p1 {
+			e.p1PostTx(i, tx, pre, receipt, nil)
 		}
 		replayed = append(replayed, tx)
 		receipts = append(receipts, receipt)

@@ -70,6 +70,10 @@ type Stats struct {
 	ReceiptMatch    atomic.Uint64 // blocks where receipt hash matches source
 	ReceiptMismatch atomic.Uint64 // blocks where receipt hash differs from source
 	GasUsedTotal    atomic.Uint64 // cumulative gas used by replayed transactions
+
+	// P1Diag holds the per-transaction outcome diagnostics of a profile-1
+	// replay (engine_v2_p1diag.go); empty otherwise.
+	P1Diag DiagCounters
 }
 
 // NewStats creates a Stats instance with initialized skip reason counters.
@@ -127,6 +131,10 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 	for k, v := range s.SkipReasons {
 		skipReasons[k] = v.Load()
 	}
+	var p1Diag map[string]uint64
+	if snap := s.P1Diag.Snapshot(); len(snap) > 0 {
+		p1Diag = snap
+	}
 	return json.Marshal(struct {
 		FromBlock       uint64            `json:"fromBlock"`
 		ToBlock         uint64            `json:"toBlock"`
@@ -145,6 +153,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		ReceiptMatch    uint64            `json:"receiptMatch"`
 		ReceiptMismatch uint64            `json:"receiptMismatch"`
 		GasUsedTotal    uint64            `json:"gasUsedTotal"`
+		P1Diag          map[string]uint64 `json:"p1Diag,omitempty"`
 	}{
 		FromBlock:       s.FromBlock,
 		ToBlock:         s.ToBlock,
@@ -163,6 +172,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		ReceiptMatch:    s.ReceiptMatch.Load(),
 		ReceiptMismatch: s.ReceiptMismatch.Load(),
 		GasUsedTotal:    s.GasUsedTotal.Load(),
+		P1Diag:          p1Diag,
 	})
 }
 
