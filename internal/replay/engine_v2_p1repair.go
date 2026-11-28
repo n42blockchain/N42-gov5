@@ -16,6 +16,12 @@
 //   - topup: a sender that cannot pay gas * price + value is credited the
 //     exact shortfall (want - have).
 //
+//   - predeploy (v2, engine_v2_p1repair2.go): a transaction that succeeded
+//     on the source but fails under profile-1 rules because a contract it
+//     created cannot be created any more gets that contract (code, storage,
+//     nonce as the source left it) in the alloc; accounts it made non-empty
+//     through internal calls are precreated with one wei.
+//
 // The recorded amounts summed per address are the alloc delta that
 // replay-p1-genesis --extra-alloc adds to the genesis. Balances are additive,
 // so the genesis credit leaves every account with the balance the injection
@@ -35,12 +41,15 @@ import (
 
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
-// P1AllocDeltaVersion is the format version of the alloc delta file.
-const P1AllocDeltaVersion = 1
+// P1AllocDeltaVersion is the format version of the alloc delta file. Version
+// 2 adds predeployed contracts (code, storage, nonce); version 1 files hold
+// balance credits only and stay readable.
+const P1AllocDeltaVersion = 2
 
 // P1DeltaEntry is the genesis credit of one address.
 type P1DeltaEntry struct {
@@ -49,6 +58,13 @@ type P1DeltaEntry struct {
 	Precreate  bool   // credited one wei as a fresh transfer recipient
 	Topups     uint64 // shortfall top-ups as a sender
 	FirstBlock uint64 // target block of the first injection
+
+	// Predeploy: the account is a contract the source created; Code,
+	// Storage and Nonce are its state right after the creating block.
+	Predeploy bool
+	Code      []byte
+	Storage   map[types.Hash]types.Hash
+	Nonce     uint64
 }
 
 // P1AllocDelta is the accumulated alloc delta of a repair pass.
@@ -84,6 +100,30 @@ func (d *P1AllocDelta) AddTopup(addr types.Address, amount *uint256.Int, number 
 	e.Wei.Add(&e.Wei, amount)
 }
 
+// AddPredeploy records a contract the source created whose creation fails
+// under profile-1 rules: code, storage and nonce as the source left them.
+func (d *P1AllocDelta) AddPredeploy(addr types.Address, code []byte, storage map[types.Hash]types.Hash, nonce uint64, number uint64) {
+	e := d.entry(addr, number)
+	e.Predeploy = true
+	e.Code = append([]byte(nil), code...)
+	e.Storage = make(map[types.Hash]types.Hash, len(storage))
+	for k, v := range storage {
+		e.Storage[k] = v
+	}
+	e.Nonce = nonce
+}
+
+// Predeploys returns the number of predeployed contracts.
+func (d *P1AllocDelta) Predeploys() int {
+	n := 0
+	for _, e := range d.Entries {
+		if e.Predeploy {
+			n++
+		}
+	}
+	return n
+}
+
 // Total returns the summed credit.
 func (d *P1AllocDelta) Total() *uint256.Int {
 	t := new(uint256.Int)
@@ -99,12 +139,18 @@ type p1DeltaEntryJSON struct {
 	Precreate  bool          `json:"precreate,omitempty"`
 	Topups     uint64        `json:"topups,omitempty"`
 	FirstBlock uint64        `json:"firstBlock"`
+
+	Predeploy bool                      `json:"predeploy,omitempty"`
+	Code      hexutil.Bytes             `json:"code,omitempty"`
+	Storage   map[types.Hash]types.Hash `json:"storage,omitempty"`
+	Nonce     uint64                    `json:"nonce,omitempty"`
 }
 
 type p1DeltaFileJSON struct {
 	Version    int                `json:"version"`
 	Addresses  int                `json:"addresses"`
 	Precreates int                `json:"precreates"`
+	Predeploys int                `json:"predeploys,omitempty"`
 	TotalWei   string             `json:"totalWei"`
 	Entries    []p1DeltaEntryJSON `json:"entries"`
 }
@@ -117,7 +163,12 @@ func (d *P1AllocDelta) MarshalJSON() ([]byte, error) {
 		if e.Precreate {
 			f.Precreates++
 		}
-		f.Entries = append(f.Entries, p1DeltaEntryJSON{Address: e.Address, Wei: e.Wei.Dec(), Precreate: e.Precreate, Topups: e.Topups, FirstBlock: e.FirstBlock})
+		je := p1DeltaEntryJSON{Address: e.Address, Wei: e.Wei.Dec(), Precreate: e.Precreate, Topups: e.Topups, FirstBlock: e.FirstBlock}
+		if e.Predeploy {
+			f.Predeploys++
+			je.Predeploy, je.Code, je.Storage, je.Nonce = true, e.Code, e.Storage, e.Nonce
+		}
+		f.Entries = append(f.Entries, je)
 	}
 	sort.Slice(f.Entries, func(i, j int) bool {
 		return string(f.Entries[i].Address[:]) < string(f.Entries[j].Address[:])
@@ -131,8 +182,8 @@ func (d *P1AllocDelta) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return err
 	}
-	if f.Version != P1AllocDeltaVersion {
-		return fmt.Errorf("alloc delta version %d, want %d", f.Version, P1AllocDeltaVersion)
+	if f.Version < 1 || f.Version > P1AllocDeltaVersion {
+		return fmt.Errorf("alloc delta version %d, want 1..%d", f.Version, P1AllocDeltaVersion)
 	}
 	d.Entries = make(map[types.Address]*P1DeltaEntry, len(f.Entries))
 	for _, je := range f.Entries {
@@ -140,6 +191,15 @@ func (d *P1AllocDelta) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("alloc delta: duplicate address %s", je.Address.Hex())
 		}
 		e := &P1DeltaEntry{Address: je.Address, Precreate: je.Precreate, Topups: je.Topups, FirstBlock: je.FirstBlock}
+		if je.Predeploy {
+			if f.Version < 2 {
+				return fmt.Errorf("alloc delta %s: predeploy in a version %d file", je.Address.Hex(), f.Version)
+			}
+			e.Predeploy, e.Code, e.Storage, e.Nonce = true, je.Code, je.Storage, je.Nonce
+			if e.Storage == nil {
+				e.Storage = map[types.Hash]types.Hash{}
+			}
+		}
 		if err := e.Wei.SetFromDecimal(je.Wei); err != nil {
 			return fmt.Errorf("alloc delta %s: wei %q: %w", je.Address.Hex(), je.Wei, err)
 		}
