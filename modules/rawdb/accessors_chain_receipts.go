@@ -224,21 +224,10 @@ func ReadReceiptByTxHash(db kv.Tx, txHash types.Hash) (*block.Receipt, uint64, u
 }
 
 // WriteReceipts stores all the transaction receipts belonging to a block.
+// Logs live only inside the per-block receipt blob; the legacy per-tx
+// modules.Log table is no longer written (old rows are still deleted on
+// truncate/prune/freeze cleanup).
 func WriteReceipts(tx kv.Putter, number uint64, receipts block.Receipts) error {
-	for txID, receipt := range receipts {
-		if len(receipt.Logs) == 0 {
-			continue
-		}
-		logs := block.Logs(receipt.Logs)
-		data, err := marshalLogsForStorage(logs)
-		if err != nil {
-			return fmt.Errorf("encode block logs for block %d: %w", number, err)
-		}
-		if err = tx.Put(modules.Log, modules.LogKey(number, uint32(txID)), data); err != nil {
-			return fmt.Errorf("writing logs for block %d: %w", number, err)
-		}
-	}
-
 	data, err := marshalReceiptsForStorage(receipts)
 	if err != nil {
 		return fmt.Errorf("encode block receipts for block %d: %w", number, err)
@@ -253,20 +242,6 @@ func WriteReceipts(tx kv.Putter, number uint64, receipts block.Receipts) error {
 // for the receipt serialization, reducing per-call allocations on the hot
 // block-processing path.
 func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) error {
-	for txID, receipt := range receipts {
-		if len(receipt.Logs) == 0 {
-			continue
-		}
-		logs := block.Logs(receipt.Logs)
-		data, err := marshalLogsForStorage(logs)
-		if err != nil {
-			return fmt.Errorf("encode block logs for block %d: %w", number, err)
-		}
-		if err = tx.Put(modules.Log, modules.LogKey(number, uint32(txID)), data); err != nil {
-			return fmt.Errorf("writing logs for block %d: %w", number, err)
-		}
-	}
-
 	buf := GetBuf()
 	defer PutBuf(buf)
 
@@ -288,13 +263,6 @@ func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) e
 // 0xFF marker). Set by replay-v2's --compact-receipts.
 var CompactReceiptWrites = true
 
-// CompactLogWrites switches the per-transaction log table to the compact
-// storage codec. The proto form spent most of its bytes on context fields the
-// key already carries (block number, transaction id) or that are derivable from
-// position. Read paths accept both formats — Logs.Unmarshal dispatches on the
-// 0xFF marker — so mixed tables are fine.
-var CompactLogWrites = true
-
 func marshalReceiptsForStorage(receipts block.Receipts) ([]byte, error) {
 	if CompactReceiptWrites {
 		return receipts.MarshalCompact(), nil
@@ -302,28 +270,7 @@ func marshalReceiptsForStorage(receipts block.Receipts) ([]byte, error) {
 	return receipts.Marshal()
 }
 
-func marshalLogsForStorage(logs block.Logs) ([]byte, error) {
-	if CompactLogWrites {
-		return logs.MarshalCompact(), nil
-	}
-	return logs.Marshal()
-}
-
 func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.Receipts) error {
-	for txID, receipt := range receipts {
-		if len(receipt.Logs) == 0 {
-			continue
-		}
-		logs := block.Logs(receipt.Logs)
-		data, err := marshalLogsForStorage(logs)
-		if err != nil {
-			return err
-		}
-		if err = tx.Append(modules.Log, modules.LogKey(blockNumber, uint32(txID)), data); err != nil {
-			return fmt.Errorf("writing logs for block %d: %w", blockNumber, err)
-		}
-	}
-
 	data, err := marshalReceiptsForStorage(receipts)
 	if err != nil {
 		return fmt.Errorf("encode block receipts for block %d: %w", blockNumber, err)

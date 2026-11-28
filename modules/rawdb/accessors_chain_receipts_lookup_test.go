@@ -182,8 +182,8 @@ func TestWriteReceiptsPooledAndAppendReceipts(t *testing.T) {
 	}
 
 	v, err := tx.GetOne(modules.Log, modules.LogKey(30, 0))
-	if err != nil || len(v) == 0 {
-		t.Fatalf("log row missing after WriteReceiptsPooled: v=%v err=%v", v, err)
+	if err != nil || v != nil {
+		t.Fatalf("log row written by WriteReceiptsPooled: v=%v err=%v", v, err)
 	}
 }
 
@@ -212,6 +212,10 @@ func TestTruncateReceiptsAndAvailableFrom(t *testing.T) {
 		t.Fatalf("ReceiptsAvailableFrom = %d, %v, want 5", from, err)
 	}
 
+	// Legacy rows from old datadirs must still be cleaned up.
+	if err := tx.Put(modules.Log, modules.LogKey(6, 0), []byte{0x01}); err != nil {
+		t.Fatal(err)
+	}
 	if err := TruncateReceipts(tx, 6); err != nil {
 		t.Fatalf("TruncateReceipts: %v", err)
 	}
@@ -247,8 +251,73 @@ func TestAppendReceipts(t *testing.T) {
 			t.Fatalf("ReadRawReceipts after append = %d, want 1", len(raw))
 		}
 		v, err := tx.GetOne(modules.Log, modules.LogKey(40, 0))
-		if err != nil || len(v) == 0 {
-			t.Fatalf("log row missing after AppendReceipts: v=%v err=%v", v, err)
+		if err != nil || v != nil {
+			t.Fatalf("log row written by AppendReceipts: v=%v err=%v", v, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReceiptWritesLeaveLogTableEmpty asserts logs live only in the receipt
+// blob and that ReadReceipts derives full log metadata from it.
+func TestReceiptWritesLeaveLogTableEmpty(t *testing.T) {
+	withChaindataTables(t)
+	db := memdb.NewTestDB(t)
+
+	receipts := makeCleanReceipts(3)
+	receipts[0].Logs = []*block.Log{{Address: types.Address{0x01}, Topics: []types.Hash{{0x0a}}, Data: []byte{1, 2}}}
+	receipts[2].Logs = []*block.Log{
+		{Address: types.Address{0x02}, Data: []byte{3}},
+		{Address: types.Address{0x03}, Topics: []types.Hash{{0x0b}, {0x0c}}},
+	}
+	var blk *block.Block
+	var hash types.Hash
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, hash = writeReceiptTestBlock(t, tx, 50, receipts)
+		return AppendReceipts(tx, 51, makeCleanReceipts(1))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		r := makeCleanReceipts(1)
+		r[0].Logs = []*block.Log{{Address: types.Address{0x04}}}
+		return AppendReceipts(tx, 52, r)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		c, err := tx.Cursor(modules.Log)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		if k, _, err := c.First(); err != nil || k != nil {
+			t.Fatalf("modules.Log not empty: k=%x err=%v", k, err)
+		}
+
+		got, err := ReadReceiptsByHash(tx, hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 || len(got[0].Logs) != 1 || len(got[1].Logs) != 0 || len(got[2].Logs) != 2 {
+			t.Fatalf("unexpected receipts/logs shape: %d", len(got))
+		}
+		txs := blk.Transactions()
+		var idx uint
+		for i, r := range got {
+			for _, l := range r.Logs {
+				if l.BlockNumber.Uint64() != 50 || l.BlockHash != hash || l.TxHash != txs[i].Hash() ||
+					l.TxIndex != uint(i) || l.Index != idx {
+					t.Fatalf("receipt %d log metadata wrong: %+v (want index %d)", i, l, idx)
+				}
+				idx++
+			}
+		}
+		if got[2].Logs[1].Topics[1] != (types.Hash{0x0c}) || got[0].Logs[0].Data[1] != 2 {
+			t.Fatal("log payload mismatch")
 		}
 		return nil
 	}); err != nil {
