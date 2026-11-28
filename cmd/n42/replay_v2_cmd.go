@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	internalcore "github.com/n42blockchain/N42/internal"
@@ -85,6 +87,8 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "p1-validator-keys", Usage: "JSON array of hex BLS secret keys of the p1 genesis's hotstuff.validators, in list order (header seals and CommitQCs)"},
 		&cli.BoolFlag{Name: "p1-source-tx-rules", Usage: "profile 1 diagnostic: execute the source transactions under the --chain config's fork rules instead of profile 1's (all forks at 0, Amsterdam)"},
 		&cli.StringFlag{Name: "p1-repair-out", Usage: "profile 1: genesis alloc repair pass; inject a one-wei credit into fresh recipients of transfers that cannot pay the new-account state gas and the shortfall into senders that cannot pay, and write the summed credits (alloc delta JSON) to this file for replay-p1-genesis --extra-alloc"},
+		&cli.StringSliceFlag{Name: "p1-prelude", Usage: "profile 1: alloc delta JSON (replay-v2 --p1-repair-out); prelude blocks after the genesis carry signed transfers from the --p1-prelude-funder-key account that credit every delta address with its summed delta; repeatable; the genesis must come from replay-p1-genesis --prelude-delta with the same files and key"},
+		&cli.StringFlag{Name: "p1-prelude-funder-key", Usage: "profile 1: secret secp256k1 key file (64 hex) of the prelude funder (replay-p1-genesis --prelude-funder-key)"},
 		&cli.BoolFlag{Name: "p1-source-rewards", Usage: "profile 1: credit each source block's body rewards (historic APoS rewards) and list them in the replayed body"},
 		&cli.IntFlag{Name: "pprof.port", Usage: "If >0, serve net/http/pprof on this port for profiling", Value: 0},
 	},
@@ -120,11 +124,16 @@ func runReplayV2(cliCtx *cli.Context) error {
 		cfg.Profile1Genesis, cfg.Profile1Keys = g, keys
 		cfg.Profile1SourceRewards = cliCtx.Bool("p1-source-rewards")
 		cfg.Profile1RepairOut = cliCtx.String("p1-repair-out")
+		deltas, key, err := loadReplayProfile1Prelude(cliCtx.StringSlice("p1-prelude"), cliCtx.String("p1-prelude-funder-key"))
+		if err != nil {
+			return err
+		}
+		cfg.Profile1PreludeDeltas, cfg.Profile1PreludeKey = deltas, key
 		if cliCtx.Bool("p1-source-tx-rules") {
 			cfg.Profile1TxRules = cfg.ChainConfig
 		}
-	} else if cliCtx.String("p1-repair-out") != "" {
-		return fmt.Errorf("--p1-repair-out needs --p1-genesis")
+	} else if cliCtx.String("p1-repair-out") != "" || len(cliCtx.StringSlice("p1-prelude")) > 0 || cliCtx.String("p1-prelude-funder-key") != "" {
+		return fmt.Errorf("--p1-repair-out and --p1-prelude need --p1-genesis")
 	} else if err := validateReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); err != nil {
 		return fmt.Errorf("validate replay target network binding: %w", err)
 	}
@@ -338,4 +347,29 @@ func loadReplayProfile1Genesis(path string) (*conf.Genesis, error) {
 		return nil, fmt.Errorf("--p1-genesis %s: not a profile-1 genesis", path)
 	}
 	return g, nil
+}
+
+// loadReplayProfile1Prelude reads the prelude deltas and the funder key of
+// replay-v2 --p1-prelude. Both or neither must be given. Errors never quote
+// key material.
+func loadReplayProfile1Prelude(deltaPaths []string, keyPath string) ([]*replay.P1AllocDelta, *ecdsa.PrivateKey, error) {
+	if len(deltaPaths) == 0 && keyPath == "" {
+		return nil, nil, nil
+	}
+	if len(deltaPaths) == 0 || keyPath == "" {
+		return nil, nil, errors.New("--p1-prelude and --p1-prelude-funder-key go together")
+	}
+	key, err := crypto.LoadECDSA(keyPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--p1-prelude-funder-key %s: not a 64-hex secp256k1 key", keyPath)
+	}
+	deltas := make([]*replay.P1AllocDelta, 0, len(deltaPaths))
+	for _, p := range deltaPaths {
+		d, err := replay.ReadP1AllocDelta(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--p1-prelude: %w", err)
+		}
+		deltas = append(deltas, d)
+	}
+	return deltas, key, nil
 }
