@@ -98,6 +98,11 @@ type ConfigV2 struct {
 	// (diagnostic: measures which outcome changes the profile-1 fork rules
 	// cause). Headers, system calls and rewards stay profile 1.
 	Profile1TxRules *params.ChainConfig
+	// Profile1RepairOut, when set, runs a genesis alloc repair pass
+	// (engine_v2_p1repair.go): fixable failures are repaired by a state
+	// injection before the transaction and the summed credits are written
+	// to this file as an alloc delta for replay-p1-genesis --extra-alloc.
+	Profile1RepairOut string
 }
 
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.

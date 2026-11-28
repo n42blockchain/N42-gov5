@@ -98,6 +98,9 @@ type EngineV2 struct {
 	p1SrcReceipts block.Receipts
 	p1Dropped     map[types.Address]struct{}
 	p1Unfunded    map[types.Address]struct{}
+	// p1Repair accumulates the genesis alloc delta of a repair pass (nil
+	// when cfg.Profile1RepairOut is empty).
+	p1Repair *P1AllocDelta
 
 	// lastRegistryRoot is the most recent source MobileRegistryRoot seen, the
 	// value a target header carries when the target config puts the root in
@@ -332,6 +335,10 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		return nil, fmt.Errorf("replay-v2: read resume point: %w", err)
 	}
 
+	if err := e.p1RepairOpen(resumeBlock); err != nil {
+		return nil, fmt.Errorf("replay-v2: %w", err)
+	}
+
 	startBlock := e.cfg.FromBlock
 	if resumeBlock > 0 && resumeBlock >= startBlock {
 		startBlock = resumeBlock + 1
@@ -358,6 +365,9 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 
 		if err := e.processBatchV2(ctx, batchStart, batchEnd); err != nil {
 			return e.stats, fmt.Errorf("replay-v2: batch %d-%d: %w", batchStart, batchEnd, err)
+		}
+		if err := e.p1RepairFlush(); err != nil {
+			return e.stats, err
 		}
 
 		if e.cfg.ProgressFn != nil {
@@ -421,6 +431,10 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		"elapsed", e.stats.Elapsed(),
 	)
 	e.dumpTopups()
+	if e.p1Repair != nil {
+		e.log.Info("profile-1 genesis repair written", "out", e.cfg.Profile1RepairOut,
+			"addresses", len(e.p1Repair.Entries), "totalWei", e.p1Repair.Total().Dec())
+	}
 	return e.stats, nil
 }
 
@@ -1583,6 +1597,10 @@ func (e *EngineV2) replayTxs(
 		var pre p1TxState
 		if p1 {
 			pre = e.p1PreTx(ibs, tx)
+			if e.p1Repair != nil && pre.shortGas {
+				e.p1RepairPrecreate(ibs, *tx.To(), srcHeader.Number.Uint64())
+				pre.shortGas = false
+			}
 		}
 		ibs.Prepare(tx.Hash(), srcBlkHash, i)
 		receipt, _, err := internal.ApplyTransaction(
@@ -1596,7 +1614,7 @@ func (e *EngineV2) replayTxs(
 		// the insufficient-funds error specifically — buyGas raises it BEFORE
 		// gp.SubGas, so the retry never double-charges gas; other "have…want…"
 		// errors (e.g. intrinsic-gas) are post-SubGas and must NOT be retried.
-		if err != nil && e.cfg.AutoTopup && strings.Contains(err.Error(), "insufficient funds") {
+		if err != nil && (e.cfg.AutoTopup || e.p1Repair != nil) && strings.Contains(err.Error(), "insufficient funds") {
 			for tries := 0; tries < 4 && err != nil; tries++ {
 				have, want, ok := parseHaveWant(err.Error())
 				if !ok || want.Cmp(have) <= 0 {
@@ -1614,11 +1632,18 @@ func (e *EngineV2) replayTxs(
 					e.topups[*from] = acc
 				}
 				acc.Add(acc, deficit)
+				if e.p1Repair != nil {
+					e.p1Repair.AddTopup(*from, deficit, srcHeader.Number.Uint64())
+					e.stats.P1Diag.Add("repair_topup", 1)
+				}
 				ibs.Prepare(tx.Hash(), srcBlkHash, i)
 				receipt, _, err = internal.ApplyTransaction(
 					e.txRulesConfig(), blockHashFunc, nil, &srcHeader.Coinbase,
 					gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
 				)
+			}
+			if err != nil && e.p1Repair != nil {
+				e.stats.P1Diag.Add("repair_topup_unresolved", 1)
 			}
 		}
 		if err != nil {

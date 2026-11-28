@@ -84,6 +84,7 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "p1-genesis", Usage: "Profile-1 genesis JSON (n42Profile 1): re-derive every replayed block to the mixed production standard, profile 1, on this genesis; implies --tree qmdb and the committee evidence of its committeePool"},
 		&cli.StringFlag{Name: "p1-validator-keys", Usage: "JSON array of hex BLS secret keys of the p1 genesis's hotstuff.validators, in list order (header seals and CommitQCs)"},
 		&cli.BoolFlag{Name: "p1-source-tx-rules", Usage: "profile 1 diagnostic: execute the source transactions under the --chain config's fork rules instead of profile 1's (all forks at 0, Amsterdam)"},
+		&cli.StringFlag{Name: "p1-repair-out", Usage: "profile 1: genesis alloc repair pass; inject a one-wei credit into fresh recipients of transfers that cannot pay the new-account state gas and the shortfall into senders that cannot pay, and write the summed credits (alloc delta JSON) to this file for replay-p1-genesis --extra-alloc"},
 		&cli.BoolFlag{Name: "p1-source-rewards", Usage: "profile 1: credit each source block's body rewards (historic APoS rewards) and list them in the replayed body"},
 		&cli.IntFlag{Name: "pprof.port", Usage: "If >0, serve net/http/pprof on this port for profiling", Value: 0},
 	},
@@ -118,9 +119,12 @@ func runReplayV2(cliCtx *cli.Context) error {
 		}
 		cfg.Profile1Genesis, cfg.Profile1Keys = g, keys
 		cfg.Profile1SourceRewards = cliCtx.Bool("p1-source-rewards")
+		cfg.Profile1RepairOut = cliCtx.String("p1-repair-out")
 		if cliCtx.Bool("p1-source-tx-rules") {
 			cfg.Profile1TxRules = cfg.ChainConfig
 		}
+	} else if cliCtx.String("p1-repair-out") != "" {
+		return fmt.Errorf("--p1-repair-out needs --p1-genesis")
 	} else if err := validateReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); err != nil {
 		return fmt.Errorf("validate replay target network binding: %w", err)
 	}
