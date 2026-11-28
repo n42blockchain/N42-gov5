@@ -550,6 +550,12 @@ func (r *pipeRun) importRun(run []pipeBlock) string {
 	}
 	// The cursor follows the executed head, or the top of the held S1 tail.
 	r.resetCursor()
+	if r.cursor <= blocks[0].Number64().Uint64() {
+		// The run moved nothing: counted like an insert without progress,
+		// so a cursor that keeps re-taking the same range ends the run at
+		// pipeStallTimeout instead of re-fetching it forever.
+		r.runsSinceProgress++
+	}
 	r.buf.dropBelow(r.cursor)
 	if knownBad {
 		r.s.noteCatchUpInvalid(pid)
