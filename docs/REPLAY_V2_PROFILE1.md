@@ -19,13 +19,13 @@ continue the chain from its head.
 
 ## Owner decisions (2026-11-26)
 
-- **D1. One rule set for all history, plus a genesis alloc repair** (revised 2026-11-28).
-  - Every block executes under profile-1 / Amsterdam rules from block 0. No per-block exception to the source rules exists.
-  - Only the genesis alloc changes, so that most historic transactions still succeed. `--p1-source-tx-rules` stays a diagnostic only.
+- **D1. One rule set for all history; the repair is by balances only, delivered by prelude transfers from one funder** (revised 2026-11-28).
+  - Every block executes under profile-1 / Amsterdam rules from block 0. No per-block exception to the source rules exists, no contract is predeployed, and no transaction is re-signed (historic gas limits stay). `--p1-source-tx-rules` stays a diagnostic only.
   - Root cause of the failures before the repair: a 21,000-gas transfer into a fresh account cannot pay the EIP-8037 new-account state gas (183,600). It halts with status 0 and moves no value. The recipient then cannot pay its own transactions (dropped, insufficient funds), and every later transaction of that sender is dropped on its nonce.
-  - The repair adds two kinds of genesis credit:
+  - The repair credits two kinds of balance before history starts:
     - **precreate**: one wei to each fresh recipient of such a transfer. A non-empty account (EIP-161) is charged no new-account state gas.
     - **topup**: the exact shortfall (`want - have`) to each sender that still cannot pay gas * price + value.
+  - The genesis stays lean. It gets ONE extra account, the prelude funder (secret key `prelude-funder.key` in the secrets directory), holding the summed credits plus a gas budget. **Prelude blocks** right after the genesis, before the first replayed source block, carry ordinary signed transfers from the funder that credit every delta address with exactly its summed delta. The resulting balances equal those a genesis-alloc credit would give.
   - What the repair cannot fix stays failed:
     - Transactions whose gas limit cannot cover the new storage, contract or access gas are included with status 0. The nonce advances, so no cascade follows.
     - Transactions the protocol refuses (intrinsic gas or calldata floor above the gas limit) are dropped and counted. The protocol cannot include them as failed.
@@ -35,9 +35,14 @@ continue the chain from its head.
 1. `replay-v2 --p1-repair-out delta.json` replays on the current genesis. When a transaction would fail for a fixable reason, the pass injects the credit into the state right before it, records it (address, wei, kinds, first block) and continues.
    - The delta is written after every committed batch, and a resumed pass continues it.
    - The delta is public chain-derived data.
-2. `replay-p1-genesis ... --extra-alloc delta.json` adds the credits to the genesis alloc. The flag is repeatable, and the deltas add up.
-3. A clean replay on the new genesis reproduces the repaired outcomes. Balances are additive, so a genesis credit leaves each account with the balance the injection gave it at the point of use.
-   - A transaction whose logic reads a balance earlier can still diverge. A second repair pass on the new genesis catches it, and the iteration stops when a pass records nothing new.
+2. `replay-p1-genesis ... --prelude-delta delta.json --prelude-funder-key <secrets>/prelude-funder.key` adds the funder to the genesis alloc with balance = sum of the deltas + n * gasPerTx * maxFee * 1.1. `--prelude-delta` is repeatable, and the deltas add up. Without these flags the genesis is unchanged. (`--extra-alloc` still writes the credits into the alloc directly; `--new-prelude-funder-key <file>` generates a funder key, mode 0600, and prints only its address.)
+3. `replay-v2 ... --p1-prelude delta.json --p1-prelude-funder-key <secrets>/prelude-funder.key` (same files as step 2) writes the prelude on a fresh target, then replays the source from block 1:
+   - one transfer per delta address, sorted by address, nonces 0..n-1, type 2, chain id of the target, one-wei tip (a zero tip deletes the empty coinbase after every transfer, EIP-161, and each deletion drops the replay read cache), fee cap twice the genesis base fee, gas limit 21,000 + 183,600 (`P1PreludeGasPerTx`);
+   - packed up to the gas target (gasLimit / 2 by summed gas limits, 73 transfers per 30M block), so the derived base fee never rises during the prelude;
+   - sealed like every replayed block (P1Sealer: header, CommitQC, committee evidence; each one slot after its parent). The source blocks keep the slot rule, so the first ones may shift by a few slots;
+   - every transfer must succeed, or the run stops;
+   - the target records the prelude (block and transfer count, digest of funder, gas and transfer list). A resumed run does not re-emit it and refuses other prelude flags. The stats `p1Diag` holds `prelude_blocks` and `prelude_txs`; prelude transfers are not counted as source transactions.
+4. A clean replay with the prelude reproduces the repaired outcomes. A transaction whose logic reads a balance earlier can still diverge: a second repair pass on top (step 1 with the prelude flags) records what is left, and the iteration stops when a pass records nothing new. `replay-v2-p1-audit` audits prelude blocks like any other block.
 
 Trial, blocks 1..1,400,000 (191,911 transactions), 2026-11-28:
 
@@ -45,12 +50,16 @@ Trial, blocks 1..1,400,000 (191,911 transactions), 2026-11-28:
 |---|---|---|---|
 | original genesis | 400 | 2,950 (2,949 new-account halts) | 188,561 (12,880 root, 175,681 nonce cascade) |
 | repair pass 1 | 191,888 | 23 | 0 |
-| clean replay, genesis + delta 1 | 191,888 | 23 | 0 |
+| clean replay, genesis alloc + delta 1 | 191,888 | 23 | 0 |
 | repair pass 2 on that genesis | 191,888 (empty delta) | 23 | 0 |
+| clean replay, funder genesis + prelude | 191,888 | 23 | 0 |
+| repair pass 2 on the prelude | 191,888 (empty delta) | 23 | 0 |
 
 - Delta 1 has 13,478 addresses: 13,344 precreated, and 135 topped up with 2,393.75 ETH in total.
+- The prelude for delta 1 is 185 blocks with 13,478 transfers (73 per block); the target head moves from 1,400,592 to 1,400,777, and the outcome counters equal the genesis-alloc variant exactly. The funder genesis is 283,920 bytes against 1,355,721 for the genesis-alloc variant (2,841 alloc accounts instead of 16,228).
+- A resumed run neither re-emits the prelude nor accepts a run without the prelude flags.
 - The 23 residual status-0 transactions ran out of gas under the new gas schedule. The source had them succeed.
-- `replay-v2-p1-audit` passed on the clean target: blocks 1-1,400,592.
+- `replay-v2-p1-audit` passed on the genesis-alloc target (blocks 1-1,400,592) and on the prelude target (blocks 1-1,400,777, 205,389 transactions = 191,911 + 13,478 prelude transfers). On the prelude target the maximum slot gap is 680,424 s: the jump from the genesis time to source block 1's time, which on the genesis-alloc target falls between the genesis and block 1, now falls after the last prelude block.
 
 The stats JSON key `p1Diag` holds the outcome diagnostics:
 
@@ -66,6 +75,7 @@ The stats JSON key `p1Diag` holds the outcome diagnostics:
   - `--prefund-out` writes the per-address table. The table is public chain data.
 - **D4/D5. Secret keys.** The validator BLS keys and the committee-pool seed are secret and local only. The genesis embeds the seed (`committeePool.seedHex`), so a genesis built with it is secret too.
   - `replay-p1-genesis --pool-seed-file --validator-secrets-file` reads them from files, never prints them, and writes the genesis mode 0600.
+  - The prelude funder key (`prelude-funder.key`, 64 hex, mode 0600) is secret the same way. Its address is public; the genesis holds only the address.
   - Never commit, log or copy them into shared directories. A replay target built from them is not to be shared either.
 
 ## Commands
@@ -83,9 +93,12 @@ n42 replay-v2 --source <src> --target <dst> --tree qmdb --chain mainnet_qmdb_sta
   --p1-genesis <secrets>/p1-genesis-secret.json \
   --p1-validator-keys <secrets>/validator-bls-secrets.json --from 1 --to <head>
 
-# genesis alloc repair: pass, then rebuild the genesis with the delta
+# repair: pass, then rebuild the genesis with the funder, then replay with the prelude
 n42 replay-v2 ... --p1-genesis <secrets>/p1-genesis-secret.json --p1-repair-out repair/delta1.json
-replay-p1-genesis <same flags as above> --extra-alloc repair/delta1.json --out <secrets>/p1-genesis-r1.json
+replay-p1-genesis <same flags as above> --prelude-delta repair/delta1.json \
+  --prelude-funder-key <secrets>/prelude-funder.key --out <secrets>/p1-genesis-r1.json
+n42 replay-v2 ... --p1-genesis <secrets>/p1-genesis-r1.json \
+  --p1-prelude repair/delta1.json --p1-prelude-funder-key <secrets>/prelude-funder.key
 
 # follower audit of every block
 n42 replay-v2-p1-audit --target <dst> --p1-genesis <genesis> --workers 16
